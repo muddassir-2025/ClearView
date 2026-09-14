@@ -45,6 +45,8 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
@@ -260,6 +262,12 @@ fun VideoPlayerScreen(
     val isManual = remember(video.videoId) { libraryStore.isManuallyAdded(video.videoId) }
     var confirmRemoveManual by remember(video.videoId) { mutableStateOf(false) }
     var lastProgressSavedAt by remember { mutableStateOf(0L) }
+    
+    // Live playback state for the custom transport controls in the PlayerControlPanel.
+    var livePosition by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    var liveDuration by remember(video.videoId) { mutableDoubleStateOf(0.0) }
+    var isPlaying by remember(video.videoId) { mutableStateOf(false) }
+
     // Runtime live signal: the IFrame API reports a NON-finite duration
     // (Infinity) for a live broadcast, and the JS bridge only forwards
     // progress when the duration is finite. Some live streams report the
@@ -527,6 +535,8 @@ fun VideoPlayerScreen(
                     command = command,
                     onToggleFullscreen = onFullscreenClick,
                     onProgress = { currentSeconds, durationSeconds ->
+                        livePosition = currentSeconds
+                        liveDuration = durationSeconds
                         // Persist real playback progress so Instagram cards get
                         // a progress bar / Watched badge and Continue Watching
                         // resumes from the exact position.
@@ -545,7 +555,8 @@ fun VideoPlayerScreen(
                             }
                         }
                     },
-                    onPlayerState = { _, ended ->
+                    onPlayerState = { currentlyPlaying, ended ->
+                        isPlaying = currentlyPlaying
                         if (ended) {
                             progressStore.set(video.videoId, 1f)
                             progressRevision++
@@ -572,6 +583,7 @@ fun VideoPlayerScreen(
                     modifier = Modifier.fillMaxSize(),
                     onMuteState = { muted -> isMuted = muted },
                     onPlayerState = { s ->
+                        isPlaying = s == YtState.PLAYING
                         // Late connection: the source is now usable — drop any
                         // timeout card.
                         if (s == YtState.PLAYING || s == YtState.PAUSED) {
@@ -612,6 +624,8 @@ fun VideoPlayerScreen(
                         markSourceLive()
                     },
                     onProgress = { currentSeconds, durationSeconds ->
+                        livePosition = currentSeconds
+                        liveDuration = durationSeconds
                         // A finite duration report is the runtime proof this is a
                         // bounded (non-live) video — live streams never report one
                         // (they report Infinity or the growing elapsed time, both
@@ -957,6 +971,15 @@ fun VideoPlayerScreen(
                 showSpeedMenu = showSpeedMenu,
                 downloadStatus = downloadStatus,
                 isOffline = isOffline,
+                isPlaying = isPlaying,
+                positionSeconds = livePosition,
+                durationSeconds = liveDuration,
+                onTogglePlay = {
+                    sendCommand(if (isPlaying) "pause" else "play")
+                },
+                onSeek = { target -> requestSeek(target) },
+                onSeekBack = { sendCommand("back10") },
+                onSeekForward = { sendCommand("fwd10") },
                 isManual = isManual,
                 onDownloadAudio = {
                     AudioDownloads.download(video, AudioDownloads.sourceFor(video))
@@ -1176,6 +1199,13 @@ private fun PlayerControlPanel(
     showSpeedMenu: Boolean,
     downloadStatus: DownloadStatus?,
     isOffline: Boolean,
+    isPlaying: Boolean,
+    positionSeconds: Double,
+    durationSeconds: Double,
+    onTogglePlay: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onSeekBack: () -> Unit,
+    onSeekForward: () -> Unit,
     /** Whether this video was manually added by URL (its ⋮ menu offers Remove). */
     isManual: Boolean,
     onDownloadAudio: () -> Unit,
@@ -1247,41 +1277,19 @@ private fun PlayerControlPanel(
             overflow = TextOverflow.Ellipsis
         )
 
-        // Primary action: Continue Watching / Watch Again.
-        if (hasPartialProgress) {
-            Spacer(Modifier.height(12.dp))
-            Button(
-                onClick = onContinue,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "Continue Watching · " +
-                        formatPosition(progress?.positionSeconds ?: 0L)
-                )
-            }
-        } else if (isWatched) {
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onWatchAgain,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text("Watch Again")
-            }
-        }
+        // Custom transport controls above the actions
+        Spacer(Modifier.height(16.dp))
+        MediaTransportControls(
+            isPlaying = isPlaying,
+            positionSeconds = positionSeconds,
+            durationSeconds = durationSeconds,
+            onTogglePlay = onTogglePlay,
+            onSeek = onSeek,
+            onSeekBack = onSeekBack,
+            onSeekForward = onSeekForward
+        )
 
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         Spacer(Modifier.height(4.dp))
 
@@ -1435,6 +1443,40 @@ private fun PlayerControlPanel(
                 onClick = onAddToPlaylist,
                 modifier = Modifier.weight(1f)
             )
+        }
+
+        // Primary action: Continue Watching / Watch Again.
+        if (hasPartialProgress) {
+            Spacer(Modifier.height(12.dp))
+            Button(
+                onClick = onContinue,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Continue Watching · " +
+                        formatPosition(progress?.positionSeconds ?: 0L)
+                )
+            }
+        } else if (isWatched) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onWatchAgain,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+                Text("Watch Again")
+            }
         }
 
         // ── Offline audio: the Download Audio button with its full state flow
@@ -2551,3 +2593,85 @@ private fun InstagramPlayer(
     }
 }
 
+
+@Composable
+private fun MediaTransportControls(
+    isPlaying: Boolean,
+    positionSeconds: Double,
+    durationSeconds: Double,
+    onTogglePlay: () -> Unit,
+    onSeek: (Double) -> Unit,
+    onSeekBack: () -> Unit,
+    onSeekForward: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var sliderValue by remember(positionSeconds) { mutableFloatStateOf(positionSeconds.toFloat()) }
+    var isDragging by remember { mutableStateOf(false) }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = formatPosition(if (isDragging) sliderValue.toLong() else positionSeconds.toLong()),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Slider(
+                value = if (isDragging) sliderValue else positionSeconds.toFloat(),
+                onValueChange = {
+                    isDragging = true
+                    sliderValue = it
+                },
+                onValueChangeFinished = {
+                    isDragging = false
+                    onSeek(sliderValue.toDouble())
+                },
+                valueRange = 0f..durationSeconds.toFloat().coerceAtLeast(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 8.dp)
+            )
+            Text(
+                text = formatPosition(durationSeconds.toLong()),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = { onSeek(0.0) }) {
+                Icon(Icons.Filled.SkipPrevious, contentDescription = "Restart")
+            }
+            IconButton(onClick = onSeekBack) {
+                Icon(Icons.Filled.Replay10, contentDescription = "Back 10")
+            }
+            IconButton(
+                onClick = onTogglePlay,
+                modifier = Modifier
+                    .size(64.dp)
+                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape)
+            ) {
+                Icon(
+                    imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (isPlaying) "Pause" else "Play",
+                    modifier = Modifier.size(32.dp),
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            IconButton(onClick = onSeekForward) {
+                Icon(Icons.Filled.Forward10, contentDescription = "Forward 10")
+            }
+            IconButton(onClick = { onSeek(durationSeconds) }) {
+                Icon(Icons.Filled.SkipNext, contentDescription = "End")
+            }
+        }
+    }
+}
