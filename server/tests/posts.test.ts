@@ -6,7 +6,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { closePool, type Queryable } from '../src/db.js';
 import { env } from '../src/env.js';
-import { UnconfiguredObjectStore, extensionFor, kindFor, mediaObjectKey } from '../src/media/store.js';
+import {
+  UnconfiguredObjectStore,
+  extensionFor,
+  isAccessDenied,
+  isNotFound,
+  kindFor,
+  mediaObjectKey,
+} from '../src/media/store.js';
 import { sweepAbandonedUploads } from '../src/media/service.js';
 import { runRetentionSweep } from '../src/jobs/retention.js';
 import { applyAllMigrations, asQueryable, freshDatabase, resetData } from './helpers/database.js';
@@ -1225,5 +1232,52 @@ describe('a deployment with no bucket configured', () => {
     expect(res.status).toBe(200);
     expect(res.body.items[0].media).toHaveLength(1);
     expect(res.body.items[0].media[0].url).toBeNull();
+  });
+});
+
+// ── Telling an absent object from a refused request ─────────────────────
+
+/**
+ * The two S3 outcomes the upload lifecycle reads, pinned to the shapes AWS
+ * really sends.
+ *
+ * These exist because the distinction is not guessable: a HEAD for a missing
+ * key comes back 404 only when the caller may list the bucket, and otherwise
+ * arrives as an `Unknown`-named error with status 403. Matching on the error
+ * name alone therefore classifies the commonest case as "unknown failure" —
+ * which is how a live deployment answered 500 to a client that had simply not
+ * uploaded yet.
+ */
+describe('classifying an S3 HEAD that did not return metadata', () => {
+  it('reads a missing object as absent, not as a failure', () => {
+    expect(isNotFound({ name: 'NotFound', $metadata: { httpStatusCode: 404 } })).toBe(true);
+    expect(isNotFound({ name: 'NoSuchKey' })).toBe(true);
+    expect(isNotFound({ name: 'NotFound' })).toBe(true);
+    // A shape carrying only the status must still count. Both orders are real:
+    // the SDK reports `NotFound` for a HEAD, and 404 for some HTTP paths.
+    expect(isNotFound({ $metadata: { httpStatusCode: 404 } })).toBe(true);
+  });
+
+  it('does not read a refused request as absent', () => {
+    // The one that matters. This is what a missing key looks like on a bucket
+    // policy without s3:ListBucket, and treating it as absent would tell a user
+    // their upload failed when the file may be sitting in the bucket.
+    expect(isNotFound({ name: 'Unknown', $metadata: { httpStatusCode: 403 } })).toBe(false);
+    expect(isAccessDenied({ name: 'Unknown', $metadata: { httpStatusCode: 403 } })).toBe(true);
+    expect(isAccessDenied({ name: 'AccessDenied', $metadata: { httpStatusCode: 403 } })).toBe(true);
+    // Status alone, because the name is not reliable for this case either.
+    expect(isAccessDenied({ $metadata: { httpStatusCode: 403 } })).toBe(true);
+  });
+
+  it('leaves anything else unclassified, so it stays a server fault', () => {
+    for (const err of [
+      { name: 'ThrottlingException', $metadata: { httpStatusCode: 429 } },
+      { name: 'NetworkingError' },
+      new Error('socket hang up'),
+      undefined,
+    ]) {
+      expect(isNotFound(err)).toBe(false);
+      expect(isAccessDenied(err)).toBe(false);
+    }
   });
 });

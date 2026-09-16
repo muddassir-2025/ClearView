@@ -2,15 +2,22 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "GoodPostMediaObjectsOnly",
+      "Sid": "GoodPostObjects",
       "Effect": "Allow",
       "Action": [
         "s3:PutObject",
         "s3:GetObject",
-        "s3:DeleteObject",
-        "s3:HeadObject"
+        "s3:DeleteObject"
       ],
       "Resource": "arn:aws:s3:::REPLACE-WITH-YOUR-BUCKET-NAME/*"
+    },
+    {
+      "Sid": "GoodPostBucketList",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::REPLACE-WITH-YOUR-BUCKET-NAME"
     }
   ]
 }

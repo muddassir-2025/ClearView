@@ -92,10 +92,10 @@ export function kindFor(contentType: string): MediaKind | null {
  * that refused, and two hand-written copies of the message would eventually
  * disagree in a way the client branches on.
  */
-export function mediaUnavailable(): ApiError {
+export function mediaUnavailable(detail?: string): ApiError {
   return serviceUnavailable(
     'media_unavailable',
-    'Media storage is not configured on this server.'
+    detail ?? 'Media storage is not configured on this server.'
   );
 }
 
@@ -259,6 +259,24 @@ class S3ObjectStore implements ObjectStore {
       // else (denied, network, throttled) must NOT be read as "absent", or a
       // transient AWS error would look like a client that never uploaded.
       if (isNotFound(err)) return null;
+
+      // Reached two ways: a bucket policy that really is too narrow, and — far
+      // more often — a missing key on a bucket where the caller may not list,
+      // because S3 answers 403 instead of 404 when it cannot tell you whether
+      // the object exists (`s3:ListBucket` is what buys the 404).
+      //
+      // Neither may be reported as a failed upload: the file may be sitting in
+      // the bucket, and telling the user to send it again would be a lie. It is
+      // a service-side answer, so it gets the wordable code and a log line —
+      // the shape a raw throw would lose, since that becomes a 500 nobody can
+      // act on. No credential and no object bytes appear in the line.
+      if (isAccessDenied(err)) {
+        console.error(
+          '[media] S3 refused a HEAD (403). A missing object only reads as 404 when the policy grants s3:ListBucket; without it every absent key looks like this.'
+        );
+        throw mediaUnavailable('Media storage refused the request. Check the bucket policy.');
+      }
+
       throw err;
     }
   }
@@ -273,13 +291,26 @@ class S3ObjectStore implements ObjectStore {
 }
 
 /** True for the 404-ish shapes S3 and its HTTP layer raise for a missing key. */
-function isNotFound(err: unknown): boolean {
+export function isNotFound(err: unknown): boolean {
   const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
   return (
     e?.name === 'NotFound' ||
     e?.name === 'NoSuchKey' ||
     e?.$metadata?.httpStatusCode === 404
   );
+}
+
+/**
+ * True when S3 refused the request rather than answering it.
+ *
+ * The status code is the reliable signal, not the name: a HEAD for an absent
+ * key on a bucket without `s3:ListBucket` arrives as `UnknownError`/
+ * `{"name":"Unknown"}` with status 403, so a check on the name alone would
+ * miss the case this exists for. Exported so that shape stays pinned by a test.
+ */
+export function isAccessDenied(err: unknown): boolean {
+  const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
+  return e?.name === 'AccessDenied' || e?.$metadata?.httpStatusCode === 403;
 }
 
 let cached: ObjectStore | null = null;

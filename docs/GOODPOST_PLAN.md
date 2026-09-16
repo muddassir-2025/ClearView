@@ -150,7 +150,7 @@ it — the link survives sign-in and opens the channel afterwards.
    same transaction as the follow change. Discovery sorts on every search
    keystroke; a `COUNT(*)` per row would be a scan.
 
-### M3 — Posts & media 🚧 started
+### M3 — Posts & media ✅ done
 Migration 004 (posts, post_media). Five post types. Presigned upload → confirm
 → publish; presigned download.
 Android: composer, Posts view, image/video/audio rendering, manual download.
@@ -217,10 +217,49 @@ Android: composer, Posts view, image/video/audio rendering, manual download.
 - Cached lists are dropped on sign-out; **downloaded media is deliberately kept**
   (§10).
 
-**S3 is still unconfigured**, so media cannot be exercised end to end yet —
-`media_unavailable` is the honest answer from an unconfigured deployment, and a
-text post needs no bucket. **The M3 backend is not deployed yet**: the live
-Render service is still the M2 commit, so the new routes 404 until it is pushed.
+**Deployed and verified against the real bucket.** `goodpost-bucket`
+(`eu-central-1`), IAM user `clearview-goodpost-s3`, policy as in
+`docs/aws-s3-policy.json`. The whole lifecycle was then run through the
+**deployed** service, not a fake:
+
+| Step | Result |
+|---|---|
+| `POST /media/uploads` | `201`, presigned URL issued |
+| `PUT` the bytes | `200` |
+| `aws s3api head-object` | present, 70 bytes, `image/png` — seen from AWS, not from our own API |
+| `POST /media/uploads/:id/confirm` | `200`, status `ready` |
+| publish with `mediaIds` | `201`, presigned read URL returned |
+| `GET` that read URL | `200`, 70 bytes, **byte-identical** to what was uploaded |
+
+**That probe found a real bug, which is the reason to run it against the live
+thing.** Confirming an asset that was never uploaded answered **`500
+internal_error`** — unwordable for the client, useless for an operator.
+
+Root cause: S3 answers a HEAD for an absent key with **403, not 404**, unless the
+caller holds `s3:ListBucket` — it cannot confirm absence without list
+permission. `isNotFound()` correctly refused to read 403 as "absent" (a transient
+AWS error must never look like a client that never uploaded), so the error fell
+through as a raw throw.
+
+Both halves are now fixed, because either alone is wrong:
+
+- **`isAccessDenied()`** classifies 403 by **status code, not error name** — the
+  real shape is `UnknownError` with `{"name":"Unknown"}`, so a name-based check
+  (the obvious first guess) would have missed the case entirely. A refused HEAD
+  is now `503 media_unavailable` with a log line naming the policy, never the
+  user's failure.
+- **The policy grants `s3:ListBucket`** (bucket-level, this bucket only), so an
+  absent key really does answer 404 and the friendly `400 media_not_uploaded`
+  path is reachable instead of being dead code. Re-verified with the app's own
+  credentials: the three object actions work, another bucket is denied,
+  `ListAllMyBuckets` is denied, and HEAD on a missing key returns 404.
+
+The alternative — reading every 403 as "the upload never arrived" — would have
+hidden the next credential problem behind "send the file again", which is the
+same misattribution that made the Firebase defect invisible.
+
+**Tests: 69** in `tests/posts.test.ts` (3 new, pinning both error shapes).
+Server total **203**.
 
 ### M1.1 — Email sign-in, and a defect found on a real device
 
@@ -242,13 +281,33 @@ So the **deployed** Firebase Admin credentials verify nothing, while the backend
 blamed the user's token.
 
 **After the fix was deployed, the service named its own problem.** Both a junk
-token and a freshly minted genuine one now answer `503 auth_unavailable`, which
+token and a freshly minted genuine one answered `503 auth_unavailable`, which
 that code returns only when `getFirebaseAdminApp()` itself throws — the PEM
 cannot be parsed. The other meaning of the same status (the three variables being
 absent) is ruled out by the earlier `401`: `invalid_id_token` was only reachable
-then on the branch where all three were present. So **Render's
-`FIREBASE_PRIVATE_KEY` has lost its `\n` escapes** — the exact failure
-`scripts/set-firebase-env.mjs --repair` exists to undo locally.
+then on the branch where all three were present.
+
+**Found, and it was worse than the `\n` escapes.** Read from the Render API, the
+stored value was **1678 characters with zero `\n` escapes**; the correct value is
+**1732 with 28 of them**. The difference was not escaping — **the
+`-----BEGIN PRIVATE KEY-----` header and the `-----END PRIVATE KEY-----` footer
+were missing entirely**, so only the base64 body had ever been pasted. No amount
+of escaping would have made that value parse.
+
+`FIREBASE_PRIVATE_KEY` now carries the full value, and the phone flow was
+re-proved on the live service **through the real Firebase token path**:
+
+| Step | Result |
+|---|---|
+| `POST /auth/signin` with a genuine ID token | `404 account_not_found` — verified, and no account yet |
+| `POST /auth/otp/request` (register) | `200` |
+| `POST /auth/register` | `201`, device session issued |
+| `GET /auth/me` with the access token | `200`, the right account |
+
+The token was minted through Google's REST API for the console **test number**,
+which is why no SMS was sent — the same number accepting `654321` is itself proof
+it is registered as a test number. The temporary account and its challenge were
+deleted afterwards, so the database holds no leftovers.
 
 Two defects made that unreadable:
 
@@ -295,12 +354,29 @@ verification expired. Send a new code and try again."** and the code step has a
   (sharing the registration field would let a value cross between the two
   flows), and the code step naming whichever channel was used.
 
-**Deployed state, checked against the live service:** `400 invalid_email` on a
-malformed address and `503 email_unavailable` on a valid one, which is the honest
-answer from a deployment with no provider configured — it refuses rather than
-pretending to have sent something. The bucket steps live in
-`docs/AWS_S3_SETUP.md`, and the IAM policy in `docs/aws-s3-policy.json` grants
-only the four object actions the code performs.
+**Deployed with a real provider (Resend), end to end.** `RESEND_API_KEY`,
+`EMAIL_FROM` and `EMAIL_DELIVERY_MODE=resend` are set on Render; the merged
+variable set was validated against the production boot guard **before** writing
+it, because a set that fails validation deploys green and then exits 1. The
+probe on the live service:
+
+| Request | Result |
+|---|---|
+| `POST /email/otp`, registered address | `200`, `{expiresAt, sendsRemaining: 4}` — accepted for delivery |
+| `POST /email/signin`, wrong code | `401 invalid_code` |
+| `POST /email/otp`, unregistered address | no different answer from the app's own logic |
+
+**One provider limitation, stated plainly:** the Resend account has **no verified
+sending domain** — the two entries in its dashboard are Android *package names*
+(`com.muddassir.clearview`, `…debug`), which are not domains. On an unverified
+account Resend refuses any sender outside its own sandbox, so `EMAIL_FROM` is
+`ClearView <onboarding@resend.dev>` and **delivery only reaches the account
+owner's own address** (`studymuddassir@gmail.com`). Any other recipient answers
+`403` from Resend, which the backend reports honestly as `503 email_unavailable`.
+
+That is enough to exercise the flow today and not enough for real users. Fixing
+it needs no code change: verify a domain in Resend, then set `EMAIL_FROM` to an
+address on it. The bucket steps live in `docs/AWS_S3_SETUP.md`.
 
 **Verified:** server typecheck clean and **200/200** tests pass (19 new),
 migration 005 applied to real Neon (11 columns, 2 indexes, 3 CHECKs, confirmed by

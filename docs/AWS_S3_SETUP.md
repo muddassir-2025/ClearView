@@ -6,21 +6,45 @@ off `store.ts` and `service.ts` rather than recalled.
 
 ## What the backend does with the bucket
 
-Exactly four object operations, on object keys only:
+Three object operations and one bucket operation:
 
 | Operation | Used for |
 |---|---|
 | `s3:PutObject` | presigned upload URL the Android client PUTs to |
-| `s3:HeadObject` | `confirm` — proves the object exists and matches the recorded size/type before a post can claim it |
-| `s3:GetObject` | presigned read URL |
+| `s3:GetObject` | presigned read URL — **and** the `confirm` HEAD, because there is no `s3:HeadObject` action |
 | `s3:DeleteObject` | post deletion and the abandoned-upload sweep (§34) |
+| `s3:ListBucket` | bucket-level only. Not used for listing: it is what makes an absent key answer 404 instead of 403 |
 
-There is **no** `ListBucket`, no bucket-level call, and no `CopyObject`. That is
-why the policy in `docs/aws-s3-policy.json` grants only those four actions on
-`<bucket>/*` and nothing on the bucket itself.
+No `CopyObject`, no `ListAllMyBuckets`, and nothing outside this bucket.
+`docs/aws-s3-policy.json` grants exactly the above.
 
 Presigning needs no extra permission: the signing happens in the backend, and
-the eventual request is authorised by the same four actions.
+the eventual request is authorised by the same actions.
+
+### Why `s3:ListBucket` is granted when nothing lists
+
+This is a correctness requirement, and it was found by running the real thing
+rather than by reading documentation. S3 answers a HEAD for a key that does not
+exist with **403, not 404**, unless the caller holds `s3:ListBucket` — because
+without list permission it cannot confirm to you whether the object is absent.
+
+That matters because "the file is not there" is a *normal* answer for `confirm`,
+not an error: a client that lost connectivity between the presigned PUT and the
+confirm step reaches it routinely. On a policy without `s3:ListBucket` that case
+is indistinguishable from a genuinely broken permission, and the deployed
+service reported it as `500 internal_error` — unwordable for the client and
+useless for an operator.
+
+With the grant, the two are distinguishable:
+
+| S3's answer | Meaning | What the API returns |
+|---|---|---|
+| 404 `NotFound` | the object is absent | `400 media_not_uploaded` — "send the file again" |
+| 403 | the request was refused (policy, credential) | `503 media_unavailable` — a service problem, never blamed on the upload |
+
+The exposure from list is confined to a bucket that holds only this app's own
+media objects, keyed by random uuid, and the app is its only writer. A guessed
+key was already readable through `GetObject`; listing adds no reach beyond it.
 
 ## Already provisioned
 
@@ -35,7 +59,7 @@ what was done rather than what remains:
 | Default encryption | `AES256`, bucket key enabled |
 | Bucket policy | none (not needed; `BlockPublicPolicy` stops a bad one being added) |
 | IAM user | `clearview-goodpost-s3`, programmatic only — **no console login** |
-| Policy | inline `GoodPostMediaObjectsOnly`, the four object actions on that bucket |
+| Policy | inline `GoodPostMediaObjectsOnly` (`GoodPostObjects` + `GoodPostBucketList`) |
 | Attached managed policies | **none** |
 
 Least privilege was **tested rather than assumed**, using the application user's
@@ -44,9 +68,14 @@ own credentials:
 | Permitted | | Denied | |
 |---|---|---|---|
 | `PutObject` | works | `s3:ListAllMyBuckets` | denied |
-| `HeadObject` | works | reading a *different* bucket | denied |
-| `GetObject` | works | `ListObjectsV2` on this bucket | denied |
-| `DeleteObject` | works | | |
+| `GetObject` / HEAD | works | reading a *different* bucket | denied |
+| `DeleteObject` | works | anything outside `goodpost-bucket` | denied |
+| `ListBucket` | works, on this bucket only | | |
+| HEAD on a missing key | 404, so "absent" is readable | | |
+
+The last row is the one that only shows up against a real bucket: with the
+original policy (no `ListBucket`) the same call returned 403, which the service
+had no way to read as "absent".
 
 ## Steps
 
