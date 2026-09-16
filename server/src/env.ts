@@ -55,6 +55,11 @@ const schema = z.object({
   S3_UPLOAD_URL_TTL: z.coerce.number().int().positive().default(900),
   S3_DOWNLOAD_URL_TTL: z.coerce.number().int().positive().default(3600),
   S3_MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(104_857_600),
+  // How long a presigned upload may sit unclaimed before the sweep may treat it
+  // as abandoned (§34). An upload that is never claimed belongs to no post and
+  // is invisible to every reader, so this is about storage cost and not about
+  // correctness — which is why it is minutes rather than days.
+  UPLOAD_CLAIM_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
 
   // ── Product rules ──
   GOODPOST_HISTORY_DAYS: z.coerce.number().int().positive().default(90),
@@ -68,6 +73,9 @@ const schema = z.object({
   MAX_PAGE_SIZE: z.coerce.number().int().positive().default(100),
   DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
   MAX_CHANNELS_PER_USER: z.coerce.number().int().positive().default(5),
+  // A carousel bound (§8). Enforced by the API rather than by a constraint,
+  // because it is a product rule and not an invariant of the data.
+  MAX_POST_MEDIA: z.coerce.number().int().positive().default(4),
 
   // ── Rate limiting ──
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),

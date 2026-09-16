@@ -71,6 +71,22 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- Channel share links (§6): clearview://goodpost/channel/<slug>.
+                 A custom scheme rather than an https App Link because resolving
+                 the link needs a session — there is no public page to prove
+                 ownership of, so an https link could not be verified anyway.
+                 BROWSABLE is required for the link to open from a chat or mail
+                 app; without it only an explicit Intent could reach this. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="clearview"
+                    android:host="goodpost"
+                    android:pathPrefix="/channel/" />
+            </intent-filter>
         </activity>
 
         <!-- Block overlay activity - no history, no recents, full-screen theme.

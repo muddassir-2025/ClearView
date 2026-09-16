@@ -5,11 +5,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { closePool, type Queryable } from '../src/db.js';
 import { env } from '../src/env.js';
-import { unauthorized } from '../src/http/errors.js';
-import type { PhoneIdentityVerifier } from '../src/auth/firebase.js';
 import { slugCandidate, slugify, SLUG_MAX_LENGTH } from '../src/channels/slug.js';
 import { decodeCursor, encodeCursor, isUuid, parsePageSize } from '../src/channels/cursor.js';
 import { applyAllMigrations, asQueryable, freshDatabase, resetData } from './helpers/database.js';
+import { authed, createChannelVia, fakeVerifier, registeredIn } from './helpers/accounts.js';
 
 /**
  * M2 channels and discovery (§5, §6, §7, §12, §32).
@@ -23,23 +22,6 @@ import { applyAllMigrations, asQueryable, freshDatabase, resetData } from './hel
 
 const PHONE_A = '+923001110001';
 const PHONE_B = '+923001110002';
-
-/**
- * Stands in for Firebase, rejecting exactly what the real verifier rejects so
- * no test can pass by having a lenient double.
- */
-function fakeVerifier(): PhoneIdentityVerifier {
-  return {
-    kind: 'firebase',
-    async verifyIdToken(idToken: string) {
-      const phone = idToken.startsWith('test:') ? idToken.slice('test:'.length) : '';
-      if (!/^\+[1-9]\d{6,14}$/.test(phone)) {
-        throw unauthorized('invalid_id_token', 'The supplied identity token is not valid.');
-      }
-      return { phoneE164: phone, firebaseUid: `uid:${phone}` };
-    },
-  };
-}
 
 let pglite: PGlite;
 let database: Queryable;
@@ -62,47 +44,16 @@ afterAll(async () => {
 });
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+// Bound to this file's app so the call sites below read as one argument.
+// The bodies live in `helpers/accounts.ts` because the posts suite needs the
+// same three steps, and a second copy of "register a user" is a second place
+// for the flow to drift from the one the app actually serves.
 
-const authed = (token: string) => ({ Authorization: `Bearer ${token}` });
+const registered = (phone: string, name?: string, email?: string) =>
+  registeredIn(app, phone, name, email);
 
-/** Registers a user through the real flow and returns a live session. */
-async function registered(phone: string, name = 'Owner', email = `${phone}@example.test`) {
-  await request(app)
-    .post('/api/v1/auth/otp/request')
-    .send({ phone, purpose: 'register' });
-
-  const res = await request(app)
-    .post('/api/v1/auth/register')
-    .send({ idToken: `test:${phone}`, displayName: name, email });
-
-  expect(res.status).toBe(201);
-  return res.body as { accessToken: string; user: { id: string } };
-}
-
-/** Creates a channel as [session] and returns the created payload. */
-async function createChannel(session: { accessToken: string }, body: Record<string, unknown>) {
-  const res = await request(app)
-    .post('/api/v1/channels')
-    .set(authed(session.accessToken))
-    .send(body);
-
-  expect(res.status).toBe(201);
-  return res.body.channel as {
-    id: string;
-    slug: string;
-    name: string;
-    description: string | null;
-    followerCount: number;
-    categorySlug: string | null;
-    viewerRole: string | null;
-    shareLink: string;
-    status: string;
-    isFollowing: boolean;
-    isBlocked: boolean;
-    notificationsEnabled: boolean;
-    hasUnread: boolean;
-  };
-}
+const createChannel = (session: { accessToken: string }, body: Record<string, unknown>) =>
+  createChannelVia(app, session, body);
 
 // ── Pure helpers ────────────────────────────────────────────────────────
 // These need no database, so they run as plain units.
@@ -772,5 +723,127 @@ describe('unread state', () => {
       .get('/api/v1/channels/following')
       .set(authed(follower.accessToken));
     expect(read.body.items[0].hasUnread).toBe(false);
+  });
+});
+
+// ── Share links (§6) ────────────────────────────────────────────────────
+
+/** Pull the slug back out of a link the API produced. */
+const slugOf = (shareLink: string) => shareLink.split('/').pop() ?? '';
+
+describe('channel share links', () => {
+  it('resolves the slug out of the link it hands the client', async () => {
+    const owner = await registered(PHONE_A);
+    const viewer = await registered(PHONE_B);
+    const channel = await createChannel(owner, { name: 'Shareable Channel' });
+
+    // The slug is taken from the link the API itself returned rather than
+    // hardcoded, so if the link format and the lookup route ever drift apart
+    // this fails instead of quietly testing a string nobody sends.
+    const slug = slugOf(channel.shareLink);
+    expect(slug).toBe('shareable-channel');
+
+    const res = await request(app)
+      .get(`/api/v1/channels/by-slug/${slug}`)
+      .set(authed(viewer.accessToken));
+
+    expect(res.status).toBe(200);
+    expect(res.body.channel.id).toBe(channel.id);
+  });
+
+  it('answers a slug lookup with exactly what the id lookup answers', async () => {
+    // A shared link and an in-app tap land on the same screen. A thinner
+    // payload for one of them would be a bug no client test could catch,
+    // because each response is individually valid.
+    const owner = await registered(PHONE_A);
+    const viewer = await registered(PHONE_B);
+    const channel = await createChannel(owner, { name: 'Same Shape' });
+
+    await request(app)
+      .post(`/api/v1/channels/${channel.id}/follow`)
+      .set(authed(viewer.accessToken));
+
+    const byId = await request(app)
+      .get(`/api/v1/channels/${channel.id}`)
+      .set(authed(viewer.accessToken));
+    const bySlug = await request(app)
+      .get(`/api/v1/channels/by-slug/${channel.slug}`)
+      .set(authed(viewer.accessToken));
+
+    expect(bySlug.body).toEqual(byId.body);
+  });
+
+  it('resolves a hand-typed link regardless of case', async () => {
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Mixed Case Link' });
+
+    const res = await request(app)
+      .get(`/api/v1/channels/by-slug/${channel.slug.toUpperCase()}`)
+      .set(authed(owner.accessToken));
+
+    expect(res.status).toBe(200);
+    expect(res.body.channel.id).toBe(channel.id);
+  });
+
+  it('treats a dead or malformed slug as a 404, never a 400', async () => {
+    // To the person holding a broken link these are one outcome. A 400 would
+    // also tell a prober whether a slug merely does not exist or is not a
+    // slug at all, which is information they have no use for.
+    const viewer = await registered(PHONE_A);
+
+    for (const slug of [
+      'no-such-channel-here',
+      'UPPER_UNDERSCORE',
+      '-leading-dash',
+      'trailing-dash-',
+      'a'.repeat(200),
+      ' ',
+    ]) {
+      const res = await request(app)
+        .get(`/api/v1/channels/by-slug/${encodeURIComponent(slug)}`)
+        .set(authed(viewer.accessToken));
+
+      expect(res.status, `slug: ${JSON.stringify(slug)}`).toBe(404);
+      expect(res.body.error, `slug: ${JSON.stringify(slug)}`).toBe('channel_not_found');
+    }
+  });
+
+  it('still resolves a suspended channel, so the link can explain itself', async () => {
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Under Review Link' });
+
+    await pglite.query(`UPDATE channels SET status = 'suspended' WHERE id = $1`, [channel.id]);
+
+    const res = await request(app)
+      .get(`/api/v1/channels/by-slug/${channel.slug}`)
+      .set(authed(owner.accessToken));
+
+    // A 404 here would make moderation look like a broken link, which is the
+    // one reading the owner must not be left with.
+    expect(res.status).toBe(200);
+    expect(res.body.channel.status).toBe('suspended');
+  });
+
+  it('does not resolve a deleted channel', async () => {
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Deleted Link' });
+
+    await pglite.query(`UPDATE channels SET deleted_at = now() WHERE id = $1`, [channel.id]);
+
+    const res = await request(app)
+      .get(`/api/v1/channels/by-slug/${channel.slug}`)
+      .set(authed(owner.accessToken));
+
+    expect(res.status).toBe(404);
+  });
+
+  it('refuses a slug lookup without a session', async () => {
+    // §39. Every Good Post endpoint requires a session; a share link is not an
+    // anonymous read surface just because it is shareable.
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Closed Link' });
+
+    const res = await request(app).get(`/api/v1/channels/by-slug/${channel.slug}`);
+    expect(res.status).toBe(401);
   });
 });

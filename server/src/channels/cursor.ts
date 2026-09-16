@@ -1,5 +1,5 @@
 /**
- * Keyset cursors for the channel feeds (§5, §6).
+ * Keyset cursors and the pagination primitives every feed shares (§5, §6, §8).
  *
  * Offset pagination is not used anywhere here, on purpose. Discovery is sorted
  * by a value that changes as the platform is used — a channel gaining
@@ -14,8 +14,11 @@
  * uuid or timestamp literal and surfaces as a 500 instead of a 400.
  *
  * Free of Express and database imports so the validation rules are unit-tested
- * directly rather than through a route.
+ * directly rather than through a route. The single exception is the error
+ * helper, so that a malformed cursor is rejected at this layer rather than
+ * handed back as null for a caller to misread as "no cursor".
  */
+import { badRequest } from '../http/errors.js';
 
 /** How discovery orders results. Also part of the cursor: see [Cursor]. */
 export type ChannelSort = 'popular' | 'active' | 'new';
@@ -92,4 +95,53 @@ export function parsePageSize(raw: unknown, fallback: number, max: number): numb
 /** True when [value] is a UUID Postgres will accept. */
 export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
+}
+
+/**
+ * The pagination parameters every list endpoint accepts.
+ *
+ * Both fields stay STRINGS: `limit` is clamped by [parsePageSize] rather than
+ * validated as a number (a nonsense size is a hint to ignore, not a request to
+ * reject), and a cursor is opaque.
+ */
+export interface PageQuery {
+  readonly limit?: string | undefined;
+  readonly cursor?: string | undefined;
+}
+
+/** One page of a keyset feed. */
+export interface Page<T> {
+  readonly items: T[];
+  readonly nextCursor: string | null;
+}
+
+/**
+ * Read a cursor, refusing a malformed one instead of silently restarting.
+ *
+ * Null means "no cursor supplied", which is a legitimate first page. A cursor
+ * that was supplied but cannot be decoded is a 400: treating it as "start
+ * over" would hide a client bug behind a page of duplicate results, which
+ * looks like the server sends the same thing twice rather than like a bad
+ * cursor.
+ */
+export function cursorOf(raw: string | undefined): Cursor | null {
+  if (raw === undefined || raw === '') return null;
+  const cursor = decodeCursor(raw);
+  if (!cursor) {
+    throw badRequest('invalid_cursor', 'The cursor is not valid.');
+  }
+  return cursor;
+}
+
+/**
+ * Shared keyset tail: fetch one extra row to learn whether another page
+ * exists, then drop it.
+ *
+ * A `LIMIT n + 1` probe rather than a `COUNT(*)`: the count would scan the
+ * whole set to answer a question about a single row, and the extra row is
+ * already in the plan.
+ */
+export function withLimit<T>(rows: T[], limit: number): { items: T[]; hasMore: boolean } {
+  if (rows.length <= limit) return { items: rows, hasMore: false };
+  return { items: rows.slice(0, limit), hasMore: true };
 }

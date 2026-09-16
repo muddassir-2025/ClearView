@@ -166,6 +166,27 @@ function clientQueryable(client: pg.PoolClient): Queryable {
   };
 }
 
+/**
+ * A timestamp column as an ISO string, or null.
+ *
+ * Timestamps arrive as `Date` from `pg` and as strings from PGlite, so the
+ * shape is normalised in one place rather than assumed at each call site. A
+ * `Date` reaching `JSON.stringify` directly would serialise to a different
+ * string than the `timestamptz` comparison its value is later fed back into —
+ * which is exactly how page two of a cursor feed ends up repeating page one.
+ */
+export function isoOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+/** [isoOrNull] for a value that is known to be present (a sort key). */
+export function cursorKeyOf(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
 /** The pool-backed `Queryable` the running service uses. */
 export const db: Queryable = {
   query,

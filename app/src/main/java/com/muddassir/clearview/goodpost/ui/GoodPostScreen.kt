@@ -51,12 +51,21 @@ import com.muddassir.clearview.goodpost.GoodPostViewModel
  * an explicit phase, which is the whole reason the phase is a type rather than
  * a set of booleans.
  *
- * Channels, the aggregated posts feed and Discover arrive in M2/M3 and become a
- * new [GoodPostPhase]; the sign-in flow they sit behind is what this file
- * implements.
+ * Channels and Discover are behind the gate (M2); the aggregated posts feed
+ * arrives in M3. The sign-in flow itself is what this file owns.
  */
 @Composable
-fun GoodPostTab(viewModel: GoodPostViewModel = viewModel()) {
+fun GoodPostTab(
+    viewModel: GoodPostViewModel = viewModel(),
+    /**
+     * A channel slug carried by a share link (§6), or null.
+     *
+     * Owned by MainActivity and cleared through [onOpenChannelHandled] once the
+     * home ViewModel has taken it, so nothing can replay the same link.
+     */
+    openChannelSlug: String? = null,
+    onOpenChannelHandled: () -> Unit = {}
+) {
     val context = LocalContext.current
     val activity = LocalActivity.current
 
@@ -88,18 +97,37 @@ fun GoodPostTab(viewModel: GoodPostViewModel = viewModel()) {
 
             LaunchedEffect(Unit) { home.initialize(context) }
 
+            // A share link opens that channel. Requesting is safe regardless of
+            // which of these two effects runs first, because the home ViewModel
+            // holds a slug it cannot act on yet. The request is consumed
+            // immediately so a rotation cannot open the channel twice.
+            LaunchedEffect(openChannelSlug) {
+                val slug = openChannelSlug ?: return@LaunchedEffect
+                home.requestOpenChannel(slug)
+                onOpenChannelHandled()
+            }
+
             // A session revoked server-side (ban, forced logout, reuse
             // detection) is noticed by the first home request, which then asks
             // the gate to re-check rather than leaving the user on a screen
             // whose every action will fail.
             LaunchedEffect(home.uiState.signedOut) {
-                if (home.uiState.signedOut) viewModel.refreshSession()
+                if (home.uiState.signedOut) {
+                    // The session is gone, so the cached lists are the previous
+                    // account's follows and posts. Dropped here rather than on
+                    // the next sign-in, so they do not sit on disk in between.
+                    home.clearCaches()
+                    viewModel.refreshSession()
+                }
             }
 
             GoodPostHome(
                 state = home.uiState,
                 accountName = state.account?.displayName.orEmpty(),
-                onSignOut = viewModel::signOut,
+                onSignOut = {
+                    home.clearCaches()
+                    viewModel.signOut()
+                },
                 viewModel = home
             )
         }

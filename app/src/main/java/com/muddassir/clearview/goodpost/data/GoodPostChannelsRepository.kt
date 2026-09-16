@@ -174,6 +174,33 @@ class GoodPostChannelsRepository(
         }
     }
 
+    /**
+     * §6 resolve a share link (`clearview://goodpost/channel/<slug>`).
+     *
+     * Offline, the followed channels already saved are searched by slug, so a
+     * link to a channel the user follows still opens without a network. A slug
+     * that was never fetched has nothing saved and reports `unreachable` rather
+     * than inventing a channel (§36).
+     */
+    suspend fun channelBySlug(slug: String): ChannelsResult<GoodPostChannel> {
+        val session = auth.validSession() ?: return ChannelsResult.SignedOut
+
+        return when (val result = api.channelBySlug(session.accessToken, slug)) {
+            is ApiResult.Ok ->
+                GoodPostChannelCodec.single(result.value)
+                    ?.let { ChannelsResult.Ok(it) }
+                    ?: ChannelsResult.Failed("unreachable")
+
+            is ApiResult.Failed -> failure(result.status, result.code)
+
+            ApiResult.Unreachable -> {
+                val cached = cachedChannelBySlug(slug)
+                if (cached != null) ChannelsResult.Stale(cached)
+                else ChannelsResult.Failed("unreachable")
+            }
+        }
+    }
+
     // ── Writes ───────────────────────────────────────────────────────────
     // Each returns only after the server confirms (§36). The small response
     // bodies are read inline: they are one- or two-field confirmations, not
@@ -317,6 +344,16 @@ class GoodPostChannelsRepository(
      */
     private fun cachedChannel(channelId: String): GoodPostChannel? =
         cache.loadFollowing()?.page?.items?.firstOrNull { it.id == channelId }
+
+    /**
+     * The same search as [cachedChannel], by slug.
+     *
+     * A share link is resolved OFFLINE against the followed list for the same
+     * reason a tapped channel is: the cache is keyed by channel id, and the
+     * slug is the only key a link carries.
+     */
+    private fun cachedChannelBySlug(slug: String): GoodPostChannel? =
+        cache.loadFollowing()?.page?.items?.firstOrNull { it.slug == slug }
 
     /** A stable key for one Discover query, so two searches cannot collide. */
     private fun signatureOf(query: String?, category: String?, sort: ChannelSort): String =

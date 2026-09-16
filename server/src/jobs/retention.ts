@@ -1,36 +1,48 @@
 import cron from 'node-cron';
+import { db, type Queryable } from '../db.js';
 import { env } from '../env.js';
+import { createObjectStore, type ObjectStore } from '../media/store.js';
+import { sweepAbandonedUploads } from '../media/service.js';
 
 /**
- * The post-history retention sweep (§11).
+ * The scheduled cleanup (§11, §34).
  *
- * It is deliberately a no-op stub in M0: the tables it will prune (posts,
- * post_media) arrive in migration 003, and the runner must not reference
- * columns that do not exist yet. The schedule, the configurable window and
- * the shutdown behaviour are wired now so the real sweep drops straight in.
+ * Two jobs share this schedule and they are deliberately different:
  *
- * Two rules it must honour when implemented:
+ *  1. **Abandoned uploads** — implemented here. A composer session that
+ *     requested an upload URL and never published leaves an object in the
+ *     bucket; nothing else will ever collect it, because no row's lifecycle
+ *     points at it. This is the one leak M3 could create, so M3 closes it.
  *
- *  1. It prunes SERVER-SIDE data only. Media a user has already downloaded
- *     lives on their device and is never touched (§10) — the server cannot
- *     and must not reach into it.
- *  2. It never deletes an S3 object that another row still references (§34),
- *     which is why deletion is driven by a reference count and not by a
- *     post-row delete.
+ *  2. **Post-history retention** — still to come in M7. It prunes posts older
+ *     than `GOODPOST_HISTORY_DAYS`, and it must remove their S3 objects by
+ *     reference count rather than by row, so an object still named by another
+ *     row is never deleted (§34). That ordering is the whole difficulty of it,
+ *     which is why it is not being rushed in alongside this.
+ *
+ * Two rules the sweep honours by construction:
+ *
+ *  * It prunes SERVER-SIDE data only. Media a user has already downloaded lives
+ *    on their device and is never touched (§10) — the server cannot and must
+ *    not reach into it.
+ *  * It never deletes an S3 object another row still references (§34), which is
+ *    why the abandoned-upload sweep only ever selects rows with `post_id IS
+ *    NULL`: a claimed object belongs to a post and is not its to remove.
  */
-export function startRetentionJob(): void {
+export function startRetentionJob(
+  database: Queryable = db,
+  store: ObjectStore = createObjectStore()
+): void {
   const task = cron.schedule(env.RETENTION_CRON, () => {
-    try {
-      runRetentionSweep();
-    } catch (err) {
-      // A failed sweep must never take the process down; the next tick retries.
-      console.error('[retention] sweep failed:', (err as Error).message);
-    }
+    // Not awaited: the cron callback must not hold a tick open, and the sweep
+    // reports its own failures.
+    void runRetentionSweep(database, store);
   });
 
   console.log(
     `[retention] scheduled "${env.RETENTION_CRON}" ` +
-      `(history window ${env.GOODPOST_HISTORY_DAYS}d, grace ${env.PURGE_GRACE_DAYS}d)`
+      `(history window ${env.GOODPOST_HISTORY_DAYS}d, grace ${env.PURGE_GRACE_DAYS}d, ` +
+      `abandoned uploads after ${env.UPLOAD_CLAIM_WINDOW_MINUTES}m)`
   );
 
   // Cron tasks hold the event loop open; unref so a SIGTERM shutdown is not
@@ -38,6 +50,32 @@ export function startRetentionJob(): void {
   (task as unknown as { unref?: () => void }).unref?.();
 }
 
-function runRetentionSweep(): void {
-  // Implemented in M7, once posts/post_media exist (migration 003).
+/**
+ * One tick. Never throws: a failed sweep must not take the process down, and
+ * the next tick retries whatever was left behind.
+ */
+export async function runRetentionSweep(
+  database: Queryable = db,
+  store: ObjectStore = createObjectStore()
+): Promise<{ readonly removed: number; readonly failed: number }> {
+  try {
+    const result = await sweepAbandonedUploads(
+      database,
+      store,
+      env.UPLOAD_CLAIM_WINDOW_MINUTES
+    );
+
+    // Logged only when something happened, so a healthy deployment every 30
+    // minutes does not fill the log with zeroes. Never logs an object key: a
+    // key is a capability for anyone who also has a bucket credential.
+    if (result.removed > 0 || result.failed > 0) {
+      console.log(
+        `[retention] abandoned uploads: removed ${result.removed}, failed ${result.failed}`
+      );
+    }
+    return result;
+  } catch (err) {
+    console.error('[retention] sweep failed:', (err as Error).message);
+    return { removed: 0, failed: 0 };
+  }
 }

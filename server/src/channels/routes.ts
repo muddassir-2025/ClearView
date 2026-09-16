@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { env } from '../env.js';
 import type { Queryable } from '../db.js';
 import { badRequest } from '../http/errors.js';
-import { parseBody } from '../http/validate.js';
+import { parseBody, pathIdParam } from '../http/validate.js';
 import { rateLimit, type FixedWindowRateLimiter, type RateLimitConfig } from '../http/rateLimit.js';
 import { authOf, requireAuth } from '../auth/middleware.js';
 import {
@@ -12,6 +12,7 @@ import {
   discoverChannels,
   followChannel,
   getChannel,
+  getChannelBySlug,
   listCategories,
   listFollowing,
   listManagedChannels,
@@ -41,9 +42,6 @@ import {
  * handler promise to the central error handler, so no handler needs a
  * try/catch and none can swallow an error by omitting one.
  */
-
-/** A channel id or slug path segment. Bounded before it reaches the database. */
-const ChannelIdParam = z.string().min(1).max(64);
 
 const CreateChannelSchema = z.object({
   name: z.string().min(2).max(env.MAX_CHANNEL_NAME_LENGTH),
@@ -98,9 +96,7 @@ const PageQuerySchema = z.object({
 });
 
 function channelIdParam(raw: unknown): string {
-  const parsed = ChannelIdParam.safeParse(raw);
-  if (!parsed.success) throw badRequest('invalid_channel_id', 'Invalid channel id.');
-  return parsed.data;
+  return pathIdParam(raw, 'invalid_channel_id');
 }
 
 export function buildChannelsRouter(
@@ -145,6 +141,24 @@ export function buildChannelsRouter(
   });
 
   // ── Parameterised paths ───────────────────────────────────────────────
+
+  /**
+   * §6 resolve a share link: `clearview://goodpost/channel/<slug>`.
+   *
+   * Registered ahead of `/:channelId` for readability rather than necessity —
+   * the two patterns have different segment counts, so a slug could never be
+   * captured as a channel id.
+   *
+   * A dead or malformed slug is a 404, not a validation error: to the person
+   * holding the link those are the same outcome, and a 400 would distinguish
+   * "this slug does not exist" from "this is not a slug" for anyone probing.
+   */
+  router.get('/by-slug/:slug', async (req, res) => {
+    const auth = authOf(req);
+    const slug = req.params.slug ?? '';
+    res.status(200).json({ channel: await getChannelBySlug(database, slug, auth.userId) });
+  });
+
   router.get('/:channelId', async (req, res) => {
     const auth = authOf(req);
     const channelId = channelIdParam(req.params.channelId);

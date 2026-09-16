@@ -27,6 +27,22 @@ enum class GoodPostError {
     /** The typed code was wrong. */
     InvalidCode,
 
+    /**
+     * The verifier refused the number itself, after it passed the local E.164
+     * check — an unassigned country code, or a format the carrier will not
+     * route. Distinct from [InvalidPhone], which is our own validation saying
+     * the input was never well-formed to begin with.
+     */
+    NumberRejected,
+
+    /**
+     * The project refuses to send at all — the SMS region policy does not cover
+     * the number's region, or this app's package/signing certificate is not
+     * registered. Distinct from [VerificationFailed] because retrying cannot
+     * help and the number is not the problem.
+     */
+    VerificationUnavailable,
+
     /** Firebase's own SMS quota for the project is exhausted. */
     SmsQuota,
 
@@ -74,6 +90,40 @@ enum class GoodPostError {
     /** A field the server rejected: bad category, bad country code, empty patch. */
     InvalidInput,
 
+    // ── Posts and media (M3) ────────────────────────────────────────────
+
+    /** §7/§32: only a channel admin (owner or editor) may publish here. */
+    PostForbidden,
+
+    /** The post is gone, already removed, or belongs to another channel. */
+    PostNotFound,
+
+    /** A post needs text, a link or a file, and this one has none. */
+    PostEmpty,
+
+    /** The text is longer than the server allows. */
+    PostTooLong,
+
+    /** The link is not an http(s) address. */
+    PostBadLink,
+
+    /** §7: the edit window for this post has closed. */
+    PostEditClosed,
+
+    /**
+     * The attached media cannot be used: the wrong type, too large, too many,
+     * mixed kinds, not uploaded, already attached to another post, or someone
+     * else's. One wording because the user has one action available — replace
+     * the file, or remove it and post the text alone.
+     */
+    PostMediaRejected,
+
+    /** This deployment has no media storage, or the asset is not available. */
+    MediaUnavailable,
+
+    /** The picked file could not be read, so its size is unknown. */
+    FileUnreadable,
+
     Unknown
 }
 
@@ -93,6 +143,8 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "otp_rate_limited", "rate_limited" -> GoodPostError.RateLimited
     "otp_locked" -> GoodPostError.OtpLocked
     "invalid_code" -> GoodPostError.InvalidCode
+    "invalid_phone_number" -> GoodPostError.NumberRejected
+    "verification_unavailable" -> GoodPostError.VerificationUnavailable
     "sms_quota_exceeded" -> GoodPostError.SmsQuota
     "verification_failed", "invalid_id_token", "phone_unverified",
     "wrong_sign_in_provider", "otp_required" -> GoodPostError.VerificationFailed
@@ -108,8 +160,28 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "channel_blocked" -> GoodPostError.ChannelBlocked
     "cannot_follow_own_channel" -> GoodPostError.CannotFollowOwnChannel
     "not_following" -> GoodPostError.NotFollowing
-    "invalid_category", "invalid_country", "empty_update",
-    "invalid_channel_id", "invalid_cursor", "incorrect_cursor" -> GoodPostError.InvalidInput
+    "invalid_category", "invalid_country", "empty_update", "invalid_channel_id",
+    "invalid_post_id", "invalid_media_id", "invalid_cursor", "incorrect_cursor" ->
+        GoodPostError.InvalidInput
+
+    // ── Posts and media (M3) ────────────────────────────────────────────
+    // Content problems get their own wording, because "the post was refused" 
+    // with no reason leaves the user with nothing to change. Failures that all
+    // mean "this file cannot be attached" share one, because the fix is the
+    // same action for every one of them: pick a different file.
+    "post_forbidden" -> GoodPostError.PostForbidden
+    "post_not_found" -> GoodPostError.PostNotFound
+    "empty_post" -> GoodPostError.PostEmpty
+    "text_too_long" -> GoodPostError.PostTooLong
+    "invalid_link" -> GoodPostError.PostBadLink
+    "edit_window_closed" -> GoodPostError.PostEditClosed
+    "too_many_media", "duplicate_media", "mixed_media", "unknown_media",
+    "media_not_ready", "media_already_used", "media_size_mismatch",
+    "media_not_uploaded", "unsupported_media_type", "media_too_large" ->
+        GoodPostError.PostMediaRejected
+    "media_unavailable", "media_forbidden", "upload_failed", "download_failed" ->
+        GoodPostError.MediaUnavailable
+    "file_unreadable" -> GoodPostError.FileUnreadable
 
     "unreachable", "timeout" -> GoodPostError.Unreachable
     "not_configured" -> GoodPostError.NotConfigured

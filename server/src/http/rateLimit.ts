@@ -11,10 +11,12 @@ import { env } from '../env.js';
  * `describeActiveLimits()` reports at boot exactly which are in force and which
  * are still reserved, so the log cannot imply protection that is absent.
  *
- * Two limits are applied today:
+ * Three limits are applied today:
  *
  *  - `global` — every /api/v1 request, from RATE_LIMIT_MAX.
  *  - `auth`   — /api/v1/auth specifically, from AUTH_RATE_LIMIT_MAX.
+ *  - `write`  — every state-changing route in the channel, post and media
+ *    surfaces, from WRITE_RATE_LIMIT_MAX.
  *
  * /health is deliberately NOT limited. Render polls it to decide whether the
  * service is alive, so rate limiting it would turn a burst of legitimate
@@ -147,10 +149,10 @@ export class FixedWindowRateLimiter {
 /**
  * The active rules, read from the environment.
  *
- * WRITE_RATE_LIMIT_MAX and REPORT_RATE_LIMIT_MAX are intentionally absent:
- * they belong to the post-writing (M3) and report (M5) routes, which do not
- * exist yet. `describeActiveLimits()` says so out loud rather than letting
- * their presence in .env imply enforcement.
+ * REPORT_RATE_LIMIT_MAX is intentionally absent: it belongs to the report
+ * routes (M5), which do not exist yet. `describeActiveLimits()` says so out
+ * loud rather than letting its presence in .env imply enforcement — the same
+ * gap this module was written to close for the auth and write limits.
  */
 export function rateLimitConfigFromEnv(): RateLimitConfig {
   return {
@@ -182,10 +184,10 @@ export function describeActiveLimits(config: RateLimitConfig): string[] {
   const lines = [
     `[rate-limit] ACTIVE  ${config.global.name}: ${config.global.max} req / ${config.global.windowMs}ms per IP (/api/v1)`,
     `[rate-limit] ACTIVE  ${config.auth.name}: ${config.auth.max} req / ${config.auth.windowMs}ms per IP (/api/v1/auth)`,
-    `[rate-limit] ACTIVE  ${config.write.name}: ${config.write.max} req / ${config.write.windowMs}ms per IP (channel + discover writes)`,
+    `[rate-limit] ACTIVE  ${config.write.name}: ${config.write.max} req / ${config.write.windowMs}ms per IP (channel, post + media writes)`,
     `[rate-limit] NOT LIMITED: /health and /health/db (Render polls these; limiting them causes restart loops)`,
     `[rate-limit] RESERVED (routes not built yet, NOT enforced): REPORT_RATE_LIMIT_MAX=${env.REPORT_RATE_LIMIT_MAX} (M5 reports)`,
-    `[rate-limit] NOTE: reads are covered by the global rule only; WRITE_RATE_LIMIT_MAX=${env.WRITE_RATE_LIMIT_MAX} applies to POST/PATCH/PUT/DELETE below`,
+    `[rate-limit] NOTE: reads are covered by the global rule only; WRITE_RATE_LIMIT_MAX=${env.WRITE_RATE_LIMIT_MAX} applies to every POST/PATCH/PUT/DELETE in the Good Post API`,
     `[rate-limit] storage: in-process fixed window — per instance, not shared`,
   ];
   return lines;

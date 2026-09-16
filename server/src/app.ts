@@ -3,8 +3,12 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { env, isProduction } from './env.js';
 import { db, pingDatabase, type Queryable } from './db.js';
+import { ApiError } from './http/errors.js';
 import { buildAuthRouter } from './auth/routes.js';
 import { buildChannelsRouter, buildDiscoverRouter } from './channels/routes.js';
+import { buildChannelPostsRouter, buildPostsRouter } from './posts/routes.js';
+import { buildMediaRouter } from './media/routes.js';
+import { createObjectStore, type ObjectStore } from './media/store.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './auth/firebase.js';
 import {
   FixedWindowRateLimiter,
@@ -46,8 +50,24 @@ function notFound(_req: Request, res: Response): void {
  * mislead the client and pollute error monitoring with self-inflicted faults.
  * Anything outside 4xx/5xx is clamped, so a bad `status` value on an injected
  * error cannot produce a nonsensical response code.
+ *
+ * A thrown [ApiError] keeps its own `type` even for a 5xx. Those are raised
+ * deliberately — `media_unavailable` is "this deployment has no bucket",
+ * `auth_unavailable` is "verification is switched off" — and the Android client
+ * branches on the code to word each one. Flattening them to `internal_error`
+ * would turn a condition the user can be told about into a generic server
+ * fault. The message is still withheld in production; only the code is kept.
  */
 function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
+  if (err instanceof ApiError) {
+    if (err.status >= 500) console.error(`[api] ${err.type}: ${err.message}`);
+    res.status(err.status).json({
+      error: err.type,
+      ...(isProduction ? {} : { detail: err.message }),
+    });
+    return;
+  }
+
   const error = err as HttpError;
   const raw = error?.status ?? error?.statusCode ?? 500;
   const status = raw >= 400 && raw <= 599 ? raw : 500;
@@ -76,12 +96,20 @@ export interface AppDeps {
   readonly verifier?: PhoneIdentityVerifier;
   /** Overridable so the suite can assert limiting with tiny windows. */
   readonly rateLimits?: RateLimitConfig;
+  /**
+   * Object storage for post media. Overridable so the whole upload lifecycle
+   * (presign → upload → confirm → claim) can be driven against a fake — the
+   * checks that matter are ours, and requiring an AWS account to test them
+   * would mean they were never tested.
+   */
+  readonly store?: ObjectStore;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
   const database = deps.database ?? db;
   const verifier = deps.verifier ?? createPhoneVerifier();
   const rateLimits = deps.rateLimits ?? rateLimitConfigFromEnv();
+  const store = deps.store ?? createObjectStore();
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -148,8 +176,23 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // Channels and discovery (M2). Both take the same limiter instance, so the
   // `write` rule shares one bounded bucket structure with the other rules
   // instead of each router carrying its own window for the same rule name.
+  // Posts and media (M3). Every router here is self-contained: each applies its
+  // own `requireAuth`, so none can be mounted somewhere and silently lose
+  // authentication.
+  //
+  // The channel-scoped post routes mount on the SAME `/api/v1/channels` prefix
+  // as the channel router, registered BEFORE it. Express matches in order and
+  // mounts no route for a two-segment `/x/posts` path, so a post request is
+  // answered here without ever entering the channel router — which is what
+  // keeps it to one session verification per request. The channel router's
+  // blanket `requireSession` would otherwise run first for every post request
+  // and verify the same token twice. The suite asserts that neither router
+  // swallows the other's paths rather than assuming it.
+  app.use('/api/v1/channels', buildChannelPostsRouter(database, store, limiter, rateLimits));
   app.use('/api/v1/channels', buildChannelsRouter(database, limiter, rateLimits));
   app.use('/api/v1/discover', buildDiscoverRouter(database));
+  app.use('/api/v1/posts', buildPostsRouter(database, store));
+  app.use('/api/v1/media', buildMediaRouter(database, store, limiter, rateLimits));
 
   app.use(notFound);
   app.use(errorHandler);

@@ -109,13 +109,18 @@ health endpoints, migration runner, Render blueprint, README.
 `migrations/003_channels.sql` (channels, channel_admins, channel_followers,
 channel_blocks, channel_categories).
 Create / edit / category / country, follow / unfollow / mute / block,
-shareable deep link, Discover with search + category + country + popularity
-ranking (§5) — ranked by followers × recent activity, **no AI recommender**.
-Android: Channels view, channel screen, Discover.
+shareable deep link **resolved end to end**, Discover with search + category +
+country + popularity ranking (§5) — ranked by followers × recent activity,
+**no AI recommender**.
+Android: Channels view, channel screen, Discover, Share action, deep-link entry.
 
-**Verified:** server typecheck clean and 108/108 tests pass (36 new), migration
+**Verified:** server typecheck clean and 115/115 tests pass (43 new), migration
 003 applied to real Neon (5 tables, 15 indexes, 2 enums, 9 seeded categories),
-Android 553/553 unit tests pass (25 new) and `assembleDebug` builds.
+Android 558/558 unit tests pass (30 new) and `assembleDebug` builds. The share
+link was also verified on a real device: `adb shell cmd package
+query-activities` resolves `clearview://goodpost/channel/<slug>` to exactly one
+activity, and cold-starting that intent opens Good Post with the gate in front of
+it — the link survives sign-in and opens the channel afterwards.
 
 **Four deviations from the line above, each deliberate:**
 
@@ -132,18 +137,90 @@ Android 553/553 unit tests pass (25 new) and `assembleDebug` builds.
    channel pages as an open decision. Handing the client an app link now beats
    publishing a URL that 404s.
 
-   **Still not actionable end to end**, and no Share button ships until it is:
-   resolving that link needs a manifest `intent-filter`, a slug→id lookup on the
-   backend, and routing from `MainActivity` into the Good Post tab. Shipping a
-   share button that produces a dead link would be worse than not having one.
+   **Now actionable end to end**, which is what the M2 completion pass added:
+   `GET /api/v1/channels/by-slug/:slug` (reusing one query with `getChannel`, so a
+   shared link and a tapped channel cannot answer with different shapes), a
+   `VIEW` intent-filter on `LauncherActivity`, and routing from `MainActivity`
+   into the Good Post tab. The Share button ships with it — it was withheld in
+   M2 precisely because a button producing a dead link is worse than no button.
+
+   The link is held across the sign-in gate rather than dropped: tapping one
+   while signed out shows the gate, and the channel opens once sign-in finishes.
 4. **`follower_count` is denormalised** on `channels` and maintained in the
    same transaction as the follow change. Discovery sorts on every search
    keystroke; a `COUNT(*)` per row would be a scan.
 
-### M3 — Posts & media
-Migration 004 (posts, post_media, links, polls). Five post types. Presigned
-upload → confirm → publish; presigned download with caching headers.
+### M3 — Posts & media 🚧 started
+Migration 004 (posts, post_media). Five post types. Presigned upload → confirm
+→ publish; presigned download.
 Android: composer, Posts view, image/video/audio rendering, manual download.
+
+**Done so far (verified):**
+
+- **Migration 004, applied to real Neon.** 2 tables, 3 enums, 4 indexes, 10 CHECK
+  constraints, confirmed by querying Neon after applying rather than by reading
+  the file back.
+- **`src/media/store.ts`** — the `ObjectStore` interface, the key policy, the
+  content-type allow-list, the S3 implementation and an unconfigured fallback.
+  Injectable for the same reason the Firebase verifier is: the upload lifecycle
+  (presign → upload → confirm → claim) is the part that can be wrong, and it must
+  be testable without an AWS account.
+- **`UPLOAD_CLAIM_WINDOW_MINUTES`** and **`MAX_POST_MEDIA`** added to config.
+
+**Two deviations from the line above, both to avoid unexercised schema:**
+
+1. **No `polls` tables.** Polls are §14 and M4's feature. Creating the tables now
+   would put tables nothing writes into the database — the same reasoning that
+   kept `channel_notifications` out of M2.
+2. **No `links` table.** A link IS a post's content: `link_url` and `link_title`
+   are columns on `posts`, and a 1:1 table for two of them would be a join that
+   earns nothing. The `type` enum still distinguishes `link` from `text`.
+
+**Completed since:**
+
+- **`src/media/service.ts`** — the whole lifecycle: `requestMediaUpload`
+  (presign), `confirmMediaUpload` (verify against the bucket, idempotent),
+  `mediaDownloadUrl` (authorized, fresh, per request), `lockMediaForClaim`
+  (`FOR UPDATE`, inside the publish transaction), `attachMediaToPost`, and
+  `sweepAbandonedUploads` for §34.
+- **`src/posts/service.ts`** — `publishPost`, `listChannelPosts`, `listFeed`,
+  `updatePost`, `deletePost`. The post **type is derived** from the attached
+  media or the link, never accepted from the client; media is claimed inside the
+  publish transaction; and `post_count`/`last_post_at` move with the rows.
+- **`src/channels/visibility.ts`** — one definition of "may this viewer read
+  this channel's content", imported by BOTH the posts reads and `mediaDownloadUrl`.
+  Two copies would have drifted in exactly the direction that leaves an asset
+  served after its post was removed; a test caught the first version missing it.
+- **`src/media/routes.ts`, `src/posts/routes.ts`** — mounted at
+  `/api/v1/media`, `/api/v1/posts` and `/api/v1/channels/:channelId/posts`. The
+  channel-scoped routes share the channel router's prefix and are registered
+  first, so a post request is answered without the channel router's blanket
+  `requireSession` running first (two session lookups per request otherwise).
+- **Retention job** now runs the abandoned-upload sweep on its schedule; the
+  history-window prune stays in M7.
+- **`errorHandler` keeps a deliberate 5xx code.** `media_unavailable` and
+  `auth_unavailable` were being flattened to `internal_error`, which threw away
+  the one thing the client branches on.
+- **Tests: 66 new** (`tests/posts.test.ts`), against real Postgres and a fake
+  bucket. Server total **181**, Android total **570**.
+
+**Android (M3):**
+
+- `GoodPostPosts.kt` (models + codec, cached WITHOUT media URLs — a presigned
+  link is a short-lived capability and writing one to disk presents an expired
+  address as a saved asset), `GoodPostPostsCache.kt`, `GoodPostPostsRepository.kt`,
+  `GoodPostMediaStore.kt` (presigned PUT, manual download to a `.part` then
+  rename), `ui/GoodPostFeed.kt` (feed, post rows, composer, edit form).
+- Media shows a real preview for images and honest labels for video/audio: it
+  does **not** auto-play, because no player is wired to S3 media yet. Saving is a
+  deliberate tap and nothing is fetched before it (§10).
+- Cached lists are dropped on sign-out; **downloaded media is deliberately kept**
+  (§10).
+
+**S3 is still unconfigured**, so media cannot be exercised end to end yet —
+`media_unavailable` is the honest answer from an unconfigured deployment, and a
+text post needs no bucket. **The M3 backend is not deployed yet**: the live
+Render service is still the M2 commit, so the new routes 404 until it is pushed.
 
 ### M4 — Engagement
 Reactions (aggregate only), polls (single/multi, aggregate results only),

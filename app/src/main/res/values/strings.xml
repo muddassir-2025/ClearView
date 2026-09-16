@@ -660,6 +660,8 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_rate_limited">Too many codes requested for this number. Try again in about an hour.</string>
     <string name="goodpost_error_otp_locked">Too many failed attempts. Request a new code later.</string>
     <string name="goodpost_error_invalid_code">That code is not correct. Check the message and try again.</string>
+    <string name="goodpost_error_number_rejected">That number could not be verified. Check the country code and digits, then try again.</string>
+    <string name="goodpost_error_verification_unavailable">Verification codes cannot be sent right now. Please try again later.</string>
     <string name="goodpost_error_sms_quota">This device has hit the limit for verification codes. Try again later.</string>
     <string name="goodpost_error_verification_failed">We could not confirm that number. Try again.</string>
     <string name="goodpost_error_email_taken">That email address is already in use. Try another, or go back and sign in.</string>
@@ -670,6 +672,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
 
     <!-- M2: channels and discovery -->
+    <string name="goodpost_section_posts">Posts</string>
     <string name="goodpost_section_channels">Channels</string>
     <string name="goodpost_section_discover">Discover</string>
     <string name="goodpost_refresh">Refresh</string>
@@ -721,4 +724,46 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_follow_own">You cannot follow your own channel.</string>
     <string name="goodpost_error_not_following">Follow this channel before changing its notifications.</string>
     <string name="goodpost_error_invalid_input">That value is not allowed. Check the name, category or country code.</string>
+
+    <!-- Posts and media (M3) -->
+    <string name="goodpost_error_post_forbidden">Only a channel admin can post here.</string>
+    <string name="goodpost_error_post_not_found">That post is no longer available.</string>
+    <string name="goodpost_error_post_empty">Add some text, a link or a file first.</string>
+    <string name="goodpost_error_post_too_long">That post is too long. Try shortening it.</string>
+    <string name="goodpost_error_post_bad_link">That link is not a valid web address. It must start with http:// or https://.</string>
+    <string name="goodpost_error_post_edit_closed">This post is too old to edit.</string>
+    <string name="goodpost_error_post_media">That file could not be used. Try a different one, or post without it.</string>
+    <string name="goodpost_error_media_unavailable">That media is not available right now.</string>
+    <string name="goodpost_error_file_unreadable">That file could not be read. Try choosing it again.</string>
+
+    <string name="goodpost_empty_feed_title">No posts yet</string>
+    <string name="goodpost_empty_feed_note">Posts from the channels you follow appear here. Follow a few in Discover.</string>
+    <string name="goodpost_empty_channel_posts">No posts in this channel yet.</string>
+
+    <string name="goodpost_compose">New post</string>
+    <string name="goodpost_composer_title">New post</string>
+    <string name="goodpost_composer_body_hint">Write something</string>
+    <string name="goodpost_composer_link_hint">Link (https://…)</string>
+    <string name="goodpost_composer_link_title_hint">Link title (optional)</string>
+    <string name="goodpost_composer_attach">Attach a file</string>
+    <string name="goodpost_composer_uploading">Uploading…</string>
+    <string name="goodpost_publish">Post</string>
+    <string name="goodpost_remove_attachment">Remove attachment</string>
+
+    <string name="goodpost_post_edited">Edited</string>
+    <string name="goodpost_post_edit">Edit post</string>
+    <string name="goodpost_post_delete">Delete post</string>
+    <string name="goodpost_post_deleted">Post removed</string>
+    <string name="goodpost_post_save_media">Save</string>
+    <string name="goodpost_post_saved">Saved</string>
+    <string name="goodpost_post_media_unavailable">Media unavailable</string>
+    <string name="goodpost_post_open_channel">Open channel</string>
+    <string name="goodpost_post_attachment">Attachment %1$d</string>
+    <string name="goodpost_channel_posts">Posts</string>
+
+    <!-- Relative times on a post. Empty is used when a date cannot be read. -->
+    <string name="goodpost_time_now">Just now</string>
+    <string name="goodpost_time_minutes">%1$dm</string>
+    <string name="goodpost_time_hours">%1$dh</string>
+    <string name="goodpost_time_days">%1$dd</string>
 </resources>

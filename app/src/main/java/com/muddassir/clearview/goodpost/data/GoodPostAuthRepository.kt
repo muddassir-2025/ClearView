@@ -122,9 +122,18 @@ class GoodPostAuthRepository(
                 }
 
                 override fun onVerificationFailed(exception: FirebaseException) {
-                    Log.w(TAG, "Phone verification failed: ${exception.javaClass.simpleName}")
+                    val code = classifyStartFailure(exception)
+                    // The code, never the SDK's own message: Firebase's text
+                    // embeds the phone number, and §38 treats that as private.
+                    // Logging the message would copy the number into logcat and
+                    // into any crash report built from it.
+                    Log.w(
+                        TAG,
+                        "Phone verification failed: ${exception.javaClass.simpleName} " +
+                            "code=${errorCodeOf(exception) ?: "none"} -> $code"
+                    )
                     if (continuation.isActive) {
-                        continuation.resume(StartResult.Failed(classifyFirebaseFailure(exception)))
+                        continuation.resume(StartResult.Failed(code))
                     }
                 }
 
@@ -175,7 +184,10 @@ class GoodPostAuthRepository(
 
     /** Complete an automatic verification that never needed a code. */
     suspend fun exchangeCredential(credential: PhoneAuthCredential): AuthResult {
-        val idToken = idTokenFrom(credential) ?: return AuthResult.Failed("verification_failed")
+        val idToken = when (val signIn = signInForToken(credential)) {
+            is SignInResult.Verified -> signIn.idToken
+            is SignInResult.Failed -> return AuthResult.Failed(signIn.code)
+        }
 
         return when (val result = api.signIn(idToken, DEVICE_LABEL)) {
             is ApiResult.Ok -> persist(result.value)
@@ -302,35 +314,93 @@ class GoodPostAuthRepository(
      * it is the device's record that this number was verified, and the app's
      * own tokens remain the source of truth for everything else.
      */
-    private suspend fun idTokenFrom(credential: PhoneAuthCredential): String? = try {
+    private suspend fun signInForToken(credential: PhoneAuthCredential): SignInResult = try {
         firebaseAuth.signInWithCredential(credential).await()
-        firebaseAuth.currentUser?.getIdToken(false)?.await()?.token
+        val token = firebaseAuth.currentUser?.getIdToken(false)?.await()?.token
+        if (token.isNullOrBlank()) SignInResult.Failed("verification_failed")
+        else SignInResult.Verified(token)
+    } catch (e: FirebaseAuthInvalidCredentialsException) {
+        // Reachable only here, where the credential was built from a typed
+        // code, so a wrong code is the overwhelmingly common cause and asking
+        // for it again is the remedy. The number-entry phase reads this same
+        // exception class as an unusable NUMBER; see [classifyStartFailure].
+        Log.w(TAG, "Firebase rejected the credential")
+        SignInResult.Failed("invalid_code")
     } catch (e: Exception) {
         Log.w(TAG, "Firebase sign-in failed: ${e.javaClass.simpleName}")
-        null
+        SignInResult.Failed("verification_failed")
+    }
+
+    /** What [signInForToken] learned, carrying why a failure failed. */
+    private sealed interface SignInResult {
+        data class Verified(val idToken: String) : SignInResult
+        data class Failed(val code: String) : SignInResult
     }
 
     /**
-     * Turn an SDK failure into a code the UI can word.
+     * Turn a failure from the NUMBER-ENTRY phase into a code the UI can word.
      *
-     * Firebase's `errorCode` strings are not shown to users as-is; only the
-     * distinction that changes the instruction is kept — a wrong code is
-     * retryable, a quota-exceeded number is not, and anything else is
-     * reported generically rather than leaking SDK detail.
+     * The phase is load-bearing, not incidental. Firebase raises
+     * [FirebaseAuthInvalidCredentialsException] for both a malformed number and
+     * a wrong code, and the callback carries no field to tell the two apart — so
+     * the same class must be READ differently depending on whether the user has
+     * been given a code yet. In this phase they have not, which makes a
+     * credentials failure an unusable number. Getting this backwards tells a
+     * user with a bad country code to check an SMS that was never sent.
+     *
+     * Firebase's `errorCode` strings are never shown to users as-is: only the
+     * distinction that changes the instruction is kept — a quota-exceeded number
+     * cannot be retried, a region the project has not enabled cannot be retried
+     * either — and anything ambiguous is reported generically rather than
+     * leaking SDK detail.
+     *
+     * The code is consulted BEFORE the exception type, because the type is not
+     * trustworthy on its own: the SDK wraps `ERROR_INVALID_APP_CREDENTIAL` — a
+     * project misconfiguration a user can do nothing about — in the same
+     * [FirebaseAuthInvalidCredentialsException] it uses for a malformed number.
+     * Reading the type first would tell that user to check their country code.
+     * The type is the fallback for when there is no usable code at all.
      */
-    private fun classifyFirebaseFailure(exception: FirebaseException): String {
-        // The callback hands back the FirebaseException base type, which does
-        // NOT carry a code — only the FirebaseAuthException branch does. The
-        // concrete type is what tells us whether retrying is even possible.
-        val errorCode = (exception as? FirebaseAuthException)?.errorCode
+    private fun classifyStartFailure(exception: FirebaseException): String {
+        val code = errorCodeOf(exception)
 
         return when {
-            exception is FirebaseAuthInvalidCredentialsException -> "invalid_code"
-            errorCode?.contains("quota", ignoreCase = true) == true -> "sms_quota_exceeded"
-            errorCode?.contains("too-many-requests", ignoreCase = true) == true -> "rate_limited"
+            code == null -> {
+                // No code to go on. In THIS phase no verification code has been
+                // typed, so a credentials failure can only be the number.
+                if (exception is FirebaseAuthInvalidCredentialsException) "invalid_phone_number"
+                else "verification_failed"
+            }
+
+            code.contains("invalid-phone-number") -> "invalid_phone_number"
+            code.contains("quota") -> "sms_quota_exceeded"
+            code.contains("too-many-requests") -> "rate_limited"
+
+            // 17006 (region disabled for the project), 17028 (this app's package
+            // or signing certificate is not registered) and 17004 (bad app
+            // credential) all mean the PROJECT will not send, whatever the
+            // number is. 17006 is what an Indian number hits out of the box,
+            // because India is not in the default SMS region policy.
+            code.contains("operation-not-allowed") ||
+                code.contains("app-not-authorized") ||
+                code.contains("invalid-app-credential") -> "verification_unavailable"
+
             else -> "verification_failed"
         }
     }
+
+    /**
+     * Firebase's error code, normalised for matching.
+     *
+     * Underscores become hyphens because the SDK spells codes
+     * `ERROR_TOO_MANY_REQUESTS` while the checks above read as phrases. Before
+     * this, `contains("too-many-requests")` could never match and that branch
+     * was unreachable — a dead path that looked like working code.
+     */
+    private fun errorCodeOf(exception: FirebaseException): String? =
+        (exception as? FirebaseAuthException)?.errorCode
+            ?.lowercase()
+            ?.replace('_', '-')
 
     /**
      * Bridge a Play Services [Task] into a suspend function.

@@ -1,6 +1,7 @@
 package com.muddassir.clearview.goodpost
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -74,10 +75,49 @@ class GoodPostAuthLogicTest {
         assertEquals(GoodPostError.RateLimited, goodPostErrorFor("otp_rate_limited"))
         assertEquals(GoodPostError.OtpLocked, goodPostErrorFor("otp_locked"))
         assertEquals(GoodPostError.InvalidCode, goodPostErrorFor("invalid_code"))
+        assertEquals(GoodPostError.NumberRejected, goodPostErrorFor("invalid_phone_number"))
+        assertEquals(
+            GoodPostError.VerificationUnavailable,
+            goodPostErrorFor("verification_unavailable")
+        )
         assertEquals(GoodPostError.SmsQuota, goodPostErrorFor("sms_quota_exceeded"))
         assertEquals(GoodPostError.EmailTaken, goodPostErrorFor("email_already_registered"))
         assertEquals(GoodPostError.PhoneTaken, goodPostErrorFor("phone_already_registered"))
         assertEquals(GoodPostError.Unreachable, goodPostErrorFor("unreachable"))
+    }
+
+    @Test
+    fun `keeps a rejected number distinct from a wrong code`() {
+        // The regression this guards: Firebase raises one exception class both
+        // for a malformed number and for a wrong code, so the two are told
+        // apart by the phase, not the exception. Collapsing them sends a user
+        // with a bad country code to look for an SMS that was never sent — the
+        // exact wording bug found on a real device with +9999999999.
+        assertNotEquals(
+            goodPostErrorFor("invalid_phone_number"),
+            goodPostErrorFor("invalid_code")
+        )
+        assertNotEquals(
+            goodPostErrorFor("invalid_phone_number"),
+            goodPostErrorFor("invalid_phone")
+        )
+    }
+
+    @Test
+    fun `does not tell a user to retry a number the project cannot reach`() {
+        // Firebase 17006 means the project's SMS region policy does not cover
+        // the number's region — the real-device failure with an Indian number.
+        // Retrying cannot fix it and the number is not wrong, so it must read
+        // differently from both a bad number and a generic failure. Reporting it
+        // as either sends the user to re-type a number that was always correct.
+        assertNotEquals(
+            GoodPostError.VerificationUnavailable,
+            goodPostErrorFor("invalid_phone_number")
+        )
+        assertNotEquals(
+            GoodPostError.VerificationUnavailable,
+            goodPostErrorFor("verification_failed")
+        )
     }
 
     @Test

@@ -1,9 +1,18 @@
 import { randomBytes } from 'node:crypto';
 import { env } from '../env.js';
-import { one, type Queryable } from '../db.js';
+import { cursorKeyOf, isoOrNull, one, type Queryable } from '../db.js';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors.js';
-import { decodeCursor, encodeCursor, isUuid, parsePageSize, type ChannelSort } from './cursor.js';
-import { slugCandidate } from './slug.js';
+import {
+  cursorOf,
+  encodeCursor,
+  isUuid,
+  parsePageSize,
+  withLimit,
+  type ChannelSort,
+  type Page,
+  type PageQuery,
+} from './cursor.js';
+import { SLUG_MAX_LENGTH, SLUG_PATTERN, slugCandidate } from './slug.js';
 
 /**
  * Channels: creation, management, following and discovery (§5, §6, §7, §12).
@@ -72,7 +81,14 @@ const CHANNEL_COLUMNS = `
   c.owner_id
 `;
 
-interface ChannelRow {
+/**
+ * A channel row with the extra columns every payload needs.
+ *
+ * Exported because the posts module reuses [loadViewable] and [roleOf] rather
+ * than re-deriving channel visibility — two implementations of "which channels
+ * may this viewer see" is one implementation too many.
+ */
+export interface ChannelRow {
   id: string;
   slug: string;
   /** Read for authorization only. Never mapped into a payload. */
@@ -92,7 +108,7 @@ interface ChannelRow {
   activity_at: unknown;
 }
 
-type ChannelStatus = 'active' | 'suspended' | 'banned';
+export type ChannelStatus = 'active' | 'suspended' | 'banned';
 export type ChannelRole = 'owner' | 'editor' | 'responder';
 
 /**
@@ -107,23 +123,6 @@ export type ChannelRole = 'owner' | 'editor' | 'responder';
  */
 function channelShareLink(slug: string): string {
   return `clearview://goodpost/channel/${slug}`;
-}
-
-/**
- * Timestamps arrive as `Date` from `pg` and as strings from PGlite, so the
- * cursor key is normalised rather than assumed. A `Date` reaching
- * `JSON.stringify` would otherwise serialise to a different string than the
- * `timestamptz` comparison it is fed back into, breaking page two.
- */
-function isoOrNull(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
-}
-
-function cursorKeyOf(value: unknown): string {
-  if (value instanceof Date) return value.toISOString();
-  return String(value);
 }
 
 function mapChannel(row: ChannelRow): ChannelSummary {
@@ -271,7 +270,7 @@ export async function createChannel(
  * null rather than throwing lets each caller choose its own error, and keeps
  * "not found" from leaking whether a channel exists.
  */
-async function roleOf(
+export async function roleOf(
   database: Queryable,
   channelId: string,
   userId: string
@@ -284,7 +283,7 @@ async function roleOf(
 }
 
 /** Load a channel it is legitimate for this viewer to see, or throw. */
-async function loadViewable(database: Queryable, channelId: string): Promise<ChannelRow> {
+export async function loadViewable(database: Queryable, channelId: string): Promise<ChannelRow> {
   if (!isUuid(channelId)) throw notFound('channel_not_found');
 
   const row = await database.queryOne<ChannelRow>(
@@ -298,14 +297,23 @@ async function loadViewable(database: Queryable, channelId: string): Promise<Cha
   return row;
 }
 
-/** Channel detail plus the viewer's own relationship to it. */
-export async function getChannel(
+/**
+ * Channel detail plus the viewer's own relationship to it (§5, §6).
+ *
+ * One query serves both the id and slug lookups because a share link and an
+ * in-app tap must answer with the SAME payload: a deep link that opened a
+ * thinner shape than the screen it was shared from would be a bug no test
+ * would catch, since both results are individually valid.
+ *
+ * Which column is matched is chosen from two hardcoded predicates rather than
+ * by interpolating a column name, so no caller-supplied value is ever
+ * concatenated into SQL. `$1` is the key and `$2` the viewer in both cases.
+ */
+async function loadChannelDetail(
   database: Queryable,
-  channelId: string,
-  userId: string
+  userId: string,
+  key: { readonly by: 'id' | 'slug'; readonly value: string }
 ): Promise<ChannelDetail> {
-  if (!isUuid(channelId)) throw notFound('channel_not_found');
-
   const row = await database.queryOne<ChannelRow & ViewerStateRow>(
     `SELECT ${CHANNEL_COLUMNS},
             (f.user_id IS NOT NULL) AS is_following,
@@ -319,8 +327,8 @@ export async function getChannel(
        LEFT JOIN channel_followers f ON f.channel_id = c.id AND f.user_id = $2
        LEFT JOIN channel_blocks b ON b.channel_id = c.id AND b.user_id = $2
        LEFT JOIN channel_admins a ON a.channel_id = c.id AND a.user_id = $2
-      WHERE c.id = $1 AND c.deleted_at IS NULL`,
-    [channelId, userId]
+      WHERE ${key.by === 'id' ? 'c.id = $1' : 'c.slug = $1'} AND c.deleted_at IS NULL`,
+    [key.value, userId]
   );
   if (!row) throw notFound('channel_not_found');
 
@@ -333,6 +341,45 @@ export async function getChannel(
     viewerRole: row.viewer_role,
     hasUnread: row.has_unread,
   };
+}
+
+/** Channel detail by id. */
+export async function getChannel(
+  database: Queryable,
+  channelId: string,
+  userId: string
+): Promise<ChannelDetail> {
+  if (!isUuid(channelId)) throw notFound('channel_not_found');
+  return loadChannelDetail(database, userId, { by: 'id', value: channelId });
+}
+
+/**
+ * Channel detail by share slug (§6), which is what makes a deep link resoluble.
+ *
+ * The slug is the only identifier a shared link carries, and this is the single
+ * place it becomes a channel. Every rejection is `channel_not_found` — a dead
+ * link, a malformed one and a typo are the same thing to the person holding the
+ * link, and telling them apart would leak which slugs exist.
+ *
+ * A channel that exists but is suspended is still returned, with its `status`,
+ * exactly as [getChannel] does: the screen can then explain itself instead of
+ * the link appearing broken.
+ */
+export async function getChannelBySlug(
+  database: Queryable,
+  slug: string,
+  userId: string
+): Promise<ChannelDetail> {
+  // Lower-cased because a link can be typed by hand and slugs are generated
+  // lowercase; the length is capped BEFORE the pattern test so an absurd path
+  // is rejected by a length check rather than fed to a matcher.
+  const normalised = slug.trim().toLowerCase();
+  if (normalised.length === 0 || normalised.length > SLUG_MAX_LENGTH) {
+    throw notFound('channel_not_found');
+  }
+  if (!SLUG_PATTERN.test(normalised)) throw notFound('channel_not_found');
+
+  return loadChannelDetail(database, userId, { by: 'slug', value: normalised });
 }
 
 interface ViewerStateRow {
@@ -619,32 +666,6 @@ export async function unblockChannel(
     `DELETE FROM channel_blocks WHERE channel_id = $1 AND user_id = $2`,
     [channelId, userId]
   );
-}
-
-export interface Page<T> {
-  readonly items: T[];
-  readonly nextCursor: string | null;
-}
-
-/** Read a cursor, refusing a malformed one instead of silently restarting. */
-function cursorOf(raw: string | undefined): { k: string; id: string } | null {
-  if (raw === undefined || raw === '') return null;
-  const cursor = decodeCursor(raw);
-  if (!cursor) {
-    throw badRequest('invalid_cursor', 'The cursor is not valid.');
-  }
-  return cursor;
-}
-
-export interface PageQuery {
-  readonly limit?: string | undefined;
-  readonly cursor?: string | undefined;
-}
-
-/** Shared keyset tail: fetch one extra row to know whether another page exists. */
-function withLimit<T>(rows: T[], limit: number): { items: T[]; hasMore: boolean } {
-  if (rows.length <= limit) return { items: rows, hasMore: false };
-  return { items: rows.slice(0, limit), hasMore: true };
 }
 
 /**

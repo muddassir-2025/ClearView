@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -69,9 +70,26 @@ open class MainActivity : ComponentActivity() {
     private val todoRequestState = mutableStateOf(false)
     val todoScreenRequested: Boolean get() = todoRequestState.value
 
+    /**
+     * Channel share link (§6): `clearview://goodpost/channel/<slug>`.
+     *
+     * A slug rather than an id because a slug is what a link carries, and the
+     * backend resolves it. Held as state for the same reason the Todo flag is:
+     * a warm start delivers the link through [onNewIntent], while the cold start
+     * reads it straight from the launch intent in MainScreen.
+     */
+    private val channelSlugRequestState = mutableStateOf<String?>(null)
+    val requestedChannelSlug: String? get() = channelSlugRequestState.value
+
+    /** Clears the request once MainScreen has handed it to the Good Post tab. */
+    fun consumeChannelSlugRequest() {
+        channelSlugRequestState.value = null
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        channelSlugFrom(intent.data)?.let { channelSlugRequestState.value = it }
         if (intent.getBooleanExtra(TodoNotifier.EXTRA_OPEN_TODO, false)) {
             intent.removeExtra(TodoNotifier.EXTRA_OPEN_TODO)
             todoRequestState.value = true
@@ -173,6 +191,41 @@ open class MainActivity : ComponentActivity() {
 
 private enum class MainTab { QURAN, MEDIA, FEED, GOODPOST, BLOCK }
 
+/**
+ * The channel slug carried by a `clearview://goodpost/channel/<slug>` link, or
+ * null when the intent is not one of ours.
+ *
+ * The Uri overload is a two-line adapter over [channelSlugFrom], which is where
+ * the decision actually lives.
+ */
+internal fun channelSlugFrom(data: Uri?): String? =
+    channelSlugFrom(data?.scheme, data?.host, data?.path)
+
+/**
+ * The same decision, taken from the three parts of a URI.
+ *
+ * Separated from the Uri form because `android.net.Uri` is stubbed to return
+ * defaults in JVM unit tests (`unitTests.isReturnDefaultValues`), so a
+ * Uri-only parser could not be tested at all — and a link that opens the wrong
+ * screen, or refuses to open, is not something to discover on a device.
+ * Nothing here touches Android.
+ *
+ * Empty segments are dropped so a trailing or doubled slash cannot change the
+ * outcome, and the shape is matched exactly — scheme, host, then
+ * `/channel/<slug>` — so the app's other `clearview://` links are never mistaken
+ * for a channel. A blank slug counts as no link at all.
+ */
+internal fun channelSlugFrom(scheme: String?, host: String?, path: String?): String? {
+    if (scheme != "clearview") return null
+    if (host != "goodpost") return null
+
+    val segments = path.orEmpty().split('/').filter { it.isNotEmpty() }
+    if (segments.size != 2) return null
+    if (segments[0] != "channel") return null
+
+    return segments[1].takeIf { it.isNotBlank() }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(viewModel: MainViewModel = viewModel()) {
@@ -180,6 +233,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     val landscape = isLandscape()
 
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.QURAN) }
+
+    /**
+     * A channel slug from a share link (§6), waiting to reach Good Post.
+     *
+     * Deliberately NOT `rememberSaveable`: the home ViewModel holds the opened
+     * channel and survives a rotation, so restoring this would reopen what is
+     * already open.
+     */
+    var pendingChannelSlug by remember { mutableStateOf<String?>(null) }
     val hub = rememberContentHubState()
 
     // A Todo-reminder notification tap opens straight into the Todo screen —
@@ -233,6 +295,26 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) {
         viewModel.initialize(context)
         viewModel.checkAccessibilityStatus(context)
+    }
+
+    // A shared channel link (§6) opens Good Post with that channel already
+    // open. Cold start: the launch intent carries the data, consumed here so a
+    // configuration change cannot open it again. Warm start: onNewIntent stored
+    // the slug and the state below picks it up.
+    LaunchedEffect(Unit) {
+        channelSlugFrom(activity?.intent?.data)?.let { slug ->
+            activity?.intent?.data = null
+            pendingChannelSlug = slug
+            selectedTab = MainTab.GOODPOST
+        }
+    }
+    val requestedChannelSlug = activity?.requestedChannelSlug
+    LaunchedEffect(requestedChannelSlug) {
+        if (requestedChannelSlug != null) {
+            activity?.consumeChannelSlugRequest()
+            pendingChannelSlug = requestedChannelSlug
+            selectedTab = MainTab.GOODPOST
+        }
     }
 
     // Periodically check accessibility and device admin status while the app
@@ -452,7 +534,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         BlockTab(viewModel, deviceAdminLauncher)
                     }
                 }
-                MainTab.GOODPOST -> GoodPostTab()
+                MainTab.GOODPOST -> GoodPostTab(
+                    openChannelSlug = pendingChannelSlug,
+                    onOpenChannelHandled = { pendingChannelSlug = null }
+                )
                 else -> ContentHubTabContent(state = hub, isLandscape = landscape)
             }
         }

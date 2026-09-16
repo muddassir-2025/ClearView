@@ -81,6 +81,8 @@ class GoodPostApi(
         const val AUTH_PATH = "/api/v1/auth"
         const val CHANNELS_PATH = "/api/v1/channels"
         const val DISCOVER_PATH = "/api/v1/discover"
+        const val POSTS_PATH = "/api/v1/posts"
+        const val MEDIA_PATH = "/api/v1/media"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_RESPONSE_BYTES = 512_000
@@ -177,6 +179,17 @@ class GoodPostApi(
     suspend fun channelDetail(accessToken: String, channelId: String): ApiResult<JSONObject> =
         get(CHANNELS_PATH + "/" + encode(channelId), accessToken)
 
+    /**
+     * §6 resolve a share link.
+     *
+     * The slug is the only identifier a shared link carries, so this is the one
+     * call that turns a pasted `clearview://goodpost/channel/<slug>` back into a
+     * channel. The route is a sibling of [channelDetail] rather than a query on
+     * it, which is why the path segment differs.
+     */
+    suspend fun channelBySlug(accessToken: String, slug: String): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/by-slug/" + encode(slug), accessToken)
+
     /** §5 Discover. Blank filters are omitted rather than sent empty. */
     suspend fun discoverChannels(
         accessToken: String,
@@ -244,6 +257,82 @@ class GoodPostApi(
     /** §4 clear the unread flag. */
     suspend fun markRead(accessToken: String, channelId: String): ApiResult<JSONObject> =
         call("POST", CHANNELS_PATH + "/" + encode(channelId) + "/read", null, accessToken)
+
+    // ── Posts (§4, §8) ──────────────────────────────────────────────────
+
+    /** §4 the aggregated feed: posts from every channel the caller follows. */
+    suspend fun feed(accessToken: String, cursor: String? = null): ApiResult<JSONObject> =
+        get(POSTS_PATH + "/feed" + pageQuery(cursor), accessToken)
+
+    /** §8 one channel's history, newest first. */
+    suspend fun channelPosts(
+        accessToken: String,
+        channelId: String,
+        cursor: String? = null
+    ): ApiResult<JSONObject> =
+        get(
+            CHANNELS_PATH + "/" + encode(channelId) + "/posts" + pageQuery(cursor),
+            accessToken
+        )
+
+    suspend fun publishPost(
+        accessToken: String,
+        channelId: String,
+        body: JSONObject
+    ): ApiResult<JSONObject> =
+        call("POST", CHANNELS_PATH + "/" + encode(channelId) + "/posts", body, accessToken)
+
+    suspend fun updatePost(
+        accessToken: String,
+        channelId: String,
+        postId: String,
+        body: JSONObject
+    ): ApiResult<JSONObject> =
+        call(
+            "PATCH",
+            CHANNELS_PATH + "/" + encode(channelId) + "/posts/" + encode(postId),
+            body,
+            accessToken
+        )
+
+    /** §7 remove a post. The server soft-deletes it, so it can be restored. */
+    suspend fun deletePost(
+        accessToken: String,
+        channelId: String,
+        postId: String
+    ): ApiResult<JSONObject> =
+        call(
+            "DELETE",
+            CHANNELS_PATH + "/" + encode(channelId) + "/posts/" + encode(postId),
+            null,
+            accessToken
+        )
+
+    // ── Media (§9, §10) ─────────────────────────────────────────────────
+
+    /**
+     * Ask for a presigned upload URL.
+     *
+     * The body carries a content type and a size and NOTHING ELSE. There is no
+     * field for a destination: the server derives the object key from the media
+     * row's own id, so no request can influence where its bytes land.
+     */
+    suspend fun requestUpload(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
+        call("POST", MEDIA_PATH + "/uploads", body, accessToken)
+
+    /** Confirm the object arrived. The server verifies it against the bucket. */
+    suspend fun confirmUpload(accessToken: String, mediaId: String): ApiResult<JSONObject> =
+        call("POST", MEDIA_PATH + "/uploads/" + encode(mediaId) + "/confirm", null, accessToken)
+
+    /**
+     * A fresh presigned read URL for one asset (§10).
+     *
+     * Used for a manual download and for playback, because the URL embedded in
+     * a post payload expires and a post cached from ten minutes ago holds a
+     * dead link.
+     */
+    suspend fun mediaUrl(accessToken: String, mediaId: String): ApiResult<JSONObject> =
+        get(MEDIA_PATH + "/" + encode(mediaId) + "/url", accessToken)
 
     // ── Internals ───────────────────────────────────────────────────────
 

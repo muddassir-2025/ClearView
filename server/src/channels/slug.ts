@@ -15,6 +15,16 @@
 /** Must match `channels.slug`'s CHECK in migration 003. */
 export const SLUG_MAX_LENGTH = 40;
 
+/**
+ * The shape `channels.slug` allows, as enforced by the CHECK in migration 003.
+ *
+ * Exported so that LOOKING UP a slug validates with the same rule that
+ * GENERATING one guarantees. A second, hand-copied regex would eventually
+ * disagree with this one, and the failure mode is a slug that reaches a query
+ * the constraint would have rejected.
+ */
+export const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
+
 const FALLBACK = 'channel';
 
 /**

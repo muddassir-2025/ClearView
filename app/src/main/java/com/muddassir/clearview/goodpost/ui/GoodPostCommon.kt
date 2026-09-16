@@ -57,6 +57,8 @@ internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.RateLimited -> R.string.goodpost_error_rate_limited
     GoodPostError.OtpLocked -> R.string.goodpost_error_otp_locked
     GoodPostError.InvalidCode -> R.string.goodpost_error_invalid_code
+    GoodPostError.NumberRejected -> R.string.goodpost_error_number_rejected
+    GoodPostError.VerificationUnavailable -> R.string.goodpost_error_verification_unavailable
     GoodPostError.SmsQuota -> R.string.goodpost_error_sms_quota
     GoodPostError.VerificationFailed -> R.string.goodpost_error_verification_failed
     GoodPostError.EmailTaken -> R.string.goodpost_error_email_taken
@@ -73,6 +75,15 @@ internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.CannotFollowOwnChannel -> R.string.goodpost_error_follow_own
     GoodPostError.NotFollowing -> R.string.goodpost_error_not_following
     GoodPostError.InvalidInput -> R.string.goodpost_error_invalid_input
+    GoodPostError.PostForbidden -> R.string.goodpost_error_post_forbidden
+    GoodPostError.PostNotFound -> R.string.goodpost_error_post_not_found
+    GoodPostError.PostEmpty -> R.string.goodpost_error_post_empty
+    GoodPostError.PostTooLong -> R.string.goodpost_error_post_too_long
+    GoodPostError.PostBadLink -> R.string.goodpost_error_post_bad_link
+    GoodPostError.PostEditClosed -> R.string.goodpost_error_post_edit_closed
+    GoodPostError.PostMediaRejected -> R.string.goodpost_error_post_media
+    GoodPostError.MediaUnavailable -> R.string.goodpost_error_media_unavailable
+    GoodPostError.FileUnreadable -> R.string.goodpost_error_file_unreadable
     GoodPostError.Unknown -> R.string.goodpost_error_unknown
 }
 

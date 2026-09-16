@@ -1,5 +1,7 @@
 package com.muddassir.clearview.goodpost.ui
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +33,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -49,12 +52,14 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -68,6 +73,8 @@ import com.muddassir.clearview.goodpost.GoodPostSection
 import com.muddassir.clearview.goodpost.data.ChannelSort
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
+import com.muddassir.clearview.goodpost.data.GoodPostMedia
+import com.muddassir.clearview.goodpost.data.GoodPostPost
 
 /**
  * Good Post home: the Channels view and Discover (§4, §5).
@@ -101,13 +108,25 @@ fun GoodPostHome(
         )
 
         // §36: saved data is labelled as saved. Presenting a cached list as
-        // live would be claiming a success the server never confirmed.
-        if (state.stale) {
+        // live would be claiming a success the server never confirmed. The
+        // feed and the channel lists are cached separately, so each carries
+        // its own flag.
+        if (state.stale || state.feedStale) {
             StaleBanner()
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
             when (state.section) {
+                GoodPostSection.Posts -> PostsSection(
+                    state = state,
+                    onOpenChannel = viewModel::open,
+                    onEditPost = viewModel::startEditPost,
+                    onDeletePost = viewModel::deletePost,
+                    onSaveMedia = viewModel::saveMedia,
+                    onLoadMore = viewModel::loadMoreFeed,
+                    onRetry = viewModel::refresh
+                )
+
                 GoodPostSection.Channels -> ChannelsSection(
                     state = state,
                     onOpen = viewModel::open,
@@ -138,9 +157,43 @@ fun GoodPostHome(
         }
     }
 
+    if (state.composerOpen) {
+        ComposerDialog(
+            state = state,
+            onBodyChange = viewModel::onComposerBodyChange,
+            onLinkChange = viewModel::onComposerLinkChange,
+            onLinkTitleChange = viewModel::onComposerLinkTitleChange,
+            onPickFile = viewModel::attachMedia,
+            onRemoveAttachment = viewModel::removeAttachment,
+            onPublish = viewModel::publish,
+            onDismiss = viewModel::cancelCompose
+        )
+    }
+
+    state.editingPostId?.let { _ ->
+        EditPostDialog(
+            body = state.editingPostBody,
+            busy = state.busyPostId != null,
+            errorCode = state.messageCode,
+            onBodyChange = viewModel::onEditPostBodyChange,
+            onSave = viewModel::saveEditPost,
+            onDismiss = viewModel::cancelEditPost
+        )
+    }
+
     state.channel?.let { channel ->
         ChannelDetail(
             channel = channel,
+            posts = state.channelPosts,
+            postsStale = state.channelPostsStale,
+            savedMediaIds = state.savedMediaIds,
+            savingMediaId = state.savingMediaId,
+            busyPostId = state.busyPostId,
+            onCompose = { viewModel.startCompose(channel.id) },
+            onLoadPosts = { viewModel.loadChannelPosts() },
+            onEditPost = viewModel::startEditPost,
+            onDeletePost = viewModel::deletePost,
+            onSaveMedia = viewModel::saveMedia,
             busy = state.busyChannelId == channel.id,
             onDismiss = viewModel::closeDetail,
             onToggleFollow = viewModel::toggleFollow,
@@ -231,6 +284,7 @@ private fun Header(
 @Composable
 private fun SectionTabs(selected: GoodPostSection, onSelect: (GoodPostSection) -> Unit) {
     val sections = listOf(
+        GoodPostSection.Posts to stringResource(R.string.goodpost_section_posts),
         GoodPostSection.Channels to stringResource(R.string.goodpost_section_channels),
         GoodPostSection.Discover to stringResource(R.string.goodpost_section_discover)
     )
@@ -552,6 +606,16 @@ private fun ChannelBadge(channel: GoodPostChannel) {
 @Composable
 private fun ChannelDetail(
     channel: GoodPostChannel,
+    posts: List<GoodPostPost>,
+    postsStale: Boolean,
+    savedMediaIds: Set<String>,
+    savingMediaId: String?,
+    busyPostId: String?,
+    onCompose: () -> Unit,
+    onLoadPosts: () -> Unit,
+    onEditPost: (GoodPostPost) -> Unit,
+    onDeletePost: (GoodPostPost) -> Unit,
+    onSaveMedia: (GoodPostMedia) -> Unit,
     busy: Boolean,
     onDismiss: () -> Unit,
     onToggleFollow: () -> Unit,
@@ -559,6 +623,12 @@ private fun ChannelDetail(
     onToggleBlock: () -> Unit,
     onEdit: () -> Unit
 ) {
+    val context = LocalContext.current
+
+    // Idempotent for the channel already loaded, so opening the same channel
+    // twice does not refetch what is already on screen.
+    LaunchedEffect(channel.id) { onLoadPosts() }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -595,7 +665,12 @@ private fun ChannelDetail(
 
                 Spacer(Modifier.height(12.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    // Three chips do not fit a narrow phone, and a clipped chip is
+                    // an action the user cannot reach.
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
                     if (channel.isOwner) {
                         AssistChip(
                             onClick = onEdit,
@@ -614,6 +689,17 @@ private fun ChannelDetail(
                             }
                         )
                     }
+                    // §6. Shipped only now that the link actually resolves:
+                    // `/channels/by-slug/:slug` turns the slug back into this
+                    // channel and the manifest filter opens the app from it. M2
+                    // withheld this button rather than handing out a dead link.
+                    AssistChip(
+                        onClick = { shareChannel(context, channel) },
+                        label = { Text(stringResource(R.string.goodpost_share)) },
+                        leadingIcon = {
+                            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                    )
                 }
 
                 Spacer(Modifier.height(16.dp))
@@ -684,6 +770,74 @@ private fun ChannelDetail(
                 }
 
                 Spacer(Modifier.height(24.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                // §8: the channel's history. This is the surface a post is
+                // published from, so the compose control lives with the list
+                // it appends to rather than beside the follow button.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = stringResource(R.string.goodpost_channel_posts),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (postsStale) {
+                        Text(
+                            text = stringResource(R.string.goodpost_stale_note),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                }
+
+                // Only where the server would accept it. `viewerRole` is the
+                // server's answer about this viewer (§32), not a guess here —
+                // and a composer that always ends in `post_forbidden` would be
+                // worse than no composer.
+                if (channel.viewerRole == "owner" || channel.viewerRole == "editor") {
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onCompose, modifier = Modifier.fillMaxWidth()) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(stringResource(R.string.goodpost_compose))
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                if (posts.isEmpty()) {
+                    Text(
+                        text = stringResource(R.string.goodpost_empty_channel_posts),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    posts.forEach { post ->
+                        PostRow(
+                            post = post,
+                            // The channel is not named on its own screen: the
+                            // header above already says which one this is.
+                            showChannel = false,
+                            savedMediaIds = savedMediaIds,
+                            savingMediaId = savingMediaId,
+                            busy = busyPostId == post.id,
+                            onOpenChannel = {},
+                            onEdit = { onEditPost(post) },
+                            onDelete = { onDeletePost(post) },
+                            onSaveMedia = onSaveMedia
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        HorizontalDivider()
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
             }
         }
     }
@@ -698,6 +852,25 @@ private fun ChannelDetail(
  * confirm action, so a second near-identical composable would only be a place
  * for the two to drift.
  */
+/**
+ * Offer a channel's deep link to another app (§6).
+ *
+ * `EXTRA_TEXT` is the link ALONE, not the name plus the link: the receiving app
+ * decides what to do with the body, and prose mixed with a URI is what turns a
+ * working link into a dead string the moment it is pasted. The name travels as
+ * the subject, which is what a mail client actually uses.
+ */
+private fun shareChannel(context: Context, channel: GoodPostChannel) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, channel.shareLink)
+        putExtra(Intent.EXTRA_SUBJECT, channel.name)
+    }
+    context.startActivity(
+        Intent.createChooser(send, context.getString(R.string.goodpost_share_chooser))
+    )
+}
+
 @Composable
 private fun ChannelFormDialog(
     title: String,
