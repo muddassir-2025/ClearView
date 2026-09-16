@@ -36,7 +36,22 @@ services:
     region: frankfurt
     branch: main
     rootDir: server
-    buildCommand: npm ci && npm run build
+    # `--include=dev` is NOT optional decoration — without it this build fails.
+    #
+    # The build needs `typescript` plus `@types/express`, `@types/cors` and
+    # `@types/pg`, and all four are devDependencies (correctly: they are
+    # build-time tooling, not runtime deps). A plain `npm ci` omits them when
+    # the install runs in production mode, which is what `NODE_ENV=production`
+    # on this service turns on. The symptom is not "tsc: not found" but a wall
+    # of TS7016 errors — "Could not find a declaration file for module
+    # 'express'" — because the type packages are absent while the compiled JS
+    # they annotate is there.
+    #
+    # Verified before changing this: package.json, package-lock.json and
+    # tsconfig.json were identical between a build that worked and one that
+    # did not, with the same Node version. The only variable was the
+    # environment, so the flag is made explicit rather than inferred.
+    buildCommand: npm ci --include=dev && npm run build
     # REMOVED FOR THE FREE PLAN. A pre-deploy command is a paid feature
     # ("available for paid web services, private services, and background
     # workers"), and leaving an unsupported key in a Blueprint is not something

@@ -241,11 +241,27 @@ If you would rather configure by hand:
 | Setting | Value |
 |---|---|
 | Root Directory | `server` |
-| Build Command | `npm ci && npm run build` |
+| Build Command | `npm ci --include=dev && npm run build` |
 | Pre-deploy Command | `npm run migrate:prod` — **paid plans only**, see below |
 | Start Command | `npm start` |
 | Health Check Path | `/health` |
 | Region | `Frankfurt (EU Central)` |
+
+### Why the build command says `--include=dev`
+
+`typescript` and the `@types/*` packages are **devDependencies**, which is
+correct — they are build-time tooling, not runtime dependencies.
+
+But `NODE_ENV=production` makes `npm ci` omit devDependencies, and this service
+sets `NODE_ENV=production`. The failure is confusing rather than obvious: the
+build does not say *"tsc: not found"*, it prints dozens of `TS7016: Could not
+find a declaration file for module 'express'` errors, because the type packages
+are missing while the JavaScript they annotate is installed.
+
+`--include=dev` makes the build independent of that setting. If you ever see
+those `TS7016` errors again, this flag is the first thing to check — in
+`render.yaml` *and* in the dashboard, since a manually-edited service ignores
+the file.
 
 ### Free plan: no Shell, no pre-deploy
 
