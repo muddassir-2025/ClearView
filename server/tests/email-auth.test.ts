@@ -1,12 +1,19 @@
 import type { Express } from 'express';
 import request from 'supertest';
 import type { PGlite } from '@electric-sql/pglite';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { closePool, type Queryable } from '../src/db.js';
 import { env, hashEmailCode } from '../src/env.js';
 import { unauthorized } from '../src/http/errors.js';
-import { providerErrorName, type OutboundMail, type Mailer } from '../src/email/sender.js';
+import {
+  SmtpMailer,
+  providerErrorName,
+  signInCodeMail,
+  type MailTransport,
+  type OutboundMail,
+  type Mailer,
+} from '../src/email/sender.js';
 import type { PhoneIdentityVerifier } from '../src/auth/firebase.js';
 import { applyAllMigrations, asQueryable, freshDatabase, resetData } from './helpers/database.js';
 
@@ -421,5 +428,105 @@ describe('reading a provider refusal', () => {
   it('accepts a type when a provider names the field that way', async () => {
     const body = JSON.stringify({ type: 'rate_limit_exceeded' });
     expect(await providerErrorName(new Response(body, { status: 429 }))).toBe('rate_limit_exceeded');
+  });
+});
+
+/**
+ * Delivery through an authenticated mailbox — Gmail's SMTP in practice — which
+ * is the route a deployment with no sending domain to verify uses.
+ *
+ * The transport is injected, so these assert the contract without opening an
+ * SMTP connection: the message handed over, that a failure becomes a code the
+ * client can word, and that a dead connection is not kept.
+ */
+describe('sending through an authenticated mailbox', () => {
+  const account = { to: 'ayesha@example.test' };
+
+  it('hands the provider the whole message, from the configured sender', async () => {
+    const sent: Array<Record<string, string>> = [];
+    const transport: MailTransport = {
+      sendMail: async (message) => {
+        sent.push(message as unknown as Record<string, string>);
+        return { accepted: [account.to] };
+      },
+    };
+
+    await new SmtpMailer(() => transport).send({ ...account, ...signInCodeMail('123456', 10) });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      // The From: must be the authenticated mailbox (or an alias it may send
+      // as), which is why this asserts the configured value rather than a
+      // literal: a sender the account cannot use is rejected by the provider.
+      from: env.EMAIL_FROM,
+      to: account.to,
+      subject: 'Your ClearView sign-in code',
+    });
+    // Both bodies carry the code: a text-only client must still be able to sign
+    // in, and an HTML-only one must not be shown a message with no code in it.
+    expect(sent[0]?.text).toContain('123456');
+    expect(sent[0]?.html).toContain('123456');
+  });
+
+  it('answers a wordable 503, and logs neither the code nor the provider detail', async () => {
+    const logged: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(' '));
+    });
+    const transport: MailTransport = {
+      sendMail: async () => {
+        throw new Error('Invalid login: 535-5.7.8 Username and Password not accepted');
+      },
+    };
+
+    const failure = await new SmtpMailer(() => transport)
+      .send({ ...account, ...signInCodeMail('654321', 10) })
+      .then(() => null)
+      .catch((err: unknown) => err as { status?: number; type?: string });
+
+    spy.mockRestore();
+
+    expect(failure).toMatchObject({ status: 503, type: 'email_unavailable' });
+    // The code is a live credential and the transport's message can name the
+    // account and the recipient, so neither may reach the log — only the fact
+    // that a send failed.
+    expect(logged.join('\n')).not.toContain('654321');
+    expect(logged.join('\n')).not.toContain('535-5.7.8');
+    expect(logged.join('\n')).toContain('SMTP delivery failed');
+  });
+
+  it('does not keep a connection that just failed', async () => {
+    let builds = 0;
+    let attempts = 0;
+    const transport: MailTransport = {
+      sendMail: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('socket hang up');
+        return { accepted: [] };
+      },
+    };
+    const mailer = new SmtpMailer(() => {
+      builds += 1;
+      return transport;
+    });
+
+    await expect(
+      mailer.send({ ...account, ...signInCodeMail('111111', 10) })
+    ).rejects.toMatchObject({ type: 'email_unavailable' });
+    await mailer.send({ ...account, ...signInCodeMail('222222', 10) });
+
+    // Reusing the transport that just died would fail every later sign-in until
+    // the process restarted, which is the failure a cached socket hides.
+    expect(builds).toBe(2);
+  });
+
+  it('opens the connection lazily, so an unused mailer costs nothing', () => {
+    let builds = 0;
+    new SmtpMailer(() => {
+      builds += 1;
+      return { sendMail: async () => ({ accepted: [] }) };
+    });
+
+    expect(builds).toBe(0);
   });
 });

@@ -378,9 +378,53 @@ That is enough to exercise the flow today and not enough for real users. Fixing
 it needs no code change: verify a domain in Resend, then set `EMAIL_FROM` to an
 address on it. The bucket steps live in `docs/AWS_S3_SETUP.md`.
 
-**Verified:** server typecheck clean and **200/200** tests pass (19 new),
-migration 005 applied to real Neon (11 columns, 2 indexes, 3 CHECKs, confirmed by
-querying Neon); Android **575/575** unit tests pass (4 new) and `assembleDebug`
+**Confirmed the hard way, on a real account.** An account registered with
+`osmancoder18@gmail.com` could not sign in by email, and Resend's own response
+settles what it was — a delivery-account limit, not a code path:
+
+```
+403 validation_error
+You can only send testing emails to your own email address (studymuddassir@gmail.com).
+To send emails to other recipients, please verify a domain at resend.com/domains
+```
+
+That message also exposed a defect in the **diagnostics**: every refusal logged
+the same `HTTP 403`, so a sandbox restriction, a dead key and a provider outage
+were indistinguishable in the logs. The provider's short error **name** is now
+logged (never its message, which quotes the recipient address — §38), pinned by
+three tests.
+
+### M1.2 — SMTP delivery, so a domain is not a prerequisite
+
+`EMAIL_DELIVERY_MODE=smtp` sends through an authenticated mailbox — Gmail in
+practice — via nodemailer. `SmtpMailer` takes its transport as a constructor
+argument like every other collaborator here, so the contract is tested without
+an SMTP connection: the message handed over, a failure mapped to the wordable
+`email_unavailable`, the transport **rebuilt after a failure** (a cached dead
+socket would break every later sign-in), and built **lazily** so an unused
+mailer costs nothing.
+
+Why this route exists: it needs **no domain to own**. The sender is a real
+mailbox Google signs for, so a code reaches any recipient. What it costs is
+documented rather than discovered — Google's own limits page allows **500
+recipients/day** per account, with a 1–24 hour block on exceeding it — so
+`docs/EMAIL_SETUP.md` states this is for development and a handful of testers,
+and that a verified domain is the production answer. Switching between the two
+routes is one variable; nothing else changes.
+
+Two guards came with it, both following the existing policy that a
+chosen-but-unconfigured capability should fail loudly rather than quietly:
+`EMAIL_DELIVERY_MODE=smtp` now requires `SMTP_USER` and `SMTP_PASS`, and
+`=resend` requires `RESEND_API_KEY`, both refused **at boot in production**
+rather than degrading to `email_unavailable` for every request.
+
+Also added: `docs/EMAIL_SETUP.md`, and `EMAIL_DELIVERY_MODE` in `render.yaml` is
+`sync: false` on purpose — pinning a value there would let a blueprint sync
+silently revert a working choice to one that cannot deliver.
+
+**Verified:** server typecheck clean and **210/210** tests pass, migration 005
+applied to real Neon (11 columns, 2 indexes, 3 CHECKs, confirmed by querying
+Neon); Android **575/575** unit tests pass (4 new) and `assembleDebug`
 builds.
 
 **Suites were flaky first, and the cause was real:** the default 10-second hook

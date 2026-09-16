@@ -1,3 +1,4 @@
+import nodemailer from 'nodemailer';
 import { env, isProduction } from '../env.js';
 import { serviceUnavailable } from '../http/errors.js';
 
@@ -30,7 +31,7 @@ export interface OutboundMail {
 }
 
 export interface Mailer {
-  readonly kind: 'resend' | 'console' | 'disabled';
+  readonly kind: 'resend' | 'smtp' | 'console' | 'disabled';
   send(mail: OutboundMail): Promise<void>;
 }
 
@@ -38,10 +39,101 @@ export interface Mailer {
  *  email did not add a dependency to a service that must boot on Render. */
 const RESEND_ENDPOINT = 'https://api.resend.com/emails';
 
-/** True when email sign-in can actually deliver. */
-export const emailDeliveryConfigured = Boolean(
-  env.EMAIL_DELIVERY_MODE === 'resend' && env.RESEND_API_KEY && env.EMAIL_FROM
-);
+/**
+ * True when the chosen provider has everything it needs to deliver.
+ *
+ * `EMAIL_FROM` is required either way: Resend rejects a sender on an unverified
+ * domain, and an SMTP provider rejects a From: the authenticated mailbox is not
+ * allowed to send as. Both are configuration mistakes better caught before the
+ * first sign-in attempt than during it.
+ */
+export const emailDeliveryConfigured =
+  env.EMAIL_DELIVERY_MODE === 'resend'
+    ? Boolean(env.RESEND_API_KEY && env.EMAIL_FROM)
+    : env.EMAIL_DELIVERY_MODE === 'smtp'
+      ? Boolean(env.SMTP_USER && env.SMTP_PASS && env.EMAIL_FROM)
+      : false;
+
+/**
+ * What this module needs from a transport, and no more.
+ *
+ * Narrower than nodemailer's own `Transporter` on purpose: a test can supply one
+ * without standing up SMTP, and the only things that matter here are that the
+ * message carries the right fields and that a transport failure becomes the
+ * wordable 503 rather than an unhandled rejection.
+ */
+export interface MailTransport {
+  sendMail(message: {
+    from: string;
+    to: string;
+    subject: string;
+    text: string;
+    html: string;
+  }): Promise<unknown>;
+}
+
+/** Built on first use, because a transport owns sockets and a TLS session. */
+export type MailTransportFactory = () => MailTransport;
+
+/**
+ * Gmail (or any other SMTP provider) over TLS.
+ *
+ * `secure` is derived from the port rather than trusted to a second variable
+ * that can contradict it: 465 is implicit TLS, 587 upgrades with STARTTLS, and
+ * a mismatch fails at connection time in a way that reads like a bad password.
+ */
+function smtpTransport(): MailTransport {
+  return nodemailer.createTransport({
+    host: env.SMTP_HOST,
+    port: env.SMTP_PORT,
+    secure: env.SMTP_PORT === 465,
+    auth: { user: env.SMTP_USER, pass: env.SMTP_PASS },
+    // Without a bound, a hung handshake holds the request open until Render's
+    // own timeout and the user sees nothing at all.
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
+  }) as MailTransport;
+}
+
+/**
+ * Delivery through an authenticated mailbox (Gmail's SMTP in practice).
+ *
+ * This is the route for a deployment with no sending domain to verify: the
+ * sender is a real mailbox Google signs for, so a code reaches ANY recipient.
+ * The cost is that the account's own daily send limit, and its reputation, are
+ * now the app's — which is why `docs/EMAIL_SETUP.md` says when to prefer a
+ * verified domain instead.
+ */
+export class SmtpMailer implements Mailer {
+  readonly kind = 'smtp' as const;
+
+  private transport: MailTransport | null = null;
+
+  constructor(private readonly createTransport: MailTransportFactory = smtpTransport) {}
+
+  async send(mail: OutboundMail): Promise<void> {
+    try {
+      this.transport ??= this.createTransport();
+      await this.transport.sendMail({
+        from: env.EMAIL_FROM,
+        to: mail.to,
+        subject: mail.subject,
+        text: mail.text,
+        html: mail.html,
+      });
+    } catch (err) {
+      // The transport's error can name the host, the account and sometimes the
+      // recipient, and the code is a live credential — so only the error's NAME
+      // is logged. The instance is dropped as well, because the commonest cause
+      // is a connection that went away, and a cached dead socket would fail
+      // every later sign-in too.
+      console.error('[email] SMTP delivery failed:', (err as Error).name);
+      this.transport = null;
+      throw serviceUnavailable('email_unavailable', 'Could not send the verification email.');
+    }
+  }
+}
 
 class ResendMailer implements Mailer {
   readonly kind = 'resend' as const;
@@ -164,8 +256,11 @@ export function createMailer(): Mailer {
     case 'resend':
       // Falls back to the disabled mailer if the key or sender is missing, so a
       // half-configured deployment answers 503 instead of throwing an
-      // unhandled error on the first sign-in attempt.
+      // unhandled error on the first sign-in attempt. In production the boot
+      // guard in env.ts refuses that combination outright.
       return emailDeliveryConfigured ? new ResendMailer() : new DisabledMailer();
+    case 'smtp':
+      return emailDeliveryConfigured ? new SmtpMailer() : new DisabledMailer();
     case 'console':
       return new ConsoleMailer();
     default:

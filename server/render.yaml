@@ -126,24 +126,39 @@ services:
 
       # Email sign-in — the second method for entering Good Post.
       #
-      # `resend` is set here rather than `disabled` because a half-configured
-      # deployment is already safe: src/email/sender.ts only uses Resend when
-      # BOTH the key and the sender are present, and otherwise answers
-      # `email_unavailable` on that one endpoint. So pasting the two secrets
-      # below is the whole setup — no blueprint edit needed — and nothing else
-      # can be affected either way.
+      # Two routes, and the mode is deliberately NOT pinned here: setting it in
+      # this file would let a blueprint sync silently revert a working choice
+      # back to one that cannot deliver. Set it in the dashboard.
       #
-      # Resend → Dashboard → API Keys. The sender must be on a domain verified
-      # in Resend; `onboarding@resend.dev` works only for sending to your own
-      # address, so it is not a production value.
+      #   smtp    → send through an authenticated mailbox (Gmail + an app
+      #             password). Reaches ANY recipient with no domain to own.
+      #             Costs the account's daily limit and reputation.
+      #   resend  → a provider API. Needs a sending domain VERIFIED in Resend;
+      #             `onboarding@resend.dev` only reaches your own address, which
+      #             is not a production value.
+      #   console → refused in production by src/env.ts: it writes live sign-in
+      #             codes into the process log.
+      #   disabled (default) → the endpoint answers `email_unavailable` and
+      #             everything else keeps working.
       #
-      # `console` is refused in production by src/env.ts, because it writes live
-      # sign-in codes into the process log.
+      # Whichever is chosen, a half-configured deployment is already safe:
+      # src/email/sender.ts uses the provider only when its credentials are
+      # present, and otherwise answers `email_unavailable` on that one endpoint.
+      # In production src/env.ts refuses to boot on a chosen-but-unconfigured
+      # mode, so the mistake surfaces at deploy time rather than at sign-in.
+      #
+      # Steps for both routes: docs/EMAIL_SETUP.md.
       - key: EMAIL_DELIVERY_MODE
-        value: resend
+        sync: false
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
+        sync: false
+      # Only read when EMAIL_DELIVERY_MODE=smtp. SMTP_PASS is a Gmail APP
+      # PASSWORD (16 characters), never the account password.
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASS
         sync: false
 
       # ── Non-secret tuning, safe in git ────────────────────────────────

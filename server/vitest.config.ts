@@ -36,6 +36,9 @@ export default defineConfig({
       FIREBASE_PROJECT_ID: 'clearview-test-placeholder',
       FIREBASE_CLIENT_EMAIL: 'test-placeholder@clearview-test-placeholder.iam.gserviceaccount.com',
       FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest-placeholder-not-a-real-key\n-----END PRIVATE KEY-----\n',
+      // Named rather than left empty, so the SMTP mailer's assertions are about
+      // a sender that could be wrong instead of two empty strings matching.
+      EMAIL_FROM: 'ClearView <test@example.test>',
       RATE_LIMIT_MAX: '100000',
       AUTH_RATE_LIMIT_MAX: '100000',
       // Every rule needs raising here, not just the ones that existed when

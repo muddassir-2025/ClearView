@@ -107,10 +107,28 @@ const schema = z.object({
   // deployment that has no email provider yet must keep working and answer
   // `email_unavailable` on the one endpoint that needs it — not refuse to
   // boot and take mobile sign-in down with it.
-  EMAIL_DELIVERY_MODE: z.enum(['resend', 'console', 'disabled']).default('disabled'),
+  EMAIL_DELIVERY_MODE: z.enum(['resend', 'smtp', 'console', 'disabled']).default('disabled'),
   RESEND_API_KEY: z.string().default(''),
-  /** The From: header, e.g. `ClearView <noreply@yourdomain>`. */
+  /**
+   * The From: header, e.g. `ClearView <noreply@yourdomain>`.
+   *
+   * Under `smtp` this must be the authenticated mailbox (or an alias it may send
+   * as), because the password signs in as that account — a From: the provider
+   * has not authorised is a good way to have a message rejected outright.
+   */
   EMAIL_FROM: z.string().default(''),
+  /**
+   * SMTP delivery, for a deployment with no sending domain to verify.
+   *
+   * Gmail's own SMTP is the case this exists for: the sender is a real mailbox
+   * that Google authenticates and signs for, so codes reach ANY recipient
+   * without owning a domain. `SMTP_HOST` defaults to Gmail and is overridable
+   * for any other provider.
+   */
+  SMTP_HOST: z.string().default('smtp.gmail.com'),
+  SMTP_PORT: z.coerce.number().int().positive().default(465),
+  SMTP_USER: z.string().default(''),
+  SMTP_PASS: z.string().default(''),
   EMAIL_OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
   EMAIL_OTP_MAX_SENDS_PER_HOUR: z.coerce.number().int().positive().default(5),
   EMAIL_OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
@@ -177,6 +195,17 @@ if (isProduction) {
     throw new Error(
       '[env] EMAIL_DELIVERY_MODE=console is refused in production: it writes live sign-in codes into the process log.'
     );
+  }
+  // Chosen but unconfigured is refused rather than degraded to `disabled`:
+  // silently answering `email_unavailable` to every request is exactly the
+  // failure this check turns into a one-line fix at boot.
+  if (env.EMAIL_DELIVERY_MODE === 'smtp' && (!env.SMTP_USER || !env.SMTP_PASS)) {
+    throw new Error(
+      '[env] EMAIL_DELIVERY_MODE=smtp requires SMTP_USER and SMTP_PASS (for Gmail, a 16-character app password).'
+    );
+  }
+  if (env.EMAIL_DELIVERY_MODE === 'resend' && !env.RESEND_API_KEY) {
+    throw new Error('[env] EMAIL_DELIVERY_MODE=resend requires RESEND_API_KEY.');
   }
   if (
     env.PHONE_VERIFY_MODE === 'firebase' &&
