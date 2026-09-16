@@ -12,6 +12,27 @@ enum class GoodPostError {
     /** The number is not valid E.164. */
     InvalidPhone,
 
+    /** The address is not usable as an email address. */
+    InvalidEmail,
+
+    /**
+     * The code was right, but no account uses that address.
+     *
+     * Reported plainly because it is only ever told to whoever proved control
+     * of the inbox — the server reveals nothing before the code is verified.
+     * The wording has to send the user to the mobile flow, because email
+     * sign-in opens existing accounts and never creates them (§19).
+     */
+    EmailNotRegistered,
+
+    /**
+     * This deployment cannot deliver email — no provider configured, or the
+     * provider refused the send. Distinct from [Unreachable] because retrying
+     * the same way will not help, and the user has a working alternative in
+     * their mobile number.
+     */
+    EmailUnavailable,
+
     /** §19: this mobile identity is banned from Good Post. */
     PhoneBanned,
 
@@ -26,6 +47,18 @@ enum class GoodPostError {
 
     /** The typed code was wrong. */
     InvalidCode,
+
+    /**
+     * The verification step itself is gone — the server's challenge expired
+     * (its TTL elapsed) or Firebase's verification session did.
+     *
+     * Distinct from [InvalidCode] because the remedy is different and the two
+     * must not be confused: re-typing the same digit string can never work
+     * here, so the user has to ask for a new code. Reported generically before,
+     * it read as "this number is bad", which sent people back to re-check a
+     * number that was always fine.
+     */
+    VerificationExpired,
 
     /**
      * The verifier refused the number itself, after it passed the local E.164
@@ -137,17 +170,21 @@ enum class GoodPostError {
  */
 fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "invalid_phone" -> GoodPostError.InvalidPhone
+    "invalid_email" -> GoodPostError.InvalidEmail
+    "email_not_registered" -> GoodPostError.EmailNotRegistered
+    "email_unavailable" -> GoodPostError.EmailUnavailable
     "phone_banned" -> GoodPostError.PhoneBanned
     "account_banned" -> GoodPostError.AccountBanned
     "account_suspended" -> GoodPostError.AccountSuspended
     "otp_rate_limited", "rate_limited" -> GoodPostError.RateLimited
     "otp_locked" -> GoodPostError.OtpLocked
     "invalid_code" -> GoodPostError.InvalidCode
+    "otp_required", "verification_expired" -> GoodPostError.VerificationExpired
     "invalid_phone_number" -> GoodPostError.NumberRejected
     "verification_unavailable" -> GoodPostError.VerificationUnavailable
     "sms_quota_exceeded" -> GoodPostError.SmsQuota
     "verification_failed", "invalid_id_token", "phone_unverified",
-    "wrong_sign_in_provider", "otp_required" -> GoodPostError.VerificationFailed
+    "wrong_sign_in_provider" -> GoodPostError.VerificationFailed
     "email_already_registered" -> GoodPostError.EmailTaken
     "phone_already_registered" -> GoodPostError.PhoneTaken
     "account_already_exists" -> GoodPostError.AccountExists
@@ -204,6 +241,27 @@ private val E164 = Regex("^\\+[1-9]\\d{6,14}$")
  * Spaces, dashes, dots and parentheses are stripped, because every country
  * formats numbers with them and none of them are significant.
  */
+/**
+ * Mirror of the server's email check.
+ *
+ * Deliberately as loose as the backend's, because the authoritative test of an
+ * address is that it is unique and deliverable, not that it matches a regex.
+ * Being stricter HERE would reject input the server would have accepted, which
+ * is the one failure mode a client-side check must never have.
+ *
+ * Trimmed and lowercased so the value shown back to the user matches what will
+ * actually be looked up. The server normalises regardless — this is a courtesy,
+ * never the authority.
+ */
+fun normalizeEmailInput(raw: String): String? {
+    val normalized = raw.trim().lowercase()
+    if (normalized.length > 254) return null
+    return if (EMAIL.matches(normalized)) normalized else null
+}
+
+/** The server's rule, exactly: something, an `@`, then a dotted domain. */
+private val EMAIL = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$")
+
 fun normalizePhoneInput(raw: String): String? {
     val trimmed = raw.trim()
     if (!trimmed.startsWith("+")) return null

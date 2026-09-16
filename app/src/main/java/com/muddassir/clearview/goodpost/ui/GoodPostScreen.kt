@@ -23,6 +23,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -37,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.GoodPostAuthMethod
 import com.muddassir.clearview.goodpost.GoodPostHomeViewModel
 import com.muddassir.clearview.goodpost.GoodPostPhase
 import com.muddassir.clearview.goodpost.GoodPostUiState
@@ -83,9 +87,9 @@ fun GoodPostTab(
             onAction = viewModel::refreshSession
         )
 
-        GoodPostPhase.Phone -> PhoneStep(state, viewModel, activity)
+        GoodPostPhase.Entry -> EntryStep(state, viewModel, activity)
 
-        GoodPostPhase.Code -> CodeStep(state, viewModel)
+        GoodPostPhase.Code -> CodeStep(state, viewModel, activity)
 
         GoodPostPhase.Register -> RegisterStep(state, viewModel)
 
@@ -136,45 +140,103 @@ fun GoodPostTab(
 
 // ── Steps ───────────────────────────────────────────────────────────────
 
+/**
+ * The way in: a mobile number or an email address.
+ *
+ * One composable for both because they are the same step — claim a code, then
+ * type it — and only the field differs. Two near-identical screens would be
+ * two places for the toggle, the busy state and the error line to drift apart.
+ */
 @Composable
-private fun PhoneStep(
+private fun EntryStep(
     state: GoodPostUiState,
     viewModel: GoodPostViewModel,
     activity: android.app.Activity?
 ) {
+    val byEmail = state.authMethod == GoodPostAuthMethod.Email
+
     Step(
-        title = stringResource(R.string.goodpost_phone_title),
-        note = stringResource(R.string.goodpost_phone_note),
+        title = stringResource(
+            if (byEmail) R.string.goodpost_email_title else R.string.goodpost_phone_title
+        ),
+        note = stringResource(
+            if (byEmail) R.string.goodpost_email_note else R.string.goodpost_phone_note
+        ),
         error = state.messageCode,
-        busy = state.busy
+        busy = state.busy,
+        // The toggle sits above the title's block, so switching methods reads as
+        // changing the question rather than navigating away from it.
+        header = { MethodToggle(state.authMethod, viewModel::onAuthMethodChange) }
     ) {
-        OutlinedTextField(
-            value = state.phone,
-            onValueChange = viewModel::onPhoneChange,
-            label = { Text(stringResource(R.string.goodpost_phone_label)) },
-            placeholder = { Text(stringResource(R.string.goodpost_phone_placeholder)) },
-            singleLine = true,
-            enabled = !state.busy,
-            keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Phone,
-                imeAction = ImeAction.Done
-            ),
-            keyboardActions = KeyboardActions(
-                onDone = { activity?.let(viewModel::startVerification) }
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (byEmail) {
+            OutlinedTextField(
+                value = state.signInEmail,
+                onValueChange = viewModel::onSignInEmailChange,
+                label = { Text(stringResource(R.string.goodpost_signin_email_label)) },
+                placeholder = { Text(stringResource(R.string.goodpost_signin_email_placeholder)) },
+                singleLine = true,
+                enabled = !state.busy,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { if (!state.busy) viewModel.startEmailVerification() }
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            OutlinedTextField(
+                value = state.phone,
+                onValueChange = viewModel::onPhoneChange,
+                label = { Text(stringResource(R.string.goodpost_phone_label)) },
+                placeholder = { Text(stringResource(R.string.goodpost_phone_placeholder)) },
+                singleLine = true,
+                enabled = !state.busy,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Phone,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { activity?.let(viewModel::startVerification) }
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
 
         Spacer(Modifier.height(16.dp))
 
-        Button(
-            onClick = { activity?.let(viewModel::startVerification) },
-            // Firebase needs a host Activity for reCAPTCHA; without one the
-            // request would fail deep inside the SDK, so block it here.
-            enabled = !state.busy && activity != null && state.phone.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(stringResource(R.string.goodpost_send_code))
+        if (byEmail) {
+            Button(
+                onClick = viewModel::startEmailVerification,
+                enabled = !state.busy && state.signInEmail.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.goodpost_send_code_email))
+            }
+        } else {
+            Button(
+                onClick = { activity?.let(viewModel::startVerification) },
+                // Firebase needs a host Activity for reCAPTCHA; without one the
+                // request would fail deep inside the SDK, so block it here.
+                enabled = !state.busy && activity != null && state.phone.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.goodpost_send_code))
+            }
+        }
+
+        if (byEmail) {
+            Spacer(Modifier.height(12.dp))
+            // Stated up front rather than after a failed code: an address on its
+            // own cannot create an account (§19), and finding that out only
+            // after requesting a code wastes the trip — and risks the user
+            // concluding the app is broken.
+            Text(
+                text = stringResource(R.string.goodpost_email_only_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         Spacer(Modifier.height(12.dp))
@@ -183,11 +245,45 @@ private fun PhoneStep(
     }
 }
 
+/** Two ways in, one selected. Matches the tab switcher's existing idiom. */
 @Composable
-private fun CodeStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+private fun MethodToggle(
+    selected: GoodPostAuthMethod,
+    onSelect: (GoodPostAuthMethod) -> Unit
+) {
+    val methods = listOf(
+        GoodPostAuthMethod.Mobile to stringResource(R.string.goodpost_method_mobile),
+        GoodPostAuthMethod.Email to stringResource(R.string.goodpost_method_email)
+    )
+
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+        methods.forEachIndexed { index, (method, label) ->
+            SegmentedButton(
+                selected = selected == method,
+                onClick = { onSelect(method) },
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = methods.size)
+            ) {
+                Text(label)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CodeStep(
+    state: GoodPostUiState,
+    viewModel: GoodPostViewModel,
+    activity: android.app.Activity?
+) {
     Step(
         title = stringResource(R.string.goodpost_code_title),
-        note = stringResource(R.string.goodpost_code_note, state.phone),
+        // "Sent to …" must name whichever channel was actually used — showing
+        // the mobile number to someone who asked for an email would be a
+        // plausible-looking line about the wrong thing.
+        note = stringResource(
+            R.string.goodpost_code_note,
+            if (state.authMethod == GoodPostAuthMethod.Email) state.signInEmail else state.phone
+        ),
         error = state.messageCode,
         busy = state.busy
     ) {
@@ -217,8 +313,24 @@ private fun CodeStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
 
         Spacer(Modifier.height(8.dp))
 
+        // A new code is a first-class action, not a detour.
+        //
+        // Without it the only way out was "use a different number", which
+        // reads as "your number is wrong" — while the actual reason a code can
+        // stop working is that the verification it belongs to expired. Asking
+        // again from here re-claims a challenge and restarts Firebase, which is
+        // exactly the remedy, and it keeps the typed number instead of making
+        // the user re-enter it.
         TextButton(
-            onClick = viewModel::backToPhone,
+            onClick = { activity?.let(viewModel::startVerification) },
+            enabled = !state.busy && activity != null,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(stringResource(R.string.goodpost_resend_code))
+        }
+
+        TextButton(
+            onClick = viewModel::backToEntry,
             enabled = !state.busy,
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -278,13 +390,20 @@ private fun RegisterStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
 
 // ── Building blocks ─────────────────────────────────────────────────────
 
-/** Scrollable title / note / content / error column shared by every step. */
+/**
+ * Scrollable title / note / content / error column shared by every step.
+ *
+ * [header] is optional content drawn above the title block — currently only the
+ * method toggle, which belongs above the question it changes rather than
+ * buried between the explanation and the field.
+ */
 @Composable
 private fun Step(
     title: String,
     note: String,
     error: String?,
     busy: Boolean,
+    header: (@Composable () -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     Column(
@@ -293,6 +412,11 @@ private fun Step(
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 24.dp)
     ) {
+        if (header != null) {
+            header()
+            Spacer(Modifier.height(20.dp))
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 Icons.Filled.Campaign,

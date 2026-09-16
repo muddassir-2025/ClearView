@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.muddassir.clearview.goodpost.data.AuthResult
+import com.muddassir.clearview.goodpost.data.EmailStartResult
 import com.muddassir.clearview.goodpost.data.GoodPostAccount
 import com.muddassir.clearview.goodpost.data.GoodPostAuthRepository
 import com.muddassir.clearview.goodpost.data.StartResult
@@ -20,14 +21,32 @@ import kotlinx.coroutines.launch
  * impossible combination ("showing the code field with no verification id")
  * cannot be represented, and so the gate has one obvious place to be right.
  */
-enum class GoodPostPhase { Checking, Phone, Code, Register, SignedIn, NotConfigured }
+enum class GoodPostPhase { Checking, Entry, Code, Register, SignedIn, NotConfigured }
+
+/**
+ * How the user proves who they are (§2).
+ *
+ * Two ways in, one account. The mobile number is still the identity §19
+ * anchors bans on; the email address is a second door into an account that
+ * already exists, never a way to create one.
+ */
+enum class GoodPostAuthMethod { Mobile, Email }
 
 data class GoodPostUiState(
     val phase: GoodPostPhase = GoodPostPhase.Checking,
+    val authMethod: GoodPostAuthMethod = GoodPostAuthMethod.Mobile,
     val phone: String = "",
     val code: String = "",
     val displayName: String = "",
+    /** The address collected at REGISTRATION. Never the sign-in address. */
     val email: String = "",
+    /**
+     * The address used to SIGN IN, kept apart from [email] deliberately:
+     * sharing one field would let a value typed during registration reappear in
+     * the sign-in box (and the reverse), and the two are different questions
+     * asked at different times.
+     */
+    val signInEmail: String = "",
     val account: GoodPostAccount? = null,
     /** Set when a session exists but the server could not be reached (§36). */
     val offline: Boolean = false,
@@ -106,7 +125,7 @@ class GoodPostViewModel : ViewModel() {
                     offline = true
                 )
 
-                else -> uiState.copy(phase = GoodPostPhase.Phone, account = null)
+                else -> uiState.copy(phase = GoodPostPhase.Entry, account = null)
             }
         }
     }
@@ -121,6 +140,30 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(code = value, messageCode = null)
     }
 
+    fun onSignInEmailChange(value: String) {
+        uiState = uiState.copy(signInEmail = value, messageCode = null)
+    }
+
+    /**
+     * Switch which way the user is signing in.
+     *
+     * Clears the typed code and any message, and nothing else: a half-typed
+     * number or address is kept, so looking at the other option does not throw
+     * away what they already entered. A code must go, though — the digits typed
+     * for an SMS mean nothing against an email challenge, and the server would
+     * reject them anyway.
+     */
+    fun onAuthMethodChange(method: GoodPostAuthMethod) {
+        if (method == uiState.authMethod) return
+        verificationId = null
+        uiState = uiState.copy(
+            authMethod = method,
+            code = "",
+            messageCode = null,
+            busy = false
+        )
+    }
+
     fun onDisplayNameChange(value: String) {
         uiState = uiState.copy(displayName = value, messageCode = null)
     }
@@ -129,11 +172,12 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(email = value, messageCode = null)
     }
 
-    fun backToPhone() {
+    /** Back to the choice of method — the entry step, not necessarily the phone. */
+    fun backToEntry() {
         verificationId = null
         pendingIdToken = null
         uiState = uiState.copy(
-            phase = GoodPostPhase.Phone,
+            phase = GoodPostPhase.Entry,
             code = "",
             messageCode = null,
             busy = false
@@ -147,6 +191,11 @@ class GoodPostViewModel : ViewModel() {
      * when Play Integrity cannot confirm the app.
      */
     fun startVerification(activity: Activity) {
+        if (uiState.authMethod == GoodPostAuthMethod.Email) {
+            startEmailVerification()
+            return
+        }
+
         val repo = repository ?: return
         val phone = normalizePhoneInput(uiState.phone)
         if (phone == null) {
@@ -178,17 +227,64 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
-    /** Step 2. */
+    /**
+     * Step 1 by email: claim the allowance and have the server deliver a code.
+     *
+     * Nothing is known about whether the address has an account, and nothing
+     * may be assumed: the endpoint answers the same way either way, so the UI
+     * cannot and must not treat this success as "that email is registered".
+     */
+    fun startEmailVerification() {
+        val repo = repository ?: return
+        val email = normalizeEmailInput(uiState.signInEmail)
+        if (email == null) {
+            uiState = uiState.copy(messageCode = "invalid_email")
+            return
+        }
+
+        viewModelScope.launch {
+            uiState = uiState.copy(busy = true, messageCode = null, signInEmail = email)
+
+            when (val result = repo.startEmailVerification(email)) {
+                // No verification id to keep: the server holds the challenge.
+                is EmailStartResult.Sent -> uiState = uiState.copy(
+                    phase = GoodPostPhase.Code,
+                    code = "",
+                    busy = false,
+                    messageCode = null
+                )
+
+                is EmailStartResult.Failed ->
+                    uiState = uiState.copy(busy = false, messageCode = result.code)
+            }
+        }
+    }
+
+    /** Step 2, for whichever method is in play. */
     fun submitCode() {
         val repo = repository ?: return
+        if (uiState.code.isBlank()) return
+
+        if (uiState.authMethod == GoodPostAuthMethod.Email) {
+            val email = normalizeEmailInput(uiState.signInEmail)
+            if (email == null) {
+                uiState = uiState.copy(messageCode = "invalid_email")
+                return
+            }
+            viewModelScope.launch {
+                uiState = uiState.copy(busy = true, messageCode = null)
+                applyAuth(repo.submitEmailCode(email, uiState.code))
+            }
+            return
+        }
+
         val id = verificationId
         if (id == null) {
             // The process was recreated, or the user navigated back. Restart
             // the flow rather than sending a credential request with no id.
-            backToPhone()
+            backToEntry()
             return
         }
-        if (uiState.code.isBlank()) return
 
         viewModelScope.launch {
             uiState = uiState.copy(busy = true, messageCode = null)
@@ -201,7 +297,7 @@ class GoodPostViewModel : ViewModel() {
         val repo = repository ?: return
         val idToken = pendingIdToken
         if (idToken == null) {
-            backToPhone()
+            backToEntry()
             return
         }
         if (uiState.displayName.isBlank() || uiState.email.isBlank()) {
@@ -230,7 +326,7 @@ class GoodPostViewModel : ViewModel() {
             verificationId = null
             pendingIdToken = null
             uiState = GoodPostUiState(
-                phase = GoodPostPhase.Phone,
+                phase = GoodPostPhase.Entry,
                 phone = "",
                 account = null
             )

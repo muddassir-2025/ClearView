@@ -222,6 +222,79 @@ Android: composer, Posts view, image/video/audio rendering, manual download.
 text post needs no bucket. **The M3 backend is not deployed yet**: the live
 Render service is still the M2 commit, so the new routes 404 until it is pushed.
 
+### M1.1 — Email sign-in, and a defect found on a real device
+
+**A sign-in defect, and how it was actually found.** Signing in with a number
+registered in the Firebase console as a *test number* showed "We could not
+confirm that number. Try again." after the correct code had been typed. The
+number, the code and the app were all fine.
+
+It was proved rather than guessed, with a control experiment: a genuine Firebase
+phone ID token was minted through Google's own REST API for that test number,
+then the **same token** was offered to two verifiers.
+
+| | Result |
+|---|---|
+| Local verifier, real service account | accepted — phone `***1063` |
+| Deployed `/auth/signin`, identical token | `401 invalid_id_token` |
+
+So the **deployed** Firebase Admin credentials are wrong or malformed, and the
+backend blamed the user's token. Two defects made that unreadable:
+
+1. `getFirebaseAdminApp()` sat *inside* the `try` that maps every failure to
+   `invalid_id_token`. A misconfigured service account — which breaks every
+   sign-in identically — reported itself as the user's bad credential. Init is
+   now separate and answers **503 `auth_unavailable`**, and both paths log their
+   Firebase error code (never the token, never the SDK's message, which can echo
+   claims back). `tests/firebase.test.ts` guards it, with an assertion that the
+   injected app getter was actually called — otherwise the same 503 would arrive
+   from the "not configured" branch and the test would prove nothing.
+2. The client never logged the backend's reason. It now logs
+   `Backend refused sign-in: invalid_id_token (http=401)`, which is the line that
+   was missing.
+
+Also fixed, because an expired verification had no way out: `otp_required` and
+Firebase's `session-expired` were folded into generic wording that blamed the
+number, and the only escape was "use a different number". They now say **"This
+verification expired. Send a new code and try again."** and the code step has a
+*Send a new code* action.
+
+**Email sign-in (§2, second method).** `migrations/005_email_signin.sql`
+(`email_verifications`), `src/email/sender.ts`, `src/auth/email.ts`,
+`POST /api/v1/auth/email/otp` and `/email/signin`.
+
+- **Sign-in only.** It never creates an account. §19 anchors the abuse identity
+  on the mobile number, so an address that could register would hand every banned
+  user a one-step bypass; there is no endpoint that registers from an email, and
+  a test asserts that no account or session can result from the flow.
+- Codes are **HMACs at rest**, compared in constant time, with an hourly send
+  allowance, a per-challenge attempt limit and a TTL. Attempt counts are written
+  **outside** the transaction that throws, or the limit would be unreachable —
+  the same trap the phone flow documents.
+- Requesting a code answers **identically whether or not the address has an
+  account**. `email_not_registered` is told only after the code is verified,
+  which is what proves control of the inbox.
+- A delivery failure **deletes the challenge** and answers `email_unavailable`,
+  rather than leaving a code the user will never receive to burn their allowance.
+- The provider is behind a `Mailer` interface (§44) and called over `fetch`, so
+  email added no dependency. `EMAIL_DELIVERY_MODE=console` exists for local work
+  and is **refused at boot in production**, because it writes live codes to the
+  log.
+- Android: a Mobile/Email toggle on the entry step, its own `signInEmail` field
+  (sharing the registration field would let a value cross between the two
+  flows), and the code step naming whichever channel was used.
+
+**Verified:** server typecheck clean and **200/200** tests pass (19 new),
+migration 005 applied to real Neon (11 columns, 2 indexes, 3 CHECKs, confirmed by
+querying Neon); Android **575/575** unit tests pass (4 new) and `assembleDebug`
+builds.
+
+**Suites were flaky first, and the cause was real:** the default 10-second hook
+timeout equals the time five migrations take against PGlite, so under parallel
+load a file's `beforeAll` failed and vitest reported the file's tests as
+*skipped* — a green-looking suite that hides failures. `hookTimeout` is now
+60s and the suite was run three times consecutively to confirm stability.
+
 ### M4 — Engagement
 Reactions (aggregate only), polls (single/multi, aggregate results only),
 post views with **per-user-per-post dedupe** so scrolling cannot inflate

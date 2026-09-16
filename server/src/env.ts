@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
 
 // Only zod primitives that behave identically across zod 3 and 4 are used
@@ -102,6 +102,19 @@ const schema = z.object({
     .transform((v) => v.replace(/\\n/g, '\n')),
   FCM_ENABLED: bool.default(true),
 
+  // ── Email delivery (email sign-in codes) ──
+  // 'disabled' by default on purpose. Email sign-in is an ADDITION, so a
+  // deployment that has no email provider yet must keep working and answer
+  // `email_unavailable` on the one endpoint that needs it — not refuse to
+  // boot and take mobile sign-in down with it.
+  EMAIL_DELIVERY_MODE: z.enum(['resend', 'console', 'disabled']).default('disabled'),
+  RESEND_API_KEY: z.string().default(''),
+  /** The From: header, e.g. `ClearView <noreply@yourdomain>`. */
+  EMAIL_FROM: z.string().default(''),
+  EMAIL_OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
+  EMAIL_OTP_MAX_SENDS_PER_HOUR: z.coerce.number().int().positive().default(5),
+  EMAIL_OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+
   // ── Retention job ──
   RETENTION_CRON: z.string().default('*/30 * * * *'),
   RETENTION_JOB_ENABLED: bool.default(true),
@@ -160,6 +173,11 @@ if (isProduction) {
       '[env] BAN_PHONE_ENFORCED=false is refused in production: bans on a mobile identity would not be enforced (§19).'
     );
   }
+  if (env.EMAIL_DELIVERY_MODE === 'console') {
+    throw new Error(
+      '[env] EMAIL_DELIVERY_MODE=console is refused in production: it writes live sign-in codes into the process log.'
+    );
+  }
   if (
     env.PHONE_VERIFY_MODE === 'firebase' &&
     (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY)
@@ -198,6 +216,21 @@ export const s3Configured = Boolean(env.AWS_S3_BUCKET) &&
 export function hashPhone(e164: string): string {
   return createHash('sha256')
     .update(`${env.PHONE_HASH_PEPPER}:${e164}`)
+    .digest('hex');
+}
+
+/**
+ * HMAC of an email sign-in code — the only form that is ever stored.
+ *
+ * HMAC rather than a bare digest, and the address mixed into the input, for two
+ * reasons that both matter here: a 6-digit code has only a million possible
+ * values, so an unsalted digest in a leaked dump would be reversed from a
+ * precomputed table in seconds; and the same code sent to two different
+ * addresses must not produce the same stored value.
+ */
+export function hashEmailCode(emailNormalized: string, code: string): string {
+  return createHmac('sha256', env.PHONE_HASH_PEPPER)
+    .update(`email-otp:${emailNormalized}:${code}`)
     .digest('hex');
 }
 

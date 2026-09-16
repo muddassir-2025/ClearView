@@ -64,6 +64,39 @@ class GoodPostAuthLogicTest {
         assertNull(normalizePhoneInput("+abc"))
     }
 
+    // ── normalizeEmailInput ─────────────────────────────────────────────
+
+    @Test
+    fun `accepts and canonicalises an email address`() {
+        assertEquals("ayesha@example.com", normalizeEmailInput("ayesha@example.com"))
+        assertEquals("ayesha@example.com", normalizeEmailInput("  Ayesha@Example.COM  "))
+        // Addresses the SERVER accepts must never be rejected here. A stricter
+        // client check is the one bug this function can have: it blocks input
+        // the backend would have taken.
+        assertEquals("first.last+tag@sub.domain.co.uk", normalizeEmailInput("first.last+tag@sub.domain.co.uk"))
+        assertEquals("a@b.co", normalizeEmailInput("a@b.co"))
+    }
+
+    @Test
+    fun `refuses input that is not an address`() {
+        assertNull(normalizeEmailInput(""))
+        assertNull(normalizeEmailInput("   "))
+        assertNull(normalizeEmailInput("ayesha"))
+        assertNull(normalizeEmailInput("ayesha@"))
+        assertNull(normalizeEmailInput("@example.com"))
+        // No dot in the domain: the server's rule requires one, so this is a
+        // request that would be refused anyway — better said now.
+        assertNull(normalizeEmailInput("ayesha@example"))
+        assertNull(normalizeEmailInput("two addresses@example.com a@b.co"))
+        assertNull(normalizeEmailInput("a b@example.com"))
+    }
+
+    @Test
+    fun `refuses an address longer than the column allows`() {
+        val local = "a".repeat(250)
+        assertNull(normalizeEmailInput("$local@example.com"))
+    }
+
     // ── goodPostErrorFor ────────────────────────────────────────────────
 
     @Test
@@ -122,10 +155,54 @@ class GoodPostAuthLogicTest {
 
     @Test
     fun `treats a challenge failure as needing another verification`() {
-        // `otp_required` means the server has no live challenge, so the only
-        // useful instruction is to start the verification again.
-        assertEquals(GoodPostError.VerificationFailed, goodPostErrorFor("otp_required"))
+        // `otp_required` means the server has no LIVE challenge: it expired, or
+        // it was already spent. Re-typing the same digits can never work, so the
+        // instruction has to be "ask for a new code" — a different sentence from
+        // "we could not confirm that number", which is what it used to say.
+        assertEquals(GoodPostError.VerificationExpired, goodPostErrorFor("otp_required"))
+        // Firebase reports its own expired verification session separately; it
+        // must land on the same instruction, not a generic one.
+        assertEquals(GoodPostError.VerificationExpired, goodPostErrorFor("verification_expired"))
+
+        // Distinct from the three things it was previously flattened into. The
+        // wording is what decides which control the user reaches for.
+        assertNotEquals(GoodPostError.InvalidCode, goodPostErrorFor("otp_required"))
+        assertNotEquals(GoodPostError.NumberRejected, goodPostErrorFor("otp_required"))
+        assertNotEquals(GoodPostError.VerificationFailed, goodPostErrorFor("otp_required"))
+
+        // A token the server could not verify is NOT an expired challenge: the
+        // remedy there is to retry, not to re-verify the number.
         assertEquals(GoodPostError.VerificationFailed, goodPostErrorFor("invalid_id_token"))
+    }
+
+    @Test
+    fun `keeps the two sign-in methods' failures distinct`() {
+        // Email sign-in is sign-in only (§19): the address opens an account and
+        // can never create one. "No account uses that email" therefore has to
+        // point at the mobile flow rather than read as a generic refusal, or the
+        // user retries the same address forever.
+        assertEquals(GoodPostError.EmailNotRegistered, goodPostErrorFor("email_not_registered"))
+        assertNotEquals(GoodPostError.VerificationFailed, goodPostErrorFor("email_not_registered"))
+        assertNotEquals(GoodPostError.InvalidCode, goodPostErrorFor("email_not_registered"))
+
+        assertEquals(GoodPostError.InvalidEmail, goodPostErrorFor("invalid_email"))
+
+        // Being unable to send mail is not the same as being offline: retrying
+        // identically will not help, and the user has a working alternative.
+        assertEquals(GoodPostError.EmailUnavailable, goodPostErrorFor("email_unavailable"))
+        assertNotEquals(GoodPostError.Unreachable, goodPostErrorFor("email_unavailable"))
+    }
+
+    @Test
+    fun `does not blame the user for a capability the server does not have`() {
+        // `auth_unavailable` is now what the backend returns when Firebase
+        // Admin cannot even be initialised — a deployment or credential
+        // problem. It must stay in the server-error family: wording it as an
+        // unverifiable number sends the user through the same loop forever,
+        // and that is exactly how a broken service account stays unnoticed.
+        assertEquals(GoodPostError.ServerError, goodPostErrorFor("auth_unavailable"))
+        assertNotEquals(GoodPostError.VerificationFailed, goodPostErrorFor("auth_unavailable"))
+        assertNotEquals(GoodPostError.NumberRejected, goodPostErrorFor("auth_unavailable"))
     }
 
     @Test

@@ -633,6 +633,14 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_not_configured_note">No backend URL is configured, so sign-in cannot work. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
     <string name="goodpost_retry">Retry</string>
     <string name="goodpost_phone_title">Your mobile number</string>
+    <string name="goodpost_method_mobile">Mobile number</string>
+    <string name="goodpost_method_email">Email</string>
+    <string name="goodpost_email_title">Enter your email</string>
+    <string name="goodpost_email_note">We\'ll email a code to confirm it. Use the address you registered with.</string>
+    <string name="goodpost_signin_email_label">Email address</string>
+    <string name="goodpost_signin_email_placeholder">you@example.com</string>
+    <string name="goodpost_send_code_email">Email me a code</string>
+    <string name="goodpost_email_only_note">Email sign-in opens the account you already have. Creating one needs a mobile number.</string>
     <string name="goodpost_phone_note">We\'ll text a code to confirm it. Include the country code.</string>
     <string name="goodpost_phone_label">Mobile number</string>
     <string name="goodpost_phone_placeholder">+923001234567</string>
@@ -641,6 +649,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_code_note">Sent to %1$s</string>
     <string name="goodpost_code_label">Verification code</string>
     <string name="goodpost_verify">Verify</string>
+    <string name="goodpost_resend_code">Send a new code</string>
     <string name="goodpost_change_number">Use a different number</string>
     <string name="goodpost_register_title">Create your account</string>
     <string name="goodpost_register_note">Your number is confirmed. Add a name and email — neither is ever shown to other Good Post users.</string>
@@ -654,12 +663,16 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_privacy_note">Your number and email stay private. Other Good Post users never see them — only your name.</string>
 
     <string name="goodpost_error_invalid_phone">Enter the number in international format, starting with + and the country code.</string>
+    <string name="goodpost_error_invalid_email">Enter a valid email address.</string>
+    <string name="goodpost_error_email_not_registered">No Good Post account uses that email address. Create one with your mobile number, then sign in here.</string>
+    <string name="goodpost_error_email_unavailable">Email sign-in is unavailable right now. Use your mobile number instead.</string>
     <string name="goodpost_error_phone_banned">This mobile number is blocked from Good Post.</string>
     <string name="goodpost_error_account_banned">This account has been permanently banned, so you cannot sign in to Good Post.</string>
     <string name="goodpost_error_account_suspended">This account is suspended. Contact support if you think this is a mistake.</string>
     <string name="goodpost_error_rate_limited">Too many codes requested for this number. Try again in about an hour.</string>
     <string name="goodpost_error_otp_locked">Too many failed attempts. Request a new code later.</string>
     <string name="goodpost_error_invalid_code">That code is not correct. Check the message and try again.</string>
+    <string name="goodpost_error_verification_expired">This verification expired. Send a new code and try again.</string>
     <string name="goodpost_error_number_rejected">That number could not be verified. Check the country code and digits, then try again.</string>
     <string name="goodpost_error_verification_unavailable">Verification codes cannot be sent right now. Please try again later.</string>
     <string name="goodpost_error_sms_quota">This device has hit the limit for verification codes. Try again later.</string>

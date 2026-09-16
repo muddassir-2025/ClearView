@@ -32,6 +32,22 @@ sealed interface StartResult {
     data class Failed(val code: String) : StartResult
 }
 
+/**
+ * Outcome of asking for an emailed code.
+ *
+ * A separate type from [StartResult] rather than two more variants on it: an
+ * emailed code has no verification id and can never be auto-verified, because
+ * the server holds the whole challenge. Sharing one type would put two
+ * unreachable branches in front of every caller and invite a caller to read a
+ * variant that cannot arrive.
+ */
+sealed interface EmailStartResult {
+    /** The code is on its way. Says nothing about whether an account exists. */
+    object Sent : EmailStartResult
+
+    data class Failed(val code: String) : EmailStartResult
+}
+
 /** Outcome of exchanging a credential for a Good Post session. */
 sealed interface AuthResult {
     data class SignedIn(val session: GoodPostSession) : AuthResult
@@ -108,7 +124,13 @@ class GoodPostAuthRepository(
 
         when (val otp = api.requestOtp(phoneE164, PURPOSE_SIGN_IN)) {
             is ApiResult.Ok -> Unit
-            is ApiResult.Failed -> return StartResult.Failed(otp.code)
+            is ApiResult.Failed -> {
+                // Logged because the screen shows only wording: a refusal here
+                // (banned, throttled, expired) is otherwise indistinguishable
+                // from a request that never arrived.
+                Log.w(TAG, "OTP request refused: ${otp.code}")
+                return StartResult.Failed(otp.code)
+            }
             ApiResult.Unreachable -> return StartResult.Failed("unreachable")
         }
 
@@ -198,6 +220,12 @@ class GoodPostAuthRepository(
                 if (result.code == "account_not_found") {
                     AuthResult.NeedsRegistration(idToken)
                 } else {
+                    // The single most valuable line in this class when
+                    // something is wrong: it is the ONLY place the server's
+                    // own reason (`invalid_id_token`, `auth_unavailable`,
+                    // `phone_unverified`, …) is recorded. Without it the user
+                    // sees generic wording and every cause looks identical.
+                    Log.w(TAG, "Backend refused sign-in: ${result.code} (http=${result.status})")
                     AuthResult.Failed(result.code)
                 }
             ApiResult.Unreachable -> AuthResult.Failed("unreachable")
@@ -231,6 +259,51 @@ class GoodPostAuthRepository(
             ApiResult.Unreachable -> AuthResult.Failed("unreachable")
         }
     }
+
+    // ── Email sign-in (§2 second method) ─────────────────────────────────
+
+    /**
+     * Claim an email allowance, then let the server deliver the code.
+     *
+     * Note what is NOT here: no verification id, and no local knowledge of the
+     * code. With a phone number Firebase holds the challenge and hands us an id
+     * to submit against; with email the server owns the whole exchange, so the
+     * client's only job is to carry the address and then the digits.
+     */
+    suspend fun startEmailVerification(email: String): EmailStartResult {
+        if (!api.isConfigured) return EmailStartResult.Failed("not_configured")
+
+        return when (val result = api.requestEmailOtp(email)) {
+            is ApiResult.Ok -> EmailStartResult.Sent
+            is ApiResult.Failed -> {
+                Log.w(TAG, "Email OTP request refused: ${result.code}")
+                EmailStartResult.Failed(result.code)
+            }
+            ApiResult.Unreachable -> EmailStartResult.Failed("unreachable")
+        }
+    }
+
+    /**
+     * Exchange an emailed code for a session.
+     *
+     * Always signs in or fails — it can never answer [AuthResult.NeedsRegistration],
+     * and that is a property of the design rather than an omission: §19 makes
+     * the mobile number the abuse identity, so an email address may open an
+     * existing account and may never create one. The server has no endpoint
+     * that would register from an address, so neither does this client.
+     */
+    suspend fun submitEmailCode(email: String, code: String): AuthResult =
+        when (val result = api.emailSignIn(email, code.trim(), DEVICE_LABEL)) {
+            is ApiResult.Ok -> persist(result.value)
+            is ApiResult.Failed -> {
+                // Logged for the same reason as the phone path: the UI shows
+                // wording, and the code is the only thing that says which of
+                // half a dozen causes it actually was.
+                Log.w(TAG, "Backend refused email sign-in: ${result.code} (http=${result.status})")
+                AuthResult.Failed(result.code)
+            }
+            ApiResult.Unreachable -> AuthResult.Failed("unreachable")
+        }
 
     // ── Session lifecycle ───────────────────────────────────────────────
 
@@ -319,16 +392,55 @@ class GoodPostAuthRepository(
         val token = firebaseAuth.currentUser?.getIdToken(false)?.await()?.token
         if (token.isNullOrBlank()) SignInResult.Failed("verification_failed")
         else SignInResult.Verified(token)
-    } catch (e: FirebaseAuthInvalidCredentialsException) {
-        // Reachable only here, where the credential was built from a typed
-        // code, so a wrong code is the overwhelmingly common cause and asking
-        // for it again is the remedy. The number-entry phase reads this same
-        // exception class as an unusable NUMBER; see [classifyStartFailure].
-        Log.w(TAG, "Firebase rejected the credential")
-        SignInResult.Failed("invalid_code")
+    } catch (e: FirebaseException) {
+        val code = errorCodeOf(e)
+        val mapped = classifyCodeFailure(e, code)
+        // The same shape as the number-entry log, and for the same reason: a
+        // failure that only says "could not confirm" cannot be told apart from
+        // a broken deployment without the code, and this is the phase where an
+        // unexplained refusal costs the user the most.
+        Log.w(
+            TAG,
+            "Firebase sign-in failed: ${e.javaClass.simpleName} " +
+                "code=${code ?: "none"} -> $mapped"
+        )
+        SignInResult.Failed(mapped)
     } catch (e: Exception) {
         Log.w(TAG, "Firebase sign-in failed: ${e.javaClass.simpleName}")
         SignInResult.Failed("verification_failed")
+    }
+
+    /**
+     * Turn a failure from the CODE-ENTRY phase into a code the UI can word.
+     *
+     * The counterpart of [classifyStartFailure], read the same way: the PHASE
+     * decides what an exception means. There, no code existed yet, so a
+     * credentials failure could only be a bad number. Here a code did exist, so
+     * the same exception means the code was wrong — unless Firebase reports the
+     * verification session itself expired, in which case no digit string could
+     * ever be accepted and the only remedy is a new code.
+     *
+     * That case is why the code is consulted before the type. Firebase returns
+     * `ERROR_SESSION_EXPIRED` (and the rejected-code case)
+     * as a plain [FirebaseAuthException], and a type-only mapping dropped it
+     * into a generic failure whose wording blames the number — the exact
+     * dead end this exists to prevent.
+     */
+    private fun classifyCodeFailure(exception: FirebaseException, code: String?): String = when {
+        code == null ->
+            if (exception is FirebaseAuthInvalidCredentialsException) "invalid_code"
+            else "verification_failed"
+
+        code.contains("session-expired") -> "verification_expired"
+        code.contains("invalid-verification-code") -> "invalid_code"
+        code.contains("too-many-requests") -> "rate_limited"
+        code.contains("quota") -> "sms_quota_exceeded"
+
+        // The type is the fallback, not the decider: in this phase a
+        // credentials failure means the code rather than the number.
+        else ->
+            if (exception is FirebaseAuthInvalidCredentialsException) "invalid_code"
+            else "verification_failed"
     }
 
     /** What [signInForToken] learned, carrying why a failure failed. */

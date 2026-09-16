@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { hashIp } from '../env.js';
 import type { Queryable } from '../db.js';
 import { parseBody } from '../http/validate.js';
+import { createMailer, type Mailer } from '../email/sender.js';
+import { emailSignIn, requestEmailOtp } from './email.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './firebase.js';
 import { authOf, requireAuth } from './middleware.js';
 import {
@@ -46,6 +48,20 @@ const SignInSchema = z.object({
   idToken: z.string().min(16).max(8192),
 });
 
+const EmailOtpSchema = z.object({
+  email: z.string().min(3).max(254),
+});
+
+/**
+ * The code is bounded loosely on purpose: the digit count is the server's
+ * business, and rejecting a pasted `"123 456"` here would be a validation
+ * error the user cannot act on. `emailSignIn` strips non-digits and compares.
+ */
+const EmailSignInSchema = z.object({
+  email: z.string().min(3).max(254),
+  code: z.string().min(4).max(12),
+});
+
 const RefreshSchema = z.object({
   refreshToken: z.string().min(16).max(512),
 });
@@ -72,7 +88,12 @@ function deviceLabelOf(headerValue: string | undefined): string | null {
 
 export function buildAuthRouter(
   database: Queryable,
-  verifier: PhoneIdentityVerifier = createPhoneVerifier()
+  verifier: PhoneIdentityVerifier = createPhoneVerifier(),
+  /**
+   * Injected like [verifier], so the email flow can be exercised without a
+   * provider account and without a single message leaving the process.
+   */
+  mailer: Mailer = createMailer()
 ): Router {
   const router = Router();
   const requireSession = requireAuth(database);
@@ -112,6 +133,30 @@ export function buildAuthRouter(
   router.post('/signin', async (req, res) => {
     const body = parseBody(SignInSchema, req.body);
     const session = await signIn(database, verifier, {
+      ...body,
+      ...clientContext(req),
+    });
+    res.status(200).json(session);
+  });
+
+  /**
+   * The email half of the same step 1. Same contract as `/otp/request`: record
+   * the intent, enforce the limits, and — for email — deliver the code.
+   *
+   * Returns 200 whether or not the address has an account. See the note in
+   * `requestEmailOtp`: the answer to "is this address registered?" is not this
+   * endpoint's to give.
+   */
+  router.post('/email/otp', async (req, res) => {
+    const body = parseBody(EmailOtpSchema, req.body);
+    const result = await requestEmailOtp(database, { email: body.email }, mailer);
+    res.status(200).json(result);
+  });
+
+  /** Step 2 for email. Proves the inbox, then issues the same device session. */
+  router.post('/email/signin', async (req, res) => {
+    const body = parseBody(EmailSignInSchema, req.body);
+    const session = await emailSignIn(database, {
       ...body,
       ...clientContext(req),
     });

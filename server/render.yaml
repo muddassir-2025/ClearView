@@ -124,6 +124,28 @@ services:
       - key: FIREBASE_PRIVATE_KEY
         sync: false
 
+      # Email sign-in — the second method for entering Good Post.
+      #
+      # `resend` is set here rather than `disabled` because a half-configured
+      # deployment is already safe: src/email/sender.ts only uses Resend when
+      # BOTH the key and the sender are present, and otherwise answers
+      # `email_unavailable` on that one endpoint. So pasting the two secrets
+      # below is the whole setup — no blueprint edit needed — and nothing else
+      # can be affected either way.
+      #
+      # Resend → Dashboard → API Keys. The sender must be on a domain verified
+      # in Resend; `onboarding@resend.dev` works only for sending to your own
+      # address, so it is not a production value.
+      #
+      # `console` is refused in production by src/env.ts, because it writes live
+      # sign-in codes into the process log.
+      - key: EMAIL_DELIVERY_MODE
+        value: resend
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+
       # ── Non-secret tuning, safe in git ────────────────────────────────
       - key: GOODPOST_HISTORY_DAYS
         value: 90
@@ -149,10 +171,17 @@ services:
       #   this is empty, which is the correct posture until a browser client
       #   exists. The admin dashboard's real origin goes here in M6. Never "*".
       #
-      # AWS_* — media storage is M3. Adding them now would make Render prompt
-      #   for credentials nothing uses, and src/env.ts already defaults
-      #   AWS_REGION to eu-central-1 with an empty bucket. M3 re-adds:
-      #   AWS_REGION, AWS_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.
+      # EMAIL_OTP_TTL_MINUTES / EMAIL_OTP_MAX_SENDS_PER_HOUR /
+      #   EMAIL_OTP_MAX_ATTEMPTS — same reasoning as the rate limits below:
+      #   they have code defaults (10 / 5 / 5) and belong in the dashboard if
+      #   you want to tune them, not duplicated here.
+      #
+      # AWS_* — the media code is written (M3) but the credentials are not
+      #   supplied yet, so the variables stay absent and the service keeps
+      #   working: src/env.ts defaults AWS_REGION to eu-central-1 with an empty
+      #   bucket, and uploads answer `media_unavailable` until both
+      #   AWS_S3_BUCKET and AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or
+      #   AWS_USE_INSTANCE_ROLE) are set. Add all four to enable media.
       #
       # RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX — left to their code defaults on
       #   purpose rather than duplicated here, so there is one source of truth.

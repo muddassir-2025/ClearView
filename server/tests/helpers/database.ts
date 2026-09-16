@@ -137,7 +137,8 @@ export async function resetData(pglite: PGlite): Promise<void> {
   // creation in the suite failing on a missing category.
   await pglite.exec(
     `TRUNCATE post_media, posts, channel_blocks, channel_followers, channel_admins,
-              channels, banned_identities, phone_verifications, user_sessions, users
+              channels, banned_identities, email_verifications, phone_verifications,
+              user_sessions, users
      RESTART IDENTITY CASCADE`
   );
 }

@@ -97,6 +97,17 @@ const E164 = /^\+[1-9]\d{6,14}$/;
  */
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * True when the value is usable as an email address.
+ *
+ * Exported so the email sign-in flow enforces exactly this and not a second,
+ * slowly-diverging copy: the address registered must be one an address can be
+ * signed in with.
+ */
+export function isValidEmail(value: string): boolean {
+  return value.length > 0 && value.length <= 254 && EMAIL.test(value);
+}
+
 function assertE164(phone: string): void {
   if (!E164.test(phone)) {
     throw badRequest('invalid_phone', 'Phone number must be in E.164 format, e.g. +923001234567.');
@@ -360,7 +371,7 @@ export async function register(
   if (displayName.length < 1 || displayName.length > 60) {
     throw badRequest('invalid_display_name', 'Display name must be 1–60 characters.');
   }
-  if (email.length > 254 || !EMAIL.test(email)) {
+  if (!isValidEmail(email)) {
     throw badRequest('invalid_email', 'Enter a valid email address.');
   }
 
@@ -465,6 +476,31 @@ export async function signIn(
     const session = await createSession(tx, user.id, input);
     return sessionResponse(user, session);
   });
+}
+
+/**
+ * Issue a session for an account whose identity was proven some other way.
+ *
+ * Email sign-in proves the address, not the number, so it cannot reuse
+ * `signIn`, which begins by verifying a Firebase ID token. Everything after
+ * that point is identical, and it deliberately lives here rather than being
+ * copied: a second session-creation path is where `deleted_at`, a re-check of
+ * status, and the access token's subject are easiest to get subtly wrong.
+ */
+export async function startSessionForAccount(
+  database: Queryable,
+  userId: string,
+  client: { deviceLabel?: string | null; ipHash?: string | null }
+): Promise<AuthSession> {
+  // Re-read rather than trusting the caller's row: `deleted_at` may have been
+  // set, or a status changed, between the check that authorised this and here.
+  const account = await loadOwnAccount(database, userId);
+  if (!account) {
+    throw unauthorized('invalid_token', 'That account is no longer available.');
+  }
+
+  const session = await createSession(database, userId, client);
+  return sessionResponse(account, session);
 }
 
 export interface RefreshInput {

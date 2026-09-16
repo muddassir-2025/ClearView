@@ -5,6 +5,7 @@ import { env, isProduction } from './env.js';
 import { db, pingDatabase, type Queryable } from './db.js';
 import { ApiError } from './http/errors.js';
 import { buildAuthRouter } from './auth/routes.js';
+import { createMailer, type Mailer } from './email/sender.js';
 import { buildChannelsRouter, buildDiscoverRouter } from './channels/routes.js';
 import { buildChannelPostsRouter, buildPostsRouter } from './posts/routes.js';
 import { buildMediaRouter } from './media/routes.js';
@@ -103,6 +104,13 @@ export interface AppDeps {
    * would mean they were never tested.
    */
   readonly store?: ObjectStore;
+  /**
+   * Outbound email for email sign-in. Overridable for the same reason as the
+   * verifier: the flow's own rules (hashed codes, attempt limits, no
+   * enumeration) must be testable without a provider account and without a
+   * single message leaving the process.
+   */
+  readonly mailer?: Mailer;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
@@ -110,6 +118,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   const verifier = deps.verifier ?? createPhoneVerifier();
   const rateLimits = deps.rateLimits ?? rateLimitConfigFromEnv();
   const store = deps.store ?? createObjectStore();
+  const mailer = deps.mailer ?? createMailer();
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -171,7 +180,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   app.use('/api/v1', rateLimit(limiter, rateLimits.global));
   app.use('/api/v1/auth', rateLimit(limiter, rateLimits.auth));
 
-  app.use('/api/v1/auth', buildAuthRouter(database, verifier));
+  app.use('/api/v1/auth', buildAuthRouter(database, verifier, mailer));
 
   // Channels and discovery (M2). Both take the same limiter instance, so the
   // `write` rule shares one bounded bucket structure with the other rules

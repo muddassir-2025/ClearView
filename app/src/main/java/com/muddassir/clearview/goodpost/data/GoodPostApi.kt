@@ -110,6 +110,35 @@ class GoodPostApi(
         }
     }
 
+    /**
+     * Step 1 by email — the same contract as [requestOtp].
+     *
+     * The server answers 200 whether or not the address has an account, on
+     * purpose, so a success here must not be read as "this email is
+     * registered". Nothing is known until the code comes back.
+     */
+    suspend fun requestEmailOtp(email: String): ApiResult<Unit> {
+        val body = JSONObject().apply { put("email", email) }
+        return when (val result = call("POST", AUTH_PATH + "/email/otp", body)) {
+            is ApiResult.Ok -> ApiResult.Ok(Unit)
+            is ApiResult.Failed -> result
+            ApiResult.Unreachable -> ApiResult.Unreachable
+        }
+    }
+
+    /** Step 2 by email. Issues the same device session as the phone flow. */
+    suspend fun emailSignIn(
+        email: String,
+        code: String,
+        deviceLabel: String?
+    ): ApiResult<GoodPostSession> {
+        val body = JSONObject().apply {
+            put("email", email)
+            put("code", code)
+        }
+        return authCall("/email/signin", body, deviceLabel)
+    }
+
     suspend fun signIn(idToken: String, deviceLabel: String?): ApiResult<GoodPostSession> {
         val body = JSONObject().apply { put("idToken", idToken) }
         return authCall("/signin", body, deviceLabel)

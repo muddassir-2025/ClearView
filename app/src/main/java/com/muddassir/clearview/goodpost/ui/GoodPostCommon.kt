@@ -51,12 +51,16 @@ import com.muddassir.clearview.goodpost.goodPostErrorFor
 @StringRes
 internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.InvalidPhone -> R.string.goodpost_error_invalid_phone
+    GoodPostError.InvalidEmail -> R.string.goodpost_error_invalid_email
+    GoodPostError.EmailNotRegistered -> R.string.goodpost_error_email_not_registered
+    GoodPostError.EmailUnavailable -> R.string.goodpost_error_email_unavailable
     GoodPostError.PhoneBanned -> R.string.goodpost_error_phone_banned
     GoodPostError.AccountBanned -> R.string.goodpost_error_account_banned
     GoodPostError.AccountSuspended -> R.string.goodpost_error_account_suspended
     GoodPostError.RateLimited -> R.string.goodpost_error_rate_limited
     GoodPostError.OtpLocked -> R.string.goodpost_error_otp_locked
     GoodPostError.InvalidCode -> R.string.goodpost_error_invalid_code
+    GoodPostError.VerificationExpired -> R.string.goodpost_error_verification_expired
     GoodPostError.NumberRejected -> R.string.goodpost_error_number_rejected
     GoodPostError.VerificationUnavailable -> R.string.goodpost_error_verification_unavailable
     GoodPostError.SmsQuota -> R.string.goodpost_error_sms_quota

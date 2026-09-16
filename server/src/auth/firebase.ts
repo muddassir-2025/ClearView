@@ -36,6 +36,18 @@ export interface PhoneIdentityVerifier {
 /** E.164: a leading +, no leading zero, 7–15 digits total. */
 const E164 = /^\+[1-9]\d{6,14}$/;
 
+/**
+ * An error's Firebase code, for logging.
+ *
+ * Only ever the CODE (e.g. `app/invalid-credential`). The SDK's message is not
+ * logged because it can quote back the input it was given, and the input here
+ * is an ID token — a live credential.
+ */
+function firebaseErrorCode(err: unknown): string | null {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code.length > 0 ? code : null;
+}
+
 /** True when the Firebase Admin service account is present. */
 export const firebaseConfigured = Boolean(
   env.FIREBASE_PROJECT_ID && env.FIREBASE_CLIENT_EMAIL && env.FIREBASE_PRIVATE_KEY
@@ -81,6 +93,13 @@ export function getFirebaseAdminApp(): App {
 class FirebasePhoneVerifier implements PhoneIdentityVerifier {
   readonly kind = 'firebase' as const;
 
+  /**
+   * [adminApp] is injected so the initialisation-failure path can be exercised
+   * without a real service account, the same way every other module here takes
+   * its collaborator as an argument rather than reaching for a global.
+   */
+  constructor(private readonly adminApp: () => App = getFirebaseAdminApp) {}
+
   async verifyIdToken(idToken: string): Promise<VerifiedPhone> {
     if (!firebaseConfigured) {
       throw serviceUnavailable(
@@ -89,16 +108,39 @@ class FirebasePhoneVerifier implements PhoneIdentityVerifier {
       );
     }
 
+    // Initialising the SDK is deliberately separated from verifying a token.
+    // While both sat inside one `try`, a malformed service account — an
+    // operator mistake that breaks EVERY sign-in identically — was reported to
+    // the user as "your identity token is not valid". That is false, it blames
+    // the one thing the user cannot fix, and it left no trace anywhere. The
+    // capability genuinely is unavailable, so it is reported as such.
+    let admin;
+    try {
+      admin = getAuth(this.adminApp());
+    } catch (err) {
+      console.error(
+        '[firebase] Admin SDK could not be initialised (check FIREBASE_PROJECT_ID, ' +
+          'FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY):',
+        firebaseErrorCode(err) ?? '<no code>'
+      );
+      throw serviceUnavailable(
+        'auth_unavailable',
+        'Firebase Admin could not be initialised on this server.'
+      );
+    }
+
     let decoded;
     try {
       // checkRevoked costs one extra round trip but makes a token invalidated
       // in the Firebase console (or by an account disable) fail here rather
       // than staying valid for its remaining hour.
-      decoded = await getAuth(getFirebaseAdminApp()).verifyIdToken(idToken, true);
-    } catch {
-      // Never echo the SDK's reason: it distinguishes "expired" from "bad
-      // signature", and a caller holding a forged token should not get that
-      // oracle. Log nothing either — the token itself is a credential.
+      decoded = await admin.verifyIdToken(idToken, true);
+    } catch (err) {
+      // The SDK's reason is not echoed to the caller: it distinguishes
+      // "expired" from "bad signature", and a caller holding a forged token
+      // should not get that oracle. It IS logged, by code alone, because
+      // without it a rejection is indistinguishable from a misconfiguration.
+      console.warn('[firebase] ID token rejected:', firebaseErrorCode(err) ?? '<no code>');
       throw unauthorized('invalid_id_token', 'The supplied identity token is not valid.');
     }
 
@@ -156,4 +198,17 @@ export function createPhoneVerifier(): PhoneIdentityVerifier {
   return env.PHONE_VERIFY_MODE === 'disabled'
     ? new DisabledPhoneVerifier()
     : new FirebasePhoneVerifier();
+}
+
+/**
+ * A verifier whose Admin app resolution is supplied by the caller.
+ *
+ * Exported for the same reason [getFirebaseAdminApp] is: the failure this
+ * guards against — a misconfigured service account being reported to a user as
+ * their own invalid token — can only be exercised by controlling how the app
+ * resolves, and letting a test build its own Firebase app would prove nothing
+ * about the code the service runs.
+ */
+export function phoneVerifierWithAdminApp(adminApp: () => App): PhoneIdentityVerifier {
+  return new FirebasePhoneVerifier(adminApp);
 }

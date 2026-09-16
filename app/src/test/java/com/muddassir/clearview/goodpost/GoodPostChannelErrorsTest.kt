@@ -50,7 +50,10 @@ class GoodPostChannelErrorsTest {
         assertEquals(GoodPostError.AccountBanned, goodPostErrorFor("account_banned"))
         assertEquals(GoodPostError.AccountSuspended, goodPostErrorFor("account_suspended"))
         assertEquals(GoodPostError.RateLimited, goodPostErrorFor("rate_limited"))
-        assertEquals(GoodPostError.VerificationFailed, goodPostErrorFor("otp_required"))
+        // `otp_required` now has its own wording ("this verification
+        // expired — send a new code") rather than the generic failure, because
+        // re-typing the same digits against a spent challenge cannot work.
+        assertEquals(GoodPostError.VerificationExpired, goodPostErrorFor("otp_required"))
         assertEquals(GoodPostError.ServerError, goodPostErrorFor("http_error"))
     }
 
