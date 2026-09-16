@@ -74,12 +74,42 @@ class ResendMailer implements Mailer {
     }
 
     if (!response.ok) {
-      // Status only — a provider error body can quote the recipient address
-      // and the message it rejected.
-      console.error(`[email] provider rejected the send: HTTP ${response.status}`);
+      // Status plus the provider's own error NAME, and nothing else. The body's
+      // message routinely quotes the recipient address and the content it
+      // rejected (§38), so it is discarded unread — but the name is what tells
+      // "this account may not send to that address" apart from "the provider is
+      // down". Without it every refusal looked identical here, which is exactly
+      // how a sandbox restriction spent an evening looking like a server fault.
+      const reason = await providerErrorName(response);
+      console.error(
+        `[email] provider rejected the send: HTTP ${response.status}` +
+          (reason ? ` (${reason})` : '')
+      );
       throw serviceUnavailable('email_unavailable', 'Could not send the verification email.');
     }
   }
+}
+
+/**
+ * The provider's own error identifier, or null.
+ *
+ * Reads a bounded prefix and keeps only `name`/`type` — short, enum-like values
+ * such as `validation_error` or `rate_limit_exceeded`. Everything else in the
+ * body is discarded without being parsed, so nothing a provider echoes back can
+ * reach a log line. Exported so the shape a real refusal takes stays pinned by a
+ * test rather than by memory.
+ */
+export async function providerErrorName(response: Response): Promise<string | null> {
+  try {
+    const raw = (await response.text()).slice(0, 4096);
+    const parsed = JSON.parse(raw) as { name?: unknown; type?: unknown };
+    for (const value of [parsed.name, parsed.type]) {
+      if (typeof value === 'string' && /^[a-z0-9_]{3,40}$/i.test(value)) return value;
+    }
+  } catch {
+    // A non-JSON body — an HTML error page, an empty 5xx — is not worth parsing.
+  }
+  return null;
 }
 
 /**

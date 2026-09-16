@@ -6,7 +6,7 @@ import { buildApp } from '../src/app.js';
 import { closePool, type Queryable } from '../src/db.js';
 import { env, hashEmailCode } from '../src/env.js';
 import { unauthorized } from '../src/http/errors.js';
-import type { OutboundMail, Mailer } from '../src/email/sender.js';
+import { providerErrorName, type OutboundMail, type Mailer } from '../src/email/sender.js';
 import type { PhoneIdentityVerifier } from '../src/auth/firebase.js';
 import { applyAllMigrations, asQueryable, freshDatabase, resetData } from './helpers/database.js';
 
@@ -379,5 +379,47 @@ describe('email sign-in is not a registration path', () => {
 
     const res = await submitCode(mailer.code(), 'Ayesha@example.test');
     expect(res.status).toBe(200);
+  });
+});
+
+/**
+ * Naming a provider refusal without quoting it.
+ *
+ * These pin the shape a real refusal takes. The verbatim body below is what
+ * Resend returns when an unverified account is asked to mail someone other than
+ * its owner — a case that previously logged only `HTTP 403`, which is
+ * indistinguishable from a dead key or a provider outage.
+ */
+describe('reading a provider refusal', () => {
+  it('keeps the short identifier and drops everything else', async () => {
+    const body = JSON.stringify({
+      statusCode: 403,
+      name: 'validation_error',
+      message:
+        'You can only send testing emails to your own email address (owner@example.test). ' +
+        'To send emails to other recipients, please verify a domain.',
+    });
+
+    expect(await providerErrorName(new Response(body, { status: 403 }))).toBe('validation_error');
+  });
+
+  it('refuses to pass through anything that is not an identifier', async () => {
+    // Each of these would be unreadable or worse in a log line: an address, a
+    // free-text sentence, a nested object, an HTML error page, an empty body.
+    for (const body of [
+      JSON.stringify({ name: 'owner@example.test' }),
+      JSON.stringify({ name: 'You can only send testing emails to your own address' }),
+      JSON.stringify({ name: { nested: 'value' } }),
+      JSON.stringify({ message: 'only a message, no name' }),
+      '<html><body>502 Bad Gateway</body></html>',
+      '',
+    ]) {
+      expect(await providerErrorName(new Response(body, { status: 502 }))).toBeNull();
+    }
+  });
+
+  it('accepts a type when a provider names the field that way', async () => {
+    const body = JSON.stringify({ type: 'rate_limit_exceeded' });
+    expect(await providerErrorName(new Response(body, { status: 429 }))).toBe('rate_limit_exceeded');
   });
 });
