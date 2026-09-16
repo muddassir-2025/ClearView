@@ -295,6 +295,13 @@ verification expired. Send a new code and try again."** and the code step has a
   (sharing the registration field would let a value cross between the two
   flows), and the code step naming whichever channel was used.
 
+**Deployed state, checked against the live service:** `400 invalid_email` on a
+malformed address and `503 email_unavailable` on a valid one, which is the honest
+answer from a deployment with no provider configured — it refuses rather than
+pretending to have sent something. The bucket steps live in
+`docs/AWS_S3_SETUP.md`, and the IAM policy in `docs/aws-s3-policy.json` grants
+only the four object actions the code performs.
+
 **Verified:** server typecheck clean and **200/200** tests pass (19 new),
 migration 005 applied to real Neon (11 columns, 2 indexes, 3 CHECKs, confirmed by
 querying Neon); Android **575/575** unit tests pass (4 new) and `assembleDebug`
