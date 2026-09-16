@@ -92,8 +92,7 @@ health endpoints, migration runner, Render blueprint, README.
 **Verified:** typecheck clean, 8/8 tests pass, built `dist/` boots and answers
 `/health` 200, `/health/db` 503, unknown path 404.
 
-### M1 — Identity & sessions
-*Migration 001 is written; the service layer and routes are next.*
+### M1 — Identity & sessions ✅ done
 - Firebase ID-token verification → `phoneHash` via HMAC pepper.
 - Register / login / refresh / logout; access JWT (15 min) + rotating opaque
   refresh token stored only as a SHA-256 hash, so a database leak cannot mint
@@ -106,15 +105,43 @@ health endpoints, migration runner, Render blueprint, README.
   **unauthenticated gate on the Good Post tab only** — the rest of ClearView
   keeps working with no login.
 
-### M2 — Channels & discovery
-Migration 002 (channels, admins, followers, categories, notifications).
-Create / edit / icon / category / country, follow / unfollow / mute / block,
+### M2 — Channels & discovery ✅ done
+`migrations/003_channels.sql` (channels, channel_admins, channel_followers,
+channel_blocks, channel_categories).
+Create / edit / category / country, follow / unfollow / mute / block,
 shareable deep link, Discover with search + category + country + popularity
 ranking (§5) — ranked by followers × recent activity, **no AI recommender**.
 Android: Channels view, channel screen, Discover.
 
+**Verified:** server typecheck clean and 108/108 tests pass (36 new), migration
+003 applied to real Neon (5 tables, 15 indexes, 2 enums, 9 seeded categories),
+Android 553/553 unit tests pass (25 new) and `assembleDebug` builds.
+
+**Four deviations from the line above, each deliberate:**
+
+1. **No `channel_notifications` table yet.** Mute/unmute is per-follow state
+   (§17) and lives on `channel_followers.notifications_enabled`, which is the
+   only thing mute actually changes. A delivery/inbox table is only meaningful
+   once FCM exists (M8); creating it now would be an unexercised table.
+2. **Channel icon upload is deferred to M3.** The `icon_object_key` column
+   exists and stays null: an icon is an S3 operation, S3 is not configured yet
+   by your instruction, and the API shape does not change when it lands.
+3. **`shareLink` is an app deep link (`clearview://goodpost/channel/<slug>`),
+   not an `https://` URL.** An https share link requires a public,
+   unauthenticated page, and §5.3 of this document records public read-only
+   channel pages as an open decision. Handing the client an app link now beats
+   publishing a URL that 404s.
+
+   **Still not actionable end to end**, and no Share button ships until it is:
+   resolving that link needs a manifest `intent-filter`, a slug→id lookup on the
+   backend, and routing from `MainActivity` into the Good Post tab. Shipping a
+   share button that produces a dead link would be worse than not having one.
+4. **`follower_count` is denormalised** on `channels` and maintained in the
+   same transaction as the follow change. Discovery sorts on every search
+   keystroke; a `COUNT(*)` per row would be a scan.
+
 ### M3 — Posts & media
-Migration 003 (posts, post_media, links, polls). Five post types. Presigned
+Migration 004 (posts, post_media, links, polls). Five post types. Presigned
 upload → confirm → publish; presigned download with caching headers.
 Android: composer, Posts view, image/video/audio rendering, manual download.
 
@@ -189,10 +216,24 @@ them one group at a time; I'll wire each in as it arrives.
 4. **Admin surface is a separate service with a separate token audience.** A
    Good Post user token cannot satisfy an admin check even if an endpoint path
    is guessed (§48).
-5. **`free` vs `starter` on Render.** `starter` is ~$7/mo. On `free`, the
-   service spins down when idle (a ~30s cold start on the first request) and
-   pre-deploy migrations may be unavailable, so migrations must be run from
-   the Shell. `render.yaml` uses `starter`; change it if you prefer.
+5. **`free` vs `starter` on Render.** `render.yaml` uses `free`. Three
+   consequences worth knowing before choosing, all of them verified against
+   Render's current documentation rather than assumed:
+
+   - A free web service **spins down after 15 minutes** with no traffic and
+     takes **about a minute** to come back. The Android client's read timeout
+     is 15 seconds, so the first request after a pause reports `unreachable`
+     and succeeds on the retry.
+   - Free instances have **no Shell access** (SSH or dashboard) and **no
+     pre-deploy command** — both are paid-only. Migrations therefore run from
+     a development machine against Neon's direct URL; see `server/README.md`
+     §5. An earlier version of this note said to run them "from the Shell",
+     which is impossible on this plan.
+   - 750 free instance hours per month, and Render's own documentation says
+     **"Do not use them for production applications"**.
+
+   `starter` (~$7/mo) removes the cold start and restores pre-deploy
+   migrations.
 6. **Deleting a post hard-deletes its media rows and S3 objects.** Retention
    ages old posts out server-side, but anything a user downloaded stays on
    their device forever (§10) — the server cannot and does not reach into it.

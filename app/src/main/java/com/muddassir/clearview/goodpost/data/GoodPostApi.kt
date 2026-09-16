@@ -7,6 +7,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 /**
  * The outcome of a backend call.
@@ -62,9 +63,14 @@ internal fun errorCodeFrom(status: Int, rawBody: String?): String {
  * the existing stack, and this endpoint set is small enough that the shared
  * convention costs nothing.
  *
- * Targets `/api/v1/auth` on its OWN base URL, not the Block tab's moderation
+ * Targets `/api/v1/...` on its OWN base URL, not the Block tab's moderation
  * backend: the two are separate services with separate deploy lifecycles, and
  * the version prefix keeps the two meanings of "channel" from colliding.
+ *
+ * One transport serves every Good Post endpoint. `call` takes an absolute API
+ * path, so M2's channels and discovery routes reuse the same timeouts, the
+ * same error-code extraction and the same "never log the request body" rule
+ * instead of a second HTTP implementation drifting from this one.
  */
 class GoodPostApi(
     private val baseUrl: () -> String = { BuildConfig.GOODPOST_BASE_URL }
@@ -73,6 +79,8 @@ class GoodPostApi(
     private companion object {
         const val TAG = "GoodPostApi"
         const val AUTH_PATH = "/api/v1/auth"
+        const val CHANNELS_PATH = "/api/v1/channels"
+        const val DISCOVER_PATH = "/api/v1/discover"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_RESPONSE_BYTES = 512_000
@@ -93,7 +101,7 @@ class GoodPostApi(
             put("phone", phone)
             put("purpose", purpose)
         }
-        return when (val result = call("POST", "/otp/request", body)) {
+        return when (val result = call("POST", AUTH_PATH + "/otp/request", body)) {
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Failed -> result
             ApiResult.Unreachable -> ApiResult.Unreachable
@@ -127,7 +135,7 @@ class GoodPostApi(
     /** Validate a stored token and read the account back. */
     suspend fun me(accessToken: String): ApiResult<GoodPostAccount> =
         withContext(Dispatchers.IO) {
-            when (val result = call("GET", "/me", null, accessToken)) {
+            when (val result = call("GET", AUTH_PATH + "/me", null, accessToken)) {
                 is ApiResult.Ok ->
                     GoodPostSessionCodec.accountFromResponse(result.value)
                         ?.let { ApiResult.Ok(it) }
@@ -142,21 +150,125 @@ class GoodPostApi(
             put("refreshToken", refreshToken)
             put("all", false)
         }
-        return when (val result = call("POST", "/logout", body, accessToken)) {
+        return when (val result = call("POST", AUTH_PATH + "/logout", body, accessToken)) {
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Failed -> result
             ApiResult.Unreachable -> ApiResult.Unreachable
         }
     }
 
+    // ── Channels (§5, §6, §7, §12) ──────────────────────────────────────
+    //
+    // These return the parsed JSON body rather than a typed object: turning it
+    // into [GoodPostChannel] is the codec's job, kept pure and unit-tested
+    // separately. The API layer's contract stops at "the server said this".
+
+    suspend fun channelCategories(accessToken: String): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/categories", accessToken)
+
+    /** §4 Channels view. `cursor` resumes a previous page. */
+    suspend fun followingChannels(accessToken: String, cursor: String? = null): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/following" + pageQuery(cursor), accessToken)
+
+    /** §7 The channels the caller owns or helps run. */
+    suspend fun managedChannels(accessToken: String): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/mine", accessToken)
+
+    suspend fun channelDetail(accessToken: String, channelId: String): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/" + encode(channelId), accessToken)
+
+    /** §5 Discover. Blank filters are omitted rather than sent empty. */
+    suspend fun discoverChannels(
+        accessToken: String,
+        query: String? = null,
+        category: String? = null,
+        country: String? = null,
+        sort: ChannelSort = ChannelSort.Popular,
+        cursor: String? = null
+    ): ApiResult<JSONObject> {
+        val params = buildList {
+            query?.takeIf { it.isNotBlank() }?.let { add("q=" + encode(it)) }
+            category?.takeIf { it.isNotBlank() }?.let { add("category=" + encode(it)) }
+            country?.takeIf { it.isNotBlank() }?.let { add("country=" + encode(it)) }
+            add("sort=" + encode(sort.wire))
+            cursor?.takeIf { it.isNotBlank() }?.let { add("cursor=" + encode(it)) }
+        }
+        return get(DISCOVER_PATH + "/channels?" + params.joinToString("&"), accessToken)
+    }
+
+    suspend fun createChannel(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
+        call("POST", CHANNELS_PATH, body, accessToken)
+
+    suspend fun updateChannel(
+        accessToken: String,
+        channelId: String,
+        body: JSONObject
+    ): ApiResult<JSONObject> =
+        call("PATCH", CHANNELS_PATH + "/" + encode(channelId), body, accessToken)
+
+    /** @param follow true to follow, false to unfollow. */
+    suspend fun setFollow(
+        accessToken: String,
+        channelId: String,
+        follow: Boolean
+    ): ApiResult<JSONObject> {
+        val method = if (follow) "POST" else "DELETE"
+        return call(method, CHANNELS_PATH + "/" + encode(channelId) + "/follow", null, accessToken)
+    }
+
+    /** §17 mute (`enabled = false`) or unmute. */
+    suspend fun setNotifications(
+        accessToken: String,
+        channelId: String,
+        enabled: Boolean
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply { put("enabled", enabled) }
+        return call(
+            "PUT",
+            CHANNELS_PATH + "/" + encode(channelId) + "/notifications",
+            body,
+            accessToken
+        )
+    }
+
+    /** §12 block, which also ends the follow, or unblock. */
+    suspend fun setBlocked(
+        accessToken: String,
+        channelId: String,
+        blocked: Boolean
+    ): ApiResult<JSONObject> {
+        val method = if (blocked) "POST" else "DELETE"
+        return call(method, CHANNELS_PATH + "/" + encode(channelId) + "/block", null, accessToken)
+    }
+
+    /** §4 clear the unread flag. */
+    suspend fun markRead(accessToken: String, channelId: String): ApiResult<JSONObject> =
+        call("POST", CHANNELS_PATH + "/" + encode(channelId) + "/read", null, accessToken)
+
     // ── Internals ───────────────────────────────────────────────────────
+
+    private suspend fun get(path: String, accessToken: String): ApiResult<JSONObject> =
+        withContext(Dispatchers.IO) { call("GET", path, null, accessToken) }
+
+    private fun pageQuery(cursor: String?): String =
+        cursor?.takeIf { it.isNotBlank() }?.let { "?cursor=" + encode(it) }.orEmpty()
+
+    /**
+     * Percent-encode a path or query component.
+     *
+     * A cursor is base64url, which can contain `-` and `_` but is still encoded
+     * defensively: a raw `&` or `#` reaching the URL would silently truncate
+     * the request and look like an empty page rather than a bug.
+     */
+    private fun encode(value: String): String =
+        URLEncoder.encode(value, Charsets.UTF_8.name())
 
     private suspend fun authCall(
         path: String,
         body: JSONObject,
         deviceLabel: String?
     ): ApiResult<GoodPostSession> = withContext(Dispatchers.IO) {
-        when (val result = call("POST", path, body, null, deviceLabel)) {
+        when (val result = call("POST", AUTH_PATH + path, body, null, deviceLabel)) {
             is ApiResult.Ok ->
                 GoodPostSessionCodec.fromAuthResponse(result.value, System.currentTimeMillis())
                     ?.let { ApiResult.Ok(it) }
@@ -169,7 +281,31 @@ class GoodPostApi(
         }
     }
 
-    private fun call(
+    /**
+     * Every network call goes through here, so the dispatcher cannot be
+     * forgotten.
+     *
+     * This wrapper exists because of a real defect: [callBlocking] is blocking,
+     * and a caller that invoked it straight from `viewModelScope` (which is
+     * `Dispatchers.Main`) hit `NetworkOnMainThreadException` — which the
+     * catch-all below swallowed, turning a main-thread bug into a permanent
+     * "unreachable" that looked exactly like the user being offline. Phone
+     * sign-in failed at step one with a misleading error.
+     *
+     * Dispatching inside the transport rather than at each call site means a
+     * new endpoint cannot reintroduce it.
+     */
+    private suspend fun call(
+        method: String,
+        path: String,
+        body: JSONObject? = null,
+        bearer: String? = null,
+        deviceLabel: String? = null
+    ): ApiResult<JSONObject> =
+        withContext(Dispatchers.IO) { callBlocking(method, path, body, bearer, deviceLabel) }
+
+    /** The blocking implementation. Call it only through [call]. */
+    private fun callBlocking(
         method: String,
         path: String,
         body: JSONObject? = null,
@@ -181,7 +317,7 @@ class GoodPostApi(
 
         var conn: HttpURLConnection? = null
         try {
-            conn = (URL(root + AUTH_PATH + path).openConnection() as HttpURLConnection).apply {
+            conn = (URL(root + path).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
                 connectTimeout = CONNECT_TIMEOUT_MS
                 readTimeout = READ_TIMEOUT_MS

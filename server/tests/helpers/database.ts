@@ -127,8 +127,18 @@ export function asQueryable(pglite: PGlite): Queryable {
  * `migrate` would create them, and only the data is reset.
  */
 export async function resetData(pglite: PGlite): Promise<void> {
+  // Explicit table list rather than relying on TRUNCATE's CASCADE to reach the
+  // channel tables through their foreign keys. The cascade would work, but it
+  // would also silently swallow a future table that references `users`, and a
+  // test that resets "some of" the data is worse than one that fails loudly.
+  //
+  // `channel_categories` is deliberately absent: it holds migration-seeded
+  // reference data, not test data, and deleting it would leave every channel
+  // creation in the suite failing on a missing category.
   await pglite.exec(
-    'TRUNCATE banned_identities, phone_verifications, user_sessions, users RESTART IDENTITY CASCADE'
+    `TRUNCATE channel_blocks, channel_followers, channel_admins, channels,
+              banned_identities, phone_verifications, user_sessions, users
+     RESTART IDENTITY CASCADE`
   );
 }
 

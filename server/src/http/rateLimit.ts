@@ -40,6 +40,13 @@ export interface RateLimitRule {
 export interface RateLimitConfig {
   readonly global: RateLimitRule;
   readonly auth: RateLimitRule;
+  /**
+   * State-changing Good Post routes (§6/§7 writes). Added in M2 with the first
+   * routes that need it — `WRITE_RATE_LIMIT_MAX` had been declared since M0
+   * while nothing consumed it, which is the same "documented but not enforced"
+   * gap the auth limits had.
+   */
+  readonly write: RateLimitRule;
 }
 
 export interface RateLimitDecision {
@@ -157,6 +164,11 @@ export function rateLimitConfigFromEnv(): RateLimitConfig {
       windowMs: env.RATE_LIMIT_WINDOW_MS,
       max: env.AUTH_RATE_LIMIT_MAX,
     },
+    write: {
+      name: 'write',
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
+      max: env.WRITE_RATE_LIMIT_MAX,
+    },
   };
 }
 
@@ -170,8 +182,10 @@ export function describeActiveLimits(config: RateLimitConfig): string[] {
   const lines = [
     `[rate-limit] ACTIVE  ${config.global.name}: ${config.global.max} req / ${config.global.windowMs}ms per IP (/api/v1)`,
     `[rate-limit] ACTIVE  ${config.auth.name}: ${config.auth.max} req / ${config.auth.windowMs}ms per IP (/api/v1/auth)`,
+    `[rate-limit] ACTIVE  ${config.write.name}: ${config.write.max} req / ${config.write.windowMs}ms per IP (channel + discover writes)`,
     `[rate-limit] NOT LIMITED: /health and /health/db (Render polls these; limiting them causes restart loops)`,
-    `[rate-limit] RESERVED (routes not built yet, NOT enforced): WRITE_RATE_LIMIT_MAX=${env.WRITE_RATE_LIMIT_MAX} (M3 posts), REPORT_RATE_LIMIT_MAX=${env.REPORT_RATE_LIMIT_MAX} (M5 reports)`,
+    `[rate-limit] RESERVED (routes not built yet, NOT enforced): REPORT_RATE_LIMIT_MAX=${env.REPORT_RATE_LIMIT_MAX} (M5 reports)`,
+    `[rate-limit] NOTE: reads are covered by the global rule only; WRITE_RATE_LIMIT_MAX=${env.WRITE_RATE_LIMIT_MAX} applies to POST/PATCH/PUT/DELETE below`,
     `[rate-limit] storage: in-process fixed window — per instance, not shared`,
   ];
   return lines;

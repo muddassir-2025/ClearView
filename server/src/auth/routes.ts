@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { hashIp } from '../env.js';
 import type { Queryable } from '../db.js';
-import { badRequest } from '../http/errors.js';
+import { parseBody } from '../http/validate.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './firebase.js';
 import { authOf, requireAuth } from './middleware.js';
 import {
@@ -28,26 +28,6 @@ import {
  * an `ApiError` into the documented `{ error: <code> }` body — so no handler
  * needs a try/catch, and no route can swallow an error by forgetting one.
  */
-
-/**
- * Validate a body, reporting FIELD NAMES ONLY on failure.
- *
- * The values are deliberately never echoed. This is the one place where a
- * malformed request is most likely to be someone's `idToken` or phone number,
- * and reflecting those into a response body or an error log turns a bad
- * request into a credential leak.
- */
-function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
-  const result = schema.safeParse(body);
-  if (!result.success) {
-    const fields = Object.keys(result.error.flatten().fieldErrors);
-    throw badRequest(
-      'invalid_request',
-      fields.length > 0 ? `Invalid fields: ${fields.join(', ')}` : 'Invalid request body.'
-    );
-  }
-  return result.data;
-}
 
 const OtpRequestSchema = z.object({
   phone: z.string().min(7).max(20),

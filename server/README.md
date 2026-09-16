@@ -242,18 +242,56 @@ If you would rather configure by hand:
 |---|---|
 | Root Directory | `server` |
 | Build Command | `npm ci && npm run build` |
-| Pre-deploy Command | `npm run migrate:prod` |
+| Pre-deploy Command | `npm run migrate:prod` — **paid plans only**, see below |
 | Start Command | `npm start` |
 | Health Check Path | `/health` |
 | Region | `Frankfurt (EU Central)` |
+
+### Free plan: no Shell, no pre-deploy
+
+`render.yaml` uses the **free** instance. Two of its limits change how you
+deploy, and neither has a workaround on Render's side:
+
+- **No pre-deploy command.** It is a paid feature. So nothing runs migrations
+  as part of a deploy.
+- **No Shell access** (neither SSH nor the dashboard). So there is no way to
+  run them from inside Render afterwards either.
+
+Run migrations **from your machine**, against Neon directly:
+
+```bash
+cd server
+npm run migrate      # reads DATABASE_URL_DIRECT from server/.env
+```
+
+That is not a hack. Neon is external to Render either way, migration files are
+immutable and checksummed, re-running them is a no-op, and each runs in its own
+transaction under a session-level advisory lock. Run it before deploying a
+commit that needs a new migration.
+
+A consequence worth noting: on the free plan **`DATABASE_URL_DIRECT` does not
+need to be set on Render at all** — only `DATABASE_URL`, which the service is
+required to have.
+
+The other free-plan behaviour to design around: the service **spins down after
+15 minutes** without inbound traffic, and the next request pays a **cold start
+of roughly a minute**. The Android client uses a 15-second read timeout, so the
+first Good Post request after a pause will report `unreachable` and succeed on
+the retry. Render's own documentation says of Free instances: *"Do not use them
+for production applications."*
+
+To move to a paid instance: set `plan: starter` in `render.yaml` and restore
+`preDeployCommand: npm run migrate:prod` (the exact lines are in the comments
+there).
 
 ### Migration safety on a hosted database
 
 `migrate:prod` uses `DATABASE_URL_DIRECT`, not `DATABASE_URL`. Migrations take
 a **session-level advisory lock**; a transaction pooler may route one session
 across backend connections, which breaks the lock that stops two deploys from
-migrating at once. The app itself uses the pooled `DATABASE_URL`. Both are
-required.
+migrating at once. The app itself uses the pooled `DATABASE_URL`. On a paid
+plan Render needs both variables; on the free plan only `DATABASE_URL` is set
+on Render, because the migration runs from your machine.
 
 ### Environment variables Render must receive
 
@@ -352,7 +390,69 @@ npm run dev               # tsx watch on :8080
 
 ---
 
-## 8. Code layout
+## 8. HTTP API surface
+
+Everything lives under `/api/v1` and **every endpoint requires a session** —
+there is no anonymous Good Post surface (§38). Send the access token as
+`Authorization: Bearer <token>`.
+
+Errors are `{ "error": "<machine_code>" }`; the client branches on the code,
+never on prose. Common ones: `missing_token`, `invalid_token`,
+`session_revoked`, `account_banned`, `account_suspended`.
+
+### Identity (`/api/v1/auth`) — M1
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/otp/request` | Claim the send allowance, then Firebase sends the SMS |
+| POST | `/register` | Firebase ID token → account + session |
+| POST | `/signin` | Same, for an existing account |
+| POST | `/refresh` | Rotate the refresh token (replay is detected) |
+| POST | `/logout` | Revoke this session, or all of them |
+| GET | `/me` | The gate the client checks on entry |
+
+### Channels (`/api/v1/channels`) — M2
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/categories` | Enabled categories (§5) |
+| GET | `/following` | Channels the caller follows (§4), cursor-paged |
+| GET | `/mine` | Channels the caller owns or helps run (§7) |
+| POST | `/` | Create a channel (§6) |
+| GET | `/:channelId` | Channel detail + the caller's own relationship to it |
+| PATCH | `/:channelId` | Edit name / description / category / country (§7, owner only) |
+| POST | `/:channelId/follow` | Follow (§12) |
+| DELETE | `/:channelId/follow` | Unfollow |
+| PUT | `/:channelId/notifications` | Mute / unmute (§17) |
+| POST | `/:channelId/read` | Clear the unread flag (§4) |
+| POST | `/:channelId/block` | Block, which also ends the follow (§12) |
+| DELETE | `/:channelId/block` | Unblock |
+
+Writes carry the `write` rate-limit rule (`WRITE_RATE_LIMIT_MAX`).
+
+### Discovery (`/api/v1/discover`) — M2
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/channels` | Search + browse (§5) |
+
+Query parameters: `q` (name/description substring), `category`, `country`
+(ISO-3166-1 alpha-2), `sort` (`popular` \| `active` \| `new`), `limit`,
+`cursor`. Paged with an opaque keyset cursor — pass the `nextCursor` from the
+previous response straight back to resume. A malformed cursor is
+`invalid_cursor` (400) rather than a silent restart from page one.
+
+Ranking is followers × recent activity (§5). There is no recommender.
+
+### Channel payloads
+
+A channel payload never contains owner or follower identity (§12, §38):
+`owner_id` is read for authorization and never serialised, and there is no
+endpoint that lists a channel's followers. `shareLink` is currently an app
+deep link (`clearview://goodpost/channel/<slug>`); public read-only channel
+pages are an open decision — see `docs/GOODPOST_PLAN.md` §5.3.
+
+## 9. Code layout
 
 ```
 server/
@@ -363,6 +463,8 @@ server/
     app.ts            Express app factory (no listen — drives tests directly)
     index.ts          listen, retention schedule, graceful shutdown
     migrate.ts        migration runner
+    auth/             Firebase verification, JWT + refresh tokens, middleware
+    channels/         channels + discovery; slug and cursor are pure and unit-tested
     jobs/retention.ts post-history retention sweep (§11) — stub until M7
   tests/              vitest + supertest
   scripts/
@@ -383,7 +485,7 @@ file re-parses to the intended values **before** anything is written.
 
 ---
 
-## 9. Security invariants
+## 10. Security invariants
 
 These hold across every endpoint and are enforced **server-side** (§32, §38):
 

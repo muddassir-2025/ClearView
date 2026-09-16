@@ -14,27 +14,45 @@ services:
   - type: web
     name: clearview-goodpost-api
     runtime: node
-    # `free` has no pre-deploy command support and spins the service down when
-    # idle (the first request after a pause takes ~30s). `starter` is required
-    # for the migration step below to run at all.
-    plan: starter
+    # ── Free instance, and what it costs you ─────────────────────────────
+    # `free` spins the service down after 15 minutes with no inbound traffic,
+    # and the next request pays a cold start of roughly a MINUTE (Render shows
+    # a loading page to browsers; a native client just sees a slow socket).
+    #
+    # It also removes Shell access and pre-deploy commands, which are paid-only
+    # features — so on this plan migrations are run from YOUR MACHINE, not from
+    # Render. That is not a workaround: Neon is external to Render either way,
+    # and `npm run migrate` already applies them under a session advisory lock
+    # with checksums, so it is safe to re-run.
+    #
+    # Render's own documentation says "Do not use them for production
+    # applications" of Free instances. This is fine for development and for
+    # testing the Android app against a real backend; move to `starter` before
+    # anyone else depends on it.
+    #
+    # To go back to paid: set plan: starter and restore the preDeployCommand
+    # shown in the comment below.
+    plan: free
     region: frankfurt
     branch: main
     rootDir: server
     buildCommand: npm ci && npm run build
-    # Runs after build, before the new version takes traffic, so the schema is
-    # always ahead of the code that needs it. Migration files are immutable and
-    # checksummed, and each runs in its own transaction under a session
-    # advisory lock, so re-running this on every deploy is safe and a no-op
-    # once the schema is current.
+    # REMOVED FOR THE FREE PLAN. A pre-deploy command is a paid feature
+    # ("available for paid web services, private services, and background
+    # workers"), and leaving an unsupported key in a Blueprint is not something
+    # to leave lying around. Restore it together with plan: starter:
     #
-    # It connects over DATABASE_URL_DIRECT, not DATABASE_URL: a transaction
-    # pooler can route the statements of one migration to different backends,
-    # which breaks both DDL and session-level advisory locks.
-    preDeployCommand: npm run migrate:prod
+    #   preDeployCommand: npm run migrate:prod
+    #
+    # When restored, note that it connects over DATABASE_URL_DIRECT and not
+    # DATABASE_URL: a transaction pooler can route the statements of one
+    # migration to different backends, which breaks both DDL and session-level
+    # advisory locks. Migration files are immutable and checksummed and each
+    # runs in its own transaction, so re-running one is a safe no-op.
     startCommand: npm start
     healthCheckPath: /health
-    autoDeploy: true
+    # `autoDeploy: true` still works but is deprecated; this is its replacement.
+    autoDeployTrigger: commit
     envVars:
       # ── Fixed ────────────────────────────────────────────────────────
       - key: NODE_ENV
@@ -56,9 +74,14 @@ services:
       # ── You must supply these (Render prompts once, then stores them) ──
       # `sync: false` means the value is NOT in git.
       #
-      # Neon → Dashboard → Connection string. Take BOTH:
+      # Neon → Dashboard → Connection string:
       #   the pooled host (contains "-pooler") → DATABASE_URL
       #   the direct host (no "-pooler")       → DATABASE_URL_DIRECT
+      #
+      # DATABASE_URL is required at boot. DATABASE_URL_DIRECT is only read by
+      # the migration runner, so on the free plan — where migrations run from
+      # your machine — this can be left empty in the Render dashboard. It is
+      # listed because the paid path needs it for pre-deploy.
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_URL_DIRECT

@@ -127,6 +127,9 @@ describe('rate limiting through the app', () => {
       rateLimits: {
         global: { name: 'global', windowMs: 60_000, max: globalMax },
         auth: { name: 'auth', windowMs: 60_000, max: authMax },
+        // Generous by default so a test about the auth rule is not also
+        // measuring the write rule; the channel suites set their own.
+        write: { name: 'write', windowMs: 60_000, max: 10_000 },
       },
     });
 

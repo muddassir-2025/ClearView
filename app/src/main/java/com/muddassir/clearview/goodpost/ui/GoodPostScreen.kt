@@ -1,9 +1,6 @@
 package com.muddassir.clearview.goodpost.ui
 
 import androidx.activity.compose.LocalActivity
-import androidx.annotation.StringRes
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -20,7 +17,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -41,11 +37,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.muddassir.clearview.R
-import com.muddassir.clearview.goodpost.GoodPostError
+import com.muddassir.clearview.goodpost.GoodPostHomeViewModel
 import com.muddassir.clearview.goodpost.GoodPostPhase
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
-import com.muddassir.clearview.goodpost.goodPostErrorFor
 
 /**
  * The Good Post tab (§4).
@@ -85,7 +80,29 @@ fun GoodPostTab(viewModel: GoodPostViewModel = viewModel()) {
 
         GoodPostPhase.Register -> RegisterStep(state, viewModel)
 
-        GoodPostPhase.SignedIn -> SignedInStep(state, viewModel)
+        GoodPostPhase.SignedIn -> {
+            // A second ViewModel owns the signed-in surface. The gate VM keeps
+            // owning the session, so the two never disagree about who is signed
+            // in, and the home screen cannot sign anyone out by accident.
+            val home: GoodPostHomeViewModel = viewModel()
+
+            LaunchedEffect(Unit) { home.initialize(context) }
+
+            // A session revoked server-side (ban, forced logout, reuse
+            // detection) is noticed by the first home request, which then asks
+            // the gate to re-check rather than leaving the user on a screen
+            // whose every action will fail.
+            LaunchedEffect(home.uiState.signedOut) {
+                if (home.uiState.signedOut) viewModel.refreshSession()
+            }
+
+            GoodPostHome(
+                state = home.uiState,
+                accountName = state.account?.displayName.orEmpty(),
+                onSignOut = viewModel::signOut,
+                viewModel = home
+            )
+        }
     }
 }
 
@@ -231,52 +248,6 @@ private fun RegisterStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     }
 }
 
-@Composable
-private fun SignedInStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
-    val account = state.account
-
-    Step(
-        title = account?.displayName?.takeIf { it.isNotBlank() }
-            ?: stringResource(R.string.goodpost_signed_in_title),
-        note = account?.email.orEmpty(),
-        error = null,
-        busy = state.busy
-    ) {
-        if (state.offline) {
-            // §36: say the state is stale rather than pretending it is live.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.CloudOff,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    stringResource(R.string.goodpost_offline_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        Text(
-            stringResource(R.string.goodpost_signed_in_note),
-            style = MaterialTheme.typography.bodyMedium
-        )
-
-        Spacer(Modifier.height(16.dp))
-
-        OutlinedButton(
-            onClick = viewModel::signOut,
-            enabled = !state.busy,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(stringResource(R.string.goodpost_sign_out))
-        }
-    }
-}
-
 // ── Building blocks ─────────────────────────────────────────────────────
 
 /** Scrollable title / note / content / error column shared by every step. */
@@ -323,7 +294,7 @@ private fun Step(
 
         if (error != null) {
             Spacer(Modifier.height(16.dp))
-            ErrorText(error)
+            ErrorNotice(error)
         }
 
         if (busy) {
@@ -341,52 +312,6 @@ private fun Step(
     }
 }
 
-/**
- * Render a backend code as something a person can act on.
- *
- * The code itself is never shown: it is deliberately machine-readable, and a
- * user seeing `otp_rate_limited` learns nothing. [goodPostErrorFor] decides
- * which of a fixed set of explanations applies, and an unrecognised code lands
- * on a generic retry rather than a confidently wrong one.
- */
-@Composable
-private fun ErrorText(code: String) {
-    Row(verticalAlignment = Alignment.Top) {
-        Icon(
-            Icons.Filled.ErrorOutline,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.error,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(Modifier.width(8.dp))
-        Text(
-            text = stringResource(messageFor(goodPostErrorFor(code))),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.error
-        )
-    }
-}
-
-@StringRes
-private fun messageFor(error: GoodPostError): Int = when (error) {
-    GoodPostError.InvalidPhone -> R.string.goodpost_error_invalid_phone
-    GoodPostError.PhoneBanned -> R.string.goodpost_error_phone_banned
-    GoodPostError.AccountBanned -> R.string.goodpost_error_account_banned
-    GoodPostError.AccountSuspended -> R.string.goodpost_error_account_suspended
-    GoodPostError.RateLimited -> R.string.goodpost_error_rate_limited
-    GoodPostError.OtpLocked -> R.string.goodpost_error_otp_locked
-    GoodPostError.InvalidCode -> R.string.goodpost_error_invalid_code
-    GoodPostError.SmsQuota -> R.string.goodpost_error_sms_quota
-    GoodPostError.VerificationFailed -> R.string.goodpost_error_verification_failed
-    GoodPostError.EmailTaken -> R.string.goodpost_error_email_taken
-    GoodPostError.PhoneTaken -> R.string.goodpost_error_phone_taken
-    GoodPostError.AccountExists -> R.string.goodpost_error_account_exists
-    GoodPostError.Unreachable -> R.string.goodpost_error_unreachable
-    GoodPostError.NotConfigured -> R.string.goodpost_not_configured_title
-    GoodPostError.ServerError -> R.string.goodpost_error_server
-    GoodPostError.Unknown -> R.string.goodpost_error_unknown
-}
-
 @Composable
 private fun PrivacyNote() {
     Text(
@@ -396,43 +321,3 @@ private fun PrivacyNote() {
     )
 }
 
-@Composable
-private fun CenteredProgress() {
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
-}
-
-@Composable
-private fun Notice(
-    icon: @Composable () -> Unit,
-    title: String,
-    note: String,
-    actionLabel: String,
-    onAction: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        icon()
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(Modifier.height(8.dp))
-        Text(
-            text = note,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedButton(onClick = onAction) { Text(actionLabel) }
-    }
-}

@@ -648,7 +648,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_email_label">Email</string>
     <string name="goodpost_create_account">Create account</string>
     <string name="goodpost_signed_in_title">You\'re signed in</string>
-    <string name="goodpost_signed_in_note">You have no channels yet. Channels, posts and Discover arrive next.</string>
     <string name="goodpost_offline_note">Showing your saved session — the server could not be reached.</string>
     <string name="goodpost_sign_out">Sign out</string>
     <string name="goodpost_working">Working…</string>
@@ -669,4 +668,57 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_unreachable">Could not reach the server. Check your connection and try again.</string>
     <string name="goodpost_error_server">The server had a problem. Try again in a moment.</string>
     <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
+
+    <!-- M2: channels and discovery -->
+    <string name="goodpost_section_channels">Channels</string>
+    <string name="goodpost_section_discover">Discover</string>
+    <string name="goodpost_refresh">Refresh</string>
+    <string name="goodpost_more">Load more</string>
+    <string name="goodpost_search_label">Search channels</string>
+    <string name="goodpost_search_hint">Search by name</string>
+    <string name="goodpost_search">Search</string>
+    <string name="goodpost_sort_label">Sort</string>
+    <string name="goodpost_sort_popular">Popular</string>
+    <string name="goodpost_sort_active">Active</string>
+    <string name="goodpost_sort_new">New</string>
+    <string name="goodpost_all_categories">All</string>
+    <string name="goodpost_follow">Follow</string>
+    <string name="goodpost_unfollow">Unfollow</string>
+    <string name="goodpost_following">Following</string>
+    <string name="goodpost_mute">Mute</string>
+    <string name="goodpost_unmute">Unmute</string>
+    <string name="goodpost_muted">Muted</string>
+    <string name="goodpost_block">Block</string>
+    <string name="goodpost_unblock">Unblock</string>
+    <string name="goodpost_blocked">Blocked</string>
+    <string name="goodpost_unread_note">New posts</string>
+    <string name="goodpost_followers">%1$s followers</string>
+    <string name="goodpost_owner_note">You own this channel</string>
+    <string name="goodpost_channel_no_description">No description yet</string>
+    <string name="goodpost_create_channel">New channel</string>
+    <string name="goodpost_create_title">Create a channel</string>
+    <string name="goodpost_channel_name_label">Channel name</string>
+    <string name="goodpost_channel_description_label">Description (optional)</string>
+    <string name="goodpost_edit_title">Edit channel</string>
+    <string name="goodpost_category_label">Category</string>
+    <string name="goodpost_create">Create</string>
+    <string name="goodpost_save">Save</string>
+    <string name="goodpost_cancel">Cancel</string>
+    <string name="goodpost_share">Share link</string>
+    <string name="goodpost_share_chooser">Share channel</string>
+    <string name="goodpost_channel_actions">Channel actions</string>
+    <string name="goodpost_empty_following_title">No channels yet</string>
+    <string name="goodpost_empty_following_note">Channels you follow appear here, with new posts first. Find some in Discover.</string>
+    <string name="goodpost_empty_discover_title">Nothing found</string>
+    <string name="goodpost_empty_discover_note">Try a different search or category.</string>
+    <string name="goodpost_stale_note">Showing saved data — the server could not be reached.</string>
+
+    <string name="goodpost_error_channel_limit">You have reached the limit of channels one account can create.</string>
+    <string name="goodpost_error_channel_not_found">That channel no longer exists.</string>
+    <string name="goodpost_error_channel_forbidden">Only the channel owner can change this.</string>
+    <string name="goodpost_error_channel_unavailable">This channel is not available right now.</string>
+    <string name="goodpost_error_channel_blocked">Unblock this channel first.</string>
+    <string name="goodpost_error_follow_own">You cannot follow your own channel.</string>
+    <string name="goodpost_error_not_following">Follow this channel before changing its notifications.</string>
+    <string name="goodpost_error_invalid_input">That value is not allowed. Check the name, category or country code.</string>
 </resources>

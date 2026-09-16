@@ -20,6 +20,13 @@ export default defineConfig({
       FCM_ENABLED: 'false',
       RATE_LIMIT_MAX: '100000',
       AUTH_RATE_LIMIT_MAX: '100000',
+      // Every rule needs raising here, not just the ones that existed when
+      // this file was written. At the shipped default (40 writes/min/IP) the
+      // channel suite exhausts the budget part way through and reports 429s,
+      // which reads like a failing feature rather than a working limiter.
+      // The limiter is still asserted on purpose, with small windows, in
+      // tests/rate-limit.test.ts — so raising it here hides nothing.
+      WRITE_RATE_LIMIT_MAX: '100000',
     },
   },
 });

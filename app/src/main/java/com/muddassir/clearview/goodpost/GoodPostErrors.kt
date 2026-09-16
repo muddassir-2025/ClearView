@@ -47,6 +47,33 @@ enum class GoodPostError {
     NotConfigured,
 
     ServerError,
+
+    // ── Channels and discovery (M2) ─────────────────────────────────────
+
+    /** §7: the account already owns as many channels as it may. */
+    ChannelLimit,
+
+    /** The channel is gone, or the link never pointed at one. */
+    ChannelNotFound,
+
+    /** §7/§32: only the owner may edit this channel. */
+    ChannelForbidden,
+
+    /** §18: a moderator has suspended or banned the channel. */
+    ChannelUnavailable,
+
+    /** §12: the user blocked this channel and must unblock it first. */
+    ChannelBlocked,
+
+    /** An owner cannot follow their own channel. */
+    CannotFollowOwnChannel,
+
+    /** Mute was requested for a channel the user does not follow. */
+    NotFollowing,
+
+    /** A field the server rejected: bad category, bad country code, empty patch. */
+    InvalidInput,
+
     Unknown
 }
 
@@ -72,6 +99,18 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "email_already_registered" -> GoodPostError.EmailTaken
     "phone_already_registered" -> GoodPostError.PhoneTaken
     "account_already_exists" -> GoodPostError.AccountExists
+
+    // ── Channels and discovery (M2) ─────────────────────────────────────
+    "channel_limit_reached" -> GoodPostError.ChannelLimit
+    "channel_not_found" -> GoodPostError.ChannelNotFound
+    "channel_forbidden" -> GoodPostError.ChannelForbidden
+    "channel_unavailable" -> GoodPostError.ChannelUnavailable
+    "channel_blocked" -> GoodPostError.ChannelBlocked
+    "cannot_follow_own_channel" -> GoodPostError.CannotFollowOwnChannel
+    "not_following" -> GoodPostError.NotFollowing
+    "invalid_category", "invalid_country", "empty_update",
+    "invalid_channel_id", "invalid_cursor", "incorrect_cursor" -> GoodPostError.InvalidInput
+
     "unreachable", "timeout" -> GoodPostError.Unreachable
     "not_configured" -> GoodPostError.NotConfigured
     "server_error", "auth_unavailable", "http_error", "payload_too_large" -> GoodPostError.ServerError

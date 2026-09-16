@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import { env, isProduction } from './env.js';
 import { db, pingDatabase, type Queryable } from './db.js';
 import { buildAuthRouter } from './auth/routes.js';
+import { buildChannelsRouter, buildDiscoverRouter } from './channels/routes.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './auth/firebase.js';
 import {
   FixedWindowRateLimiter,
@@ -143,6 +144,12 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   app.use('/api/v1/auth', rateLimit(limiter, rateLimits.auth));
 
   app.use('/api/v1/auth', buildAuthRouter(database, verifier));
+
+  // Channels and discovery (M2). Both take the same limiter instance, so the
+  // `write` rule shares one bounded bucket structure with the other rules
+  // instead of each router carrying its own window for the same rule name.
+  app.use('/api/v1/channels', buildChannelsRouter(database, limiter, rateLimits));
+  app.use('/api/v1/discover', buildDiscoverRouter(database));
 
   app.use(notFound);
   app.use(errorHandler);
