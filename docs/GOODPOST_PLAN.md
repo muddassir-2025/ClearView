@@ -238,8 +238,19 @@ then the **same token** was offered to two verifiers.
 | Local verifier, real service account | accepted — phone `***1063` |
 | Deployed `/auth/signin`, identical token | `401 invalid_id_token` |
 
-So the **deployed** Firebase Admin credentials are wrong or malformed, and the
-backend blamed the user's token. Two defects made that unreadable:
+So the **deployed** Firebase Admin credentials verify nothing, while the backend
+blamed the user's token.
+
+**After the fix was deployed, the service named its own problem.** Both a junk
+token and a freshly minted genuine one now answer `503 auth_unavailable`, which
+that code returns only when `getFirebaseAdminApp()` itself throws — the PEM
+cannot be parsed. The other meaning of the same status (the three variables being
+absent) is ruled out by the earlier `401`: `invalid_id_token` was only reachable
+then on the branch where all three were present. So **Render's
+`FIREBASE_PRIVATE_KEY` has lost its `\n` escapes** — the exact failure
+`scripts/set-firebase-env.mjs --repair` exists to undo locally.
+
+Two defects made that unreadable:
 
 1. `getFirebaseAdminApp()` sat *inside* the `try` that maps every failure to
    `invalid_id_token`. A misconfigured service account — which breaks every
