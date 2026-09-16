@@ -33,6 +33,11 @@ import {
  *              are what make that true under concurrency).
  *   swept    → never confirmed and never claimed, pruned by age (§34).
  *
+ * Note which of those the enum actually stores: `media_status` holds only
+ * `pending` and `ready`. Claiming is `post_id IS NOT NULL` and sweeping is the
+ * row being deleted, so filtering the table for the other two labels fails with
+ * an enum error rather than an empty result.
+ *
  * The store is a parameter rather than a module singleton so this whole
  * lifecycle is testable without an AWS account; the checks that matter are
  * ours, and a fake proves they hold.
