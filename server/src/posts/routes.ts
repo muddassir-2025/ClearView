@@ -6,6 +6,8 @@ import { parseBody, pathIdParam } from '../http/validate.js';
 import { rateLimit, type FixedWindowRateLimiter, type RateLimitConfig } from '../http/rateLimit.js';
 import { authOf, requireAuth } from '../auth/middleware.js';
 import type { ObjectStore } from '../media/store.js';
+import { fanOutPostNotification } from '../notifications/service.js';
+import type { PushSender } from '../notifications/push.js';
 import { deletePost, listChannelPosts, listFeed, publishPost, updatePost } from './service.js';
 
 /**
@@ -36,13 +38,58 @@ import { deletePost, listChannelPosts, listFeed, publishPost, updatePost } from 
  * and a zod `.max()` here would replace them with a generic `invalid_request`.
  */
 
+/**
+ * §14's poll, published WITH its post.
+ *
+ * Shape only, like everything else here: option counts are bounded by
+ * `POLL_MIN_OPTIONS`/`POLL_MAX_OPTIONS` in the service, which is where the
+ * error codes a client words (`too_few_options`, `duplicate_option`) live. The
+ * `.min(1)`/`.max(50)` here exist to stop a 100 000-element array from being
+ * parsed at all, not to state the product rule.
+ */
+const PollSchema = z.object({
+  question: z.string().min(1).max(300),
+  options: z.array(z.string().min(1).max(120)).min(1).max(50),
+  allowMultiple: z.boolean().optional(),
+  /** Hours until it closes. Omitted means it stays open. */
+  openForHours: z.number().positive().max(8760).optional(),
+});
+
 const CreatePostSchema = z.object({
   body: z.string().optional(),
   linkUrl: z.string().optional(),
   linkTitle: z.string().optional(),
   /** Ids from the upload endpoints, in the order they should be displayed. */
   mediaIds: z.array(z.string().min(1).max(64)).optional(),
+  poll: PollSchema.optional(),
 });
+
+/**
+ * What a notification body should say.
+ *
+ * The caption if there is one, otherwise a description of what the post IS —
+ * "shared a photo" tells a reader more than an empty string, and either way the
+ * post itself is one tap away. Deliberately not the media URL: a notification
+ * must not carry a capability (§38).
+ */
+function previewOf(post: { readonly body: string | null; readonly type: string }): string {
+  const caption = post.body?.trim() ?? '';
+  if (caption !== '') return caption;
+  switch (post.type) {
+    case 'image':
+      return 'Shared a photo';
+    case 'video':
+      return 'Shared a video';
+    case 'audio':
+      return 'Shared an audio clip';
+    case 'link':
+      return 'Shared a link';
+    case 'poll':
+      return 'Started a poll';
+    default:
+      return 'New post';
+  }
+}
 
 /**
  * A patch is a partial update, so every field is optional. `null` clears a
@@ -69,7 +116,8 @@ export function buildChannelPostsRouter(
   database: Queryable,
   store: ObjectStore,
   limiter: FixedWindowRateLimiter,
-  rateLimits: RateLimitConfig
+  rateLimits: RateLimitConfig,
+  push: PushSender
 ): Router {
   const router = Router();
   const requireSession = requireAuth(database);
@@ -88,9 +136,28 @@ export function buildChannelPostsRouter(
     const auth = authOf(req);
     const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
     const body = parseBody(CreatePostSchema, req.body);
-    res
-      .status(201)
-      .json({ post: await publishPost(database, store, auth.userId, channelId, body) });
+
+    const post = await publishPost(database, store, auth.userId, channelId, body);
+
+    // §17's fan-out, AFTER the post is committed and OUTSIDE the publish's own
+    // transaction. A notification is a side effect of publishing, not part of
+    // it: if the push provider is unreachable, or a row cannot be written, the
+    // post still exists and the publisher must not be told their post failed.
+    // The failure is logged, and the inbox is filled by the next publish — or,
+    // for the affected followers, by opening the channel.
+    try {
+      await fanOutPostNotification(database, push, {
+        channelId,
+        postId: post.id,
+        authorId: auth.userId,
+        channelName: post.channel.name ?? '',
+        preview: previewOf(post),
+      });
+    } catch (err) {
+      console.error('[notifications] post fan-out failed:', (err as Error).message);
+    }
+
+    res.status(201).json({ post });
   });
 
   /** §7 edit the text of a post that is still inside its edit window. */

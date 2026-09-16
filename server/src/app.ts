@@ -9,6 +9,12 @@ import { createMailer, type Mailer } from './email/sender.js';
 import { buildChannelsRouter, buildDiscoverRouter } from './channels/routes.js';
 import { buildChannelPostsRouter, buildPostsRouter } from './posts/routes.js';
 import { buildMediaRouter } from './media/routes.js';
+import { buildEngagementRouter } from './engagement/routes.js';
+import { buildModerationRouter } from './moderation/routes.js';
+import { buildNotificationsRouter } from './notifications/routes.js';
+import { createPushSender, type PushSender } from './notifications/push.js';
+import { buildAdminRouter } from './admin/routes.js';
+import { buildDashboardRouter } from './admin/dashboard.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './auth/firebase.js';
 import {
@@ -111,6 +117,12 @@ export interface AppDeps {
    * single message leaving the process.
    */
   readonly mailer?: Mailer;
+  /**
+   * Push delivery (§17). Overridable for the same reason as the store: the
+   * rules that matter — who is notified, who is excluded, what is deduped — are
+   * ours, and a suite that needed a device to test them would not test them.
+   */
+  readonly push?: PushSender;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
@@ -119,6 +131,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   const rateLimits = deps.rateLimits ?? rateLimitConfigFromEnv();
   const store = deps.store ?? createObjectStore();
   const mailer = deps.mailer ?? createMailer();
+  const push = deps.push ?? createPushSender();
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -182,6 +195,42 @@ export function buildApp(deps: AppDeps = {}): express.Express {
 
   app.use('/api/v1/auth', buildAuthRouter(database, verifier, mailer));
 
+  // Engagement (M4). Registered before the channel and post routers because it
+  // answers paths under both prefixes (`/posts/:id/reactions`,
+  // `/channels/:id/analytics`); matching first keeps a reaction from being
+  // seen by the posts router, whose blanket `requireAuth` would then verify the
+  // same session twice. The suite asserts neither router swallows the other's
+  // paths rather than assuming it.
+  app.use('/api/v1', buildEngagementRouter(database, limiter, rateLimits));
+
+  // Moderation and private messaging (M5). Same shared prefix and the same
+  // registration-order reasoning as engagement above: `/channels/:id/conversations`
+  // belongs to this router even though it lives under the channel prefix.
+  app.use('/api/v1', buildModerationRouter(database, limiter, rateLimits, push));
+
+  // Notifications (M7/M9). The inbox and device registration sit on the same
+  // prefix as everything else user-facing; the fan-out itself is triggered from
+  // the publish, message and admin-message paths.
+  app.use('/api/v1', buildNotificationsRouter(database, limiter, rateLimits));
+
+  // ── Platform administration (M6, §20–§30) ─────────────────────────────
+  //
+  // A DIFFERENT PATH PREFIX from every user endpoint, and a different token
+  // audience and signing key behind it (§48). No user token can satisfy these
+  // routes and no admin token can satisfy `/api/v1`, so the two surfaces cannot
+  // be reached from each other by guessing a path.
+  //
+  // The global rule applies here too — the admin API is not exempt from rate
+  // limiting — and `/admin/api/auth/login` additionally takes the tighter auth
+  // rule inside the router.
+  app.use('/admin/api', rateLimit(limiter, rateLimits.global));
+  app.use('/admin/api', buildAdminRouter(database, limiter, rateLimits, push));
+
+  // The dashboard itself: server-rendered HTML, its own CSS and JS served from
+  // this origin. Same process, same API, no second framework (§31), and no
+  // CDN or inline script — helmet's default CSP then applies unmodified.
+  app.use('/admin', buildDashboardRouter());
+
   // Channels and discovery (M2). Both take the same limiter instance, so the
   // `write` rule shares one bounded bucket structure with the other rules
   // instead of each router carrying its own window for the same rule name.
@@ -197,7 +246,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // blanket `requireSession` would otherwise run first for every post request
   // and verify the same token twice. The suite asserts that neither router
   // swallows the other's paths rather than assuming it.
-  app.use('/api/v1/channels', buildChannelPostsRouter(database, store, limiter, rateLimits));
+  app.use('/api/v1/channels', buildChannelPostsRouter(database, store, limiter, rateLimits, push));
   app.use('/api/v1/channels', buildChannelsRouter(database, limiter, rateLimits));
   app.use('/api/v1/discover', buildDiscoverRouter(database));
   app.use('/api/v1/posts', buildPostsRouter(database, store));

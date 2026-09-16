@@ -106,16 +106,22 @@ describe('rate limit configuration', () => {
     expect(config.auth.windowMs).toBeGreaterThan(0);
   });
 
-  it('says out loud which variables are NOT enforced', () => {
-    // The failure this guards against is an operator reading .env, seeing
-    // WRITE_RATE_LIMIT_MAX, and believing it protects something. The boot log
-    // must contradict that.
+  it('reports every declared limit as enforced, and keeps reporting the exemptions', () => {
+    // The failure this guards against is an operator reading .env, seeing a
+    // limit name, and believing it protects something. That was a real gap: for
+    // three milestones REPORT_RATE_LIMIT_MAX was documented and consumed by
+    // nothing. The boot log must therefore name each rule as ACTIVE — and still
+    // admit what is deliberately NOT limited.
     const reported = describeActiveLimits(rateLimitConfigFromEnv()).join('\n');
 
-    expect(reported).toContain('ACTIVE');
-    expect(reported).toContain('RESERVED');
-    expect(reported).toContain('WRITE_RATE_LIMIT_MAX');
-    expect(reported).toContain('REPORT_RATE_LIMIT_MAX');
+    expect(reported).toContain('ACTIVE  global');
+    expect(reported).toContain('ACTIVE  auth');
+    expect(reported).toContain('ACTIVE  write');
+    expect(reported).toContain('ACTIVE  report');
+    expect(reported).toContain('ACTIVE  admin_message');
+    // No rule may still claim to be reserved: an unenforced limit must be
+    // impossible to mistake for an enforced one.
+    expect(reported).not.toContain('RESERVED');
     expect(reported).toContain('NOT LIMITED: /health');
   });
 });
@@ -130,6 +136,10 @@ describe('rate limiting through the app', () => {
         // Generous by default so a test about the auth rule is not also
         // measuring the write rule; the channel suites set their own.
         write: { name: 'write', windowMs: 60_000, max: 10_000 },
+        // The M5 report rule shares the limiter instance but not the bucket, so
+        // a generous allowance here cannot mask a problem with `write`.
+        report: { name: 'report', windowMs: 60_000, max: 10_000 },
+        adminMessage: { name: 'admin_message', windowMs: 60_000, max: 10_000 },
       },
     });
 

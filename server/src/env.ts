@@ -73,6 +73,46 @@ const schema = z.object({
   MAX_PAGE_SIZE: z.coerce.number().int().positive().default(100),
   DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
   MAX_CHANNELS_PER_USER: z.coerce.number().int().positive().default(5),
+
+  // ── Engagement (§13, §14, §15) ──
+  // How long a second look at the same post counts as the SAME view. §15 asks
+  // for dedupe that a scroll loop cannot defeat; a window rather than "once
+  // ever" keeps the number meaningful (a post re-read next week is a view)
+  // while a pull-to-refresh cannot inflate it.
+  VIEW_DEDUPE_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
+  POLL_MIN_OPTIONS: z.coerce.number().int().min(2).default(2),
+  POLL_MAX_OPTIONS: z.coerce.number().int().positive().default(10),
+  /** The window a channel's analytics charts cover. */
+  ANALYTICS_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
+
+  // ── Moderation (§18) ──
+  MAX_REPORT_DETAILS_LENGTH: z.coerce.number().int().positive().default(2000),
+
+  // ── Admins (§20–§30) ──
+  // Shorter than a user session on purpose: the admin surface can ban
+  // identities and read every report, so a stolen token has a smaller window.
+  ADMIN_ACCESS_TOKEN_TTL: z.string().default('10m'),
+  ADMIN_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(7),
+  /** §27's floor for a new administrator's password. */
+  ADMIN_MIN_PASSWORD_LENGTH: z.coerce.number().int().positive().default(12),
+  /** Official admin messages per hour, per administrator. */
+  ADMIN_MESSAGE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
+
+  // ── Notifications (§17) ──
+  /** Device registrations accepted per account, so tokens cannot pile up. */
+  MAX_DEVICE_TOKENS_PER_USER: z.coerce.number().int().positive().default(10),
+  /** How long a delivered notification is kept before the sweep prunes it. */
+  NOTIFICATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  /**
+   * How long a push token may go unrefreshed before it is disabled.
+   *
+   * Longer than a phone's typical upgrade cycle is not the goal — the goal is
+   * "long enough that a working install always refreshes first". The client
+   * re-registers on every sign-in and launch, so this only ever catches a device
+   * that is gone.
+   */
+  DEVICE_TOKEN_STALE_DAYS: z.coerce.number().int().positive().default(120),
+
   // A carousel bound (§8). Enforced by the API rather than by a constraint,
   // because it is a product rule and not an invariant of the data.
   MAX_POST_MEDIA: z.coerce.number().int().positive().default(4),
@@ -133,9 +173,11 @@ const schema = z.object({
   EMAIL_OTP_MAX_SENDS_PER_HOUR: z.coerce.number().int().positive().default(5),
   EMAIL_OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
 
-  // ── Retention job ──
+  // ── Retention job (§11, §34) ──
   RETENTION_CRON: z.string().default('*/30 * * * *'),
   RETENTION_JOB_ENABLED: bool.default(true),
+  /** Rows one purge pass may take, so a large backlog cannot stall a tick. */
+  PURGE_BATCH_SIZE: z.coerce.number().int().positive().default(200),
 });
 
 const parsed = schema.safeParse(process.env);

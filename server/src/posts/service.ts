@@ -17,6 +17,13 @@ import {
 } from '../channels/service.js';
 import { contentVisibleTo } from '../channels/visibility.js';
 import {
+  createPollInTransaction,
+  engagementForPosts,
+  normalisePollInput,
+  type CreatePollInput,
+  type PostEngagement,
+} from '../engagement/service.js';
+import {
   attachMediaToPost,
   lockMediaForClaim,
   mediaForPosts,
@@ -52,7 +59,7 @@ import type { ObjectStore } from '../media/store.js';
  * rather than at an unpredictable boundary.
  */
 
-export type PostType = 'text' | 'image' | 'video' | 'audio' | 'link';
+export type PostType = 'text' | 'image' | 'video' | 'audio' | 'link' | 'poll';
 
 /** Roles that may publish, edit and remove posts (§7). */
 const PUBLISHING_ROLES: readonly ChannelRole[] = ['owner', 'editor'];
@@ -92,6 +99,16 @@ export interface PostSummary {
    * put an authorization decision in the UI layer (§32).
    */
   readonly viewerCanManage: boolean;
+  /**
+   * Reactions, views and the poll, already aggregated (§13, §14, §15).
+   *
+   * Part of a post's payload rather than a second request per post, because
+   * every consumer of this shape — the feed, channel history, the publish
+   * response — needs it, and a client that had to fetch it separately would
+   * either do so once per post or render counts that do not match the post
+   * beside them.
+   */
+  readonly engagement: PostEngagement;
 }
 
 /** A post in the aggregated feed, which spans channels and so must name one. */
@@ -104,6 +121,8 @@ export interface PublishPostInput {
   readonly linkUrl?: string | undefined;
   readonly linkTitle?: string | undefined;
   readonly mediaIds?: readonly string[] | undefined;
+  /** §14. A poll post's content is its poll; the body becomes a caption. */
+  readonly poll?: CreatePollInput | undefined;
 }
 
 export interface UpdatePostInput {
@@ -139,7 +158,8 @@ interface FeedRow extends PostRow {
 function mapPost(
   row: PostRow,
   media: readonly MediaSummary[],
-  viewerCanManage: boolean
+  viewerCanManage: boolean,
+  engagement: PostEngagement
 ): PostSummary {
   const editedAt = isoOrNull(row.edited_at);
   return {
@@ -154,6 +174,20 @@ function mapPost(
     editedAt,
     isEdited: editedAt !== null,
     viewerCanManage,
+    engagement,
+  };
+}
+
+/** The all-zero engagement shape, so no payload has a nullable `engagement`. */
+function emptyEngagement(): PostEngagement {
+  return {
+    reactions: [],
+    reactionTotal: 0,
+    viewerReaction: null,
+    uniqueViewers: 0,
+    totalViews: 0,
+    viewerHasViewed: false,
+    poll: null,
   };
 }
 
@@ -223,7 +257,7 @@ export async function publishPost(
   userId: string,
   channelId: string,
   input: PublishPostInput
-): Promise<PostSummary> {
+): Promise<FeedPost> {
   const channel = await loadViewableChannel(database, channelId);
   await assertMayManagePosts(database, channel.id, userId);
   if (channel.status !== 'active') {
@@ -234,6 +268,10 @@ export async function publishPost(
   const linkUrl = input.linkUrl?.trim() ?? '';
   const linkTitle = input.linkTitle?.trim() ?? '';
   const mediaIds = input.mediaIds ?? [];
+
+  // Normalised BEFORE the transaction opens, so an unusable poll is a plain
+  // 400 instead of a post-and-media claim that gets rolled back.
+  const poll = input.poll === undefined ? null : normalisePollInput(input.poll);
 
   // Shape first, so a nonsense request is rejected without touching the
   // database or the caller's locked rows.
@@ -252,8 +290,14 @@ export async function publishPost(
   if (linkUrl !== '' && !isHttpUrl(linkUrl)) {
     throw badRequest('invalid_link', 'A link must be an http or https address.');
   }
-  if (body === '' && linkUrl === '' && mediaIds.length === 0) {
-    throw badRequest('empty_post', 'A post needs text, a link or a file.');
+  if (body === '' && linkUrl === '' && mediaIds.length === 0 && poll === null) {
+    throw badRequest('empty_post', 'A post needs text, a link, a file or a poll.');
+  }
+  if (poll !== null && mediaIds.length > 0) {
+    // One thing per post keeps `type` a description of the whole post rather
+    // than of its first field. A poll plus a photo would need a renderer rule
+    // no product decision has been made about.
+    throw badRequest('poll_with_media', 'A poll post cannot also carry a file.');
   }
 
   const postId = await database.transaction(async (tx) => {
@@ -279,7 +323,10 @@ export async function publishPost(
       throw badRequest('mixed_media', 'A post can hold one kind of file at a time.');
     }
 
-    const type: PostType = kind ?? (linkUrl === '' ? 'text' : 'link');
+    // The type follows from what the post actually carries, so a client cannot
+    // describe its own post wrongly (§8). A poll wins over the text fallback
+    // because a poll post IS its poll, with the body as a caption.
+    const type: PostType = poll !== null ? 'poll' : (kind ?? (linkUrl === '' ? 'text' : 'link'));
 
     const inserted = await tx.query<{ id: string }>(
       `INSERT INTO posts (channel_id, author_id, type, body, link_url, link_title)
@@ -298,6 +345,10 @@ export async function publishPost(
 
     await attachMediaToPost(tx, created, mediaIds);
 
+    // The poll is written in the same transaction as the post that promises it,
+    // so a post of type `poll` without a poll cannot exist even briefly.
+    if (poll !== null) await createPollInTransaction(tx, created, poll);
+
     // Same transaction as the insert, so the channel's counters cannot
     // disagree with the rows they count — the same rule `follower_count`
     // follows in M2. `last_post_at` also drives discovery ordering and the
@@ -312,7 +363,22 @@ export async function publishPost(
 
   // Read back through the same path a list uses, so the publish response and a
   // later read cannot answer with different shapes.
-  return loadPost(database, store, postId, true);
+  const post = await loadPost(database, store, userId, postId, true);
+
+  // The channel is attached here because publish ALREADY loaded it to check
+  // ownership, so naming it costs no query — and a caller that just published
+  // needs the name to announce it (§17). Returning the feed shape rather than
+  // the bare summary also means the publish response and a feed row cannot
+  // disagree about the channel a post belongs to.
+  return {
+    ...post,
+    channel: {
+      id: channel.id,
+      slug: channel.slug,
+      name: channel.name,
+      iconObjectKey: channel.icon_object_key,
+    },
+  };
 }
 
 /**
@@ -325,6 +391,7 @@ export async function publishPost(
 async function loadPost(
   database: Queryable,
   store: ObjectStore,
+  userId: string,
   postId: string,
   viewerCanManage: boolean
 ): Promise<PostSummary> {
@@ -334,8 +401,16 @@ async function loadPost(
   );
   if (!row) throw notFound('post_not_found');
 
-  const media = await mediaForPosts(database, store, [row.id]);
-  return mapPost(row, media.get(row.id) ?? [], viewerCanManage);
+  const [media, engagement] = await Promise.all([
+    mediaForPosts(database, store, [row.id]),
+    engagementForPosts(database, userId, [row.id]),
+  ]);
+  return mapPost(
+    row,
+    media.get(row.id) ?? [],
+    viewerCanManage,
+    engagement.get(row.id) ?? emptyEngagement()
+  );
 }
 
 /**
@@ -385,7 +460,7 @@ export async function listChannelPosts(
   const last = items[items.length - 1];
 
   return {
-    items: await assemble(database, store, items, () => canManage),
+    items: await assemble(database, store, userId, items, () => canManage),
     nextCursor:
       hasMore && last ? encodeCursor({ k: cursorKeyOf(last.created_at), id: last.id }) : null,
   };
@@ -447,6 +522,7 @@ export async function listFeed(
   const summaries = await assemble(
     database,
     store,
+    userId,
     items,
     (row) => row.viewer_role !== null && PUBLISHING_ROLES.includes(row.viewer_role)
   );
@@ -482,15 +558,21 @@ export async function listFeed(
 async function assemble<T extends PostRow>(
   database: Queryable,
   store: ObjectStore,
+  userId: string,
   rows: readonly T[],
   canManage: (row: T) => boolean
 ): Promise<PostSummary[]> {
-  const media = await mediaForPosts(
-    database,
-    store,
-    rows.map((row) => row.id)
+  const ids = rows.map((row) => row.id);
+  // Both are batched per page rather than per post: a 30-post feed would
+  // otherwise issue 60 extra queries, which is the difference between a feed
+  // that opens and one that feels broken on a phone.
+  const [media, engagement] = await Promise.all([
+    mediaForPosts(database, store, ids),
+    engagementForPosts(database, userId, ids),
+  ]);
+  return rows.map((row) =>
+    mapPost(row, media.get(row.id) ?? [], canManage(row), engagement.get(row.id) ?? emptyEngagement())
   );
-  return rows.map((row) => mapPost(row, media.get(row.id) ?? [], canManage(row)));
 }
 
 /**
@@ -586,7 +668,7 @@ export async function updatePost(
     ]
   );
 
-  return loadPost(database, store, postId, true);
+  return loadPost(database, store, userId, postId, true);
 }
 
 /**
