@@ -22,6 +22,32 @@ why the policy in `docs/aws-s3-policy.json` grants only those four actions on
 Presigning needs no extra permission: the signing happens in the backend, and
 the eventual request is authorised by the same four actions.
 
+## Already provisioned
+
+Verified against the account on 16 Sep 2026, so the steps below are recorded as
+what was done rather than what remains:
+
+| | |
+|---|---|
+| Bucket | `goodpost-bucket` |
+| Region | `eu-central-1` — same as Neon and the Render service |
+| Public access block | all four settings ON |
+| Default encryption | `AES256`, bucket key enabled |
+| Bucket policy | none (not needed; `BlockPublicPolicy` stops a bad one being added) |
+| IAM user | `clearview-goodpost-s3`, programmatic only — **no console login** |
+| Policy | inline `GoodPostMediaObjectsOnly`, the four object actions on that bucket |
+| Attached managed policies | **none** |
+
+Least privilege was **tested rather than assumed**, using the application user's
+own credentials:
+
+| Permitted | | Denied | |
+|---|---|---|---|
+| `PutObject` | works | `s3:ListAllMyBuckets` | denied |
+| `HeadObject` | works | reading a *different* bucket | denied |
+| `GetObject` | works | `ListObjectsV2` on this bucket | denied |
+| `DeleteObject` | works | | |
+
 ## Steps
 
 1. **Create the bucket** in `eu-central-1`. Same region as Neon (`eu-central-1`)
