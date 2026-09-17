@@ -19,15 +19,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.NotificationsOff
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -43,45 +47,77 @@ import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 
 /**
- * The Good Post home screen: the channel list (§3, §4, §15).
+ * The Good Post home screen: the channels this reader has (§1, §3, §4, §15).
  *
- * The hierarchy is the one a channel list uses: a bold page title with search
- * and an overflow menu, then a bold "Channels" section heading with an Explore
- * action beside it, then compact rows, and finally — at the very bottom, out of
- * the way — the way in for whoever runs a channel.
+ * The list is not "every channel that exists" — that is Explore, which is one tap
+ * away. This is the short list the reader built by following, and the whole of
+ * the tab's job is to answer "what did they say" for those channels. A fresh
+ * install therefore starts empty and says where to go, which is the honest
+ * version of a list nobody has chosen anything for yet.
  *
- * Nothing here counts anything. A row says who a channel is, what it last said
- * and when; there is no follower number, no unread count and no reaction total,
- * because Good Post is a broadcast system and those numbers do not exist in it
- * (§1, §5).
+ * When an administrator is signed in, the same list becomes the channels their
+ * account has access to — every channel for a super administrator, the one they
+ * run for a channel administrator (§3). There is no second, dashboard-shaped
+ * screen: the tab IS the admin surface, which is what keeps this feeling like
+ * WhatsApp rather than like a control panel.
+ *
+ * Rows are compact and carry three things: who the channel is, what it last said,
+ * and when. Nothing is counted (§1, §5).
  */
 @Composable
 internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    var confirmDelete by remember { mutableStateOf(false) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            WaTopBar(
-                title = stringResource(R.string.goodpost_tab),
-                actions = {
-                    WaIconAction(
-                        icon = Icons.Filled.Search,
-                        description = stringResource(R.string.goodpost_search),
-                        onClick = { viewModel.openExplore() }
-                    )
-                    WaOverflowMenu(
-                        items = listOf(
-                            // No "sign out": a reader has nothing to sign out of.
-                            WaMenuItem(
-                                label = stringResource(R.string.goodpost_create_channel),
-                                onClick = viewModel::openAdmin
-                            ),
-                            WaMenuItem(
-                                label = stringResource(R.string.goodpost_refresh),
-                                onClick = viewModel::refreshChannels
-                            )
+            if (state.channelSelectionActive) {
+                ChannelsSelectionBar(
+                    state = state,
+                    viewModel = viewModel,
+                    onDelete = { confirmDelete = true }
+                )
+            } else {
+                WaTopBar(
+                    title = stringResource(R.string.goodpost_tab),
+                    actions = {
+                        WaIconAction(
+                            icon = Icons.Filled.Search,
+                            description = stringResource(R.string.goodpost_search),
+                            onClick = { viewModel.openExplore() }
                         )
-                    )
-                }
-            )
+                        WaOverflowMenu(
+                            items = buildList {
+                                // Only a reader, or a super administrator, has any
+                                // use for the way in: a channel administrator's
+                                // channel is already on this list (§15, §17).
+                                if (state.canCreateChannel) {
+                                    add(
+                                        WaMenuItem(
+                                            label = stringResource(R.string.goodpost_create_channel),
+                                            onClick = viewModel::openAdmin
+                                        )
+                                    )
+                                }
+                                add(
+                                    WaMenuItem(
+                                        label = stringResource(R.string.goodpost_refresh),
+                                        onClick = viewModel::refreshChannels
+                                    )
+                                )
+                                if (state.isAdmin) {
+                                    add(
+                                        WaMenuItem(
+                                            label = stringResource(R.string.goodpost_sign_out),
+                                            onClick = viewModel::adminSignOut,
+                                            destructive = true
+                                        )
+                                    )
+                                }
+                            }
+                        )
+                    }
+                )
+            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
@@ -103,40 +139,174 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     }
                 }
 
-                items(state.channels, key = { it.id }) { channel ->
+                items(state.tabChannels, key = { it.id }) { channel ->
+                    // Only a channel this account may manage says so; every other
+                    // row is the reader's view of it.
+                    val manageable = state.canManage(channel.id)
+
                     ChannelRow(
                         channel = channel,
-                        hasUnread = false,
-                        muted = state.hasMuted(channel.id),
-                        onClick = { viewModel.openChannel(channel.id) }
+                        selected = state.selectedChannelIds.contains(channel.id),
+                        selectionActive = state.channelSelectionActive,
+                        manageable = manageable,
+                        onClick = {
+                            if (state.channelSelectionActive) {
+                                viewModel.toggleChannelSelected(channel.id)
+                            } else {
+                                viewModel.openChannel(channel.id)
+                            }
+                        },
+                        // Long press is offered only where there is something to
+                        // do with it (§5): a reader has no action to take on a
+                        // channel, so their list is simply a list of links.
+                        onLongClick = if (manageable) {
+                            { viewModel.toggleChannelSelected(channel.id) }
+                        } else {
+                            null
+                        }
                     )
                 }
 
-                if (state.channels.isEmpty() && state.channelsLoading) {
+                if (state.tabChannels.isEmpty() && state.tabLoading) {
                     item(key = "loading") { CenteredProgress(Modifier.height(160.dp)) }
                 }
 
-                if (state.channels.isEmpty() && !state.channelsLoading &&
+                if (state.tabChannels.isEmpty() && !state.tabLoading &&
                     state.channelsError == null
                 ) {
                     item(key = "empty") {
-                        WaEmptyState(
-                            title = stringResource(R.string.goodpost_empty_channels_title),
-                            note = stringResource(R.string.goodpost_empty_channels_note),
-                            actionLabel = stringResource(R.string.goodpost_explore),
-                            onAction = { viewModel.openExplore() }
-                        )
+                        EmptyChannels(state = state, viewModel = viewModel)
                     }
                 }
 
                 // §15: a small utility row at the very bottom, never above the
-                // list. Public readers come here to read; only the person who
-                // runs a channel comes here to make one.
-                item(key = "create") {
-                    CreateChannelFooter(onClick = viewModel::openAdmin)
+                // list, and only where there is a channel to create.
+                if (state.canCreateChannel) {
+                    item(key = "create") {
+                        CreateChannelFooter(onClick = viewModel::openAdmin)
+                    }
                 }
             }
         }
+    }
+
+    if (confirmDelete) {
+        DeleteChannelsDialog(
+            state = state,
+            onConfirm = {
+                confirmDelete = false
+                viewModel.deleteSelectedChannels()
+            },
+            onDismiss = { confirmDelete = false }
+        )
+    }
+}
+
+/**
+ * The bar a selection replaces the title with (§5).
+ *
+ * Which actions appear is the permission model, not a preference: a reader may
+ * stop following, and an account that runs a channel may edit or delete it. The
+ * server refuses the rest regardless, but offering a control that always fails is
+ * its own kind of lie.
+ */
+@Composable
+private fun ChannelsSelectionBar(
+    state: GoodPostUiState,
+    viewModel: GoodPostViewModel,
+    onDelete: () -> Unit
+) {
+    val selectedIds = state.selectedChannelIds
+    // A selection can only begin on a row this account manages, so both actions
+    // here always apply to what is selected.
+    val editable = selectedIds.size == 1
+
+    WaSelectionBar(
+        count = selectedIds.size,
+        onClose = viewModel::clearChannelSelection,
+        actions = {
+            if (editable) {
+                WaIconAction(
+                    icon = Icons.Filled.Edit,
+                    description = stringResource(R.string.goodpost_edit_channel),
+                    onClick = {
+                        state.tabChannels.firstOrNull { it.id == selectedIds.first() }
+                            ?.let { viewModel.startEditChannel(it) }
+                    }
+                )
+            }
+
+            WaIconAction(
+                icon = Icons.Filled.Delete,
+                description = stringResource(R.string.goodpost_delete),
+                tint = Wa.Danger,
+                onClick = onDelete
+            )
+        }
+    )
+}
+
+/**
+ * The dialog before a channel is deleted (§17).
+ *
+ * The only confirmation in the app, because deleting a channel is the only
+ * action that cannot be taken back: the channel goes from the server along with
+ * its posts, its media and the login that ran it (§17). It names what will go,
+ * since "delete" alone would not lead anyone to expect all of that.
+ */
+@Composable
+private fun DeleteChannelsDialog(
+    state: GoodPostUiState,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val selected = state.selectedChannelIds
+
+    if (selected.size == 1) {
+        val name = state.tabChannels.firstOrNull { it.id == selected.first() }?.name.orEmpty()
+        WaConfirmDialog(
+            title = stringResource(R.string.goodpost_delete_channel_title),
+            message = stringResource(R.string.goodpost_delete_channel_note, name),
+            confirmLabel = stringResource(R.string.goodpost_delete),
+            onConfirm = onConfirm,
+            onDismiss = onDismiss
+        )
+    } else {
+        WaConfirmDialog(
+            title = stringResource(R.string.goodpost_delete_channels_title),
+            message = stringResource(R.string.goodpost_delete_channels_note),
+            confirmLabel = stringResource(R.string.goodpost_delete),
+            onConfirm = onConfirm,
+            onDismiss = onDismiss
+        )
+    }
+}
+
+/**
+ * What the tab says when it has nothing to show (§1).
+ *
+ * Two different answers, because the two states are different: a reader looking
+ * at an empty catalogue needs to be told where channels come from, and an account
+ * with no channels needs the way to create one.
+ */
+@Composable
+private fun EmptyChannels(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    if (state.isAdmin) {
+        WaEmptyState(
+            title = stringResource(R.string.goodpost_empty_admin_title),
+            note = stringResource(R.string.goodpost_empty_admin_note),
+            actionLabel = stringResource(R.string.goodpost_create_channel).takeIf {
+                state.canCreateChannel
+            },
+            onAction = viewModel::openAdmin
+        )
+    } else {
+        WaEmptyState(
+            title = stringResource(R.string.goodpost_empty_channels_title),
+            note = stringResource(R.string.goodpost_empty_channels_note),
+            actionLabel = stringResource(R.string.goodpost_explore),
+            onAction = { viewModel.openExplore() }
+        )
     }
 }
 
@@ -165,22 +335,25 @@ private fun ChannelsHeader(onExplore: () -> Unit) {
  *
  * Three things and nothing else: what it is called, what it last said, and when.
  * The preview falls back to the description only for a channel that has never
- * posted, where there is no preview to show and the description is the one
- * useful thing available.
+ * posted, where there is no preview to show and the description is the one useful
+ * thing available.
  */
 @Composable
 private fun ChannelRow(
     channel: GoodPostChannel,
-    hasUnread: Boolean,
-    muted: Boolean,
-    onClick: () -> Unit
+    selected: Boolean,
+    selectionActive: Boolean,
+    manageable: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?
 ) {
     val posted = channel.lastPostAt != null
     val preview = when {
+        channel.status == "suspended" -> stringResource(R.string.goodpost_suspended)
         posted && !channel.lastPostPreview.isNullOrBlank() -> channel.lastPostPreview
         // A post with no text is still a post — a photo, a video, a link. Saying
-        // what it is beats an empty line, and it is what the small icon beside
-        // it cannot say on its own.
+        // what it is beats an empty line, and it is what the small icon beside it
+        // cannot say on its own.
         posted -> stringResource(mediaLabel(channel.lastPostType))
         else -> channel.description?.takeIf { it.isNotBlank() }
             ?: stringResource(R.string.goodpost_no_description)
@@ -194,16 +367,18 @@ private fun ChannelRow(
         timestamp = if (posted) waListStamp(at) else null,
         timestampRecent = waStampIsRecent(at),
         onClick = onClick,
+        onLongClick = onLongClick,
+        selected = selected,
         avatar = { WaAvatar(name = channel.name, size = 49.dp, url = channel.iconUrl) },
         previewIcon = mediaIcon(channel.lastPostType),
         trailing = {
-            if (hasUnread) WaUnreadDot()
-            if (muted) {
-                Icon(
-                    Icons.Filled.NotificationsOff,
-                    contentDescription = stringResource(R.string.goodpost_muted),
-                    tint = Wa.TextDim,
-                    modifier = Modifier.size(15.dp)
+            // Only while something is selected, and only on the rows it applies
+            // to: a control on every row would be the icon soup §5 rules out.
+            if (selectionActive && manageable) {
+                Text(
+                    text = stringResource(R.string.goodpost_edit),
+                    color = Wa.TextDim,
+                    fontSize = 12.sp
                 )
             }
         }
@@ -227,7 +402,6 @@ private fun mediaIcon(type: String?): ImageVector? = when (type) {
 private fun mediaLabel(type: String?): Int = when (type) {
     "image" -> R.string.goodpost_posted_photo
     "video" -> R.string.goodpost_posted_video
-    "audio" -> R.string.goodpost_posted_audio
     "link" -> R.string.goodpost_posted_link
     else -> R.string.goodpost_posted_something
 }

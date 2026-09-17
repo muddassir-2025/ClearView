@@ -50,10 +50,14 @@ sealed interface GoodPostScreen {
     /** The administrator way in (§16). */
     data object AdminLogin : GoodPostScreen
 
-    /** The administrator's channel list (§19). */
-    data object AdminHome : GoodPostScreen
-
-    /** One channel, as its administrator sees it (§19, §21). */
+    /**
+     * One channel, as its administrator sees it (§19, §21).
+     *
+     * There is no separate administrator home screen any more. An account's
+     * channels ARE the tab — the list is built from what the account may publish
+     * to — so a second list of the same channels would be a dashboard beside the
+     * product rather than part of it (§5).
+     */
     data class AdminChannel(val channelId: String) : GoodPostScreen
 }
 
@@ -76,9 +80,16 @@ data class GoodPostUiState(
     /** True while what is on screen came from the cache (§27). */
     val channelsStale: Boolean = false,
     val channelsError: String? = null,
-    /** Channels this device has opened, so the row's dot is honest (§4). */
-    val openedChannelIds: Set<String> = emptySet(),
-    val mutedChannelIds: Set<String> = emptySet(),
+
+    /**
+     * The rows currently selected, by long press (§5).
+     *
+     * Non-empty means selection mode: the bar above the list becomes an action
+     * bar, a tap toggles instead of opening, and the actions offered are the ones
+     * that apply to what is selected. One set per list rather than one shared
+     * set, because the two lists can be on screen in different states.
+     */
+    val selectedChannelIds: Set<String> = emptySet(),
 
     // ── A channel's feed (§8, §9, §10) ───────────────────────────────────
     val channel: GoodPostChannel? = null,
@@ -88,6 +99,9 @@ data class GoodPostUiState(
     val postsCursor: String? = null,
     val postsError: String? = null,
     val postsLoadingMore: Boolean = false,
+
+    /** Posts selected by long press in a channel's feed (§5). */
+    val selectedPostIds: Set<String> = emptySet(),
 
     // ── The information page (§11–§14) ───────────────────────────────────
     val media: List<GoodPostMediaItem> = emptyList(),
@@ -109,6 +123,13 @@ data class GoodPostUiState(
     val adminEmail: String = "",
     val adminPassword: String = "",
     val adminBusy: Boolean = false,
+    /**
+     * The channels this account may work with: all of them for a super
+     * administrator, exactly one for a channel administrator.
+     *
+     * Decided by the server, and it IS the tab's list when signed in — see
+     * [tabChannels].
+     */
     val adminChannels: List<GoodPostChannel> = emptyList(),
     val adminChannelsLoading: Boolean = false,
 
@@ -167,6 +188,60 @@ data class GoodPostUiState(
     val screen: GoodPostScreen get() = backStack.last()
 
     val isAdmin: Boolean get() = admin != null
+
+    /**
+     * The channels the tab lists (§1, §3).
+     *
+     * A reader sees the public catalogue, because that is what §3 asks the tab
+     * to be: the channel list, opened straight into, with no account and nothing
+     * to set up first.
+     *
+     * A signed-in account sees the channels it has access to instead — the whole
+     * product for a super administrator, exactly one channel for an account
+     * created for one. That replacement is the point: an account made for a
+     * channel must not be handed the rest of Good Post, and its list therefore
+     * carries only the controls it is entitled to.
+     */
+    val tabChannels: List<GoodPostChannel>
+        get() = if (admin != null) {
+            adminChannels
+        } else {
+            channels
+        }
+
+    /**
+     * Whether the account may create a channel, and therefore whether the tab
+     * offers the way in (§15, §17).
+     *
+     * True for a reader — the way in is the administrator sign-in — and for a
+     * super administrator, who is the only role that can create one. A channel
+     * administrator holds no `channels.create`, so offering it would be offering
+     * a button that always fails.
+     */
+    val canCreateChannel: Boolean get() = admin == null || admin.isSuperAdmin
+
+    /**
+     * True while the tab's list is still on its way.
+     *
+     * Which list that is depends on who is asking, and the two are fetched
+     * separately — so a screen that watched only `channelsLoading` showed the
+     * empty state for the moment between the public read finishing and the
+     * account's own list arriving. That reads as "you have no channels", which
+     * is a statement about the account rather than a loading state, and a false
+     * one.
+     */
+    val tabLoading: Boolean
+        get() = if (admin != null) adminChannelsLoading else channelsLoading
+
+    /** True while a selection is active in the channel list (§5). */
+    val channelSelectionActive: Boolean get() = selectedChannelIds.isNotEmpty()
+
+    /** True while a selection is active in a feed (§5). */
+    val postSelectionActive: Boolean get() = selectedPostIds.isNotEmpty()
+
+    /** Whether a channel may be edited or deleted by this account. */
+    fun canManage(channelId: String): Boolean =
+        admin?.let { session -> session.isSuperAdmin || session.channelId == channelId } == true
 }
 
 /**
@@ -216,6 +291,12 @@ class GoodPostViewModel : ViewModel() {
 
         refreshChannels()
         if (uiState.categories.isEmpty()) loadCategories()
+
+        // A stored session decides what the tab lists, so its channels are
+        // fetched with everything else. Without this the list came up empty with
+        // "No channels. Create one to start publishing." — a statement about the
+        // account rather than a loading state, and a false one.
+        if (uiState.admin != null) loadAdminChannels()
 
         pendingSlug?.let { slug ->
             pendingSlug = null
@@ -284,9 +365,7 @@ class GoodPostViewModel : ViewModel() {
                     channels = result.value.items,
                     channelsLoading = false,
                     channelsStale = false,
-                    channelsError = null,
-                    openedChannelIds = uiState.openedChannelIds,
-                    mutedChannelIds = repo.mutedChannelIds()
+                    channelsError = null
                 )
 
                 is ApiResult.Failed -> uiState = uiState.copy(
@@ -316,21 +395,31 @@ class GoodPostViewModel : ViewModel() {
 
     // ── A channel (§8–§14) ───────────────────────────────────────────────
 
-    /** Open a channel's feed. Fetches the channel if it is not already known. */
+    /**
+     * Open a channel's feed. Fetches the channel if it is not already known.
+     *
+     * A channel this account has access to opens as its administrator's view of
+     * it — the compose button, the post actions — because that is what the
+     * account may do with it. Everything else opens as a reader's. The decision
+     * is made here rather than at each row, so no screen can offer a control the
+     * account does not hold.
+     */
     fun openChannel(channelId: String) {
+        if (uiState.canManage(channelId)) {
+            openAdminChannel(channelId)
+            return
+        }
+
         uiState = uiState.copy(
             channel = uiState.channels.firstOrNull { it.id == channelId },
             posts = emptyList(),
             postsCursor = null,
             postsError = null,
             postsStale = false,
+            selectedPostIds = emptySet(),
             messageCode = null
         )
         open(GoodPostScreen.Channel(channelId))
-
-        // The dot is cleared locally the moment the channel is opened. There is
-        // no server-side read state to clear, because no reader has an account.
-        uiState = uiState.copy(openedChannelIds = uiState.openedChannelIds + channelId)
         loadChannel(channelId)
         loadPosts(channelId)
     }
@@ -429,20 +518,121 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(descriptionExpanded = !uiState.descriptionExpanded)
     }
 
+    // ── Selection (§5) ───────────────────────────────────────────────────
+
+    /** Long press: select the row, or add it to what is already selected. */
+    fun toggleChannelSelected(channelId: String) {
+        val next = uiState.selectedChannelIds.toMutableSet()
+        if (!next.add(channelId)) next.remove(channelId)
+        uiState = uiState.copy(selectedChannelIds = next, messageCode = null)
+    }
+
+    fun clearChannelSelection() {
+        uiState = uiState.copy(selectedChannelIds = emptySet(), messageCode = null)
+    }
+
     /**
-     * Mute or unmute a channel's notifications (§14).
+     * Delete the selected channels (§17).
      *
-     * Stored on this device only, and the screen says so: a reader has no account
-     * to hang the preference on, and there is no push infrastructure behind it
-     * yet. Recording the intent locally is the honest version of the switch —
-     * inventing a server-side follow would be inventing the account this product
-     * deliberately does not have.
+     * The administrator-side action, and the only irreversible one in the app:
+     * the server removes the channel with its posts, its media and the login that
+     * ran it. The confirmation is the screen's job — see `ConfirmDeleteDialog` —
+     * and this is what runs once it has been given.
      */
-    fun toggleMuted(channelId: String, muted: Boolean) {
-        repository?.setChannelMuted(channelId, muted)
-        val next = uiState.mutedChannelIds.toMutableSet()
-        if (muted) next.add(channelId) else next.remove(channelId)
-        uiState = uiState.copy(mutedChannelIds = next)
+    fun deleteSelectedChannels() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        val selected = uiState.selectedChannelIds
+        if (selected.isEmpty()) return
+
+        // A channel administrator can reach this only for their own channel, and
+        // the server is what enforces that; the selection is checked here as well
+        // so the app never sends a request it knows will be refused.
+        val permitted = selected.filter { uiState.canManage(it) }
+        if (permitted.isEmpty()) {
+            uiState = uiState.copy(messageCode = "admin_forbidden", selectedChannelIds = emptySet())
+            return
+        }
+
+        viewModelScope.launch {
+            var firstFailure: String? = null
+            for (channelId in permitted) {
+                val result = repo.adminDeleteChannel(channelId)
+                if (result is ApiResult.Failed || result is ApiResult.Unreachable) {
+                    firstFailure = if (result is ApiResult.Failed) adminFailureCode(result) else "unreachable"
+                    break
+                }
+            }
+
+            // Removed locally whatever succeeded, then reloaded: the server is
+            // the only thing that knows what is left, and guessing would leave a
+            // row on screen for a channel that no longer exists.
+            uiState = uiState.copy(
+                adminChannels = uiState.adminChannels.filterNot { permitted.contains(it.id) },
+                channels = uiState.channels.filterNot { permitted.contains(it.id) },
+                selectedChannelIds = emptySet(),
+                messageCode = firstFailure
+            )
+            if (uiState.admin != null) loadAdminChannels()
+            refreshChannels()
+        }
+    }
+
+    /** Long press a post: select it, or add it to what is already selected. */
+    fun togglePostSelected(postId: String) {
+        val next = uiState.selectedPostIds.toMutableSet()
+        if (!next.add(postId)) next.remove(postId)
+        uiState = uiState.copy(selectedPostIds = next, messageCode = null)
+    }
+
+    fun clearPostSelection() {
+        uiState = uiState.copy(selectedPostIds = emptySet(), messageCode = null)
+    }
+
+    /**
+     * Remove every selected post in one request (§17).
+     *
+     * One call rather than one per post: the server applies the selection
+     * atomically, so a failure leaves the list whole instead of half-emptied.
+     */
+    fun deleteSelectedPosts() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        val selected = uiState.selectedPostIds.toList()
+        if (selected.isEmpty()) return
+
+        viewModelScope.launch {
+            when (val result = repo.adminDeletePosts(selected)) {
+                is ApiResult.Ok -> {
+                    uiState = uiState.copy(
+                        posts = uiState.posts.filterNot { selected.contains(it.id) },
+                        selectedPostIds = emptySet()
+                    )
+                    // Reloaded rather than trusted: a page boundary can shift when
+                    // rows in the middle of the list disappear.
+                    currentChannelId()?.let { loadPosts(it) }
+                }
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    selectedPostIds = emptySet(),
+                    messageCode = adminFailureCode(result)
+                )
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    selectedPostIds = emptySet(),
+                    messageCode = "unreachable"
+                )
+            }
+        }
+    }
+
+    /** The channel the open feed is showing, whichever screen opened it. */
+    private fun currentChannelId(): String? = when (val screen = uiState.screen) {
+        is GoodPostScreen.Channel -> screen.channelId
+        is GoodPostScreen.AdminChannel -> screen.channelId
+        else -> null
     }
 
     // ── Explore (§7) ─────────────────────────────────────────────────────
@@ -524,18 +714,21 @@ class GoodPostViewModel : ViewModel() {
 
     // ── Administrator (§16, §19, §21) ────────────────────────────────────
 
+    /**
+     * The tab's way in for whoever runs a channel (§15, §16).
+     *
+     * Signed out it is the sign-in; a super administrator goes straight to
+     * creating a channel, because that is the only thing this control is for once
+     * the account is known — their channels are already on the tab. A channel
+     * administrator is not offered it at all ([GoodPostUiState.canCreateChannel]),
+     * which the screen decides.
+     */
     fun openAdmin() {
-        // Straight to the channel list when a session is already stored, so an
-        // administrator does not retype a password every time they open the tab.
-        val signedIn = uiState.admin != null
-        open(if (signedIn) GoodPostScreen.AdminHome else GoodPostScreen.AdminLogin)
-
-        // ...and LOAD that list. Without this the screen rendered its empty state,
-        // "No channels. Create one to start publishing.", which is not a loading
-        // state but a statement about the account — and a false one, since the
-        // only paths that fetched anything were a fresh sign-in and a save. An
-        // administrator reopening the app was told their channels were gone.
-        if (signedIn) loadAdminChannels()
+        if (uiState.admin == null) {
+            open(GoodPostScreen.AdminLogin)
+            return
+        }
+        startCreateChannel()
     }
 
     fun onAdminEmailChange(value: String) {
@@ -560,14 +753,37 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = repo.adminLogin(email, password)) {
                 is ApiResult.Ok -> {
+                    val session = result.value
+
+                    // Where the account lands after signing in is the account's
+                    // own shape, not a screen choice: a channel administrator
+                    // gets the channel they run and nothing else (§3), while a
+                    // super administrator gets the tab, whose list IS every
+                    // channel they may publish to.
+                    val destination = if (session.isSuperAdmin) {
+                        listOf(GoodPostScreen.Home)
+                    } else {
+                        session.channelId
+                            ?.let { listOf(GoodPostScreen.Home, GoodPostScreen.AdminChannel(it)) }
+                            ?: listOf(GoodPostScreen.Home)
+                    }
+
                     uiState = uiState.copy(
-                        admin = result.value,
+                        admin = session,
                         adminPassword = "",
                         adminBusy = false,
                         messageCode = null,
-                        backStack = listOf(GoodPostScreen.Home, GoodPostScreen.AdminHome)
+                        selectedChannelIds = emptySet(),
+                        backStack = destination
                     )
+
                     loadAdminChannels()
+                    destination.lastOrNull()?.let { screen ->
+                        if (screen is GoodPostScreen.AdminChannel) {
+                            loadChannel(screen.channelId)
+                            loadPosts(screen.channelId)
+                        }
+                    }
                 }
 
                 // A refusal this contract cannot produce is not a credential
@@ -608,6 +824,8 @@ class GoodPostViewModel : ViewModel() {
             adminEmail = "",
             adminPassword = "",
             adminChannels = emptyList(),
+            selectedChannelIds = emptySet(),
+            selectedPostIds = emptySet(),
             backStack = listOf(GoodPostScreen.Home)
         )
         refreshChannels()
@@ -1075,26 +1293,6 @@ class GoodPostViewModel : ViewModel() {
             // The feed is reloaded either way on success, so a published post
             // appears immediately and an edit is visible without a pull (§21).
             if (result is ApiResult.Ok) loadPosts(channelId)
-        }
-    }
-
-    fun deletePost(post: GoodPostPost) {
-        val repo = repository ?: return
-        // Signed in is the only precondition a caller can check. The token itself
-        // belongs to the repository, which renews it when it has lapsed — a stale
-        // copy held here is what made every call fail ten minutes in.
-        if (uiState.admin == null) return
-
-        viewModelScope.launch {
-            val result = repo.adminDeletePost(post.id)
-            if (result is ApiResult.Ok) {
-                // Removed locally first, so the row leaves the list at the speed
-                // of the tap rather than of the round trip.
-                uiState = uiState.copy(posts = uiState.posts.filterNot { it.id == post.id })
-                loadPosts(post.channelId)
-            } else if (result is ApiResult.Failed) {
-                uiState = uiState.copy(messageCode = adminFailureCode(result))
-            }
         }
     }
 

@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -28,9 +29,8 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -95,12 +96,26 @@ internal fun GoodPostChannelInfo(
             actions = {
                 channel?.let { known ->
                     WaOverflowMenu(
-                        items = listOf(
-                            WaMenuItem(
-                                label = stringResource(R.string.goodpost_share),
-                                onClick = { shareChannel(context, known.name, known.shareLink) }
+                        items = buildList {
+                            add(
+                                WaMenuItem(
+                                    label = stringResource(R.string.goodpost_share),
+                                    onClick = { shareChannel(context, known.name, known.shareLink) }
+                                )
                             )
-                        )
+                            // Only where the account may actually change it.
+                            // Deleting is deliberately NOT here: an irreversible
+                            // action does not belong a slip away from Share, and
+                            // the list's selection actions are where it lives.
+                            if (state.canManage(known.id)) {
+                                add(
+                                    WaMenuItem(
+                                        label = stringResource(R.string.goodpost_edit_channel),
+                                        onClick = { viewModel.startEditChannel(known) }
+                                    )
+                                )
+                            }
+                        }
                     )
                 }
             }
@@ -119,7 +134,7 @@ internal fun GoodPostChannelInfo(
             Spacer(Modifier.height(28.dp))
 
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                WaAvatar(name = channel.name, size = 104.dp, url = channel.iconUrl)
+                WaAvatar(name = channel.name, size = 116.dp, url = channel.iconUrl)
             }
 
             Spacer(Modifier.height(18.dp))
@@ -197,10 +212,7 @@ internal fun GoodPostChannelInfo(
 
             Spacer(Modifier.height(24.dp))
 
-            NotificationsRow(
-                muted = state.hasMuted(channel.id),
-                onToggle = { muted -> viewModel.toggleMuted(channel.id, muted) }
-            )
+            NotificationsRow()
 
             Spacer(Modifier.height(40.dp))
         }
@@ -216,16 +228,16 @@ private fun ChannelAction(icon: ImageVector, label: String, onClick: () -> Unit)
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(60.dp)
                 .clip(CircleShape)
                 .background(Wa.Bar)
                 .clickable(onClick = onClick),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = label, tint = Wa.Text, modifier = Modifier.size(22.dp))
+            Icon(icon, contentDescription = label, tint = Wa.Text, modifier = Modifier.size(24.dp))
         }
-        Spacer(Modifier.height(6.dp))
-        Text(text = label, color = Wa.Text, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+        Spacer(Modifier.height(8.dp))
+        Text(text = label, color = Wa.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
     }
 }
 
@@ -328,8 +340,8 @@ private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
 
     Box(
         modifier = Modifier
-            .size(104.dp)
-            .clip(WaMediaShape)
+            .size(100.dp)
+            .clip(RoundedCornerShape(12.dp))
             .background(Wa.Pressed)
             .clickable(enabled = !item.url.isNullOrBlank(), onClick = onClick),
         contentAlignment = Alignment.Center
@@ -345,18 +357,20 @@ private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
         }
 
         if (item.isVideo) {
-            Box(
+            Row(
                 modifier = Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(Wa.Canvas),
-                contentAlignment = Alignment.Center
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Filled.PlayArrow,
+                    Icons.Filled.Videocam,
                     contentDescription = null,
-                    tint = Wa.Text,
-                    modifier = Modifier.size(18.dp)
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
                 )
             }
         }
@@ -364,47 +378,38 @@ private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
 }
 
 /**
- * The notification switch (§14).
+ * Where a channel's notification setting belongs (§14).
  *
- * The preference is stored on this device, and the row says what it is: with no
- * accounts there is nowhere else to keep it, and with no push infrastructure
- * behind it the switch records an intent rather than promising a delivery. The
- * note under it is the honest half of that — a switch that silently does nothing
- * is worse than one that says what it does.
+ * A statement rather than a switch: this app has no push infrastructure, so a
+ * toggle would record a preference nothing can act on. Saying so is the honest
+ * version of the same section, and it becomes the switch when delivery exists.
  */
 @Composable
-private fun NotificationsRow(muted: Boolean, onToggle: (Boolean) -> Unit) {
+private fun NotificationsRow() {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
-            Icons.Filled.Notifications,
+            imageVector = Icons.Filled.Notifications,
             contentDescription = null,
             tint = Wa.TextDim,
             modifier = Modifier.size(20.dp)
         )
-        Spacer(Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
+        Spacer(Modifier.width(12.dp))
+        Column {
             Text(
                 text = stringResource(R.string.goodpost_notifications),
                 color = Wa.Text,
                 fontSize = 15.sp
             )
+            Spacer(Modifier.height(2.dp))
             Text(
                 text = stringResource(R.string.goodpost_notifications_note),
                 color = Wa.TextDim,
-                fontSize = 12.sp
+                fontSize = 13.sp
             )
         }
-        Switch(
-            checked = !muted,
-            onCheckedChange = { enabled -> onToggle(!enabled) },
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Wa.OnAccent,
-                checkedTrackColor = Wa.Accent
-            )
-        )
     }
 }
 

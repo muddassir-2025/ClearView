@@ -827,6 +827,87 @@ describe('deleting a channel (§17)', () => {
   });
 });
 
+/**
+ * Removing several posts at once (§17).
+ *
+ * The gesture is a long press and a few taps, so it is one action and one
+ * request. The property that matters is that it is ALL OR NOTHING: a selection
+ * that includes a post the caller may not touch is refused whole, because the
+ * alternative is a selection that half-disappeared with no way to tell which
+ * half — and a client that re-sends would delete whatever survived twice.
+ */
+describe('removing several posts at once (§17)', () => {
+  it('removes the selection, and refuses all of it when one post is not theirs', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const mine = await createChannelWithAdmin(app, superSession, uniqueName('Mine'));
+    const theirs = await createChannelWithAdmin(app, superSession, uniqueName('Theirs'));
+    const owner = await signIn(app, mine.adminEmail, mine.password);
+    const otherOwner = await signIn(app, theirs.adminEmail, theirs.password);
+
+    const one = await publishTextPost(app, owner, mine.channel.id, 'one');
+    const two = await publishTextPost(app, owner, mine.channel.id, 'two');
+    const notMine = await publishTextPost(app, otherOwner, theirs.channel.id, 'not mine');
+
+    const mixed = await request(app)
+      .post('/admin/api/posts/bulk-delete')
+      .set(authed(owner.accessToken))
+      .send({ postIds: [one, two, notMine] });
+
+    // The outsider's post is refused as a CHANNEL they may not name, which is
+    // what the scope check answers for everyone else's channel — and nothing was
+    // removed, including the two that were theirs.
+    expect(mixed.status).toBe(404);
+    expect(mixed.body.error).toBe('channel_not_found');
+
+    const kept = await request(app)
+      .get(`/api/v1/channels/${mine.channel.slug}/posts`);
+    expect(kept.body.items).toHaveLength(2);
+
+    const own = await request(app)
+      .post('/admin/api/posts/bulk-delete')
+      .set(authed(owner.accessToken))
+      .send({ postIds: [one, two] });
+    expect(own.status, JSON.stringify(own.body)).toBe(200);
+    expect(own.body.deleted).toBe(2);
+
+    // And the reader sees them gone, which is the only part that is the point.
+    const after = await request(app).get(`/api/v1/channels/${mine.channel.slug}/posts`);
+    expect(after.body.items).toHaveLength(0);
+  });
+
+  it('counts a post once when a selection names it twice', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const channel = await createBareChannel(app, superSession, uniqueName('Dupes'));
+    const postId = await publishTextPost(app, superSession, channel.id, 'once');
+
+    const res = await request(app)
+      .post('/admin/api/posts/bulk-delete')
+      .set(authed(superSession.accessToken))
+      .send({ postIds: [postId, postId] });
+
+    // A second delete of the same id would be a 404 partway through, so the
+    // duplicate is collapsed before anything is touched.
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.deleted).toBe(1);
+  });
+
+  it('refuses an empty selection and a body that is not a list of ids', async () => {
+    const superSession = await superAdminSession(app, pglite);
+
+    const empty = await request(app)
+      .post('/admin/api/posts/bulk-delete')
+      .set(authed(superSession.accessToken))
+      .send({ postIds: [] });
+    expect(empty.status).toBe(400);
+
+    const wrong = await request(app)
+      .post('/admin/api/posts/bulk-delete')
+      .set(authed(superSession.accessToken))
+      .send({ postIds: ['not-a-uuid'] });
+    expect(wrong.status).toBe(400);
+  });
+});
+
 /** A store that answers "this deployment has no bucket" (§22). */
 function unconfiguredStore(): FakeObjectStore {
   const fake = new FakeObjectStore();

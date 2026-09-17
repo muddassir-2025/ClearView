@@ -236,8 +236,8 @@ describe('a post a reader cannot see anything in', () => {
   it('leaves a channel with nothing to show describing nothing', async () => {
     const slug = unique('quiet');
     // `channels.last_post_at` is advanced on publish and recomputed by the
-    // retention sweep, so it can outlive the post it names once that post
-    // expires. A row's preview and its timestamp come from the join for exactly
+    // retention sweep, so it can outlive the post it names once that post is
+    // deleted. A row's preview and its timestamp come from the join for exactly
     // this reason, and this fixture is that state: activity recorded, no post.
     await seedChannel({ slug, name: 'Quiet', lastPostAt: new Date().toISOString() });
 

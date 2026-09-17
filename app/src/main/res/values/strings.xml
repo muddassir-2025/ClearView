@@ -631,256 +631,49 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_not_configured_title">Good Post is not set up in this build</string>
     <string name="goodpost_not_configured_note">No backend URL is configured, so sign-in cannot work. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
     <string name="goodpost_retry">Retry</string>
-    <string name="goodpost_phone_title">Your mobile number</string>
-    <string name="goodpost_method_mobile">Mobile number</string>
-    <string name="goodpost_method_email">Email</string>
-    <string name="goodpost_email_title">Enter your email</string>
-    <string name="goodpost_email_note">We\'ll email you a code. New here? The same code creates your account.</string>
-    <string name="goodpost_signin_email_label">Email address</string>
-    <string name="goodpost_signin_email_placeholder">you@example.com</string>
-    <string name="goodpost_send_code_email">Email me a code</string>
-    <string name="goodpost_email_only_note">New here? Enter your email and we\'ll create your account with the same code.</string>
-    <string name="goodpost_phone_note">We\'ll text a code to confirm it. Include the country code.</string>
-    <string name="goodpost_phone_label">Mobile number</string>
-    <string name="goodpost_phone_placeholder">+923001234567</string>
-    <string name="goodpost_send_code">Send code</string>
-    <string name="goodpost_code_title">Enter the code</string>
-    <string name="goodpost_code_note">Sent to %1$s</string>
-    <string name="goodpost_code_label">Verification code</string>
-    <string name="goodpost_verify">Verify</string>
-    <string name="goodpost_resend_code">Send a new code</string>
-    <string name="goodpost_change_number">Use a different number</string>
-    <string name="goodpost_change_target">Use a different email</string>
-    <string name="goodpost_find_channels">Find channels</string>
-    <string name="goodpost_edit_image">Edit photo</string>
-    <string name="goodpost_edit_filters">Filters</string>
-    <string name="goodpost_edit_crop">Crop</string>
-    <string name="goodpost_edit_adjust">Adjust</string>
-    <string name="goodpost_edit_rotate">Rotate</string>
-    <string name="goodpost_edit_flip">Flip</string>
-    <string name="goodpost_edit_brightness">Brightness</string>
-    <string name="goodpost_edit_contrast">Contrast</string>
-    <string name="goodpost_edit_saturation">Saturation</string>
-    <string name="goodpost_edit_reset">Reset adjustments</string>
-    <string name="goodpost_done">Done</string>
-    <string name="goodpost_appearance">Appearance</string>
-    <string name="goodpost_appearance_note">Make it yours. Saved on this device only.</string>
-    <string name="goodpost_appearance_accent">Accent</string>
-    <string name="goodpost_appearance_theme">Theme</string>
-    <string name="goodpost_media_tap_to_view">Tap to view</string>
-    <string name="goodpost_media_fetching">Downloading…</string>
-    <string name="goodpost_media_preview_failed">Preview unavailable</string>
-    <string name="goodpost_my_channel">My channel</string>
-    <string name="goodpost_channel_posted_media">📷 Photo</string>
-    <string name="goodpost_email_register_title">Create your account</string>
-    <string name="goodpost_email_register_note">%1$s is confirmed, but no Good Post account uses it yet. Pick a name to finish.</string>
-    <string name="goodpost_email_confirmed">Verified: %1$s</string>
-    <string name="goodpost_register_title">Create your account</string>
-    <string name="goodpost_register_note">Your number is confirmed. Add a name and email — neither is ever shown to other Good Post users.</string>
-    <string name="goodpost_name_placeholder">e.g. Muddassir</string>
-    <string name="goodpost_name_label">Name</string>
-    <string name="goodpost_email_label">Email</string>
-    <string name="goodpost_create_account">Create account</string>
-    <string name="goodpost_signed_in_title">You\'re signed in</string>
-    <string name="goodpost_offline_note">Showing your saved session — the server could not be reached.</string>
     <string name="goodpost_sign_out">Sign out</string>
-    <string name="goodpost_working">Working…</string>
-    <string name="goodpost_privacy_note">Your number and email stay private. Other Good Post users never see them — only your name.</string>
 
-    <string name="goodpost_error_invalid_phone">Enter the number in international format, starting with + and the country code.</string>
-    <string name="goodpost_error_invalid_email">Enter a valid email address.</string>
-    <string name="goodpost_error_email_not_registered">No Good Post account uses that email address. Create one with your mobile number, then sign in here.</string>
-    <string name="goodpost_error_email_unavailable">Email sign-in is unavailable right now. Use your mobile number instead.</string>
-    <string name="goodpost_error_phone_banned">This mobile number is blocked from Good Post.</string>
-    <string name="goodpost_error_account_banned">This account has been permanently banned, so you cannot sign in to Good Post.</string>
-    <string name="goodpost_error_account_suspended">This account is suspended. Contact support if you think this is a mistake.</string>
     <string name="goodpost_error_rate_limited">Too many codes requested for this number. Try again in about an hour.</string>
-    <string name="goodpost_error_otp_locked">Too many failed attempts. Request a new code later.</string>
-    <string name="goodpost_error_invalid_code">That code is not correct. Check the message and try again.</string>
-    <string name="goodpost_error_verification_expired">This verification expired. Send a new code and try again.</string>
-    <string name="goodpost_error_number_rejected">That number could not be verified. Check the country code and digits, then try again.</string>
-    <string name="goodpost_error_verification_unavailable">Verification codes cannot be sent right now. Please try again later.</string>
-    <string name="goodpost_error_sms_quota">This device has hit the limit for verification codes. Try again later.</string>
-    <string name="goodpost_error_verification_failed">We could not confirm that number. Try again.</string>
-    <string name="goodpost_error_email_taken">That email address is already in use. Try another, or go back and sign in.</string>
-    <string name="goodpost_error_phone_taken">This number already has an account. Go back and sign in.</string>
-    <string name="goodpost_error_account_exists">That account already exists. Go back and sign in.</string>
-    <string name="goodpost_error_unreachable">Could not reach the server. Check your connection and try again.</string>
     <string name="goodpost_error_server">The server had a problem. Try again in a moment.</string>
     <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
 
-    <!-- M2: channels and discovery -->
-    <string name="goodpost_section_posts">Posts</string>
-    <string name="goodpost_channels_you_follow">Channels you follow</string>
-    <string name="goodpost_section_channels">Channels</string>
+    <!-- The channel list's own controls. Nothing here counts, follows or
+         subscribes on the server: following is device-local (§1, §2). -->
     <string name="goodpost_refresh">Refresh</string>
     <string name="goodpost_more">Load more</string>
-    <string name="goodpost_search_label">Search channels</string>
-    <string name="goodpost_search_hint">Search by name</string>
     <string name="goodpost_search">Search</string>
-    <string name="goodpost_sort_label">Sort</string>
-    <string name="goodpost_sort_popular">Popular</string>
-    <string name="goodpost_sort_active">Active</string>
-    <string name="goodpost_sort_new">New</string>
     <string name="goodpost_all_categories">All</string>
-    <string name="goodpost_follow">Follow</string>
-    <string name="goodpost_unfollow">Unfollow</string>
-    <string name="goodpost_following">Following</string>
-    <string name="goodpost_mute">Mute</string>
-    <string name="goodpost_unmute">Unmute</string>
-    <string name="goodpost_muted">Muted</string>
-    <string name="goodpost_block">Block</string>
-    <string name="goodpost_unblock">Unblock</string>
-    <string name="goodpost_blocked">Blocked</string>
-    <string name="goodpost_unread_note">New posts</string>
-    <string name="goodpost_followers">%1$s followers</string>
-    <string name="goodpost_owner_note">You own this channel</string>
-    <string name="goodpost_channel_no_description">No description yet</string>
     <string name="goodpost_create_channel">Create a channel</string>
-    <string name="goodpost_create_title">Create a channel</string>
-    <string name="goodpost_channel_name_label">Channel name</string>
-    <string name="goodpost_channel_description_label">Description (optional)</string>
-    <string name="goodpost_edit_title">Edit channel</string>
-    <string name="goodpost_category_label">Category</string>
     <string name="goodpost_create">Create</string>
     <string name="goodpost_save">Save</string>
     <string name="goodpost_cancel">Cancel</string>
     <string name="goodpost_share">Share link</string>
-    <string name="goodpost_share_chooser">Share channel</string>
-    <string name="goodpost_channel_actions">Channel actions</string>
     <string name="goodpost_stale_note">Showing saved data — the server could not be reached.</string>
 
-    <string name="goodpost_error_channel_limit">You have reached the limit of channels one account can create.</string>
-    <string name="goodpost_error_channel_not_found">That channel no longer exists.</string>
-    <string name="goodpost_error_channel_forbidden">Only the channel owner can change this.</string>
-    <string name="goodpost_error_channel_unavailable">This channel is not available right now.</string>
-    <string name="goodpost_error_channel_blocked">Unblock this channel first.</string>
-    <string name="goodpost_error_follow_own">You cannot follow your own channel.</string>
-    <string name="goodpost_error_not_following">Follow this channel before changing its notifications.</string>
     <string name="goodpost_error_invalid_input">That value is not allowed. Check the name, category or country code.</string>
 
     <!-- Posts and media (M3) -->
-    <string name="goodpost_error_post_forbidden">Only a channel admin can post here.</string>
-    <string name="goodpost_error_post_not_found">That post is no longer available.</string>
-    <string name="goodpost_error_post_empty">Add some text, a link or a file first.</string>
-    <string name="goodpost_error_post_too_long">That post is too long. Try shortening it.</string>
-    <string name="goodpost_error_post_bad_link">That link is not a valid web address. It must start with http:// or https://.</string>
-    <string name="goodpost_error_post_edit_closed">This post is too old to edit.</string>
-    <string name="goodpost_error_post_media">That file could not be used. Try a different one, or post without it.</string>
     <string name="goodpost_error_media_unavailable">That media is not available right now.</string>
-    <string name="goodpost_error_file_unreadable">That file could not be read. Try choosing it again.</string>
 
     <string name="goodpost_empty_feed_title">No posts yet</string>
     <string name="goodpost_empty_channel_posts">New updates from this channel will appear here.</string>
 
-    <string name="goodpost_compose">New post</string>
-    <string name="goodpost_composer_title">New post</string>
-    <string name="goodpost_composer_body_hint">Write something</string>
-    <string name="goodpost_composer_link_hint">Link (https://…)</string>
-    <string name="goodpost_composer_link_title_hint">Link title (optional)</string>
-    <string name="goodpost_composer_attach">Attach a file</string>
-    <string name="goodpost_composer_uploading">Uploading…</string>
     <string name="goodpost_publish">Post</string>
-    <string name="goodpost_remove_attachment">Remove attachment</string>
-
-    <string name="goodpost_post_edited">Edited</string>
-    <string name="goodpost_post_edit">Edit post</string>
-    <string name="goodpost_post_delete">Delete post</string>
-    <string name="goodpost_post_deleted">Post removed</string>
-    <string name="goodpost_post_save_media">Save</string>
-    <string name="goodpost_post_saved">Saved</string>
-    <string name="goodpost_post_media_unavailable">Media unavailable</string>
-    <string name="goodpost_post_open_channel">Open channel</string>
-    <string name="goodpost_post_attachment">Attachment %1$d</string>
-    <string name="goodpost_channel_posts">Posts</string>
 
     <!-- Relative times on a post. Empty is used when a date cannot be read. -->
-    <string name="goodpost_time_now">Just now</string>
-    <string name="goodpost_time_minutes">%1$dm</string>
-    <string name="goodpost_time_hours">%1$dh</string>
-    <string name="goodpost_time_days">%1$dd</string>
 
     <!-- Engagement: reactions, polls and views -->
-    <string name="goodpost_reactions_choose">React</string>
-    <string name="goodpost_views">%1$s views</string>
-    <string name="goodpost_poll_votes">%1$s votes</string>
-    <string name="goodpost_poll_closed">This poll has closed</string>
-    <string name="goodpost_poll_multi">Choose one or more</string>
-    <string name="goodpost_poll_vote">Vote</string>
-    <string name="goodpost_poll_change">Change vote</string>
-    <string name="goodpost_poll_you_voted">You voted</string>
-    <string name="goodpost_analytics">Analytics</string>
-    <string name="goodpost_analytics_title">Channel analytics</string>
-    <string name="goodpost_analytics_window">Last %1$d days</string>
-    <string name="goodpost_analytics_followers">Followers</string>
-    <string name="goodpost_analytics_posts">Posts</string>
-    <string name="goodpost_analytics_viewers">Unique viewers</string>
-    <string name="goodpost_analytics_views">Views</string>
-    <string name="goodpost_analytics_reactions">Reactions</string>
-    <string name="goodpost_analytics_poll_votes">Poll votes</string>
-    <string name="goodpost_analytics_top_posts">Top posts</string>
-    <string name="goodpost_analytics_none">No activity in this window yet</string>
 
     <!-- Reports and blocks (§12, §18) -->
-    <string name="goodpost_report">Report</string>
-    <string name="goodpost_report_title">Report</string>
-    <string name="goodpost_report_reason">Why are you reporting this?</string>
-    <string name="goodpost_report_details">Anything else? (optional)</string>
-    <string name="goodpost_report_send">Send report</string>
-    <string name="goodpost_report_sent_note">Our moderators will review it. You will not be told who acted on it.</string>
-    <string name="goodpost_report_sent">Report sent. Thank you.</string>
-    <string name="goodpost_report_post">Report this post</string>
-    <string name="goodpost_report_channel">Report this channel</string>
 
     <!-- Notifications, notices and messages (§16, §17, §26) -->
-    <string name="goodpost_section_inbox">Inbox</string>
-    <string name="goodpost_inbox_notifications">Notifications</string>
-    <string name="goodpost_inbox_notices">Notices</string>
-    <string name="goodpost_inbox_messages">Messages</string>
-    <string name="goodpost_inbox_mark_all_read">Mark all read</string>
-    <string name="goodpost_inbox_empty_notifications">Nothing new</string>
-    <string name="goodpost_inbox_empty_notices">No official notices</string>
-    <string name="goodpost_inbox_empty_messages">No conversations yet</string>
-    <string name="goodpost_inbox_unread">%1$d unread</string>
-    <string name="goodpost_message_channel">Message channel</string>
-    <string name="goodpost_message_thread">Conversation</string>
-    <string name="goodpost_message_hint">Write a message</string>
-    <string name="goodpost_message_send">Send</string>
-    <string name="goodpost_message_sent_pending">Sending…</string>
-    <string name="goodpost_message_failed">Not sent — check your connection</string>
-    <string name="goodpost_message_block">Block this conversation</string>
-    <string name="goodpost_message_unblock">Unblock</string>
-    <string name="goodpost_channel_inbox">Follower messages</string>
-    <string name="goodpost_conversation_closed">This conversation is closed</string>
-    <string name="goodpost_dm_unknown_sender">Good Post user</string>
-    <string name="goodpost_message_private">Only you and the channel can read this</string>
 
     <!-- New error wordings -->
-    <string name="goodpost_error_invalid_reaction">That reaction is not available.</string>
-    <string name="goodpost_error_analytics_forbidden">Only a channel admin can see its analytics.</string>
-    <string name="goodpost_error_poll_closed">This poll has closed.</string>
-    <string name="goodpost_error_poll_single_choice">This poll takes one answer.</string>
-    <string name="goodpost_error_poll_rejected">That vote could not be recorded. Pick an option and try again.</string>
-    <string name="goodpost_error_messages_disabled">This channel does not accept messages.</string>
-    <string name="goodpost_error_own_channel">A channel cannot message itself.</string>
-    <string name="goodpost_error_conversation_blocked">This conversation is blocked.</string>
-    <string name="goodpost_error_conversation_closed">This conversation is closed.</string>
-    <string name="goodpost_error_message_invalid">A message needs between 1 and 4000 characters.</string>
-    <string name="goodpost_error_report_invalid">That report could not be filed. Choose a reason and try again.</string>
-    <string name="goodpost_error_device_limit">This account has reached its device limit.</string>
 
     <!-- Composing a poll (§14) -->
-    <string name="goodpost_composer_poll">Ask a poll instead of posting a file</string>
-    <string name="goodpost_poll_question">Poll question</string>
-    <string name="goodpost_poll_option">Option %1$d</string>
-    <string name="goodpost_poll_add_option">Add option</string>
-    <string name="goodpost_poll_remove_option">Remove option</string>
-    <string name="goodpost_poll_multiple">Allow more than one answer</string>
-    <string name="goodpost_allow_messages">Let followers send private messages</string>
 
     <!-- Push delivery (§17). One channel, so a user who mutes Good Post does not
          silence the rest of the app with it. -->
-    <string name="goodpost_notification_channel">Good Post</string>
 
     <!-- Good Post — the public channel browser (§3–§14).
 
@@ -891,8 +684,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_back">Back</string>
     <string name="goodpost_dismiss">Dismiss</string>
     <string name="goodpost_search_channels">Search channels…</string>
-    <string name="goodpost_sort_recent">Recent</string>
-    <string name="goodpost_sort_name">Name</string>
     <string name="goodpost_channel">Channel</string>
     <string name="goodpost_public_channel">Public channel</string>
     <string name="goodpost_no_description">No description yet</string>
@@ -901,22 +692,29 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_read_more">Read more</string>
     <string name="goodpost_created_on">Created on %1$s</string>
     <string name="goodpost_media_and_links">Media and links</string>
-    <string name="goodpost_notifications">Notifications</string>
-    <string name="goodpost_notifications_note">Saved on this device. Deliveries are not switched on yet.</string>
     <string name="goodpost_media_unavailable">Media unavailable</string>
+
+    <!-- Following (§1, §2). The tab lists the channels this phone follows, so
+         following IS the channel's primary action rather than a preference:
+         it is what puts a channel in the list and what takes it out. -->
+    <string name="goodpost_notifications">Notifications</string>
+    <string name="goodpost_notifications_note">Channel updates are not delivered to this device yet.</string>
     <string name="goodpost_play_video">Play video</string>
 
     <!-- What a row says when the newest post carries no text (§5). -->
     <string name="goodpost_posted_photo">Photo</string>
     <string name="goodpost_posted_video">Video</string>
-    <string name="goodpost_posted_audio">Audio</string>
     <string name="goodpost_posted_link">Link</string>
     <string name="goodpost_posted_something">New post</string>
 
+    <!-- The empty tab points at Explore, because that is now the only way in:
+         following is local, so a fresh install follows nothing (§1, §2). -->
     <string name="goodpost_empty_channels_title">No channels yet</string>
-    <string name="goodpost_empty_channels_note">Channels will appear here once they are published.</string>
+    <string name="goodpost_empty_channels_note">Channels published in Good Post appear here.</string>
     <string name="goodpost_empty_explore_title">Nothing found</string>
     <string name="goodpost_empty_explore_note">Try a different name or category.</string>
+    <!-- An account with no channels at all. Its own note, because "follow some
+         in Explore" is advice for a reader rather than for whoever runs one. -->
     <string name="goodpost_empty_admin_title">No channels</string>
     <string name="goodpost_empty_admin_note">Create one to start publishing.</string>
 
@@ -930,27 +728,20 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_no_access">Don’t have channel access?</string>
     <string name="goodpost_contact">Contact: %1$s</string>
     <string name="goodpost_admin_contact">admin@example.com</string>
-    <string name="goodpost_my_channels">My channels</string>
     <string name="goodpost_edit">Edit</string>
     <string name="goodpost_edit_channel">Edit channel</string>
     <string name="goodpost_channel_name">Channel name</string>
     <string name="goodpost_channel_name_hint">ClearView</string>
     <string name="goodpost_channel_description">Description</string>
     <string name="goodpost_channel_description_hint">What this channel publishes</string>
-    <string name="goodpost_category">Category</string>
-    <string name="goodpost_no_category">None</string>
     <string name="goodpost_channel_admin_section">The account that will run this channel</string>
     <string name="goodpost_admin_email">Admin email</string>
     <string name="goodpost_admin_password">Admin password</string>
 
-    <string name="goodpost_create_post">Create post</string>
-    <string name="goodpost_post_text">Text</string>
-    <string name="goodpost_post_text_hint">What do you want to share?</string>
-    <string name="goodpost_post_link">Link (optional)</string>
-    <string name="goodpost_post_link_hint">https://…</string>
+    <string name="goodpost_write_update">Write an update</string>
+    <string name="goodpost_new_channel">New channel</string>
     <string name="goodpost_video">Video</string>
     <string name="goodpost_edit_post">Edit post</string>
-    <string name="goodpost_delete_post">Delete post</string>
 
     <!-- Rare failures of the public surface (§24). Kept short: a reader can act
          on "try again", and nothing else here is actionable. -->
@@ -967,23 +758,15 @@ This video cannot be played inside the app.</string>
          each needs a different thing from the person holding the phone:
          pick another file, wait, or try again later. -->
     <string name="goodpost_error_media_too_large">That file is too large to upload. Try a smaller one.</string>
-    <string name="goodpost_error_media_type">That file type cannot be posted. Images, video and audio only.</string>
+    <string name="goodpost_error_media_type">That file type cannot be posted. Images and video only.</string>
     <string name="goodpost_error_attachment_uploading">A file is still uploading. Wait for it to finish, then post.</string>
     <string name="goodpost_error_attachment_failed">A file could not be attached. Remove it, or post without it.</string>
 
     <!-- The composer's media strip (§21). -->
     <string name="goodpost_add_media">Add photo or video</string>
-    <string name="goodpost_media_limit">That is the most files one post can hold</string>
-    <string name="goodpost_add_media_note">Images, video or audio.</string>
-    <string name="goodpost_remove_media">Remove %1$s</string>
     <string name="goodpost_attachment_uploading">Uploading…</string>
     <string name="goodpost_attachment_ready">Ready</string>
     <string name="goodpost_attachment_failed">Failed</string>
-    <string name="goodpost_attachment_image">Image</string>
-    <string name="goodpost_attachment_video">Video</string>
-    <string name="goodpost_attachment_audio">Audio</string>
-    <string name="goodpost_media_unsupported">That file cannot be attached. Images, video and audio only.</string>
-    <string name="goodpost_media_edit_note">A post\u2019s files cannot be changed after publishing.</string>
     <!-- The channel's profile image (§11), set from the same upload handshake as a post's media (§22). -->
     <string name="goodpost_channel_image">Channel image</string>
     <string name="goodpost_channel_image_add">Add image</string>
@@ -993,4 +776,25 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_channel_image_current">Current image</string>
     <string name="goodpost_channel_image_none">No image yet</string>
     <string name="goodpost_channel_image_removing">Will be removed when you save</string>
+
+    <!-- Selection and the actions taken on it (§5). A long press selects, which
+         swaps the bar for one that says how many are selected and what can be
+         done with them. -->
+    <plurals name="goodpost_selected_count">
+        <item quantity="one">%1$d selected</item>
+        <item quantity="other">%1$d selected</item>
+    </plurals>
+    <string name="goodpost_clear_selection">Clear selection</string>
+    <string name="goodpost_copy">Copy</string>
+    <string name="goodpost_edited">edited</string>
+    <string name="goodpost_delete">Delete</string>
+
+    <!-- Deleting a channel (§17). The only irreversible control in the app, so
+         the only one that asks first — and it says what goes with it. -->
+    <string name="goodpost_delete_channel">Delete channel</string>
+    <string name="goodpost_delete_channel_title">Delete this channel?</string>
+    <string name="goodpost_delete_channel_note">%1$s and everything it published will be removed for everyone, including its posts, its media and the login that runs it. This cannot be undone.</string>
+    <string name="goodpost_delete_channels_title">Delete these channels?</string>
+    <string name="goodpost_delete_channels_note">Every channel in the selection and everything it published will be removed for everyone, including its posts, its media and the login that runs it. This cannot be undone.</string>
+    <string name="goodpost_suspended">Suspended</string>
 </resources>

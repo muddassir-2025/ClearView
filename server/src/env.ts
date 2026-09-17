@@ -82,22 +82,19 @@ const schema = z.object({
   UPLOAD_CLAIM_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
 
   // ── Product rules ──
-  // 30 days, and the product rule behind it is the storage model rather than
-  // cost: Good Post keeps the SHORT version of history on the server and the
-  // long version on the device (§10, §11). Anything a user downloaded lives in
-  // their own storage forever and is never touched by this window, so a post
-  // expiring here removes the server's copy and nothing else.
-  GOODPOST_HISTORY_DAYS: z.coerce.number().int().positive().default(30),
   /** Notifications are a DEVICE-LOCAL preference until real push exists (§14). */
   DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
-  // How long an expired post's rows survive before the physical delete.
+  // How long a DELETED post's rows survive before the physical delete.
   //
-  // Zero, because the rule is "nothing sits on the server past the history
-  // window": a post becomes unreadable at exactly `GOODPOST_HISTORY_DAYS` and
-  // the next sweep (every 30 minutes) removes the rows and their objects. A
-  // grace period here would only mean keeping data the product says it does not
-  // keep, and the record that mattered — the moderation history — is written at
-  // the moment of the action, not carried in the post's own row.
+  // Zero, because deleting a post is meant to be final for its content: the row
+  // stops being readable the moment it is deleted, and the next sweep (every 30
+  // minutes) removes the rows and their objects. A grace period here would only
+  // mean keeping data an administrator has already removed, and the record that
+  // mattered — who removed what, and when — is in the audit log, which this
+  // never touches.
+  //
+  // Nothing expires posts on a schedule: a channel's history stays until someone
+  // deletes it.
   PURGE_GRACE_DAYS: z.coerce.number().int().nonnegative().default(0),
   EDIT_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
   MAX_TEXT_LENGTH: z.coerce.number().int().positive().default(4000),

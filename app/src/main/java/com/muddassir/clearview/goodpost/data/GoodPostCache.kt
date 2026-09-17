@@ -38,7 +38,6 @@ internal class GoodPostCache(context: Context) {
         const val KEY_CHANNELS = "channels"
         const val KEY_CATEGORIES = "categories"
         const val KEY_SAVED_AT = "_saved_at"
-        const val KEY_MUTED = "muted_channels"
         const val POSTS_PREFIX = "posts:"
 
         /** Enough to browse offline; small enough to stay off the heap. */
@@ -84,25 +83,7 @@ internal class GoodPostCache(context: Context) {
         return CachedPosts(decoded, prefs.getLong(key + KEY_SAVED_AT, 0L))
     }
 
-    // ── Notification preference (§14) ────────────────────────────────────
-    //
-    // Device-local, and deliberately so. A reader of Good Post has no account,
-    // so there is nowhere else this preference could live — and there is no push
-    // infrastructure behind it yet, which the channel page says on the switch
-    // itself rather than pretending otherwise.
-
-    fun mutedChannelIds(): Set<String> =
-        prefs.getStringSet(KEY_MUTED, emptySet())?.toSet() ?: emptySet()
-
-    fun setChannelMuted(channelId: String, muted: Boolean) {
-        val next = mutedChannelIds().toMutableSet()
-        if (muted) next.add(channelId) else next.remove(channelId)
-        // A copy is written rather than the mutated instance: `SharedPreferences`
-        // keeps the set it was given by reference, so handing it one that is
-        // still being mutated is a documented way to lose the edit.
-        prefs.edit().putStringSet(KEY_MUTED, next.toSet()).apply()
-    }
-
+    // ── Following (§1, §2) ───────────────────────────────────────────────
     // ── Categories (§7) ──────────────────────────────────────────────────
 
     fun saveCategories(categories: List<GoodPostCategory>) {
@@ -114,14 +95,7 @@ internal class GoodPostCache(context: Context) {
     fun loadCategories(): List<GoodPostCategory> =
         GoodPostCodec.decodeCategories(prefs.getString(KEY_CATEGORIES, null))
 
-    /**
-     * Drop everything.
-     *
-     * Called when an administrator signs out, and when the install's data is
-     * reset: a cached list belongs to whoever was last reading, and leaving it
-     * for the next person to open the tab would show them someone else's view
-     * without any indication that it is stale.
-     */
+    /** Forget everything fetched. Called when an administrator signs out. */
     fun clear() {
         prefs.edit().clear().apply()
     }

@@ -678,7 +678,20 @@ export function buildAdminRouter(
     res.status(200).json({ post });
   });
 
-  /** Remove a post (§17). Soft, so it stays reversible. */
+  /**
+ * How many posts one multi-select delete may carry.
+ *
+ * The phone's gesture is "pick some, remove them", and a number here is what
+ * stops that becoming an unbounded query in one request. A hundred is far past
+ * what a person can select by hand and far below anything that would hurt.
+ */
+const BULK_DELETE_LIMIT = 100;
+
+const BulkDeleteSchema = z.object({
+  postIds: z.array(z.string().uuid()).min(1).max(BULK_DELETE_LIMIT)
+});
+
+/** Remove a post (§17). Soft, so it stays reversible. */
   router.delete('/posts/:postId', requireAdmin(database, 'posts.delete'), write, async (req, res) => {
     const context = adminOf(req);
     const postId = pathIdParam(req.params.postId, 'invalid_post_id');
@@ -699,6 +712,54 @@ export function buildAdminRouter(
     });
 
     res.status(200).json({ deleted: true, postId });
+  });
+
+  /**
+   * Remove several posts in one request (§17).
+   *
+   * The select-and-remove gesture is ONE action to the person doing it, and
+   * doing it as N requests would make it N token checks, N audit rows, and a
+   * half-applied selection the moment one of them failed — with no way to tell
+   * which half. So the whole selection is checked and applied together, and a
+   * post the caller may not touch refuses all of it rather than quietly skipping
+   * the ones that were out of reach.
+   *
+   * The scope is proved per post against the caller's own channel binding, never
+   * against a channel id from the body — the same rule the single delete follows,
+   * because a bulk endpoint is not a way to ask a different question.
+   */
+  router.post('/posts/bulk-delete', requireAdmin(database, 'posts.delete'), write, async (req, res) => {
+    const context = adminOf(req);
+    const body = parseBody(BulkDeleteSchema, req.body);
+    const scope = scopeOf(context);
+
+    // Deduplicated first: a selection cannot legitimately name the same post
+    // twice, and the audit row should count posts rather than taps.
+    const postIds = [...new Set(body.postIds)];
+
+    for (const postId of postIds) {
+      const existing = await loadPostRow(database, postId);
+      await requireChannelScope(database, scope, existing.channel_id);
+    }
+
+    await database.transaction(async (tx) => {
+      for (const postId of postIds) await deletePost(tx, postId);
+    });
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'post.delete_many',
+      targetType: 'post',
+      // No single target, so the row records the set it removed rather than
+      // pretending one of them is the subject.
+      targetId: postIds.join(','),
+      metadata: { count: postIds.length },
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({ deleted: postIds.length, postIds });
   });
 
   // ── Media (§21, §22) ─────────────────────────────────────────────────
@@ -851,7 +912,6 @@ export function buildAdminRouter(
     const context = adminOf(req);
     res.status(200).json({
       settings: {
-        historyDays: env.GOODPOST_HISTORY_DAYS,
         editWindowDays: env.EDIT_WINDOW_DAYS,
         maxTextLength: env.MAX_TEXT_LENGTH,
         maxPostMedia: env.MAX_POST_MEDIA,

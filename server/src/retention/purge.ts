@@ -1,84 +1,46 @@
-import { env } from '../env.js';
 import type { Queryable } from '../db.js';
 import type { ObjectStore } from '../media/store.js';
+import { env } from '../env.js';
 
 /**
- * Server-side retention (§11) and media cleanup (§34).
+ * Media cleanup for deleted posts (§34).
  *
- * Three passes, in this order and no other:
+ * Deleting a post is a SOFT delete: the row's `deleted_at` is set and every read
+ * filters on it, so it disappears from the app the moment it is deleted. What is
+ * left behind is a row nothing reads and the objects it was holding. This pass
+ * finishes the job, in two stages:
  *
- *  1. **Expire** — posts older than `GOODPOST_HISTORY_DAYS` stop being readable.
- *     This is a soft delete (`deleted_at = now()`), which is what §11 means by a
- *     retention WINDOW rather than a retention deadline: the row is unreadable
- *     immediately, and the data is still there during the grace period.
+ *  1. **Purge** — rows that have been deleted for `PURGE_GRACE_DAYS` are removed
+ *     for real. Their object keys are collected BEFORE the delete, inside the same
+ *     transaction, because afterwards there is nothing left to say which objects
+ *     belonged to them.
  *
- *  2. **Purge** — rows that have been unreadable for `PURGE_GRACE_DAYS` are
- *     deleted for real, and their object keys are collected BEFORE the delete,
- *     because after it there is nothing left to tell us which objects to remove.
- *
- *  3. **Collect** — each collected object is removed only if no media row still
+ *  2. **Collect** — each key is removed from the bucket only if no media row still
  *     refers to it. That check is the whole of §34: "media deletion must not
- *     accidentally delete a shared object still referenced elsewhere". Today an
- *     object key is derived from its own media row's uuid, so sharing cannot
- *     happen — but the check is written as a reference count rather than as
- *     "always safe", so the day something does share an object, the GC is
- *     already correct.
+ *     accidentally delete a shared object still referenced elsewhere". Today a key
+ *     is derived from its own media row's uuid, so sharing cannot happen — but the
+ *     check is written as a reference count rather than as "always safe", so the
+ *     day something does share an object, the GC is already correct.
  *
- * What this explicitly does NOT do, and must never do: touch media a user has
- * downloaded to their own device (§10). That media lives in the app's files
- * directory on the phone; the server has no handle on it, and its absence from
- * this file is the guarantee. A post disappearing from the server leaves every
- * offline copy exactly where it was.
+ * Posts themselves are NOT expired on a schedule. A channel's history is what a
+ * channel is; an update stays readable until an administrator deletes it, and the
+ * media a reader has already downloaded lives on their own device where the
+ * server has no handle on it at all.
  */
 
-export interface RetentionReport {
-  readonly expired: number;
-  readonly purged: number;
-  readonly objectsRemoved: number;
-  readonly objectsFailed: number;
-}
-
 /**
- * Stage 1: expire posts past the history window.
+ * Physically remove deleted posts and their objects.
  *
- * One statement, bounded by `PURGE_BATCH_SIZE` so a large backlog cannot hold a
- * long transaction or blow up the log. `deleted_reason` records WHY, which is
- * what lets an owner tell a moderator removal from the retention sweep (§7).
- *
- * The window is read from configuration every run rather than stored per row, so
- * changing `GOODPOST_HISTORY_DAYS` is a configuration change and not a data
- * migration — the reason 004 kept the window out of the table.
- */
-export async function expireOldPosts(database: Queryable): Promise<number> {
-  const rows = await database.query(
-    `UPDATE posts
-        SET deleted_at = now(), deleted_reason = 'retention_window'
-      WHERE id IN (
-        SELECT id FROM posts
-         WHERE deleted_at IS NULL
-           AND created_at < now() - ($1::int * interval '1 day')
-         ORDER BY created_at ASC
-         LIMIT $2
-      )
-      RETURNING id`,
-    [env.GOODPOST_HISTORY_DAYS, env.PURGE_BATCH_SIZE]
-  );
-  return rows.length;
-}
-
-/**
- * Stage 2 + 3: physically remove long-expired posts and their objects.
- *
- * The object keys are read inside the same transaction that deletes the rows,
- * so the set of keys to remove is exactly the set the delete removed. Doing the
+ * The object keys are read inside the same transaction that deletes the rows, so
+ * the set of keys to remove is exactly the set the delete removed. Doing the
  * SELECT first and the DELETE afterwards would leave a window in which a
  * concurrent publish could attach a key that this pass then deletes.
  *
- * Objects are removed AFTER the commit. That order is deliberate: a crash
- * between the two leaves unreferenced objects in the bucket, which costs a
- * little money and is fixable by a later pass, whereas removing objects first
- * and then failing to commit would leave rows pointing at nothing — a broken
- * post, which is the failure §25 and §34 both warn about.
+ * Objects are removed AFTER the commit. That order is deliberate: a crash between
+ * the two leaves unreferenced objects in the bucket, which costs a little money
+ * and is fixable by a later pass, whereas removing objects first and then failing
+ * to commit would leave rows pointing at nothing — a broken post, which is the
+ * failure §25 and §34 both warn about.
  */
 export async function purgeExpiredPosts(
   database: Queryable,
@@ -165,21 +127,4 @@ export async function purgeExpiredPosts(
   }
 
   return { purged: collected.postIds.length, objectsRemoved: removed, objectsFailed: failed };
-}
-
-/**
- * One full retention pass.
- *
- * Child posts of a channel are removed by cascade when the channel row goes, so
- * there is no separate channel pass here; what this returns is what actually
- * happened, for the job to log without inventing numbers.
- */
-export async function runRetentionPass(
-  database: Queryable,
-  store: ObjectStore
-): Promise<RetentionReport> {
-  const expired = await expireOldPosts(database);
-  const { purged, objectsRemoved, objectsFailed } = await purgeExpiredPosts(database, store);
-
-  return { expired, purged, objectsRemoved, objectsFailed };
 }

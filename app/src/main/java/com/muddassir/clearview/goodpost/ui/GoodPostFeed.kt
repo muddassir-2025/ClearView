@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +28,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
@@ -51,11 +55,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -108,10 +123,18 @@ internal fun GoodPostFeed(
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,
-            alpha = 0.55f
+            alpha = 1.0f
         )
 
         Column(modifier = Modifier.fillMaxSize()) {
+            if (state.postSelectionActive) {
+                PostSelectionBar(
+                    state = state,
+                    channelName = channel?.name.orEmpty(),
+                    editable = editable,
+                    viewModel = viewModel
+                )
+            } else {
             WaTopBar(
                 title = channel?.name ?: stringResource(R.string.goodpost_channel),
                 subtitle = channel?.name?.let { stringResource(R.string.goodpost_public_channel) },
@@ -168,6 +191,7 @@ internal fun GoodPostFeed(
                     )
                 }
             )
+            }
 
             if (state.postsStale) WaStaleBanner(onRetry = { viewModel.loadPosts(channelId) })
 
@@ -191,11 +215,20 @@ internal fun GoodPostFeed(
                         when (entry) {
                             is FeedEntry.Separator -> WaDatePill(entry.label)
                             is FeedEntry.Post -> PostItem(
+                                channelName = channel?.name.orEmpty(),
                                 post = entry.post,
-                                channelName = channel?.name ?: "",
-                                editable = editable,
-                                onEdit = { viewModel.startEditPost(entry.post) },
-                                onDelete = { viewModel.deletePost(entry.post) }
+                                selected = state.selectedPostIds.contains(entry.post.id),
+                                selectionActive = state.postSelectionActive,
+                                onClick = {
+                                    // In selection mode a tap adds to the
+                                    // selection; otherwise a post has no tap
+                                    // action at all. Nothing a post does is
+                                    // hidden behind a tap (§5).
+                                    if (state.postSelectionActive) {
+                                        viewModel.togglePostSelected(entry.post.id)
+                                    }
+                                },
+                                onLongClick = { viewModel.togglePostSelected(entry.post.id) }
                             )
                         }
                     }
@@ -241,34 +274,114 @@ internal fun GoodPostFeed(
                     }
                 }
 
-                // The compose action, only where an administrator may publish
-                if (editable) {
-                    WaFab(
-                        icon = Icons.Filled.Edit,
-                        description = stringResource(R.string.goodpost_compose),
-                        onClick = viewModel::startCompose,
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(end = 16.dp, bottom = 16.dp)
-                    )
-                }
+            }
+
+            if (editable) {
+                ChannelInputBar(state = state, viewModel = viewModel)
             }
         }
     }
 }
 
-/** One post, as a WhatsApp olive-green message bubble (§9, Screenshot 4). */
+/**
+ * The bar a post selection replaces the channel title with (§5).
+ *
+ * This is what a long press is for: the actions that apply to the posts picked,
+ * in the place the channel's own controls were. Copy and Forward work on any
+ * number of posts; Delete appears only where the account may publish, and asks
+ * for nothing further — a removed post is soft on the server, so it is the one
+ * destructive action here that stays reversible.
+ */
 @Composable
-private fun PostItem(
-    post: GoodPostPost,
+private fun PostSelectionBar(
+    state: GoodPostUiState,
     channelName: String,
     editable: Boolean,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit
+    viewModel: GoodPostViewModel
+) {
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val selected = state.posts.filter { state.selectedPostIds.contains(it.id) }
+
+    WaSelectionBar(
+        count = state.selectedPostIds.size,
+        onClose = viewModel::clearPostSelection,
+        actions = {
+            if (editable && selected.size == 1) {
+                WaIconAction(
+                    icon = Icons.Filled.Edit,
+                    description = stringResource(R.string.goodpost_edit),
+                    onClick = {
+                        viewModel.startEditPost(selected.first())
+                        viewModel.clearPostSelection()
+                    }
+                )
+            }
+            WaIconAction(
+                icon = Icons.Filled.ContentCopy,
+                description = stringResource(R.string.goodpost_copy),
+                onClick = {
+                    clipboard.setText(AnnotatedString(selected.joinToString("\n\n") { it.copyText() }))
+                    viewModel.clearPostSelection()
+                }
+            )
+            if (editable) {
+                WaIconAction(
+                    icon = Icons.Filled.Delete,
+                    description = stringResource(R.string.goodpost_delete),
+                    tint = Wa.Danger,
+                    onClick = viewModel::deleteSelectedPosts
+                )
+            }
+        }
+    )
+}
+
+/**
+ * A post's text, as something worth copying.
+ *
+ * The body plus its link, because those are the two things a post carries that
+ * can be put somewhere else: media is a URL that expires, so copying one would
+ * hand the recipient a link that stops working.
+ */
+private fun GoodPostPost.copyText(): String = buildString {
+    if (!body.isNullOrBlank()) append(body)
+    if (!linkUrl.isNullOrBlank()) {
+        if (isNotEmpty()) append("\n\n")
+        append(linkUrl)
+    }
+}
+
+/**
+ * One post, as a WhatsApp olive-green message bubble (§9, Screenshot 4).
+ *
+ * Two things changed here from the version with a row of icons under every
+ * bubble. The icons went, because an action attached to every message is an
+ * action attached to no message in particular — and the body is now a
+ * `SelectionContainer`, so text can be selected with a long press and copied
+ * the way text is copied everywhere else on the phone.
+ */
+@Composable
+private fun PostItem(
+    channelName: String,
+    post: GoodPostPost,
+    selected: Boolean,
+    selectionActive: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
 ) {
     val context = LocalContext.current
 
-    Column(modifier = Modifier.fillMaxWidth()) {
+    // The selection fill is on this wrapper rather than inside the bubble: the
+    // bubble paints its own background over whatever it is given, so a highlight
+    // passed inwards would be covered by the very container it is meant to mark.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (selected) Wa.Selected else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+    ) {
         WaPostContainer {
             post.media.forEach { asset ->
                 if (asset.isImage) {
@@ -276,27 +389,33 @@ private fun PostItem(
                         url = asset.url,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 180.dp, max = 400.dp)
+                            .heightIn(min = 180.dp, max = 420.dp)
                     )
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                 } else if (asset.isVideo) {
                     VideoTile(asset = asset, onOpen = { openMedia(context, asset.url) })
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(4.dp))
                 }
             }
 
             if (!post.body.isNullOrBlank()) {
-                Text(
-                    text = post.body,
-                    color = Wa.BubbleText,
-                    fontSize = 15.sp,
-                    lineHeight = 21.sp,
-                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                )
+                SelectionContainer {
+                    Text(
+                        text = post.body,
+                        color = Wa.BubbleText,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.5.sp,
+                        lineHeight = 20.sp,
+                        modifier = Modifier.padding(
+                            horizontal = 6.dp,
+                            vertical = if (post.media.isNotEmpty()) 4.dp else 2.dp
+                        )
+                    )
+                }
             }
 
             if (post.isLink) {
-                if (!post.body.isNullOrBlank()) Spacer(Modifier.height(6.dp))
+                if (!post.body.isNullOrBlank()) Spacer(Modifier.height(4.dp))
                 LinkChip(
                     label = post.linkTitle?.takeIf { it.isNotBlank() } ?: post.linkUrl.orEmpty(),
                     url = post.linkUrl.orEmpty(),
@@ -304,31 +423,23 @@ private fun PostItem(
                 )
             }
 
-            Spacer(Modifier.height(3.dp))
+            Spacer(Modifier.height(2.dp))
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp),
+                    .padding(start = 6.dp, end = 6.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (editable) {
-                    Icon(
-                        Icons.Filled.Edit,
-                        contentDescription = stringResource(R.string.goodpost_edit_post),
-                        tint = Wa.TextDim,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable(onClick = onEdit)
-                    )
-                    Spacer(Modifier.width(14.dp))
-                    Icon(
-                        Icons.Filled.Delete,
-                        contentDescription = stringResource(R.string.goodpost_delete_post),
-                        tint = Wa.TextDim,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable(onClick = onDelete)
+                // A post that has been edited says so, because a reader who saw
+                // it before should not have to wonder whether they misremembered
+                // it. There is no other furniture in this row: what a post can do
+                // is reached by holding it (§5).
+                if (post.editedAt != null) {
+                    Text(
+                        text = stringResource(R.string.goodpost_edited),
+                        color = Wa.BubbleTime,
+                        fontSize = 11.sp
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -337,33 +448,6 @@ private fun PostItem(
                     color = Wa.BubbleTime
                 )
             }
-        }
-
-        // WhatsApp quick forward action underneath each bubble on the left (Screenshot 4)
-        Box(
-            modifier = Modifier
-                .padding(top = 4.dp, start = 4.dp)
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(Wa.ForwardBg)
-                .clickable {
-                    val shareText = buildString {
-                        if (!post.body.isNullOrBlank()) append(post.body)
-                        if (!post.linkUrl.isNullOrBlank()) {
-                            if (isNotEmpty()) append("\n\n")
-                            append(post.linkUrl)
-                        }
-                    }
-                    shareChannel(context, channelName, shareText)
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.Forward,
-                contentDescription = stringResource(R.string.goodpost_forward),
-                tint = Wa.TextDim,
-                modifier = Modifier.size(16.dp)
-            )
         }
     }
 }
@@ -391,7 +475,7 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
             bitmap = current.asImageBitmap(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = modifier.clip(WaMediaShape)
+            modifier = modifier.clip(RoundedCornerShape(11.dp))
         )
     } else {
         WaMediaPlaceholder(
@@ -477,7 +561,7 @@ private fun LinkChip(label: String, url: String, onOpen: () -> Unit) {
 private const val COMPOSER_MAX_ATTACHMENTS = 4
 
 /**
- * The composer (§21).
+ * The WhatsApp Channel input bar for publishing and editing updates (§21).
  *
  * Text, an optional link, and files attached to the post. A file is uploaded the
  * moment it is picked — see [GoodPostViewModel.attachMedia] — so by the time
@@ -488,25 +572,14 @@ private const val COMPOSER_MAX_ATTACHMENTS = 4
  * appears to have been published with a picture, and does not.
  */
 @Composable
-internal fun ComposerDialog(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     val context = LocalContext.current
     val editing = state.editingPostId != null
 
-    /**
-     * The system photo picker, with the app's own fallback for older devices.
-     *
-     * `PickMultipleVisualMedia` is used rather than a raw `ACTION_OPEN_DOCUMENT`
-     * because it hands back a URI the app may read without a storage permission,
-     * and it degrades to the document picker where the photo picker is absent —
-     * one launcher, no permission prompt, no `READ_MEDIA_*` request.
-     */
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(COMPOSER_MAX_ATTACHMENTS)
     ) { uris ->
         uris.forEach { uri ->
-            // Metadata is read here, where the picker's grant on the URI is
-            // valid. A file this app will not send — a document, an SVG, one it
-            // cannot size — is refused with a sentence instead of a round trip.
             val attachment = readGoodPostAttachment(context, uri)
             if (attachment == null) {
                 viewModel.reportUnsupportedMedia()
@@ -516,96 +589,180 @@ internal fun ComposerDialog(state: GoodPostUiState, viewModel: GoodPostViewModel
         }
     }
 
-    Dialog(onDismissRequest = viewModel::cancelCompose) {
-        Column(
-            modifier = Modifier
-                .background(Wa.Bar, androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
-                .padding(20.dp)
-        ) {
-            Text(
-                text = stringResource(
-                    if (editing) R.string.goodpost_edit_post else R.string.goodpost_create_post
-                ),
-                color = Wa.Text,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            WaField(
-                value = state.composerBody,
-                onValueChange = viewModel::onComposerBodyChange,
-                label = stringResource(R.string.goodpost_post_text),
-                placeholder = stringResource(R.string.goodpost_post_text_hint),
-                enabled = !state.composerBusy,
-                singleLine = false,
-                minHeight = 110.dp
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            WaField(
-                value = state.composerLink,
-                onValueChange = viewModel::onComposerLinkChange,
-                label = stringResource(R.string.goodpost_post_link),
-                placeholder = stringResource(R.string.goodpost_post_link_hint),
-                enabled = !state.composerBusy
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            if (editing) {
-                // No picker while editing: the server has no route that swaps a
-                // published post's files, and offering one that silently did
-                // nothing would be worse than not offering it.
-                Text(
-                    text = stringResource(R.string.goodpost_media_edit_note),
-                    color = Wa.TextDim,
-                    fontSize = 12.sp
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Wa.Canvas)
+    ) {
+        // If editing an existing post, show an "Editing update" header strip
+        if (editing) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Wa.Bar)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = null,
+                    tint = Wa.StampRecent,
+                    modifier = Modifier.size(16.dp)
                 )
-            } else if (state.composerMediaAvailable) {
-                ComposerAttachments(
-                    attachments = state.composerAttachments,
-                    busy = state.composerBusy,
-                    full = state.composerAttachments.size >= COMPOSER_MAX_ATTACHMENTS,
-                    onPick = {
-                        picker.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                        )
-                    },
-                    onRemove = viewModel::removeMedia
-                )
-            } else {
-                // `media_unavailable` is an answer about the DEPLOYMENT (§22), so
-                // the picker is withdrawn and the reason is stated rather than
-                // left as a button that fails every time.
+                Spacer(Modifier.width(8.dp))
                 Text(
-                    text = stringResource(R.string.goodpost_error_media_unavailable),
-                    color = Wa.TextDim,
-                    fontSize = 12.sp
+                    text = stringResource(R.string.goodpost_edit_post),
+                    color = Wa.StampRecent,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.goodpost_cancel),
+                    tint = Wa.TextDim,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .clickable(onClick = viewModel::cancelCompose)
                 )
             }
+        }
 
-            Spacer(Modifier.height(20.dp))
+        // If media attached, show thumbnail preview strip directly above the input bar
+        if (state.composerAttachments.isNotEmpty()) {
+            LazyRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Wa.Bar)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(state.composerAttachments, key = { it.uri }) { attachment ->
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Wa.Pressed),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            if (attachment.kind == "video") Icons.Filled.PlayArrow else Icons.Filled.Image,
+                            contentDescription = null,
+                            tint = Wa.TextDim,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(20.dp)
+                                .clip(CircleShape)
+                                .background(Wa.Canvas)
+                                .clickable { viewModel.removeMedia(attachment.uri) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = null,
+                                tint = Wa.TextDim,
+                                modifier = Modifier.size(12.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_cancel),
-                    enabled = !state.composerBusy,
-                    onClick = viewModel::cancelCompose
+        // Input pill row + Send button
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Wa.Bar)
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                BasicTextField(
+                    value = state.composerBody,
+                    onValueChange = viewModel::onComposerBodyChange,
+                    modifier = Modifier.weight(1f),
+                    textStyle = TextStyle(
+                        color = Wa.Text,
+                        fontSize = 16.sp
+                    ),
+                    cursorBrush = SolidColor(Wa.StampRecent),
+                    maxLines = 5,
+                    decorationBox = { innerTextField ->
+                        if (state.composerBody.isEmpty()) {
+                            Text(
+                                text = if (editing) stringResource(R.string.goodpost_edit_post)
+                                else stringResource(R.string.goodpost_write_update),
+                                color = Wa.TextDim,
+                                fontSize = 16.sp
+                            )
+                        }
+                        innerTextField()
+                    }
                 )
-                Spacer(Modifier.weight(1f))
-                Box(modifier = Modifier.width(150.dp)) {
-                    WaPrimaryButton(
-                        text = stringResource(
-                            if (state.editingPostId == null) R.string.goodpost_publish
-                            else R.string.goodpost_save
-                        ),
-                        enabled = !state.composerBusy &&
-                            (editing || state.composerAttachments.all { it.mediaId != null }),
-                        busy = state.composerBusy,
-                        onClick = viewModel::publish
+
+                if (!editing && state.composerMediaAvailable) {
+                    Spacer(Modifier.width(8.dp))
+                    Icon(
+                        Icons.Filled.AttachFile,
+                        contentDescription = stringResource(R.string.goodpost_add_media),
+                        tint = Wa.TextDim,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable(
+                                enabled = !state.composerBusy && state.composerAttachments.size < COMPOSER_MAX_ATTACHMENTS,
+                                onClick = {
+                                    picker.launch(
+                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                                    )
+                                }
+                            )
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(6.dp))
+
+            val canSubmit = (state.composerBody.isNotBlank() || state.composerAttachments.isNotEmpty()) &&
+                !state.composerBusy &&
+                (editing || state.composerAttachments.all { it.mediaId != null })
+
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (canSubmit) Wa.StampRecent else Wa.Bar)
+                    .clickable(enabled = canSubmit, onClick = viewModel::publish),
+                contentAlignment = Alignment.Center
+            ) {
+                if (state.composerBusy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = Wa.OnAccent
+                    )
+                } else if (editing) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = stringResource(R.string.goodpost_save),
+                        tint = if (canSubmit) Wa.OnAccent else Wa.TextDim,
+                        modifier = Modifier.size(24.dp)
+                    )
+                } else {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = stringResource(R.string.goodpost_publish),
+                        tint = if (canSubmit) Wa.OnAccent else Wa.TextDim,
+                        modifier = Modifier.size(22.dp)
                     )
                 }
             }
@@ -613,151 +770,7 @@ internal fun ComposerDialog(state: GoodPostUiState, viewModel: GoodPostViewModel
     }
 }
 
-/**
- * The files attached to the post being written (§21).
- *
- * A horizontal strip of tiles, each with the state of its own upload. The
- * attachment's picture is NOT previewed: decoding a picked file means a second
- * image pipeline (another decode path, another cache, another place to get the
- * sample size wrong), and the tile already says everything the user needs — what
- * kind of file it is, and whether it has got there yet.
- */
-@Composable
-private fun ComposerAttachments(
-    attachments: List<GoodPostAttachment>,
-    busy: Boolean,
-    full: Boolean,
-    onPick: () -> Unit,
-    onRemove: (String) -> Unit
-) {
-    if (attachments.isNotEmpty()) {
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(attachments, key = { it.uri }) { attachment ->
-                AttachmentTile(
-                    attachment = attachment,
-                    enabled = !busy,
-                    onRemove = { onRemove(attachment.uri) }
-                )
-            }
-        }
-        Spacer(Modifier.height(10.dp))
-    }
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(WaMediaShape)
-            .clickable(enabled = !busy && !full, onClick = onPick)
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            Icons.Filled.AddPhotoAlternate,
-            contentDescription = null,
-            tint = if (busy || full) Wa.TextDim else Wa.Accent,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(
-                text = stringResource(
-                    if (full) R.string.goodpost_media_limit else R.string.goodpost_add_media
-                ),
-                color = if (busy || full) Wa.TextDim else Wa.Text,
-                fontSize = 14.sp
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = stringResource(R.string.goodpost_add_media_note),
-                color = Wa.TextDim,
-                fontSize = 12.sp
-            )
-        }
-    }
-}
-
-/** One attached file, with the state of its own upload. */
-@Composable
-private fun AttachmentTile(
-    attachment: GoodPostAttachment,
-    enabled: Boolean,
-    onRemove: () -> Unit
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            modifier = Modifier
-                .size(72.dp)
-                .clip(WaMediaShape)
-                .background(Wa.Pressed),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = when (attachment.kind) {
-                    "image" -> Icons.Filled.Image
-                    "video" -> Icons.Filled.PlayArrow
-                    else -> Icons.Filled.MusicNote
-                },
-                contentDescription = stringResource(
-                    when (attachment.kind) {
-                        "image" -> R.string.goodpost_attachment_image
-                        "video" -> R.string.goodpost_attachment_video
-                        else -> R.string.goodpost_attachment_audio
-                    }
-                ),
-                tint = Wa.TextDim,
-                modifier = Modifier.size(26.dp)
-            )
-
-            // The remove control is a tap on the tile's corner rather than a
-            // long press: a file that failed to upload has to be removable in
-            // one obvious gesture, or the post can never be published.
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .size(24.dp)
-                    .clip(CircleShape)
-                    .background(Wa.Canvas)
-                    .clickable(enabled = enabled, onClick = onRemove),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = stringResource(
-                        R.string.goodpost_remove_media,
-                        stringResource(R.string.goodpost_attachment_image)
-                    ),
-                    tint = Wa.TextDim,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
-        }
-
-        Spacer(Modifier.height(4.dp))
-
-        Text(
-            text = when (attachment.state) {
-                is GoodPostUploadState.Ready -> stringResource(R.string.goodpost_attachment_ready)
-                is GoodPostUploadState.Failed -> stringResource(R.string.goodpost_attachment_failed)
-                GoodPostUploadState.Uploading -> stringResource(R.string.goodpost_attachment_uploading)
-            },
-            color = when (attachment.state) {
-                is GoodPostUploadState.Ready -> Wa.Accent
-                is GoodPostUploadState.Failed -> Wa.TextDim
-                GoodPostUploadState.Uploading -> Wa.TextDim
-            },
-            fontSize = 11.sp
-        )
-    }
-}
-
-/**
- * Share a channel (§6).
- *
- * `EXTRA_TEXT` is the link ALONE, not the name plus the link: the receiving app
- * decides what to do with the body, and prose mixed with a URI is what turns a
- * working link into a dead string the moment it is pasted. The name travels as
- * the subject, which is what a mail client actually uses.
- */
+/** Hand a channel's link to whatever the device shares with (§11). */
 internal fun shareChannel(context: Context, name: String, link: String) {
     if (link.isBlank()) return
     val send = Intent(Intent.ACTION_SEND).apply {

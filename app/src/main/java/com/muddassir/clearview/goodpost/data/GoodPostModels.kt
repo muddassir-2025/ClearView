@@ -46,7 +46,16 @@ data class GoodPostChannel(
     /** The opening of the newest post's text, or null for a media-only post. */
     val lastPostPreview: String?,
     /** App deep link (§6): `clearview://goodpost/channel/<slug>`. */
-    val shareLink: String
+    val shareLink: String,
+    /**
+     * `active` or `suspended`, and only on a payload an administrator received.
+     *
+     * Null for a reader, because the public read never returns a suspended
+     * channel at all — a null here means "you are reading this as a viewer",
+     * whereas a suspended status means the row is being shown to somebody who
+     * runs it and needs to know it is not public.
+     */
+    val status: String? = null
 )
 
 /** The channel a post came from, as a single-post payload names it. */
@@ -100,6 +109,14 @@ data class GoodPostPost(
     val linkTitle: String?,
     val media: List<GoodPostMedia>,
     val createdAt: String,
+    /**
+     * When the publisher last changed it, or null.
+     *
+     * Kept because an edit changes what the channel said, and a reader who saw
+     * the earlier version should not have to wonder whether they misremembered
+     * it.
+     */
+    val editedAt: String? = null,
     /** Present only when the post was fetched on its own. */
     val channel: GoodPostChannelRef? = null
 ) {
@@ -166,7 +183,8 @@ internal object GoodPostCodec {
             lastPostAt = json.nullableString("lastPostAt"),
             lastPostType = json.nullableString("lastPostType"),
             lastPostPreview = json.nullableString("lastPostPreview"),
-            shareLink = json.optString("shareLink")
+            shareLink = json.optString("shareLink"),
+            status = json.nullableString("status")
         )
     }
 
@@ -210,6 +228,7 @@ internal object GoodPostCodec {
             linkTitle = json.nullableString("linkTitle"),
             media = mediaArray(json.optJSONArray("media")),
             createdAt = json.optString("createdAt"),
+            editedAt = json.nullableString("editedAt"),
             channel = json.optJSONObject("channel")?.let(::channelRef)
         )
     }

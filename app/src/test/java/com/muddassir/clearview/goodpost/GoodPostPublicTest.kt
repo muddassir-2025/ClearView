@@ -301,7 +301,11 @@ class GoodPostPublicTest {
         assertEquals("image", goodPostKindFor("image/png"))
         assertEquals("video", goodPostKindFor("video/mp4"))
         assertEquals("video", goodPostKindFor("video/quicktime"))
-        assertEquals("audio", goodPostKindFor("audio/mpeg"))
+
+        // An audio file is no longer a post this product can carry: the server
+        // refuses to store one, so accepting it here would mean a pick that
+        // fails an upload later instead of a pick that is refused now.
+        assertNull(goodPostKindFor("audio/mpeg"))
 
         // A content type arrives with parameters and mixed case from the picker,
         // and a file whose type is refused for being spelled differently would be
@@ -370,5 +374,9 @@ class GoodPostPublicTest {
 private val GoodPostChannelFields = setOf(
     "id", "slug", "name", "description", "categorySlug", "categoryLabel",
     "countryCode", "iconUrl", "createdAt", "lastPostAt", "lastPostType",
-    "lastPostPreview", "shareLink"
+    "lastPostPreview", "shareLink",
+    // `status` is not a counter and not an account: it is `active`/`suspended`,
+    // present only on a payload an administrator received, and it exists so a
+    // channel they run can say it is not currently public.
+    "status"
 )

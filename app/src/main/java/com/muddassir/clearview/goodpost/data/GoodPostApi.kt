@@ -282,6 +282,22 @@ class GoodPostApi(
             parse = { GoodPostCodec.singleChannel(it) ?: throw ContractBreak() }
         )
 
+    /**
+     * Delete a channel, with its posts, its media and the login that ran it (§17).
+     *
+     * There is no undo on the other end, so the app asks first — the confirmation
+     * is a UI decision, but its existence is why this returns nothing useful:
+     * there is nothing to render from a channel that no longer exists.
+     */
+    suspend fun adminDeleteChannel(token: String, channelId: String): ApiResult<Unit> =
+        parsedCall(
+            method = "DELETE",
+            path = "$ADMIN_PATH/channels/${encode(channelId)}",
+            body = null,
+            bearer = token,
+            parse = { }
+        )
+
     /** Publish a post (§21). The type follows from what is attached. */
     suspend fun adminCreatePost(
         token: String,
@@ -318,6 +334,24 @@ class GoodPostApi(
             body = null,
             bearer = token,
             parse = { Unit }
+        )
+
+    /**
+     * Remove several posts in one request (§17).
+     *
+     * One call for a whole selection, because the server applies it atomically:
+     * a partial delete would be a list with some rows missing and no way to know
+     * which, and re-sending would be the only way to find out.
+     */
+    suspend fun adminDeletePosts(token: String, postIds: List<String>): ApiResult<Int> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/posts/bulk-delete",
+            body = JSONObject().apply {
+                put("postIds", JSONArray().apply { postIds.forEach { put(it) } })
+            },
+            bearer = token,
+            parse = { body -> body.optInt("deleted", 0) }
         )
 
     // ── Media uploads (§21, §22) ────────────────────────────────────────

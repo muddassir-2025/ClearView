@@ -70,6 +70,11 @@ internal fun ApplyGoodPostStatusBar(enabled: Boolean) {
  *
  * The only credential anywhere in the tab belongs to an administrator, and it is
  * asked for only when someone taps "Create a channel" (§16).
+ *
+ * There is no administrator home screen and no dashboard: signing in changes
+ * which channels the tab lists and what the rows and posts offer, and nothing
+ * else. The same screens serve both, which is what keeps this feeling like a
+ * channel app rather than a control panel.
  */
 @Composable
 fun GoodPostTab(
@@ -126,8 +131,6 @@ fun GoodPostTab(
 
             GoodPostScreen.AdminLogin -> AdminLoginScreen(state = state, viewModel = viewModel)
 
-            GoodPostScreen.AdminHome -> AdminHomeScreen(state = state, viewModel = viewModel)
-
             is GoodPostScreen.AdminChannel -> GoodPostFeed(
                 state = state,
                 channelId = screen.channelId,
@@ -137,14 +140,8 @@ fun GoodPostTab(
         }
     }
 
-    // The composer and the channel form are dialogs on top of whichever screen
-    // opened them, so closing one lands back exactly where it was started.
-    if (state.composerOpen) {
-        ComposerDialog(state = state, viewModel = viewModel)
-    }
-
     if (state.channelFormOpen) {
-        ChannelFormDialog(state = state, viewModel = viewModel)
+        ChannelFormScreen(state = state, viewModel = viewModel)
     }
 
     state.messageCode?.let { code ->
@@ -240,6 +237,4 @@ private fun MessageDialog(code: String, onDismiss: () -> Unit) {
 /** A colour used by the read-only surfaces, kept here so they never import grey. */
 internal val WaTransparent: Color = Color.Transparent
 
-/** Extra state a screen needs from [GoodPostUiState] without a second source. */
-internal fun GoodPostUiState.hasMuted(channelId: String): Boolean =
-    mutedChannelIds.contains(channelId)
+

@@ -50,18 +50,7 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
             }
         )
 
-        WaFilterRow {
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_sort_recent),
-                selected = state.sort == "recent",
-                onClick = { viewModel.selectSort("recent") }
-            )
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_sort_name),
-                selected = state.sort == "name",
-                onClick = { viewModel.selectSort("name") }
-            )
-        }
+
 
         if (state.categories.isNotEmpty()) {
             WaFilterRow {
@@ -97,6 +86,8 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
                         avatar = {
                             WaAvatar(name = channel.name, size = 49.dp, url = channel.iconUrl)
                         }
+                        // No trailing control: the row is a way in, and nothing
+                        // here is per-device any more (§7, §5).
                     )
                 }
 

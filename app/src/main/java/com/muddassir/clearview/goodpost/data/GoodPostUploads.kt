@@ -63,7 +63,7 @@ sealed interface GoodPostUploadState {
  */
 data class GoodPostAttachment(
     val uri: String,
-    /** `image`, `video` or `audio`. */
+    /** `image` or `video`. */
     val kind: String,
     val contentType: String,
     val byteSize: Long,
@@ -88,6 +88,10 @@ data class GoodPostAttachment(
  * exists for the same reason there: what is stored under a URL anyone can fetch
  * is what a browser will later run. `image/svg+xml` is absent deliberately — an
  * SVG served from our bucket domain is a stored-XSS primitive.
+ *
+ * The audio types went with audio posts: §21 lists text, image, video and link
+ * updates, so the server no longer stores a third kind and the picker must not
+ * act as though it does.
  */
 val GOODPOST_ACCEPTED_TYPES: Set<String> = setOf(
     "image/jpeg",
@@ -96,12 +100,7 @@ val GOODPOST_ACCEPTED_TYPES: Set<String> = setOf(
     "image/gif",
     "video/mp4",
     "video/quicktime",
-    "video/webm",
-    "audio/mpeg",
-    "audio/mp4",
-    "audio/aac",
-    "audio/ogg",
-    "audio/wav"
+    "video/webm"
 )
 
 /**
@@ -117,7 +116,10 @@ fun goodPostKindFor(contentType: String?): String? {
     return when {
         base.startsWith("image/") -> "image"
         base.startsWith("video/") -> "video"
-        else -> "audio"
+        // A type in the set that is neither an image nor a video is a mistake in
+        // the set, not a third kind: refusing it is the honest answer, because
+        // the server would refuse it too.
+        else -> null
     }
 }
 

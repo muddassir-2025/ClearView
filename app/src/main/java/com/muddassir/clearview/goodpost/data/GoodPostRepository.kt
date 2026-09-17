@@ -91,18 +91,6 @@ internal class GoodPostRepository(
         cursor: String? = null
     ): ApiResult<GoodPostPage<GoodPostMediaItem>> = api.channelMedia(channelId, cursor)
 
-    // ── A device-local notification preference (§14) ────────────────────
-    //
-    // There is nowhere else this could live: a reader has no account, and no
-    // push infrastructure exists behind it yet.
-
-    /** Channels this device has muted. */
-    fun mutedChannelIds(): Set<String> = cache.mutedChannelIds()
-
-    fun setChannelMuted(channelId: String, muted: Boolean) {
-        cache.setChannelMuted(channelId, muted)
-    }
-
     /** Categories for the Explore filter (§7). */
     suspend fun categories(): ApiResult<List<GoodPostCategory>> =
         api.categories().also { result ->
@@ -126,6 +114,13 @@ internal class GoodPostRepository(
      * The cached content goes with it. A cached list is a view of public content,
      * so leaving it would leak nothing — but the cache is also the administrator's
      * working set, and a fresh sign-in should not start from someone else's screen.
+     */
+    /**
+     * Sign out: drop the credentials and everything fetched with them.
+     *
+     * Including the cached public content: a cached list belongs to whoever was
+     * last reading, and leaving it for the next person to open the tab would show
+     * them someone else's view without saying so.
      */
     fun forgetAdminSession() {
         tokens.clear()
@@ -221,6 +216,26 @@ internal class GoodPostRepository(
 
     suspend fun adminDeletePost(postId: String): ApiResult<Unit> =
         authorized { token -> api.adminDeletePost(token, postId) }
+
+    /**
+     * Remove a selection of posts in one request.
+     *
+     * One call rather than one per post: the server applies the whole selection
+     * or none of it, so a failure cannot leave the list half-emptied with no way
+     * to tell which half went.
+     */
+    suspend fun adminDeletePosts(postIds: List<String>): ApiResult<Int> =
+        authorized { token -> api.adminDeletePosts(token, postIds) }
+
+    /**
+     * Delete a channel, with everything that belonged to it (§17).
+     *
+     * Hard on the server: the posts, the media rows, the objects in the bucket
+     * and the login created to run the channel go with it. Offered to a super
+     * administrator and refused to anyone else by the server, not by this call.
+     */
+    suspend fun adminDeleteChannel(channelId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteChannel(token, channelId) }
 
     // ── Media (§21, §22) ────────────────────────────────────────────────
 

@@ -4,6 +4,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +51,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -107,13 +109,13 @@ internal object Wa {
     val Pressed = Color(0xFF182229)
 
     /** A post's container on the feed - WhatsApp channel update olive green (§9, Screenshot 4). */
-    val Bubble = Color(0xFF1F3C2C)
+    val Bubble = Color(0xFF334B19)
 
     /** Text inside the post bubble */
     val BubbleText = Color(0xFFE9EDEF)
 
     /** Subtle sage-green timestamp inside the olive bubble */
-    val BubbleTime = Color(0xFF8AA89B)
+    val BubbleTime = Color(0xFFA4B898)
 
     /** Small forward button background next to post bubbles */
     val ForwardBg = Color(0xFF182229)
@@ -130,6 +132,16 @@ internal object Wa {
     val Text = Color(0xFFE9EDEF)
     val TextDim = Color(0xFF8696A0)
     val Divider = Color(0xFF1F2C34)
+
+    /**
+     * The fill of a selected row, and of the bar that acts on it (§5).
+     *
+     * A lifted surface rather than a tint, because selection is a state the list
+     * is in and not a highlight on some text: WhatsApp darkens the row and swaps
+     * the bar, and doing it with a green wash instead would collide with the
+     * accent that means "this is a control".
+     */
+    val Selected = Color(0xFF2A3942)
 
     /** A recent timestamp, tinted WhatsApp vibrant green (§4). */
     val StampRecent = Color(0xFF25D366)
@@ -340,68 +352,98 @@ internal fun WaChannelRow(
     timestampRecent: Boolean = false,
     avatar: @Composable () -> Unit,
     previewIcon: ImageVector? = null,
+    /**
+     * Long press (§5): selection, or opening the contextual actions.
+     *
+     * A row's actions are reached by holding it rather than by a row of icons
+     * beside every line, which is the difference between a list you read and a
+     * toolbar you navigate.
+     */
+    onLongClick: (() -> Unit)? = null,
+    /** True while this row is part of a selection (§5). */
+    selected: Boolean = false,
     trailing: @Composable () -> Unit = {}
 ) {
-    Column(modifier = modifier.fillMaxWidth().clickable(onClick = onClick)) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(if (selected) Wa.Selected else Wa.Canvas)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick,
+                onLongClickLabel = null
+            )
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 72.dp)
-                .padding(start = 16.dp, end = 12.dp),
+                .padding(start = 16.dp, end = 16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             avatar()
 
             Spacer(Modifier.width(15.dp))
 
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    color = Wa.Text,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // The media indicator is a small icon BEFORE the preview, so
-                    // a channel whose latest post is a photo says so without the
-                    // row having to invent words for it (§5).
-                    if (previewIcon != null) {
-                        Icon(
-                            previewIcon,
-                            contentDescription = null,
-                            tint = Wa.TextDim,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
-                    }
-                    Text(
-                        text = preview,
-                        color = Wa.TextDim,
-                        fontSize = 14.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            }
-
-            Spacer(Modifier.width(10.dp))
-
             Column(
-                horizontalAlignment = Alignment.End,
+                modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.Center
             ) {
-                if (timestamp != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = timestamp,
-                        color = if (timestampRecent) Wa.StampRecent else Wa.TextDim,
-                        fontSize = 12.sp,
-                        maxLines = 1
+                        text = title,
+                        color = Wa.Text,
+                        fontSize = 16.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (timestamp != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = timestamp,
+                            color = if (timestampRecent) Wa.StampRecent else Wa.TextDim,
+                            fontSize = 12.sp,
+                            fontWeight = if (timestampRecent) FontWeight.Medium else FontWeight.Normal,
+                            maxLines = 1
+                        )
+                    }
                 }
-                trailing()
+
+                Spacer(Modifier.height(3.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (previewIcon != null) {
+                            Icon(
+                                previewIcon,
+                                contentDescription = null,
+                                tint = Wa.TextDim,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(Modifier.width(5.dp))
+                        }
+                        Text(
+                            text = preview,
+                            color = Wa.TextDim,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    trailing()
+                }
             }
         }
 
@@ -411,22 +453,102 @@ internal fun WaChannelRow(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 80.dp)
-                .height(1.dp)
+                .height(0.8.dp)
                 .background(Wa.Divider)
         )
     }
 }
 
-/** A green dot marking a channel the reader has not opened yet. */
+/**
+ * The bar a selection replaces the title bar with (§5).
+ *
+ * This is the whole of the "action mode" idea: the same row of icons in the same
+ * place, showing what is possible for what is selected. Nothing floats over the
+ * content, nothing is added to every row, and there is one obvious way out.
+ *
+ * When nothing is selected the caller renders its ordinary bar instead — which
+ * is why this is a separate composable rather than a mode inside [WaTopBar].
+ */
 @Composable
-internal fun WaUnreadDot(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .padding(top = 4.dp)
-            .size(10.dp)
-            .clip(CircleShape)
-            .background(Wa.Accent)
-    )
+internal fun WaSelectionBar(
+    count: Int,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+    actions: @Composable () -> Unit = {}
+) {
+    Column(modifier = modifier.fillMaxWidth().background(Wa.Selected)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(60.dp)
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            WaIconAction(
+                icon = Icons.Filled.Close,
+                description = stringResource(R.string.goodpost_clear_selection),
+                onClick = onClose
+            )
+
+            Text(
+                text = pluralStringResource(
+                    R.plurals.goodpost_selected_count,
+                    count,
+                    count
+                ),
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+                color = Wa.Text,
+                fontSize = 19.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            actions()
+        }
+    }
+}
+
+/**
+ * A confirmation for the one action that cannot be taken back (§17).
+ *
+ * Deleting a channel removes its posts, its media and the login that ran it, and
+ * there is nothing on the other end to restore from. Every other control in the
+ * app is reversible — a post's removal is soft, unfollowing is local — so this is
+ * the only place a confirmation is warranted, and it says exactly what will go.
+ */
+@Composable
+internal fun WaConfirmDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .background(Wa.Bar, RoundedCornerShape(16.dp))
+                .padding(20.dp)
+        ) {
+            Text(text = title, color = Wa.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(text = message, color = Wa.TextDim, fontSize = 14.sp, lineHeight = 20.sp)
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                WaTextAction(
+                    text = stringResource(R.string.goodpost_cancel),
+                    onClick = onDismiss
+                )
+                Spacer(Modifier.weight(1f))
+                WaTextAction(
+                    text = confirmLabel,
+                    onClick = onConfirm,
+                    destructive = true
+                )
+            }
+        }
+    }
 }
 
 /** A section heading above a list, e.g. "Channels" (§3). */
@@ -708,7 +830,7 @@ internal fun WaFab(
         modifier = modifier
             .size(56.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(Wa.Accent)
+            .background(Wa.StampRecent)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -782,7 +904,7 @@ internal fun WaPostContainer(
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(Wa.Bubble)
-            .padding(horizontal = 9.dp, vertical = 8.dp),
+            .padding(horizontal = 4.dp, vertical = 4.dp),
         content = content
     )
 }
@@ -985,10 +1107,10 @@ private val clockFormat: DateTimeFormatter =
 private val listStampFormat: DateTimeFormatter =
     DateTimeFormatter.ofPattern("dd/MM/yy", Locale.getDefault())
 
-/** The clock time inside a post: `9:41 AM`. */
+/** The clock time inside a post: `9:41 am`. */
 internal fun waClock(epochMs: Long?): String {
     if (epochMs == null) return ""
-    return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(clockFormat)
+    return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(clockFormat).lowercase(Locale.getDefault())
 }
 
 /**
@@ -1004,7 +1126,7 @@ internal fun waListStamp(epochMs: Long?): String {
     val day = at.toLocalDate()
 
     return when {
-        day == today -> at.format(clockFormat)
+        day == today -> at.format(clockFormat).lowercase(Locale.getDefault())
         day == today.minusDays(1) -> "Yesterday"
         day.isAfter(today.minusDays(7)) ->
             at.format(DateTimeFormatter.ofPattern("EEE", Locale.getDefault()))

@@ -39,7 +39,6 @@ void ensureSuperAdmin(db)
 
 const server = buildApp().listen(env.PORT, () => {
   console.log(`[api] listening on :${env.PORT} (${env.NODE_ENV})`);
-  console.log(`[api] post history window: ${env.GOODPOST_HISTORY_DAYS} days`);
 });
 
 if (env.RETENTION_JOB_ENABLED) {

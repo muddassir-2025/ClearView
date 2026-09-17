@@ -170,91 +170,6 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
 }
 
 /**
- * The administrator's own view (§19).
- *
- * A plain list of the channels this account may publish to — one for a channel
- * admin, all of them for a super admin, which the server decides and this screen
- * simply renders. It uses the same rows, avatar and type as the public list,
- * because an administrator is looking at the same thing with more rights.
- */
-@Composable
-internal fun AdminHomeScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
-    Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
-        WaTopBar(
-            title = stringResource(R.string.goodpost_my_channels),
-            navigation = {
-                WaIconAction(
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
-                    description = stringResource(R.string.goodpost_back),
-                    onClick = { viewModel.back() }
-                )
-            },
-            actions = {
-                WaOverflowMenu(
-                    items = listOf(
-                        WaMenuItem(
-                            label = stringResource(R.string.goodpost_sign_out),
-                            onClick = viewModel::adminSignOut,
-                            destructive = true
-                        )
-                    )
-                )
-            }
-        )
-
-        Box(modifier = Modifier.weight(1f)) {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 96.dp)
-            ) {
-                state.adminChannels.forEach { channel ->
-                    item(key = channel.id) {
-                        WaChannelRow(
-                            title = channel.name,
-                            preview = channel.description?.takeIf { it.isNotBlank() }
-                                ?: stringResource(R.string.goodpost_no_description),
-                            onClick = { viewModel.openAdminChannel(channel.id) },
-                            avatar = {
-                                WaAvatar(name = channel.name, size = 49.dp, url = channel.iconUrl)
-                            },
-                            trailing = {
-                                // Editing the channel itself lives here, beside
-                                // the row, rather than a screen deeper: an
-                                // administrator changes a name far less often
-                                // than they publish, and it should not sit in
-                                // the way of publishing.
-                                WaTextAction(
-                                    text = stringResource(R.string.goodpost_edit),
-                                    onClick = { viewModel.startEditChannel(channel) }
-                                )
-                            }
-                        )
-                    }
-                }
-
-                if (state.adminChannels.isEmpty() && !state.adminChannelsLoading) {
-                    item(key = "empty") {
-                        WaEmptyState(
-                            title = stringResource(R.string.goodpost_empty_admin_title),
-                            note = stringResource(R.string.goodpost_empty_admin_note)
-                        )
-                    }
-                }
-            }
-
-            WaFab(
-                icon = Icons.Filled.Add,
-                description = stringResource(R.string.goodpost_create_channel),
-                onClick = viewModel::startCreateChannel,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 16.dp)
-            )
-        }
-    }
-}
-
-/**
  * A channel's profile image, on the form that creates or edits it (§21).
  *
  * Four states, and each is drawn from the real one rather than guessed:
@@ -360,29 +275,14 @@ private fun ChannelIconField(
 }
 
 /**
- * Create or edit a channel (§19, §20).
- *
- * A super admin creating a channel also names the account that will run it,
- * because the server creates both in one step — a channel with no administrator
- * would be one nobody could publish to. A channel admin editing their own
- * channel sees no credential fields at all, and the server would refuse them if
- * they were sent.
+ * Create or edit a channel as a clean full screen (§19, §20).
  */
 @Composable
-internal fun ChannelFormDialog(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     val creating = state.channelFormId == null
     val mintsAdmin = state.channelFormAdminEmail != null
     val context = LocalContext.current
 
-    /**
-     * Pick the profile image.
-     *
-     * `PickVisualMedia` for a single IMAGE, not `ImageAndVideo`: the avatar is
-     * drawn into a circle, so a video has no meaning in one and offering it would
-     * be a choice that can only be refused. `SingleSelect` still returns a list
-     * on some OEM implementations, so the first element is taken rather than the
-     * result being trusted to have exactly one.
-     */
     val iconPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
@@ -391,136 +291,165 @@ internal fun ChannelFormDialog(state: GoodPostUiState, viewModel: GoodPostViewMo
         if (attachment == null) viewModel.reportUnsupportedMedia() else viewModel.onChannelIconPicked(attachment)
     }
 
-    Dialog(onDismissRequest = viewModel::cancelChannelForm) {
-        Column(
-            modifier = Modifier
-                .background(Wa.Bar, androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            Text(
-                text = stringResource(
-                    if (creating) R.string.goodpost_create_channel
+    val picked = state.channelFormIcon
+    val removed = state.channelFormIconRemoved
+    val existingUrl = if (removed) null else state.channelFormExistingIconUrl
+    val showingPicked = picked != null && picked.mediaId != null
+
+    WaBackdrop {
+        Column(modifier = Modifier.fillMaxSize()) {
+            WaTopBar(
+                title = stringResource(
+                    if (creating) R.string.goodpost_new_channel
                     else R.string.goodpost_edit_channel
                 ),
-                color = Wa.Text,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            // The image, at the top of the form because it is the one field a
-            // reader sees before anything else the channel says.
-            ChannelIconField(
-                state = state,
-                busy = state.adminBusy,
-                onPick = {
-                    iconPicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                navigation = {
+                    WaIconAction(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        description = stringResource(R.string.goodpost_back),
+                        onClick = viewModel::cancelChannelForm
                     )
-                },
-                onRemove = viewModel::removeChannelIcon,
-                onKeep = viewModel::keepChannelIcon
+                }
             )
 
-            Spacer(Modifier.height(16.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Centered circular avatar
+                Box(
+                    modifier = Modifier
+                        .size(100.dp)
+                        .clip(CircleShape)
+                        .background(Wa.Bar)
+                        .clickable(
+                            enabled = !state.adminBusy && state.composerMediaAvailable,
+                            onClick = {
+                                iconPicker.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    WaAvatar(
+                        name = state.channelFormName.ifBlank { "?" },
+                        size = 100.dp,
+                        url = if (showingPicked) null else existingUrl
+                    )
+                }
 
-            WaField(
-                value = state.channelFormName,
-                onValueChange = viewModel::onChannelFormNameChange,
-                label = stringResource(R.string.goodpost_channel_name),
-                placeholder = stringResource(R.string.goodpost_channel_name_hint),
-                enabled = !state.adminBusy
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            WaField(
-                value = state.channelFormDescription,
-                onValueChange = viewModel::onChannelFormDescriptionChange,
-                label = stringResource(R.string.goodpost_channel_description),
-                placeholder = stringResource(R.string.goodpost_channel_description_hint),
-                enabled = !state.adminBusy,
-                singleLine = false,
-                minHeight = 84.dp
-            )
-
-            if (state.categories.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
-                Text(
-                    text = stringResource(R.string.goodpost_category),
-                    color = Wa.Accent,
-                    fontSize = 13.sp
-                )
-                Spacer(Modifier.height(6.dp))
-                WaFilterRow {
-                    WaFilterPill(
-                        label = stringResource(R.string.goodpost_no_category),
-                        selected = state.channelFormCategory == null,
-                        onClick = { viewModel.onChannelFormCategoryChange(null) }
-                    )
-                    state.categories.forEach { category ->
-                        WaFilterPill(
-                            label = category.label,
-                            selected = state.channelFormCategory == category.slug,
-                            onClick = { viewModel.onChannelFormCategoryChange(category.slug) }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    if (removed) {
+                        WaTextAction(
+                            text = stringResource(R.string.goodpost_channel_image_keep),
+                            enabled = !state.adminBusy,
+                            onClick = viewModel::keepChannelIcon
+                        )
+                    } else {
+                        WaTextAction(
+                            text = stringResource(
+                                if (picked != null || existingUrl != null) {
+                                    R.string.goodpost_channel_image_change
+                                } else {
+                                    R.string.goodpost_channel_image_add
+                                }
+                            ),
+                            enabled = !state.adminBusy && state.composerMediaAvailable,
+                            onClick = {
+                                iconPicker.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            }
+                        )
+                    }
+
+                    if (!removed && (picked != null || existingUrl != null)) {
+                        Spacer(Modifier.width(16.dp))
+                        WaTextAction(
+                            text = stringResource(R.string.goodpost_channel_image_remove),
+                            enabled = !state.adminBusy,
+                            onClick = viewModel::removeChannelIcon,
+                            destructive = true
                         )
                     }
                 }
-            }
 
-            if (mintsAdmin) {
-                Spacer(Modifier.height(12.dp))
-
-                Text(
-                    text = stringResource(R.string.goodpost_channel_admin_section),
-                    color = Wa.TextDim,
-                    fontSize = 13.sp
-                )
-
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(24.dp))
 
                 WaField(
-                    value = state.channelFormAdminEmail.orEmpty(),
-                    onValueChange = viewModel::onChannelFormAdminEmailChange,
-                    label = stringResource(R.string.goodpost_admin_email),
-                    placeholder = stringResource(R.string.goodpost_email_hint),
-                    enabled = !state.adminBusy,
-                    keyboardType = KeyboardType.Email
+                    value = state.channelFormName,
+                    onValueChange = viewModel::onChannelFormNameChange,
+                    label = stringResource(R.string.goodpost_channel_name),
+                    placeholder = stringResource(R.string.goodpost_channel_name_hint),
+                    enabled = !state.adminBusy
                 )
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(16.dp))
 
                 WaField(
-                    value = state.channelFormAdminPassword.orEmpty(),
-                    onValueChange = viewModel::onChannelFormAdminPasswordChange,
-                    label = stringResource(R.string.goodpost_admin_password),
-                    placeholder = stringResource(R.string.goodpost_password_hint),
+                    value = state.channelFormDescription,
+                    onValueChange = viewModel::onChannelFormDescriptionChange,
+                    label = stringResource(R.string.goodpost_channel_description),
+                    placeholder = stringResource(R.string.goodpost_channel_description_hint),
                     enabled = !state.adminBusy,
-                    keyboardType = KeyboardType.Password
+                    singleLine = false,
+                    minHeight = 90.dp
                 )
-            }
 
-            Spacer(Modifier.height(20.dp))
+                if (mintsAdmin) {
+                    Spacer(Modifier.height(20.dp))
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_cancel),
-                    enabled = !state.adminBusy,
-                    onClick = viewModel::cancelChannelForm
-                )
-                Spacer(Modifier.weight(1f))
-                Box(modifier = Modifier.width(150.dp)) {
-                    WaPrimaryButton(
-                        text = stringResource(
-                            if (creating) R.string.goodpost_create else R.string.goodpost_save
-                        ),
-                        enabled = !state.adminBusy && state.channelFormName.isNotBlank(),
-                        busy = state.adminBusy,
-                        onClick = viewModel::submitChannelForm
+                    Text(
+                        text = stringResource(R.string.goodpost_channel_admin_section),
+                        color = Wa.TextDim,
+                        fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(10.dp))
+
+                    WaField(
+                        value = state.channelFormAdminEmail.orEmpty(),
+                        onValueChange = viewModel::onChannelFormAdminEmailChange,
+                        label = stringResource(R.string.goodpost_admin_email),
+                        placeholder = stringResource(R.string.goodpost_email_hint),
+                        enabled = !state.adminBusy,
+                        keyboardType = KeyboardType.Email
+                    )
+
+                    Spacer(Modifier.height(14.dp))
+
+                    WaField(
+                        value = state.channelFormAdminPassword.orEmpty(),
+                        onValueChange = viewModel::onChannelFormAdminPasswordChange,
+                        label = stringResource(R.string.goodpost_admin_password),
+                        placeholder = stringResource(R.string.goodpost_password_hint),
+                        enabled = !state.adminBusy,
+                        keyboardType = KeyboardType.Password
                     )
                 }
+
+                Spacer(Modifier.height(32.dp))
+
+                WaPrimaryButton(
+                    text = stringResource(
+                        if (creating) R.string.goodpost_create_channel else R.string.goodpost_save
+                    ),
+                    enabled = !state.adminBusy && state.channelFormName.isNotBlank(),
+                    busy = state.adminBusy,
+                    onClick = viewModel::submitChannelForm
+                )
+
+                Spacer(Modifier.height(24.dp))
             }
         }
     }
