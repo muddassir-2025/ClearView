@@ -128,6 +128,12 @@ fun GoodPostTab(
                 viewModel = viewModel
             )
 
+            is GoodPostScreen.ChannelSearch -> GoodPostChannelSearch(
+                state = state,
+                channelId = screen.channelId,
+                viewModel = viewModel
+            )
+
             GoodPostScreen.AdminLogin -> AdminLoginScreen(state = state, viewModel = viewModel)
 
             is GoodPostScreen.AdminChannel -> GoodPostFeed(
@@ -217,9 +223,10 @@ private fun MessageDialog(code: String, onDismiss: () -> Unit) {
                 .padding(20.dp)
         ) {
             Text(
-                text = stringResource(
-                    goodPostErrorMessage(com.muddassir.clearview.goodpost.goodPostErrorFor(code))
-                ),
+                // Through the shared renderer rather than the resource id, so a
+                // message that has to name a number is worded on every surface
+                // that shows it (§10).
+                text = goodPostErrorText(code),
                 color = Wa.Text,
                 fontSize = 15.sp
             )

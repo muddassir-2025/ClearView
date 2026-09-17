@@ -30,7 +30,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
@@ -188,6 +187,16 @@ internal fun GoodPostFeed(
                                 WaMenuItem(
                                     label = stringResource(R.string.goodpost_channel_info),
                                     onClick = { viewModel.open(GoodPostScreen.ChannelInfo(channelId)) }
+                                )
+                            )
+                            // §9: finding a message in a channel you are already
+                            // reading. Here rather than only on the information
+                            // page because this is where the reader is when they
+                            // want it — WhatsApp puts it in the same menu.
+                            add(
+                                WaMenuItem(
+                                    label = stringResource(R.string.goodpost_search_in_channel),
+                                    onClick = { viewModel.openChannelSearch(channelId) }
                                 )
                             )
                             channel?.let { known ->
@@ -362,14 +371,20 @@ private fun GoodPostPost.copyText(): String = buildString {
 /**
  * One post, as a WhatsApp olive-green message bubble (§9, Screenshot 4).
  *
- * Two things changed here from the version with a row of icons under every
- * bubble. The icons went, because an action attached to every message is an
- * action attached to no message in particular — and the body is now a
- * `SelectionContainer`, so text can be selected with a long press and copied
- * the way text is copied everywhere else on the phone.
+ * The actions are a long press rather than a row of icons under every bubble: an
+ * action attached to every message is an action attached to no message in
+ * particular, and the selection bar that appears is what tells the reader which
+ * one they are acting on.
+ *
+ * The body is deliberately NOT a `SelectionContainer`. It was one, so the text
+ * could be selected and copied with a long press — and that made the gesture mean
+ * two things at once: the platform's own select/copy/read-aloud toolbar rose over
+ * the bubble at the same moment the app was putting the post into its selection
+ * state. The bar that appears now is the app's, and Copy is one of its actions,
+ * so nothing was lost by making the long press mean exactly one thing.
  */
 @Composable
-private fun PostItem(
+internal fun PostItem(
     post: GoodPostPost,
     selected: Boolean,
     onClick: () -> Unit,
@@ -405,7 +420,9 @@ private fun PostItem(
 
             val bodyText = post.body
             if (!bodyText.isNullOrBlank()) {
-                SelectionContainer {
+                // §5: holding the bubble is the app's own gesture, and this is
+                // what keeps Android's select/copy menu from answering it too.
+                WaNoTextSelection {
                     Text(
                         // §17: the stored markers become spans here, and only
                         // here. The body itself is plain text the server never

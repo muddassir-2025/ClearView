@@ -33,6 +33,53 @@ import {
  */
 export const JSON_BODY_LIMIT = '256kb';
 
+/**
+ * One line per request, so a failure reported from a device can be found.
+ *
+ * This exists because of a real case: the app said "Something went wrong" and
+ * there was nothing on the server to look at. The error handler logged 5xx
+ * only, so the 4xx a client actually hits — `invalid_token`, `creator_required`,
+ * `email_taken` — left no trace anywhere, and a client's own wording cannot
+ * tell those apart from the outside.
+ *
+ * The CODE is what is logged rather than the message: it is the machine-readable
+ * half, it is what the Android client branches on, and it is what names the
+ * condition.
+ *
+ * Deliberately no query string, no body and no headers. A query can be a reader's
+ * search term and an admin body carries a password, so neither belongs in a log;
+ * the path and the code are enough to identify a failure. Successful requests
+ * are logged too, because "did it even arrive?" is the first question and
+ * silence cannot answer it.
+ *
+ * `/health` is skipped: Render polls it, and a line every 30 seconds is noise
+ * that buries the ones worth reading.
+ */
+function requestLogger(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === '/health' || req.path === '/health/db') {
+    next();
+    return;
+  }
+
+  const startedAt = Date.now();
+  // `originalUrl` rather than `path`: Express rewrites `req.url` while a
+  // request is inside a mounted router, so `path` read at finish time can be
+  // missing the mount prefix — a line reading `GET /channels` when the caller
+  // asked for `/api/v1/channels` is worse than useless in a log that is only
+  // ever read to match one against the other. The query string is cut off
+  // explicitly, which is also what keeps a reader's search term out of it.
+  const path = req.originalUrl.split('?')[0];
+  res.on('finish', () => {
+    const code = typeof res.locals.errorCode === 'string' ? ` ${res.locals.errorCode}` : '';
+    const line = `[req] ${req.method} ${path} ${res.statusCode}${code} ${Date.now() - startedAt}ms`;
+    if (res.statusCode >= 500) console.error(line);
+    else if (res.statusCode >= 400) console.warn(line);
+    else console.log(line);
+  });
+
+  next();
+}
+
 type HttpError = Error & { status?: number; statusCode?: number; type?: string };
 
 function notFound(_req: Request, res: Response): void {
@@ -61,6 +108,11 @@ function notFound(_req: Request, res: Response): void {
  */
 function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction): void {
   if (err instanceof ApiError) {
+    // Recorded for the request log below, which is where a failure reported
+    // from a device is looked for. Every code is recorded, not just the 5xx
+    // ones: a 401 or a 409 is the answer a user is most likely to be asking
+    // about, and those were previously leaving no trace at all.
+    res.locals.errorCode = err.type;
     if (err.status >= 500) console.error(`[api] ${err.type}: ${err.message}`);
     res.status(err.status).json({
       error: err.type,
@@ -73,6 +125,7 @@ function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFun
   const raw = error?.status ?? error?.statusCode ?? 500;
   const status = raw >= 400 && raw <= 599 ? raw : 500;
   const isServerFault = status >= 500;
+  res.locals.errorCode = isServerFault ? 'internal_error' : (error?.type ?? 'invalid_request');
 
   if (isServerFault) {
     console.error('[api] unhandled error:', error?.message);
@@ -148,6 +201,9 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   );
 
   app.use(express.json({ limit: JSON_BODY_LIMIT }));
+
+  // Before every route, so its `finish` listener is attached to all of them.
+  app.use(requestLogger);
 
   // ── Health ────────────────────────────────────────────────────────────
   // Two endpoints with distinct jobs. /health answers "is the process
@@ -231,7 +287,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // limiting — and `/admin/api/auth/login` additionally takes the tighter auth
   // rule inside the router.
   app.use('/admin/api', rateLimit(limiter, rateLimits.global));
-  app.use('/admin/api', buildAdminRouter(database, store, limiter, rateLimits));
+  app.use('/admin/api', buildAdminRouter(database, store, limiter, rateLimits, verifier));
 
   app.use(notFound);
   app.use(errorHandler);

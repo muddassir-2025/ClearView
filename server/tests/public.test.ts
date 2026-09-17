@@ -110,6 +110,21 @@ async function seedPost(
   return one(rows.rows).id;
 }
 
+/** A reader, and the fact that they follow a channel (§4). */
+async function seedFollow(channelId: string, uid: string): Promise<void> {
+  await pglite.query(
+    `WITH r AS (
+       INSERT INTO readers (firebase_uid) VALUES ($2)
+       ON CONFLICT (firebase_uid) DO UPDATE SET last_seen_at = now()
+       RETURNING id
+     )
+     INSERT INTO channel_follows (reader_id, channel_id)
+     SELECT id, $1::uuid FROM r
+     ON CONFLICT DO NOTHING`,
+    [channelId, uid]
+  );
+}
+
 async function seedMedia(postId: string): Promise<string> {
   const rows = await pglite.query<{ id: string }>(
     `INSERT INTO post_media
@@ -360,6 +375,291 @@ describe('public channel posts', () => {
     const res = await request(app).get('/api/v1/channels/nobody/posts');
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('channel_not_found');
+  });
+});
+
+/**
+ * The two numbers a channel now carries (§9).
+ *
+ * Both are read on the list screen and on a channel's information page, and
+ * both are DB-derived rather than stored twice: the follower count is a COUNT
+ * over the follows that already exist, and the view count is the newest post's
+ * own column. What is pinned here is that neither can be invented — a channel
+ * nobody follows reports zero, and a post nobody has reported reading reports
+ * zero rather than a placeholder.
+ */
+describe('a channel’s follower and view numbers (§9)', () => {
+  it('counts the readers who follow it, and nobody else', async () => {
+    const followed = unique('counted');
+    const lonely = unique('lonely');
+    const followedId = await seedChannel({ slug: followed });
+    const lonelyId = await seedChannel({ slug: lonely });
+
+    await seedFollow(followedId, 'reader-one');
+    await seedFollow(followedId, 'reader-two');
+    await seedFollow(lonelyId, 'reader-three');
+
+    const list = await request(app).get('/api/v1/channels?limit=50');
+    const bySlug = new Map(
+      list.body.items.map((c: { slug: string; followerCount: number }) => [c.slug, c.followerCount])
+    );
+
+    expect(bySlug.get(followed)).toBe(2);
+    expect(bySlug.get(lonely)).toBe(1);
+
+    const detail = await request(app).get(`/api/v1/channels/${followed}`);
+    expect(detail.body.channel.followerCount).toBe(2);
+  });
+
+  it('reports the newest post’s views, and zero before anybody has read it', async () => {
+    const slug = unique('views');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, {
+      body: 'older',
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const newest = await seedPost(channelId, { body: 'newest' });
+
+    // A post nobody has reported reading is a real zero, not a missing value.
+    const before = await request(app).get(`/api/v1/channels/${slug}`);
+    expect(before.body.channel.lastPostViews).toBe(0);
+
+    const reported = await request(app)
+      .post(`/api/v1/channels/${slug}/posts/views`)
+      .send({ ids: [newest] });
+    expect(reported.status, JSON.stringify(reported.body)).toBe(200);
+    expect(reported.body.counted).toBe(1);
+
+    const after = await request(app).get(`/api/v1/channels/${slug}`);
+    expect(after.body.channel.lastPostViews).toBe(1);
+
+    // The count is on the post payload too, which is what a channel's own feed
+    // renders.
+    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    const byBody = new Map(
+      posts.body.items.map((p: { body: string; views: number }) => [p.body, p.views])
+    );
+    expect(byBody.get('newest')).toBe(1);
+    expect(byBody.get('older')).toBe(0);
+  });
+});
+
+/**
+ * The one write on the reader surface (§9).
+ *
+ * Its rules are all about scope and about not treating a race as an error, so
+ * each case below is one of those: a batch is counted once, a post belonging to
+ * another channel is not counted through this one, a post that was removed is
+ * not counted at all, and a stale id does not fail the batch it arrived in.
+ */
+describe('reporting views (§9)', () => {
+  it('counts a batch once, and requires no credential to do it', async () => {
+    const slug = unique('views');
+    const channelId = await seedChannel({ slug });
+    const first = await seedPost(channelId, { body: 'one' });
+    const second = await seedPost(channelId, { body: 'two' });
+
+    const res = await request(app)
+      .post(`/api/v1/channels/${slug}/posts/views`)
+      .send({ ids: [first, second] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.counted).toBe(2);
+
+    const rows = await pglite.query<{ id: string; view_count: number }>(
+      `SELECT id, view_count FROM posts WHERE channel_id = $1 ORDER BY body`,
+      [channelId]
+    );
+    expect(rows.rows.map((r) => r.view_count)).toEqual([1, 1]);
+  });
+
+  it('cannot count another channel’s post through this one', async () => {
+    const mine = unique('mine');
+    const theirs = unique('theirs');
+    const myChannel = await seedChannel({ slug: mine });
+    const theirChannel = await seedChannel({ slug: theirs });
+    const theirPost = await seedPost(theirChannel, { body: 'not mine' });
+
+    const res = await request(app)
+      .post(`/api/v1/channels/${mine}/posts/views`)
+      .send({ ids: [theirPost] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.counted).toBe(0);
+
+    const rows = await pglite.query<{ view_count: number }>(
+      `SELECT view_count FROM posts WHERE id = $1`,
+      [theirPost]
+    );
+    expect(rows.rows[0]?.view_count).toBe(0);
+    expect(myChannel).not.toBe(theirChannel);
+  });
+
+  it('leaves a removed post at zero, and does not fail the batch over it', async () => {
+    const slug = unique('views');
+    const channelId = await seedChannel({ slug });
+    const visible = await seedPost(channelId, { body: 'still here' });
+    const removed = await seedPost(channelId, { body: 'gone', deleted: true });
+
+    const res = await request(app)
+      .post(`/api/v1/channels/${slug}/posts/views`)
+      .send({ ids: [visible, removed, '11111111-1111-4111-8111-111111111111'] });
+
+    // The two it could count are counted; the third is simply not a match.
+    expect(res.status).toBe(200);
+    expect(res.body.counted).toBe(1);
+
+    const rows = await pglite.query<{ body: string | null; view_count: number }>(
+      `SELECT body, view_count FROM posts WHERE channel_id = $1 ORDER BY body`,
+      [channelId]
+    );
+    expect(rows.rows.map((r) => r.view_count)).toEqual([0, 1]);
+  });
+
+  it('refuses an empty batch and an id that is not one', async () => {
+    const slug = unique('views');
+    await seedChannel({ slug });
+
+    const empty = await request(app).post(`/api/v1/channels/${slug}/posts/views`).send({ ids: [] });
+    expect(empty.status).toBe(400);
+
+    const junk = await request(app)
+      .post(`/api/v1/channels/${slug}/posts/views`)
+      .send({ ids: ['not-a-uuid'] });
+    expect(junk.status).toBe(400);
+  });
+
+  it('404s for a channel that does not exist, like every other channel route', async () => {
+    const res = await request(app)
+      .post('/api/v1/channels/nobody/posts/views')
+      .send({ ids: [await seedPost(await seedChannel({ slug: unique('x') }))] });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('channel_not_found');
+  });
+});
+
+/**
+ * Search inside ONE channel (§9).
+ *
+ * The feature a reader actually uses this for is "where did the channel say X"
+ * — the answers have to stay inside the channel they asked about, and they have
+ * to still be a page of the same feed rather than a second, differently shaped
+ * result set the client has to render with different code.
+ */
+describe('searching a channel’s posts', () => {
+  it('returns only the posts that contain the term, newest first', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, {
+      body: 'Zakat is due on savings',
+      createdAt: new Date(Date.now() - 180_000).toISOString(),
+    });
+    await seedPost(channelId, { body: 'Salah times for tonight' });
+    await seedPost(channelId, {
+      body: 'Reminder about ZAKAT',
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+
+    const res = await request(app).get(`/api/v1/channels/${slug}/posts?q=zakat`);
+    expect(res.status).toBe(200);
+    expect(res.body.items).toHaveLength(2);
+    // Case-insensitive, and the newest match leads — the same order the
+    // unfiltered feed uses.
+    expect(res.body.items.map((p: { body: string }) => p.body)).toEqual([
+      'Reminder about ZAKAT',
+      'Zakat is due on savings',
+    ]);
+  });
+
+  it('never returns another channel’s posts', async () => {
+    const mine = unique('mine');
+    const theirs = unique('theirs');
+    const myChannel = await seedChannel({ slug: mine });
+    const theirChannel = await seedChannel({ slug: theirs });
+    await seedPost(myChannel, { body: 'qibla direction' });
+    await seedPost(theirChannel, { body: 'qibla direction, from the other channel' });
+
+    const res = await request(app).get(`/api/v1/channels/${mine}/posts?q=qibla`);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].channelId).toBe(myChannel);
+  });
+
+  it('treats a blank term as no filter at all', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, { body: 'first' });
+    await seedPost(channelId, { body: 'second' });
+
+    for (const term of ['', '   ']) {
+      const res = await request(app).get(
+        `/api/v1/channels/${slug}/posts?q=${encodeURIComponent(term)}`
+      );
+      expect(res.body.items).toHaveLength(2);
+    }
+  });
+
+  it('treats the term as text rather than as a pattern', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, { body: 'Discount is 50% today' });
+    await seedPost(channelId, { body: 'Nothing to see here' });
+
+    // `%` is a LIKE wildcard. A reader searching for it must get the post that
+    // says 50%, not every post in the channel.
+    const res = await request(app).get(`/api/v1/channels/${slug}/posts?q=${encodeURIComponent('50%')}`);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].body).toBe('Discount is 50% today');
+  });
+
+  it('pages a search the same way it pages the feed', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    for (let i = 0; i < 5; i += 1) {
+      await seedPost(channelId, {
+        body: `ayah ${i}`,
+        createdAt: new Date(Date.now() - i * 60_000).toISOString(),
+      });
+    }
+    await seedPost(channelId, { body: 'unrelated' });
+
+    const first = await request(app).get(`/api/v1/channels/${slug}/posts?q=ayah&limit=2`);
+    expect(first.body.items).toHaveLength(2);
+    expect(first.body.nextCursor).not.toBeNull();
+
+    const second = await request(app).get(
+      `/api/v1/channels/${slug}/posts?q=ayah&limit=2&cursor=${first.body.nextCursor}`
+    );
+    const bodies = [
+      ...first.body.items.map((p: { body: string }) => p.body),
+      ...second.body.items.map((p: { body: string }) => p.body),
+    ];
+    expect(bodies).toEqual(['ayah 0', 'ayah 1', 'ayah 2', 'ayah 3']);
+    expect(new Set(bodies).size).toBe(bodies.length);
+  });
+
+  it('finds a post by the title of the link it carries', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, {
+      type: 'link',
+      body: null,
+      linkUrl: 'https://example.test/lecture',
+      linkTitle: 'Tafsir of Surah Al-Kahf',
+    });
+
+    const res = await request(app).get(`/api/v1/channels/${slug}/posts?q=tafsir`);
+    expect(res.body.items).toHaveLength(1);
+    expect(res.body.items[0].linkTitle).toBe('Tafsir of Surah Al-Kahf');
+  });
+
+  it('omits a removed post even when it matches', async () => {
+    const slug = unique('search');
+    const channelId = await seedChannel({ slug });
+    await seedPost(channelId, { body: 'revised timetable', deleted: true });
+
+    const res = await request(app).get(`/api/v1/channels/${slug}/posts?q=revised`);
+    expect(res.body.items).toEqual([]);
   });
 });
 

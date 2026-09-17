@@ -100,6 +100,24 @@ const schema = z.object({
   // ── S3 ──
   AWS_REGION: z.string().default('eu-central-1'),
   AWS_S3_BUCKET: z.string().default(''),
+
+  /**
+   * Point the S3 client at an S3-COMPATIBLE service instead of Amazon's.
+   *
+   * Empty means Amazon S3, which is the default and the configuration the rest
+   * of these comments describe. Setting it switches the bucket — and nothing
+   * else — to a provider that speaks the same API: Cloudflare R2 (zero egress
+   * fees, and a free tier that covers this product's images), Backblaze B2 or
+   * Wasabi. Every presign, HEAD and delete then goes to that host without any
+   * other code changing, because the AWS SDK's S3 client is the S3 protocol and
+   * not Amazon's endpoint.
+   *
+   * For R2 the value is
+   * `https://<account-id>.r2.cloudflarestorage.com`, and `AWS_REGION` should be
+   * set to `auto` at the same time — R2 does not have regions and expects that
+   * literal string in the signature.
+   */
+  AWS_ENDPOINT_URL: z.string().default(''),
   AWS_ACCESS_KEY_ID: z.string().default(''),
   AWS_SECRET_ACCESS_KEY: z.string().default(''),
   AWS_USE_INSTANCE_ROLE: bool.default(false),
@@ -154,8 +172,15 @@ const schema = z.object({
   // and delete on a channel's behalf.
   ADMIN_ACCESS_TOKEN_TTL: z.string().default('10m'),
   ADMIN_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(7),
-  /** §16's floor for a channel administrator's password. */
-  ADMIN_MIN_PASSWORD_LENGTH: z.coerce.number().int().positive().default(12),
+  /**
+   * §16's floor for a channel administrator's password.
+   *
+   * Eight, and that is a product decision rather than a security one: this
+   * password is typed into a phone by whoever the super admin hands it to, and a
+   * ten-character floor was refusing passwords a person had already decided were
+   * long enough. It is not a reader credential and grants one channel.
+   */
+  ADMIN_MIN_PASSWORD_LENGTH: z.coerce.number().int().positive().default(8),
 
   // A carousel bound (§8). Enforced by the API rather than by a constraint,
   // because it is a product rule and not an invariant of the data.

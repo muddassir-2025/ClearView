@@ -69,6 +69,11 @@ function readerToken(uid: string, options: { email?: string; anonymous?: boolean
     uid,
     anonymous,
     email: anonymous ? null : (options.email ?? `${uid}@example.test`),
+    // Unproven here on purpose: nothing in the reader surface may depend on the
+    // verified-address claim (§16 links accounts on it), and saying so keeps a
+    // future reader-scoped feature from borrowing an assumption this suite
+    // never made.
+    emailVerified: false,
   });
   return token;
 }

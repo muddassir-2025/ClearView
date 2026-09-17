@@ -105,9 +105,16 @@ export async function hashPassword(password: string): Promise<string> {
  */
 export function assertPasswordAcceptable(password: string): void {
   if (password.length < env.ADMIN_MIN_PASSWORD_LENGTH) {
+    // The LENGTH is named, and the password is not: a refusal that says only
+    // "too short" is what sends somebody through four passwords in a row that
+    // were each one character under a rule nobody stated, and the count is the
+    // one fact that turns that into a fix. This message is a developer aid
+    // (production withholds it), so the client's own wording carries the floor
+    // to whoever is typing — see `BuildConfig.ADMIN_MIN_PASSWORD_LENGTH`.
     throw badRequest(
       'weak_password',
-      `A password must be at least ${env.ADMIN_MIN_PASSWORD_LENGTH} characters.`
+      `A password must be at least ${env.ADMIN_MIN_PASSWORD_LENGTH} characters; ` +
+        `${password.length} were given.`
     );
   }
 }
@@ -126,7 +133,11 @@ const DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEeO7ZBpVQvV9zPWJMoZbWqBBBBBBBBBBBB
  * question it needs — "does the configured password still open this account?" —
  * without a second bcrypt call site quietly drifting from this one.
  */
-export async function passwordMatches(password: string, hash: string | undefined): Promise<boolean> {
+export async function passwordMatches(
+  password: string,
+  /** `null` for a creator who has no password (§16) — see the nullable column. */
+  hash: string | null | undefined
+): Promise<boolean> {
   try {
     return await bcrypt.compare(password, hash ?? DUMMY_HASH);
   } catch {
@@ -244,7 +255,13 @@ export interface LoginInput {
 }
 
 interface LoginRow extends AdminRow {
-  password_hash: string;
+  /**
+   * NULL for a creator who signs in with Firebase and has no password (§16).
+   * [passwordMatches] then compares against its dummy hash and refuses, which is
+   * the right answer for the password form — and the reason it takes
+   * `string | undefined` rather than assuming a hash is present.
+   */
+  password_hash: string | null;
   failed_login_count: number;
   locked_until: unknown;
 }
@@ -362,8 +379,15 @@ async function recordFailedLogin(database: Queryable, row: LoginRow): Promise<vo
   );
 }
 
-/** Mint a session row plus the access token that names it. */
-async function createSession(
+/**
+ * Mint a session row plus the access token that names it.
+ *
+ * Exported for the creator sign-in path (§16), which must issue the SAME kind of
+ * session the password path does. A second implementation of "make a session"
+ * would be a second place that mints tokens, and the two would drift — the
+ * failure mode of that drift is a session that outlives its revocation.
+ */
+export async function createSession(
   database: Queryable,
   account: AdminAccount,
   input: { readonly ipHash: string; readonly userAgent: string | null }
@@ -583,7 +607,14 @@ export async function insertAdmin(
     readonly role: AdminRole;
     readonly channelId: string | null;
     readonly createdByAdminId: string | null;
-    readonly passwordHash: string;
+    /**
+     * NULL for a creator whose identity is Firebase rather than a password
+     * (§16). Callers that take a plaintext password hash it first, through
+     * [createAdmin], so nothing reversible reaches this function.
+     */
+    readonly passwordHash: string | null;
+    /** The Firebase identity that signed this account up, when there is one. */
+    readonly firebaseUid?: string | null;
   }
 ): Promise<AdminAccount> {
   if (!isAdminRole(input.role)) throw badRequest('invalid_role', 'Unknown administrator role.');
@@ -605,8 +636,9 @@ export async function insertAdmin(
   const rows = await database.query<AdminRow>(
     `INSERT INTO admin_users
        (display_name, email, email_normalized, password_hash, role, status,
-        channel_id, created_by_admin_id, password_changed_at)
-     VALUES ($1, $2, $3, $4, $5::admin_role, 'active', $6, $7, now())
+        channel_id, created_by_admin_id, password_changed_at, firebase_uid)
+     VALUES ($1, $2, $3, $4, $5::admin_role, 'active', $6, $7,
+             CASE WHEN $4::text IS NULL THEN NULL ELSE now() END, $8)
      RETURNING ${ADMIN_COLUMNS}`,
     [
       input.displayName.trim(),
@@ -616,6 +648,7 @@ export async function insertAdmin(
       input.role,
       input.channelId,
       input.createdByAdminId,
+      input.firebaseUid ?? null,
     ]
   );
 
@@ -653,6 +686,76 @@ export async function setAdminPassword(
     [adminId, hash]
   );
   if (rows.length === 0) throw notFound('admin_not_found');
+}
+
+/**
+ * Change the password of the account that runs a channel (§20).
+ *
+ * The target is never taken from the request. A super administrator resets the
+ * channel's own `channel_admin` — whichever row that is — and a channel
+ * administrator may only change THEIR OWN account, which is a fact about their
+ * session rather than something a body could assert. That is what keeps this
+ * from being an endpoint that hands out somebody else's channel: the id is
+ * derived, and the scope check has already established that the caller may touch
+ * this channel at all.
+ *
+ * Returns the account whose password changed, for the audit line.
+ */
+export async function changeChannelAdminPassword(
+  database: Queryable,
+  options: {
+    readonly channelId: string;
+    readonly password: string;
+    readonly actorAdminId: string;
+    readonly actorIsSuperAdmin: boolean;
+  }
+): Promise<string> {
+  const rows = await database.query<{ id: string }>(
+    `SELECT id FROM admin_users
+      WHERE channel_id = $1 AND role = 'channel_admin'
+      ORDER BY created_at ASC, id ASC`,
+    [options.channelId]
+  );
+
+  let targetId: string;
+  if (options.actorIsSuperAdmin) {
+    const first = rows[0];
+    if (first === undefined) {
+      // A channel with no login of its own. Refused rather than silently
+      // inventing an account here: creating one needs an email, and guessing
+      // it would produce a credential nobody could be given.
+      throw badRequest(
+        'channel_has_no_admin',
+        'This channel has no administrator account to set a password on.'
+      );
+    }
+    targetId = first.id;
+  } else {
+    // A channel administrator, confined to the one channel the scope check
+    // already matched. They may only be changing their own row.
+    if (!rows.some((row) => row.id === options.actorAdminId)) {
+      throw forbidden('not_channel_admin', 'This account does not run this channel.');
+    }
+    targetId = options.actorAdminId;
+  }
+
+  await setAdminPassword(database, targetId, options.password);
+
+  // A reset by somebody ELSE signs that account out everywhere: the point of a
+  // reset is that whoever was signed in as it stops being signed in. When an
+  // administrator changes their own password the session that made the request
+  // is deliberately left alone — signing somebody out of the device they are
+  // holding is not what they asked for, and it would read as the app failing.
+  if (targetId !== options.actorAdminId) {
+    await database.query(
+      `UPDATE admin_sessions
+          SET revoked_at = now(), revoked_reason = 'password_changed'
+        WHERE admin_id = $1 AND revoked_at IS NULL`,
+      [targetId]
+    );
+  }
+
+  return targetId;
 }
 
 /** Every administrator, for a super admin's dashboard. Never the password hash. */

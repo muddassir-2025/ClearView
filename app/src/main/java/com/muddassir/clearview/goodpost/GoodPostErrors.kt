@@ -90,6 +90,67 @@ enum class GoodPostError {
      */
     SessionExpired,
 
+    /**
+     * The address a creator signed up with already runs an account (§16).
+     *
+     * Worth its own wording rather than "something went wrong", because there is
+     * something the reader can do about it: the deployment's owner configuring
+     * their own address as the super administrator is the common case, and the
+     * answer for them is the administrator sign-in below the form, not a retry.
+     */
+    EmailAlreadyUsed,
+
+    /** This creator identity already owns a channel — one each, by design (§16). */
+    ChannelExists,
+
+    /**
+     * A Google sign-in that got as far as Google and did not finish (§16).
+     *
+     * Not a credential problem, and worded as its own thing for that reason:
+     * "those details do not match" would send somebody to re-check a password
+     * they never typed. Dismissing the account picker is deliberately NOT this —
+     * that is a decision, and it gets no message at all.
+     */
+    GoogleSignInFailed,
+
+    /**
+     * The channel name is one an existing channel already answers to.
+     *
+     * The backend re-slugifies a collision where it can, so reaching this means
+     * the name could not be made unique at all. Its own message because the
+     * reader can fix it in one move — by choosing another name. Reporting it as
+     * a generic failure would leave them retrying the same string.
+     */
+    NameTaken,
+
+    /**
+     * This deployment cannot verify a sign-in at all.
+     *
+     * `auth_unavailable`: the server is up and the request was well-formed, but
+     * it has no Firebase project configured, so it refuses every identity rather
+     * than trusting one. Retrying will not help, and "check your connection"
+     * would be a lie — the deployment is incomplete, which is not the reader's
+     * to fix.
+     */
+    SignInUnavailable,
+
+    /**
+     * A password the server would not accept for a new administrator.
+     *
+     * Its own wording rather than a generic "invalid input", because the fix is
+     * specific and the reader is choosing it at that moment.
+     */
+    WeakPassword,
+
+    /**
+     * An administrator trying to switch off their own account.
+     *
+     * Refused by the server so an operator cannot lock themselves out of their
+     * own deployment with one tap. Worth saying plainly instead of reporting a
+     * failure, because the action was understood and deliberately declined.
+     */
+    CannotDisableYourself,
+
     /** A code this client does not recognise. */
     Unknown
 }
@@ -115,10 +176,43 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
         GoodPostError.InvalidInput
 
     // Administrator sign-in and writes.
-    "invalid_credentials", "unauthorized" -> GoodPostError.InvalidCredentials
-    "session_expired" -> GoodPostError.SessionExpired
-    "forbidden", "channel_forbidden", "post_forbidden" -> GoodPostError.Forbidden
+    "invalid_credentials", "unauthorized", "admin_credentials_incomplete" ->
+        GoodPostError.InvalidCredentials
+    //
+    // Every way a sign-in can be over, in one bucket. The server distinguishes
+    // them because they are different conditions on ITS side; on this side they
+    // have exactly one answer, which is to sign in again — and they used to fall
+    // through to "something went wrong", which told the reader nothing at all
+    // and left them retrying a dead credential.
+    "session_expired", "invalid_refresh_token", "session_revoked", "invalid_token",
+    "missing_token" -> GoodPostError.SessionExpired
+    //
+    // The deployment cannot verify anybody (`FIREBASE_PROJECT_ID` unset). Not a
+    // session problem and not retryable, so it gets its own sentence.
+    "auth_unavailable" -> GoodPostError.SignInUnavailable
+    "weak_password" -> GoodPostError.WeakPassword
+    "cannot_disable_self" -> GoodPostError.CannotDisableYourself
+    "slug_unavailable" -> GoodPostError.NameTaken
+    // Raised by the client when Google's half of §16 does not complete.
+    "creator_signin_failed" -> GoodPostError.GoogleSignInFailed
+    "channel_name_required" -> GoodPostError.InvalidInput
+
+    // Creator sign-up (§16). `email_taken` is a REFUSAL rather than a collision
+    // to be retried: the identity is never matched onto an existing account on
+    // an address Firebase has not verified, so this is the one the reader can
+    // act on — by signing in as an administrator instead.
+    "email_taken" -> GoodPostError.EmailAlreadyUsed
+    "channel_exists" -> GoodPostError.ChannelExists
+    "email_required", "creator_required" -> GoodPostError.InvalidCredentials
+    "forbidden", "channel_forbidden", "post_forbidden", "admin_forbidden",
+    "invalid_role" -> GoodPostError.Forbidden
     "admin_unavailable" -> GoodPostError.AdminUnavailable
+    // A channel the caller may not act on, in the three shapes the server says
+    // it: gone, not named, and not theirs. All three are the same thing to the
+    // screen showing them.
+    "channel_unavailable" -> GoodPostError.NotFound
+    "channel_required", "channel_not_allowed", "not_following" -> GoodPostError.InvalidInput
+    "admin_not_found" -> GoodPostError.NotFound
 
     // Publishing.
     "empty_post", "empty_update", "invalid_link", "text_too_long",
@@ -135,8 +229,13 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "unsupported_media_type" -> GoodPostError.UnsupportedMedia
     "attachment_uploading", "media_not_ready", "media_not_uploaded",
     "media_size_mismatch" -> GoodPostError.AttachmentUploading
-    "attachment_failed", "unknown_media", "media_already_used",
+    "attachment_failed", "unknown_media", "media_already_used", "media_not_found",
     "too_many_media", "duplicate_media", "mixed_media" -> GoodPostError.AttachmentFailed
+
+    // A status this client has no name for and a body that named no code. A
+    // proxy's HTML 502 lands here, and it is a server-side condition however it
+    // is described — so it is reported as one.
+    "http_error" -> GoodPostError.ServerFault
 
     else -> GoodPostError.Unknown
 }
@@ -158,9 +257,9 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
  *    whoever typed it off to reset something that was never wrong.
  *
  * The last rule only holds because this client cannot send a malformed body.
- * `adminSignIn` refuses an unparsable address or an empty password locally, and
- * the Continue button is disabled while either field is blank — so a 400 on this
- * route is never this app's own doing.
+ * [GoodPostViewModel.signIn] refuses an unparsable address or an empty password
+ * locally, and the Continue button is disabled while either field is blank — so
+ * a 400 on this route is never this app's own doing.
  */
 internal fun signInHitAnotherContract(status: Int, code: String): Boolean =
     when {
@@ -168,6 +267,45 @@ internal fun signInHitAnotherContract(status: Int, code: String): Boolean =
         code == "invalid_request" -> true
         else -> false
     }
+
+/**
+ * Whether a refusal from the administrator sign-in is the END of the attempt.
+ *
+ * One form serves two populations (§16): an administrator whose password lives
+ * on the server, and a creator whose account lives in Firebase. The app tries
+ * the server first and falls through to Firebase for everyone else, so this rule
+ * decides which refusals are allowed to mean "not a provisioned account" — and
+ * getting it wrong in either direction is visible to the person signing in:
+ *
+ *  * **locked or disabled** is final. The account EXISTS and was switched off,
+ *    and no Firebase sign-up can change that. Falling through would spend a
+ *    round trip to reach the same answer, and — worse — a wrong password on a
+ *    locked account would be reported as "invalid credentials" from the second
+ *    attempt, hiding the lockout that is the actual problem.
+ *
+ *  * **the deployment cannot verify a sign-in at all** is final for the same
+ *    reason: it is a property of the server, not of these credentials, and
+ *    retrying it through a different route cannot succeed.
+ *
+ * Everything else — most of all `invalid_credentials` — is "not this kind of
+ * account", which is exactly what the Firebase half exists to answer.
+ */
+internal fun adminRefusalIsFinal(error: GoodPostError): Boolean =
+    error == GoodPostError.AdminLocked || error == GoodPostError.SignInUnavailable
+
+/**
+ * Whether a password being minted for an administrator is short of the floor (§10).
+ *
+ * Extracted from the form so the boundary is pinned by a test rather than by
+ * somebody remembering it: off-by-one here is the difference between a channel
+ * that gets created and a refusal, and the number is not visible in the code
+ * that would have to be edited to change it.
+ *
+ * The floor is a PARAMETER rather than read from [BuildConfig] inside, so the
+ * test states the rule instead of depending on a build setting.
+ */
+internal fun adminPasswordTooShort(password: String, floor: Int): Boolean =
+    password.length < floor
 
 /**
  * Mirror of the server's email check, for the administrator sign-in field.

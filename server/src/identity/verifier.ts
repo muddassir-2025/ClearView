@@ -56,6 +56,27 @@ export interface VerifiedIdentity {
    * otherwise be classified as anonymous.
    */
   readonly anonymous: boolean;
+
+  /**
+   * Whether Firebase has PROVEN this address belongs to the caller (§16).
+   *
+   * True for a Google account, and for an email/password account that has
+   * confirmed its address. This is what makes it safe to attach the identity to
+   * an EXISTING administrator account that already holds the same address: the
+   * claim is Google's word that the caller controls the mailbox, not the
+   * caller's own.
+   *
+   * The distinction is load-bearing rather than cosmetic. Firebase reports an
+   * address as CLAIMED the moment somebody types it into a sign-up form, and
+   * Firebase's own uniqueness check does not help here — the accounts this
+   * matters for live in `admin_users`, not in Firebase, so somebody could sign
+   * up holding the super administrator's address without Firebase objecting.
+   * Matching on an unverified claim would hand them that account.
+   *
+   * Defaults to false when the claim is absent, so a token that does not say is
+   * treated as unproven rather than as proven.
+   */
+  readonly emailVerified: boolean;
 }
 
 export interface IdentityVerifier {
@@ -181,6 +202,10 @@ export function createFirebaseVerifier(
         // authority, not the presence of the field.
         email: provider === 'anonymous' ? null : email,
         anonymous: provider === 'anonymous',
+        // Never true for an anonymous uid, whatever the token says: there is no
+        // address to verify, and a claim on a token with no identity behind it
+        // is exactly what must not be believed.
+        emailVerified: provider !== 'anonymous' && payload['email_verified'] === true,
       };
     },
   };

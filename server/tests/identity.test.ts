@@ -65,6 +65,8 @@ interface TokenOptions {
   expiresIn?: number;
   key?: string;
   kid?: string;
+  /** Firebase's own claim, and the only thing that makes an email trustworthy. */
+  emailVerified?: boolean;
 }
 
 function token(options: TokenOptions = {}): string {
@@ -76,6 +78,7 @@ function token(options: TokenOptions = {}): string {
     firebase: { sign_in_provider: options.provider ?? 'anonymous' },
   };
   if (options.email !== undefined) payload['email'] = options.email;
+  if (options.emailVerified !== undefined) payload['email_verified'] = options.emailVerified;
 
   return jwt.sign(payload, options.key ?? privateKey, {
     algorithm: 'RS256',
@@ -102,7 +105,12 @@ describe('verifying a Firebase ID token', () => {
     const verifier = createFirebaseVerifier(PROJECT_ID, sourceOf(publicKey));
 
     const reader = await verifier.verify(token());
-    expect(reader).toEqual({ uid: 'anon-uid-1', email: null, anonymous: true });
+    expect(reader).toEqual({
+      uid: 'anon-uid-1',
+      email: null,
+      anonymous: true,
+      emailVerified: false,
+    });
 
     // §16: the same verification path, one different claim. This is the whole
     // difference between a reader and a creator at this layer.
@@ -111,7 +119,27 @@ describe('verifying a Firebase ID token', () => {
       uid: 'anon-uid-1',
       email: 'maker@example.test',
       anonymous: false,
+      emailVerified: false,
     });
+
+    // And the claim that decides whether an address may be attached to an
+    // EXISTING account: a Google address is proven, a typed one is not.
+    const google = await verifier.verify(
+      token({ provider: 'google.com', email: 'maker@example.test', emailVerified: true })
+    );
+    expect(google.emailVerified).toBe(true);
+  });
+
+  it('never treats an anonymous uid as having a proven address', async () => {
+    // A token that claims both must not be believed: there is no address behind
+    // an anonymous identity, so there is nothing for the claim to be about.
+    const verifier = createFirebaseVerifier(PROJECT_ID, sourceOf(publicKey));
+
+    const reader = await verifier.verify(token({ email: 'maker@example.test', emailVerified: true }));
+
+    expect(reader.anonymous).toBe(true);
+    expect(reader.email).toBeNull();
+    expect(reader.emailVerified).toBe(false);
   });
 
   it('never reports an email for an anonymous uid', async () => {

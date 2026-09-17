@@ -85,6 +85,24 @@ export interface ChannelPayload {
   readonly lastPostType: string | null;
   /** The opening of the newest post's text, or null for a media-only post. */
   readonly lastPostPreview: string | null;
+  /**
+   * The newest post's view count, or null when the channel has never posted.
+   *
+   * Read from the same lateral join as the preview, for the same reason: a count
+   * and the post it describes have to come from one row, and two sources can
+   * disagree.
+   */
+  readonly lastPostViews: number | null;
+  /**
+   * How many readers follow this channel (§4).
+   *
+   * A COUNT over `channel_follows` rather than a column: a denormalised counter
+   * would have to be maintained by every follow, unfollow and cascade, and the
+   * number is read on lists that are already one query per page. It is a real
+   * number about real rows, which is the whole difference between it and a
+   * social metric invented to fill a gap under a channel's name.
+   */
+  readonly followerCount: number;
   /** App deep link (§6): `clearview://goodpost/channel/<slug>`. */
   readonly shareLink: string;
   /** Present only on an administrator's own payloads. */
@@ -95,7 +113,8 @@ export interface ChannelPayload {
 export const CHANNEL_COLUMNS = `
   c.id, c.slug, c.name, c.description, c.icon_object_key, c.category_slug,
   cat.label AS category_label, c.country_code, c.status, c.created_at, c.last_post_at,
-  COALESCE(c.last_post_at, c.created_at) AS activity_at
+  COALESCE(c.last_post_at, c.created_at) AS activity_at,
+  (SELECT count(*)::int FROM channel_follows cf WHERE cf.channel_id = c.id) AS follower_count
 `;
 
 /**
@@ -126,6 +145,7 @@ export const LAST_POST_JOIN = `
   LEFT JOIN LATERAL (
     SELECT p.type AS preview_type,
            p.created_at AS preview_at,
+           p.view_count AS preview_views,
            LEFT(BTRIM(COALESCE(p.body, '')), 120) AS preview_body
       FROM posts p
      WHERE p.channel_id = c.id AND p.deleted_at IS NULL
@@ -137,6 +157,7 @@ export const LAST_POST_JOIN = `
 export const LAST_POST_COLUMNS = `
   lp.preview_type AS last_post_type,
   lp.preview_at AS preview_at,
+  lp.preview_views AS last_post_views,
   NULLIF(lp.preview_body, '') AS last_post_preview
 `;
 
@@ -155,6 +176,8 @@ export interface ChannelRow {
   activity_at: unknown;
   last_post_type?: string | null;
   last_post_preview?: string | null;
+  last_post_views?: number | null;
+  follower_count?: number | null;
   preview_at?: unknown;
 }
 
@@ -256,15 +279,15 @@ export function mapChannel(
     lastPostAt: isoOrNull(row.preview_at),
     lastPostType: row.last_post_type ?? null,
     lastPostPreview: row.last_post_preview ?? null,
+    lastPostViews: row.last_post_views ?? null,
+    // A channel a query did not count has no followers as far as this payload
+    // is concerned, which is true of every row the write paths return: a channel
+    // created a moment ago has none, and the read paths that matter select the
+    // count. Zero rather than null so the app has one shape to render.
+    followerCount: row.follower_count ?? 0,
     shareLink: channelShareLink(row.slug),
     ...(includeStatus ? { status: row.status } : {})
   };
-}
-
-/** Postgres unique-violation. Used to resolve slug collisions without a race. */
-function isUniqueViolation(err: unknown, constraint: string): boolean {
-  const e = err as { code?: string; constraint?: string };
-  return e?.code === '23505' && e?.constraint === constraint;
 }
 
 /**
@@ -556,11 +579,27 @@ export interface CreateChannelInput {
  * lets a channel exist for the moment between its creation and the creation of
  * the login bound to it, both of which happen in one transaction one level up.
  *
- * Slug collisions are resolved by retrying the whole transaction rather than
- * pre-checking with a SELECT. A pre-check is a race — two creates can both see
- * the slug free — and a failed INSERT aborts the surrounding Postgres
- * transaction, so an in-transaction retry could not simply try again. Attempt 0
- * uses the bare slug, so the common case produces a short, memorable link.
+ * ## Slug collisions, and why this is `ON CONFLICT` rather than a retry
+ *
+ * A slug is derived from the name, so two channels called "Namaz Times" are a
+ * matter of when rather than whether — and with §16's open creator signup that
+ * is now an ordinary event rather than a rare one. Attempt 0 takes the bare slug
+ * so the common case produces a short, memorable link, and later attempts append
+ * random hex.
+ *
+ * Choosing between them must not involve a failed INSERT. This function is
+ * called INSIDE the transaction that also creates the administrator bound to the
+ * channel, and in Postgres one failed statement aborts the whole transaction:
+ * `catch { try again }` would retry into an aborted transaction and fail on
+ * every attempt with "current transaction is aborted" — a 500 for a second
+ * channel whose name merely matched an existing one. (That is what this used to
+ * do, and a savepoint would only have moved the problem.)
+ *
+ * `ON CONFLICT (slug) DO NOTHING` makes a taken slug a zero-row INSERT instead
+ * of an error, which is exactly the signal the loop needs and leaves the
+ * transaction healthy for the next attempt. Only a slug conflict is absorbed:
+ * any other constraint violation still raises, because silencing a different
+ * error here would turn a bug into a channel that silently has no name.
  */
 export async function createChannel(
   database: Queryable,
@@ -577,22 +616,19 @@ export async function createChannel(
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const slug = slugCandidate(input.name, attempt, randomBytes(3).toString('hex'));
-    try {
-      const inserted = await database.query<ChannelRow>(
-        `INSERT INTO channels (slug, name, description, category_slug, country_code)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id, slug, name, description, icon_object_key, category_slug,
-                   NULL::text AS category_label, country_code, status, created_at,
-                   NULL::timestamptz AS last_post_at, created_at AS activity_at`,
-        [slug, input.name.trim(), input.description?.trim() ?? null, input.categorySlug ?? null, country]
-      );
-      return one(inserted);
-    } catch (err) {
-      // Only a slug collision is retryable; the category error above must
-      // propagate untouched.
-      if (isUniqueViolation(err, 'channels_slug_key') && attempt < 4) continue;
-      throw err;
-    }
+    const inserted = await database.query<ChannelRow>(
+      `INSERT INTO channels (slug, name, description, category_slug, country_code)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (slug) DO NOTHING
+       RETURNING id, slug, name, description, icon_object_key, category_slug,
+                 NULL::text AS category_label, country_code, status, created_at,
+                 NULL::timestamptz AS last_post_at, created_at AS activity_at`,
+      [slug, input.name.trim(), input.description?.trim() ?? null, input.categorySlug ?? null, country]
+    );
+
+    // Empty means the slug was taken — nothing was written and, crucially,
+    // nothing was aborted. Ask for a new one.
+    if (inserted.length > 0) return one(inserted);
   }
 
   // Unreachable in practice: five random suffixes colliding is not a thing.

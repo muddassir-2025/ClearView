@@ -8,6 +8,7 @@ import {
   getPublicPost,
   listPublicChannelMedia,
   listPublicChannelPosts,
+  recordPostViews,
 } from './service.js';
 
 /**
@@ -59,6 +60,30 @@ const PageQuerySchema = z.object({
   cursor: z.string().max(512).optional(),
 });
 
+/**
+ * A channel's history, optionally narrowed by a search term (§9).
+ *
+ * `q` is capped at the length the service will actually use, so a client that
+ * pastes a document into the search box is not refused for it — the term is
+ * truncated where it is used, and the shape check only keeps the request from
+ * being unbounded.
+ */
+const PostQuerySchema = PageQuerySchema.extend({
+  q: z.string().max(200).optional(),
+});
+
+/**
+ * A batch of posts a reader displayed (§9).
+ *
+ * Bounded at both ends: an empty batch is a client that has nothing to report
+ * (a 400, because a request that can only do nothing is a bug), and the upper
+ * bound is twice the largest page, so a screen can report everything it drew
+ * without the endpoint being usable as a bulk updater.
+ */
+const PostViewsSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(60),
+});
+
 export function buildPublicRouter(database: Queryable, store: ObjectStore): Router {
   const router = Router();
 
@@ -91,10 +116,19 @@ export function buildPublicRouter(database: Queryable, store: ObjectStore): Rout
     res.status(200).json({ channel: await getPublicChannel(database, store, idOrSlug) });
   });
 
-  /** A channel's history, newest first (§9). */
+  /**
+   * A channel's history, newest first, optionally filtered by a search term
+   * (§9).
+   *
+   * One endpoint for the feed and for search inside a channel, deliberately.
+   * "Show me this channel's posts" and "show me this channel's posts about X"
+   * are the same read with one optional predicate, and a separate search route
+   * would be a second place for the visibility rule, the payload shape and the
+   * paging contract to drift out of step with this one.
+   */
   router.get('/channels/:channelIdOrSlug/posts', async (req, res) => {
     const idOrSlug = req.params.channelIdOrSlug ?? '';
-    const query = parseBody(PageQuerySchema, req.query);
+    const query = parseBody(PostQuerySchema, req.query);
     res.status(200).json(await listPublicChannelPosts(database, store, idOrSlug, query));
   });
 
@@ -103,6 +137,30 @@ export function buildPublicRouter(database: Queryable, store: ObjectStore): Rout
     const idOrSlug = req.params.channelIdOrSlug ?? '';
     const query = parseBody(PageQuerySchema, req.query);
     res.status(200).json(await listPublicChannelMedia(database, store, idOrSlug, query));
+  });
+
+  /**
+   * Report the posts a reader has just seen (§9).
+   *
+   * The only WRITE on the reader surface, and it needs no token: a view count is
+   * a fact about the post, not about the reader — there is nothing here that
+   * says WHO read anything, which is why the reader identity is deliberately not
+   * consulted even though it is available.
+   *
+   * A batch, not one request per post: a feed is up to thirty rows, and thirty
+   * writes per screen open would be thirty round trips for a number nobody
+   * acts on. The client sends what it actually drew, once.
+   *
+   * It answers 200 with the count it changed, and never 404 for an id that was
+   * not found: a post that was removed between the read and the report is the
+   * normal way this race resolves, not a client error (§23). A channel that does
+   * not exist — or is suspended — still 404s, because that is a different claim.
+   */
+  router.post('/channels/:channelIdOrSlug/posts/views', async (req, res) => {
+    const idOrSlug = req.params.channelIdOrSlug ?? '';
+    const body = parseBody(PostViewsSchema, req.body);
+    const counted = await recordPostViews(database, idOrSlug, body.ids);
+    res.status(200).json({ counted });
   });
 
   /** One post, with the channel it came from (§9). */

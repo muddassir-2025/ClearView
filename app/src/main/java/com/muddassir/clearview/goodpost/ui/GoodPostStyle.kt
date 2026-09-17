@@ -3,6 +3,7 @@ package com.muddassir.clearview.goodpost.ui
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -27,6 +28,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
@@ -47,6 +50,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -55,11 +59,15 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import com.muddassir.clearview.BuildConfig
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -154,6 +162,24 @@ internal object Wa {
     val StampRecent = Color(0xFF25D366)
 
     val Danger = Color(0xFFF15C6D)
+
+    /**
+     * The Google button's own palette, and the sign-in screen's one departure
+     * from the dark theme.
+     *
+     * Not an inconsistency: the button is Google's brand mark in button form, and
+     * its whole value is that somebody recognises it before they read it. A
+     * dark-styled lookalike would have to invent a Google wordmark in the
+     * product's colours, which is worse on both counts — unrecognisable and
+     * pretending to be something it is not.
+     *
+     * White surface, hairline border and near-black ink are the values Google's
+     * own guidance puts on a light background; the four-colour G carries the
+     * brand, so nothing else here has to.
+     */
+    val GoogleSurface = Color(0xFFFFFFFF)
+    val GoogleBorder = Color(0xFFDADCE0)
+    val GoogleLabel = Color(0xFF1F1F1F)
 
     /**
      * Avatar fills, picked by name so a channel keeps its colour.
@@ -403,6 +429,9 @@ internal fun WaChannelRow(
 
             Spacer(Modifier.width(15.dp))
 
+            // §5: a row's OWN gesture is a hold, so the platform must not
+            // answer the same press with a selection menu over the row's text.
+            WaNoTextSelection {
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.Center
@@ -466,6 +495,7 @@ internal fun WaChannelRow(
                     }
                     trailing()
                 }
+            }
             }
         }
 
@@ -539,6 +569,85 @@ internal fun WaSelectionBar(
  * app is recoverable — a post's removal is soft and reversible — so this is the
  * only place a confirmation is warranted, and it says exactly what will go.
  */
+@Composable
+internal fun WaTypedConfirmDialog(
+    title: String,
+    message: String,
+    /** What has to be typed, exactly, before the destructive action unlocks. */
+    expected: String,
+    label: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    // Held here rather than in the ViewModel: it is a keystroke, not a fact
+    // about the account or the channel, and nothing outside this dialog can act
+    // on it. It also cannot survive its own dialog, which is the property that
+    // matters — the confirmation is not "remembered" for the next deletion.
+    var typed by remember { mutableStateOf("") }
+    val matched = typed.trim().equals(expected.trim(), ignoreCase = true)
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .background(Wa.Bar, RoundedCornerShape(16.dp))
+                .padding(20.dp)
+        ) {
+            Text(text = title, color = Wa.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(text = message, color = Wa.TextDim, fontSize = 14.sp, lineHeight = 20.sp)
+            Spacer(Modifier.height(16.dp))
+
+            // The same field every other form in the tab uses, so the dialog
+            // does not introduce a second visual language for one input.
+            WaField(
+                value = typed,
+                onValueChange = { typed = it },
+                label = label,
+                placeholder = expected,
+                singleLine = true
+            )
+
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                WaTextAction(
+                    text = stringResource(R.string.goodpost_cancel),
+                    onClick = onDismiss
+                )
+                Spacer(Modifier.weight(1f))
+                WaTextAction(
+                    text = confirmLabel,
+                    onClick = onConfirm,
+                    destructive = true,
+                    // Disabled rather than hidden: the rule has to be visible
+                    // BEFORE it is satisfied, or the button simply looks broken.
+                    enabled = matched
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Text a reader can hold without the platform offering to select it (§5).
+ *
+ * Long-pressing a post card is the app's OWN gesture — it puts the post into
+ * selection, which is what the Edit / Copy / Delete bar above it is for. On a
+ * current Compose the text inside that card is selectable by default, so the
+ * same press also raised Android's own Cut / Copy / Paste / Read aloud bubble
+ * over the bubble being held: two answers to one gesture, one of them in a
+ * light menu that belongs to no app in particular.
+ *
+ * [DisableSelection] is what turns that off, and it is deliberately scoped
+ * rather than global: the composer's field NEEDS selection, because the
+ * formatting controls act on exactly what is highlighted (§7). Read-only
+ * surfaces get this wrapper; input fields do not.
+ */
+@Composable
+internal fun WaNoTextSelection(content: @Composable () -> Unit) {
+    DisableSelection(content = content)
+}
+
 @Composable
 internal fun WaConfirmDialog(
     title: String,
@@ -716,6 +825,128 @@ internal fun WaPrimaryButton(
     }
 }
 
+/**
+ * "Continue with Google", as a card of its own.
+ *
+ * Deliberately NOT [WaPrimaryButton] with different colours: that button is the
+ * product's accent on the product's canvas, and neither of its colours survives a
+ * white surface. This is the one control on the sign-in screen that should look
+ * like it came from Google, so it is drawn as one — light surface, hairline
+ * border, the four-colour G and near-black ink.
+ *
+ * It sits above the email-and-password form rather than beside it, because the
+ * two are not equals on this screen: Google is how a creator signs up, and the
+ * panel below it is for the accounts a deployment provisions.
+ */
+@Composable
+internal fun WaGoogleButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    busy: Boolean = false
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (enabled && !busy) Wa.GoogleSurface else Wa.Pressed)
+            .border(1.dp, Wa.GoogleBorder, RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled && !busy, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = Wa.GoogleLabel
+            )
+        } else {
+            Image(
+                painter = painterResource(R.drawable.ic_google_g),
+                // The label beside it already says "Google", so reading out the
+                // mark again would make the button announce itself twice.
+                contentDescription = null,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                text = text,
+                color = Wa.GoogleLabel,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+/**
+ * A card on the sign-in screen that opens something below it ("Other ways").
+ *
+ * The same shape and height as [WaGoogleButton], on purpose: the two sit one
+ * above the other and are the same KIND of thing — a way in, chosen by tapping a
+ * card. What differs is only the surface, which is what keeps the Google card
+ * the obvious first move and this one the second.
+ *
+ * It carries a state rather than performing an action, which is why the label
+ * does not change when it opens: the panel appearing underneath IS the answer,
+ * and swapping "Other ways" for "Hide" would make the same card read as two
+ * different controls between one tap and the next.
+ */
+@Composable
+internal fun WaExpandableCard(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    expanded: Boolean,
+    enabled: Boolean = true
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (enabled) Wa.Bar else Wa.Pressed)
+            .border(1.dp, Wa.Divider, RoundedCornerShape(12.dp))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            // The label beside it says the same thing more precisely.
+            contentDescription = null,
+            tint = if (enabled) Wa.Accent else Wa.TextDim,
+            modifier = Modifier.size(20.dp)
+        )
+
+        Spacer(Modifier.width(14.dp))
+
+        Text(
+            text = text,
+            color = if (enabled) Wa.Text else Wa.TextDim,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.weight(1f)
+        )
+
+        Icon(
+            imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+            // Announced, because it is the only thing that says the card changes
+            // anything: the row opens and closes a form rather than going
+            // somewhere.
+            contentDescription = stringResource(
+                if (expanded) R.string.goodpost_collapse else R.string.goodpost_expand
+            ),
+            tint = Wa.TextDim,
+            modifier = Modifier.size(22.dp)
+        )
+    }
+}
+
 /** A borderless text action: green, or in the warning colour when destructive. */
 @Composable
 internal fun WaTextAction(
@@ -839,6 +1070,17 @@ internal fun WaField(
      * than a state the field drifts into.
      */
     masked: Boolean = false,
+    /**
+     * What this field holds, for the platform's Autofill service (§10).
+     *
+     * Declared rather than guessed, because the service guesses well and wrongly
+     * here: a field it cannot classify is offered whatever saved credential it
+     * has for the app. That is right for the sign-in screen and wrong for the
+     * form that MINTS a password for somebody else — a saved login silently
+     * replacing a typed one is a password that reaches the server at the wrong
+     * length, with nothing on screen to show it happened.
+     */
+    autofillContentType: ContentType? = null,
     imeAction: ImeAction = ImeAction.Next,
     onDone: () -> Unit = {}
 ) {
@@ -898,6 +1140,13 @@ internal fun WaField(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = minHeight)
+                    .then(
+                        if (autofillContentType == null) {
+                            Modifier
+                        } else {
+                            Modifier.semantics { contentType = autofillContentType }
+                        }
+                    )
             )
         }
     }
@@ -1142,11 +1391,34 @@ internal fun WaEmptyState(
     }
 }
 
+/**
+ * The words for a failure, formatted where a message has to name a number.
+ *
+ * The sibling of [goodPostErrorMessage], and the reason it exists: a message
+ * that takes an argument would be worded correctly on the screen that
+ * remembered to pass one and read `%1$d` on the one that did not. Every screen
+ * goes through here instead of reaching for a resource id itself.
+ */
+@Composable
+internal fun goodPostErrorText(code: String): String {
+    val error = goodPostErrorFor(code)
+    return when (error) {
+        // The one message that has to say HOW long, because "too short" without
+        // a number is what sent somebody to try four passwords in a row (§10).
+        GoodPostError.WeakPassword -> stringResource(
+            R.string.goodpost_error_weak_password,
+            BuildConfig.ADMIN_MIN_PASSWORD_LENGTH
+        )
+
+        else -> stringResource(goodPostErrorMessage(error))
+    }
+}
+
 /** An error line, coloured for this surface. */
 @Composable
 internal fun WaErrorNotice(code: String, modifier: Modifier = Modifier) {
     Text(
-        text = stringResource(goodPostErrorMessage(goodPostErrorFor(code))),
+        text = goodPostErrorText(code),
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
@@ -1180,6 +1452,15 @@ internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.AttachmentFailed -> R.string.goodpost_error_attachment_failed
     GoodPostError.AdminUnavailable -> R.string.goodpost_error_admin_unavailable
     GoodPostError.SessionExpired -> R.string.goodpost_error_session_expired
+    GoodPostError.GoogleSignInFailed -> R.string.goodpost_error_google_signin
+    GoodPostError.EmailAlreadyUsed -> R.string.goodpost_error_email_taken
+    GoodPostError.ChannelExists -> R.string.goodpost_error_channel_exists
+    GoodPostError.NameTaken -> R.string.goodpost_error_name_taken
+    GoodPostError.SignInUnavailable -> R.string.goodpost_error_sign_in_unavailable
+    // Has an argument, so it is worded by [goodPostErrorText] rather than
+    // rendered straight from this id: on its own it would print `%1$d`.
+    GoodPostError.WeakPassword -> R.string.goodpost_error_weak_password
+    GoodPostError.CannotDisableYourself -> R.string.goodpost_error_cannot_disable_self
     GoodPostError.Unknown -> R.string.goodpost_error_unknown
 }
 

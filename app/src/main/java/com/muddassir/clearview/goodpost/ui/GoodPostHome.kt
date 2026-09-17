@@ -258,6 +258,15 @@ private fun ChannelsSelectionBar(
  * action that cannot be taken back: the channel goes from the server along with
  * its posts, its media and the login that ran it (§17). It names what will go,
  * since "delete" alone would not lead anyone to expect all of that.
+ *
+ * It also makes the administrator TYPE. A destructive button in a dialog is one
+ * tap away from the row underneath it, and this list is a list of rows that look
+ * alike: a slip of the thumb on a list of channels somebody else runs should not
+ * remove one of them. Typing the channel's own name is what turns a tap into a
+ * decision — it cannot be done without reading which channel it is.
+ *
+ * One channel asks for its name; a selection of several asks for the word, since
+ * there is no single name to type and the point is still that it is deliberate.
  */
 @Composable
 private fun DeleteChannelsDialog(
@@ -266,20 +275,25 @@ private fun DeleteChannelsDialog(
     onDismiss: () -> Unit
 ) {
     val selected = state.selectedChannelIds
+    val word = stringResource(R.string.goodpost_delete_confirm_word)
 
     if (selected.size == 1) {
         val name = state.tabChannels.firstOrNull { it.id == selected.first() }?.name.orEmpty()
-        WaConfirmDialog(
+        WaTypedConfirmDialog(
             title = stringResource(R.string.goodpost_delete_channel_title),
             message = stringResource(R.string.goodpost_delete_channel_note, name),
+            expected = name,
+            label = stringResource(R.string.goodpost_delete_type_name),
             confirmLabel = stringResource(R.string.goodpost_delete),
             onConfirm = onConfirm,
             onDismiss = onDismiss
         )
     } else {
-        WaConfirmDialog(
+        WaTypedConfirmDialog(
             title = stringResource(R.string.goodpost_delete_channels_title),
             message = stringResource(R.string.goodpost_delete_channels_note),
+            expected = word,
+            label = stringResource(R.string.goodpost_delete_type_word, word),
             confirmLabel = stringResource(R.string.goodpost_delete),
             onConfirm = onConfirm,
             onDismiss = onDismiss

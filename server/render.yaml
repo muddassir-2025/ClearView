@@ -194,7 +194,7 @@ services:
       - key: ADMIN_SESSION_TTL_DAYS
         value: 7
       - key: ADMIN_MIN_PASSWORD_LENGTH
-        value: 12
+        value: 8
       - key: RETENTION_JOB_ENABLED
         value: true
       - key: RETENTION_CRON
@@ -216,8 +216,23 @@ services:
       # The policy the access key needs — PutObject, DeleteObject, GetObject and a
       # scoped ListBucket — is written out in docs/AWS_S3_SETUP.md, with
       # docs/aws-s3-policy.json as the exact document to attach.
+      # Leave AWS_ENDPOINT_URL EMPTY to use Amazon S3 (with the policy in
+      # docs/aws-s3-policy.json). Set it to use an S3-compatible provider
+      # instead — and then set AWS_REGION to `auto` at the same time:
+      #
+      #   Cloudflare R2  https://<account-id>.r2.cloudflarestorage.com
+      #                  zero egress fees, 10GB free, so the images this product
+      #                  stores cost nothing to serve
+      #   Backblaze B2   https://s3.<region>.backblazeb2.com
+      #   Wasabi         https://s3.<region>.wasabisys.com
+      #
+      # Only the endpoint changes; presign, HEAD and delete all go to it
+      # unchanged, because the AWS SDK's S3 client is the S3 protocol rather
+      # than Amazon's hostname.
       - key: AWS_REGION
         value: eu-central-1
+      - key: AWS_ENDPOINT_URL
+        sync: false
       - key: AWS_S3_BUCKET
         sync: false
       - key: AWS_ACCESS_KEY_ID

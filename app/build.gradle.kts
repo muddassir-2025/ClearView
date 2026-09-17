@@ -1,3 +1,4 @@
+import groovy.json.JsonSlurper
 import java.io.FileInputStream
 import java.util.Properties
 
@@ -19,6 +20,56 @@ val keystoreProperties = Properties().apply {
     }
 }
 val hasReleaseSigning = keystorePropertiesFile.exists()
+
+/**
+ * The WEB client id (`client_type: 3`) out of one of the Firebase config files,
+ * or null.
+ *
+ * Google sign-in needs it, and it is the one value Google's own tooling does not
+ * hand the app: `google-services.json` carries it, and the google-services
+ * plugin generates a `default_web_client_id` string resource for it — but only
+ * when the file has a type-3 client, which is exactly the state this project was
+ * in before the Google provider was enabled in the Firebase console. Reading it
+ * here means enabling the provider and re-downloading the file is the ONLY step
+ * an operator has to take; nothing is hand-copied into gradle.properties, and a
+ * build that predates the change simply gets an empty id (and a sign-in screen
+ * that offers no Google button) instead of a crash at first tap.
+ *
+ * A lambda rather than a top-level function because this is a script, where the
+ * declaration order of `fun`s is easy to get wrong and impossible to see.
+ *
+ * It is NOT a secret: it ships inside the app either way, and its only use is to
+ * identify which OAuth project a sign-in is for.
+ */
+val webClientIdIn: (File) -> String? = { config ->
+    if (!config.exists()) {
+        null
+    } else {
+        runCatching {
+            val root = JsonSlurper().parse(config) as Map<*, *>
+            (root["client"] as? List<*>)
+                ?.asSequence()
+                ?.mapNotNull { it as? Map<*, *> }
+                ?.flatMap { client ->
+                    ((client["oauth_client"] as? List<*>) ?: emptyList<Any?>()).asSequence()
+                }
+                ?.mapNotNull { it as? Map<*, *> }
+                ?.firstOrNull { (it["client_type"] as? Number)?.toInt() == 3 }
+                ?.get("client_id") as? String
+        }.getOrNull()
+    }
+}
+
+// The release config first: the web client id is a property of the Firebase
+// PROJECT, not of an app entry, so both files hold the same value and the
+// variant-specific one is only a fallback for a checkout that has just the
+// debug copy.
+val googleWebClientId: String = (project.findProperty("googleWebClientId") as String?)
+    ?.trim()
+    ?.takeIf { it.isNotEmpty() }
+    ?: webClientIdIn(file("google-services.json"))
+    ?: webClientIdIn(file("src/debug/google-services.json"))
+    ?: ""
 
 android {
     namespace = "com.muddassir.clearview"
@@ -43,13 +94,35 @@ android {
         val goodPostBaseUrl = (project.findProperty("goodPostBaseUrl") as String?).orEmpty()
         buildConfigField("String", "GOODPOST_BASE_URL", "\"$goodPostBaseUrl\"")
 
-        // The address the sign-in screen shows under "Don't have channel access?"
-        // (§16). Configured here for the same reason as the base URL: it belongs
-        // to whoever deploys this backend, so baking one into the source would be
-        // wrong everywhere but one installation. Empty is a valid state — the
-        // screen falls back to its placeholder rather than showing nothing.
-        val goodPostContactEmail = (project.findProperty("goodPostContactEmail") as String?).orEmpty()
-        buildConfigField("String", "GOODPOST_CONTACT_EMAIL", "\"$goodPostContactEmail\"")
+        // There is deliberately no contact address configured here any more.
+        // The sign-in screen used to ask readers to write to the deployment's
+        // owner for channel access, which is now something the form on that
+        // screen does by itself (§16) — and a private address printed on a
+        // public screen is a liability rather than a feature. `goodPostContactEmail`
+        // is therefore gone with the block that showed it; a support address
+        // belongs in a Help row in Settings, where a reader looks for it.
+
+        // The Google sign-in `serverClientId` (§16), read from the Firebase
+        // config above rather than configured by hand. Empty is a supported
+        // state and the reason the creator screen decides whether to offer the
+        // button at all: with no id there is nothing to send Google, and a
+        // button that can only fail is worse than no button.
+        buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"$googleWebClientId\"")
+
+        // The floor the channel form states and checks before it submits
+        // (§10). The SERVER enforces it either way; this is what lets the form
+        // say "at least 8 characters" instead of refusing a password nobody was
+        // told the rule for. Keep it equal to the backend's
+        // ADMIN_MIN_PASSWORD_LENGTH — see gradle.properties.
+        val adminMinPasswordLength = (project.findProperty("adminMinPasswordLength") as String?)
+            ?.trim()
+            ?.toIntOrNull()
+            ?.takeIf { it > 0 }
+            ?: 8
+        // `int`, not `Int`: buildConfigField emits a JAVA field, and `Int` is not
+        // a Java type — it compiles to `public static final Int …` and every use
+        // of it then fails with "Cannot access class 'Int'".
+        buildConfigField("int", "ADMIN_MIN_PASSWORD_LENGTH", "$adminMinPasswordLength")
     }
 
     signingConfigs {
@@ -182,4 +255,19 @@ dependencies {
     // §8 as a system to build rather than a library to add — adding the SDK now
     // would ship a service nothing sends to.
     implementation("com.google.firebase:firebase-auth")
+
+    // ── Google sign-in (§16) ──
+    //
+    // Credential Manager, not `play-services-auth`'s `GoogleSignInClient`.
+    // Google deprecated that API in favour of this one, and it is the only one
+    // that returns an ID token without the app also holding a Google account
+    // session of its own — which is the whole requirement here, since the token
+    // is exchanged for a Firebase credential and then discarded.
+    //
+    // `credentials` is the API, `credentials-play-services-auth` is the backend
+    // that actually talks to Google on a device with Play services, and
+    // `googleid` supplies the request/option types.
+    implementation("androidx.credentials:credentials:1.2.0-rc01")
+    implementation("androidx.credentials:credentials-play-services-auth:1.2.0-rc01")
+    implementation("com.google.android.libraries.identity.googleid:googleid:1.1.0")
 }

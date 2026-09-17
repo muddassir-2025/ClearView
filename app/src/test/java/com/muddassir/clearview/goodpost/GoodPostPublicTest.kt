@@ -14,7 +14,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
-import java.time.temporal.ChronoUnit
+import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * The public Good Post contract (§24).
@@ -246,13 +247,24 @@ class GoodPostPublicTest {
 
     @Test
     fun `a separator appears only when the day changes`() {
-        val now = Instant.now()
+        // Built from LOCAL MIDNIGHT, not from offsets to `Instant.now()`.
+        //
+        // This fixture used to be `now`, `now - 2h`, `now - 1d`, `now - 1d - 3h`,
+        // which reads as "two days" and is two days for most of the clock — but
+        // between midnight and 02:00 the first subtraction lands on yesterday,
+        // producing three separators and a failure that has nothing to do with
+        // the code. It did exactly that in CI at 00:08. Times of day are now
+        // stated, so the grouping is the only thing the test can be measuring.
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        fun at(day: LocalDate, hour: Int) = day.atTime(hour, 0).atZone(zone).toInstant()
+
         val entries = withDateSeparators(
             listOf(
-                postAt("a", now),
-                postAt("b", now.minus(2, ChronoUnit.HOURS)),
-                postAt("c", now.minus(1, ChronoUnit.DAYS)),
-                postAt("d", now.minus(1, ChronoUnit.DAYS).minus(3, ChronoUnit.HOURS))
+                postAt("a", at(today, 10)),
+                postAt("b", at(today, 8)),
+                postAt("c", at(today.minusDays(1), 12)),
+                postAt("d", at(today.minusDays(1), 9))
             )
         )
 
@@ -309,6 +321,81 @@ class GoodPostPublicTest {
     @Test
     fun `an unknown code is reported as unknown rather than guessed at`() {
         assertEquals(GoodPostError.Unknown, goodPostErrorFor("something_new"))
+    }
+
+    @Test
+    fun `every way a sign-in can be over is worded as one, never as something went wrong`() {
+        // Each of these is a credential the server refused for its own reason.
+        // They all used to fall through to "Something went wrong", which named
+        // nothing, and left the reader retrying a token that could not work.
+        // The creator flow also keys off this exact mapping to decide that the
+        // token it holds is dead and the sign-in step has to come back.
+        listOf("invalid_token", "missing_token", "session_expired", "session_revoked", "invalid_refresh_token")
+            .forEach { code ->
+                assertEquals(code, GoodPostError.SessionExpired, goodPostErrorFor(code))
+            }
+
+        // And the deployment-side counterpart, which is NOT retryable and must
+        // not read as an expired session: nobody's sign-in ended, the server
+        // simply cannot verify one.
+        assertEquals(GoodPostError.SignInUnavailable, goodPostErrorFor("auth_unavailable"))
+    }
+
+    @Test
+    fun `the password floor is enforced at the boundary the form states`() {
+        // The rule the channel form puts in its own label and checks before it
+        // submits. One character either side of the floor, because that is where
+        // the bug was reported from: a password that looked long enough being
+        // refused by a form that never said how long was needed.
+        assertTrue(adminPasswordTooShort("Password123", 12))
+        assertFalse(adminPasswordTooShort("Password1234", 12))
+        assertTrue(adminPasswordTooShort("", 12))
+
+        // The floor is a parameter, so a deployment that raises it gets the same
+        // rule applied from its own value rather than from a constant buried
+        // here.
+        assertTrue(adminPasswordTooShort("Password1234", 16))
+        assertFalse(adminPasswordTooShort("Password12345678", 16))
+    }
+
+    @Test
+    fun `the remaining refusals a creator can meet are each named`() {
+        assertEquals(GoodPostError.NameTaken, goodPostErrorFor("slug_unavailable"))
+        assertEquals(GoodPostError.WeakPassword, goodPostErrorFor("weak_password"))
+        assertEquals(GoodPostError.CannotDisableYourself, goodPostErrorFor("cannot_disable_self"))
+        assertEquals(GoodPostError.InvalidCredentials, goodPostErrorFor("admin_credentials_incomplete"))
+        assertEquals(GoodPostError.InvalidCredentials, goodPostErrorFor("creator_required"))
+        assertEquals(GoodPostError.Forbidden, goodPostErrorFor("admin_forbidden"))
+        assertEquals(GoodPostError.Forbidden, goodPostErrorFor("invalid_role"))
+        assertEquals(GoodPostError.NotFound, goodPostErrorFor("admin_not_found"))
+        assertEquals(GoodPostError.NotFound, goodPostErrorFor("channel_unavailable"))
+        assertEquals(GoodPostError.InvalidInput, goodPostErrorFor("channel_required"))
+        assertEquals(GoodPostError.InvalidInput, goodPostErrorFor("not_following"))
+        assertEquals(GoodPostError.AttachmentFailed, goodPostErrorFor("media_not_found"))
+
+        // A status with no code in the body — a proxy's HTML 502. A server-side
+        // condition however it is described, so it is reported as one rather
+        // than as a mystery.
+        assertEquals(GoodPostError.ServerFault, goodPostErrorFor("http_error"))
+    }
+
+    @Test
+    fun `only a refusal that Firebase cannot answer stops the single sign-in form`() {
+        // One form serves a server-side administrator and a Firebase creator, so
+        // the app tries the server first and falls through for everyone else.
+        // These two refusals must NOT fall through.
+        assertTrue(adminRefusalIsFinal(GoodPostError.AdminLocked))
+        assertTrue(adminRefusalIsFinal(GoodPostError.SignInUnavailable))
+
+        // And the one that must: a wrong password for THIS kind of account is
+        // exactly the signal that the credentials may belong to the other kind,
+        // which is what makes "Continue" work for a creator without a second
+        // button.
+        assertFalse(adminRefusalIsFinal(GoodPostError.InvalidCredentials))
+        assertFalse(adminRefusalIsFinal(GoodPostError.AdminUnavailable))
+        assertFalse(adminRefusalIsFinal(GoodPostError.SessionExpired))
+        assertFalse(adminRefusalIsFinal(GoodPostError.ServerFault))
+        assertFalse(adminRefusalIsFinal(GoodPostError.Forbidden))
     }
 
     @Test

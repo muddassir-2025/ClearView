@@ -3,6 +3,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import type { PGlite } from '@electric-sql/pglite';
 import { buildApp } from '../src/app.js';
+import { env } from '../src/env.js';
 import { ensureSuperAdmin } from '../src/admin/bootstrap.js';
 import { applyAllMigrations, asQueryable, freshDatabase, insertAdmin, resetData } from './helpers/database.js';
 import { FakeObjectStore } from './helpers/storage.js';
@@ -997,11 +998,15 @@ describe('the super administrator’s password follows the environment (§18)', 
 
   it('applies a configured password that is below the form floor, and says so rather than hiding it', async () => {
     const database = asQueryable(pglite);
-    // Nine characters: under ADMIN_MIN_PASSWORD_LENGTH. This is not hypothetical
-    // — it is the length of the SUPER_ADMIN_PASSWORD that surfaced this whole
-    // bug, and the first version of this fix refused it, which would have left
-    // the account on the stale hash and reproduced the original symptom exactly.
-    const short = 'ninechars';
+    // One character short of ADMIN_MIN_PASSWORD_LENGTH, and below it only by
+    // construction rather than by a number copied into the test — the floor has
+    // moved once already (it is eight, chosen because this password is typed
+    // into a phone, not because the deployment's own is any particular length).
+    // The first version of this fix REFUSED a configured password below the
+    // floor, which left the account on the stale hash and reproduced the
+    // original symptom exactly, so what is pinned here is that it is applied and
+    // merely advised about.
+    const short = 'a'.repeat(env.ADMIN_MIN_PASSWORD_LENGTH - 1);
 
     expect((await ensureSuperAdmin(database, ORIGINAL)).created).toBe(true);
 
@@ -1011,6 +1016,7 @@ describe('the super administrator’s password follows the environment (§18)', 
     // Advised about, never refused, and never echoed.
     expect(applied.warning).not.toBeNull();
     expect(applied.warning).toContain('SUPER_ADMIN_PASSWORD');
+    expect(applied.warning).toContain(String(env.ADMIN_MIN_PASSWORD_LENGTH));
     expect(applied.warning).not.toContain(short);
 
     // And it actually signs in, which is the whole point: the floor protects a
@@ -1020,6 +1026,119 @@ describe('the super administrator’s password follows the environment (§18)', 
       .post('/admin/api/auth/login')
       .send({ email: EMAIL, password: short });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+});
+
+/**
+ * Changing the password that runs a channel (§20).
+ *
+ * The form that creates a channel also mints the login for it, which means the
+ * one credential a deployment hands to somebody was, until this, the one thing
+ * it could never change: a lost password meant deleting the channel, and a
+ * compromised one meant the same. These cases pin the whole of it — who may do
+ * it, that the new value works, that the old one stops working, and that a
+ * refusal leaves the account exactly as it was.
+ */
+describe('changing the password that runs a channel (§20)', () => {
+  it('lets a super administrator reset the password, and the old one stops working', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const created = await createChannelWithAdmin(app, superSession, uniqueName('Rotated'));
+    const owner = await signIn(app, created.adminEmail, created.password);
+
+    const res = await request(app)
+      .patch(`/admin/api/channels/${created.channel.id}`)
+      .set(authed(superSession.accessToken))
+      .send({ adminPassword: 'a-brand-new-password' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // Never echoed back — not in the channel payload, not anywhere in the body.
+    expect(JSON.stringify(res.body)).not.toContain('a-brand-new-password');
+
+    const renewed = await signIn(app, created.adminEmail, 'a-brand-new-password');
+    expect(renewed.channelId).toBe(created.channel.id);
+
+    // The value it replaced is gone, not merely shadowed.
+    const stale = await request(app)
+      .post('/admin/api/auth/login')
+      .send({ email: created.adminEmail, password: created.password });
+    expect(stale.status).toBe(401);
+
+    // A reset by somebody else signs that account out of the sessions it had.
+    const doomed = await request(app)
+      .get('/admin/api/auth/me')
+      .set(authed(owner.accessToken));
+    expect(doomed.status).toBe(401);
+  });
+
+  it('lets a channel administrator change their own password without signing themselves out', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const created = await createChannelWithAdmin(app, superSession, uniqueName('Owner'));
+    const owner = await signIn(app, created.adminEmail, created.password);
+
+    const res = await request(app)
+      .patch(`/admin/api/channels/${created.channel.id}`)
+      .set(authed(owner.accessToken))
+      .send({ adminPassword: 'chosen-by-the-owner' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    // The session they made the change with is deliberately left alive: being
+    // signed out of the phone in your hand is not what "change my password"
+    // asked for.
+    const stillHere = await request(app)
+      .get('/admin/api/auth/me')
+      .set(authed(owner.accessToken));
+    expect(stillHere.status).toBe(200);
+
+    const renewed = await signIn(app, created.adminEmail, 'chosen-by-the-owner');
+    expect(renewed.adminId).toBe(owner.adminId);
+  });
+
+  it('refuses a password below the floor, and leaves the account on the old one', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const created = await createChannelWithAdmin(app, superSession, uniqueName('Weak'));
+
+    const res = await request(app)
+      .patch(`/admin/api/channels/${created.channel.id}`)
+      .set(authed(superSession.accessToken))
+      .send({ adminPassword: 'short' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('weak_password');
+
+    // A refused password changes nothing — including the rest of the edit that
+    // arrived with it, because both are one transaction.
+    const stillWorks = await signIn(app, created.adminEmail, created.password);
+    expect(stillWorks.channelId).toBe(created.channel.id);
+  });
+
+  it('refuses to invent an administrator for a channel that has none', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const bare = await createBareChannel(app, superSession, uniqueName('NoLogin'));
+
+    const res = await request(app)
+      .patch(`/admin/api/channels/${bare.id}`)
+      .set(authed(superSession.accessToken))
+      .send({ adminPassword: 'a-password-nobody-owns' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('channel_has_no_admin');
+  });
+
+  it('cannot reach another channel’s administrator', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const mine = await createChannelWithAdmin(app, superSession, uniqueName('Mine'));
+    const theirs = await createChannelWithAdmin(app, superSession, uniqueName('Theirs'));
+    const interloper = await signIn(app, mine.adminEmail, mine.password);
+
+    // The scope check answers 404 rather than 403 — a channel administrator may
+    // not even learn that the other channel exists (§18).
+    const res = await request(app)
+      .patch(`/admin/api/channels/${theirs.channel.id}`)
+      .set(authed(interloper.accessToken))
+      .send({ adminPassword: 'a-password-i-chose' });
+    expect(res.status).toBe(404);
+
+    // And the other channel's own credential is untouched.
+    const unaffected = await signIn(app, theirs.adminEmail, theirs.password);
+    expect(unaffected.channelId).toBe(theirs.channel.id);
   });
 });
 

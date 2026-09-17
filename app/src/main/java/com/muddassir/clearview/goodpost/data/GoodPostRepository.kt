@@ -1,5 +1,6 @@
 package com.muddassir.clearview.goodpost.data
 
+import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import kotlinx.coroutines.sync.Mutex
@@ -47,6 +48,14 @@ internal class GoodPostRepository(
 
     /** True when a backend URL has been configured for this build. */
     val isConfigured: Boolean get() = api.isConfigured
+
+    /**
+     * True when this build can identify a reader at all (§3).
+     *
+     * Read by the home tab to decide what a failed follows fetch means — see
+     * [GoodPostIdentity.available].
+     */
+    val identifiesReaders: Boolean get() = identity.available
 
     // ── Public reads ────────────────────────────────────────────────────
 
@@ -152,6 +161,20 @@ internal class GoodPostRepository(
             }
         }
 
+    /**
+     * Search inside one channel (§9).
+     *
+     * Deliberately NOT [channelPosts] with a term, and the difference is the
+     * cache: a search result set is not the channel's history, so writing it
+     * where the history lives would leave a reader who searched once opening the
+     * channel offline later and seeing their search results as the feed.
+     */
+    suspend fun searchChannelPosts(
+        channelId: String,
+        term: String,
+        cursor: String? = null
+    ): ApiResult<GoodPostPage<GoodPostPost>> = api.channelPosts(channelId, cursor, term)
+
     /** A channel's images and videos, for the profile gallery (§13). */
     suspend fun channelMedia(
         channelId: String,
@@ -172,6 +195,50 @@ internal class GoodPostRepository(
     /** Sign in, and keep the session only if the server accepted it. */
     suspend fun adminLogin(email: String, password: String): ApiResult<AdminSession> =
         api.adminLogin(email, password).also { result ->
+            if (result is ApiResult.Ok) tokens.save(result.value)
+        }
+
+    /**
+     * The Firebase ID token for an email/password creator (§16), or null.
+     *
+     * Exposed through the repository rather than reached for directly, so the
+     * screens keep talking to one object and `NoIdentity` — a build with no
+     * `google-services.json` — remains a single substitution rather than a
+     * condition at each call site.
+     */
+    suspend fun creatorToken(email: String, password: String, signUp: Boolean): String? =
+        identity.creatorToken(email, password, signUp)
+
+    /**
+     * Forget the CREATOR identity, leaving the reader's alone (§16).
+     *
+     * Exposed here rather than reached for from the ViewModel so the whole of
+     * Firebase stays behind this one object — see [GoodPostIdentity].
+     */
+    suspend fun creatorSignOut() = identity.creatorSignOut()
+
+    /** The Google sign-in result (§16): a token, a dismissal, or a failure. */
+    suspend fun googleCreatorToken(activity: Activity): GoogleSignIn =
+        identity.googleCreatorToken(activity)
+
+    /**
+     * Sign in as a creator (§16), keeping the session only if there is one.
+     *
+     * Nothing is stored on a `NeedsChannel` answer, because there is nothing to
+     * store: the account does not exist until the channel does. The Firebase
+     * token that got this far is held by the ViewModel for the one call that
+     * finishes the job, and never written to disk.
+     */
+    suspend fun creatorLogin(idToken: String): ApiResult<CreatorSignIn> =
+        api.creatorLogin(idToken).also { result ->
+            if (result is ApiResult.Ok && result.value is CreatorSignIn.Session) {
+                tokens.save((result.value as CreatorSignIn.Session).session)
+            }
+        }
+
+    /** A creator's first channel — which also creates the account it belongs to. */
+    suspend fun creatorCreateChannel(idToken: String, name: String): ApiResult<AdminSession> =
+        api.creatorCreateChannel(idToken, name).also { result ->
             if (result is ApiResult.Ok) tokens.save(result.value)
         }
 

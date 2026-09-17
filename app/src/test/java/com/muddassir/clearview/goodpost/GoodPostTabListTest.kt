@@ -8,13 +8,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * What the Good Post tab lists (§1, §3).
+ * What the Good Post tab lists (§1, §3, §4).
  *
  * One rule, and it is the product's rather than a screen's: a reader sees the
- * public channel list, and a signed-in account sees the channels that account has
- * access to. The second replaces the first while it lasts, which is the part
- * worth pinning: an account created for one channel must not be handed the rest
- * of Good Post.
+ * list the tab fetched for them — their FOLLOWED channels, which is what
+ * `refreshChannels` writes — and a signed-in account sees the channels that
+ * account has access to. The second REPLACES the first while it lasts, which is
+ * the part worth pinning: an account created for one channel must not be handed
+ * the rest of Good Post.
+ *
+ * Both are rules about [GoodPostUiState.channels], so the reader cases here hand
+ * it the list a reader's own follows produce. Which list that is, and why it is
+ * the follows rather than the catalogue or the other way round, belongs to the
+ * ViewModel and is settled where the fetch is made.
  *
  * Tested here as a pure rule rather than through a screen because it is the
  * decision that was hardest to get right, and the one a screen would let drift:
@@ -51,12 +57,24 @@ class GoodPostTabListTest {
     private fun ids(state: GoodPostUiState) = state.tabChannels.map { it.id }
 
     @Test
-    fun `a reader sees the public channels`() {
+    fun `a reader sees the channels the tab fetched for them`() {
         val state = GoodPostUiState(
             channels = listOf(channel("a"), channel("b"), channel("c"))
         )
 
         assertEquals(listOf("a", "b", "c"), ids(state))
+    }
+
+    @Test
+    fun `following nothing is an empty tab, not a catalogue`() {
+        // The state a reader who follows nothing is in, and the one this list is
+        // most likely to get wrong: filling it with every channel on the
+        // platform would make the tab indistinguishable from Explore and hide
+        // the fact that nobody had chosen anything.
+        val signedIn = GoodPostUiState(admin = session("super_admin", null))
+
+        assertEquals(emptyList<String>(), ids(signedIn.copy(adminChannels = emptyList())))
+        assertEquals(emptyList<String>(), ids(GoodPostUiState(channels = emptyList())))
     }
 
     @Test

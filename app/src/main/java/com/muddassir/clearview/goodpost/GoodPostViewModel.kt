@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.muddassir.clearview.BuildConfig
 import com.muddassir.clearview.goodpost.data.AdminSession
 import com.muddassir.clearview.goodpost.data.ApiResult
 import com.muddassir.clearview.goodpost.data.CachedChannels
@@ -18,7 +19,10 @@ import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
 import com.muddassir.clearview.goodpost.data.GoodPostPage
 import com.muddassir.clearview.goodpost.data.GoodPostPost
+import android.app.Activity
+import com.muddassir.clearview.goodpost.data.CreatorSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostRepository
+import com.muddassir.clearview.goodpost.data.GoogleSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.ui.waDayLabel
@@ -46,6 +50,16 @@ sealed interface GoodPostScreen {
 
     /** A channel's information page (§11–§14). */
     data class ChannelInfo(val channelId: String) : GoodPostScreen
+
+    /**
+     * Search inside ONE channel (§9).
+     *
+     * A screen of its own rather than a mode of the feed, because it carries
+     * state the feed must not: a term, the results for that term, and the note
+     * that the results are not the channel's history. It sits on the stack, so
+     * Back returns to the channel exactly where it was.
+     */
+    data class ChannelSearch(val channelId: String) : GoodPostScreen
 
     /** The administrator way in (§16). */
     data object AdminLogin : GoodPostScreen
@@ -116,6 +130,23 @@ data class GoodPostUiState(
     /** Posts selected by long press in a channel's feed (§5). */
     val selectedPostIds: Set<String> = emptySet(),
 
+    // ── Search inside one channel (§9) ───────────────────────────────────
+    /** What is in the search box. */
+    val channelSearchQuery: String = "",
+    /**
+     * The term the results on screen are actually FOR.
+     *
+     * Kept apart from [channelSearchQuery] because the two disagree for as long
+     * as a search is in flight — and the empty state has to describe the term it
+     * searched rather than the text somebody is halfway through typing.
+     */
+    val channelSearchTerm: String = "",
+    val channelSearchResults: List<GoodPostPost> = emptyList(),
+    val channelSearchLoading: Boolean = false,
+    val channelSearchLoadingMore: Boolean = false,
+    val channelSearchCursor: String? = null,
+    val channelSearchError: String? = null,
+
     // ── The information page (§11–§14) ───────────────────────────────────
     val media: List<GoodPostMediaItem> = emptyList(),
     val mediaLoading: Boolean = false,
@@ -136,6 +167,34 @@ data class GoodPostUiState(
     val adminEmail: String = "",
     val adminPassword: String = "",
     val adminBusy: Boolean = false,
+
+    /**
+     * A creator has signed in but has no channel yet (§16).
+     *
+     * A step rather than a failure: it is the state every creator is in exactly
+     * once, and the screen answers it with the one field that finishes the job
+     * instead of an error. Nothing is stored on a session-less sign-in, so
+     * abandoning this step leaves no trace on the server.
+     */
+    val creatorNeedsChannel: Boolean = false,
+    /** The address the pending creator account is under, shown on that step. */
+    val creatorEmail: String? = null,
+    /** The channel name being typed on that step. */
+    val creatorChannelName: String = "",
+
+    /**
+     * Whether the "Other ways" panel on the sign-in screen is open (§16).
+     *
+     * Closed until it is asked for. It holds the two fields a deployment-
+     * provisioned administrator types into, and putting them on screen for
+     * everyone would make the sign-in page look like a password form to a creator
+     * who only ever needs the Google card above it.
+     *
+     * Screen state rather than [creatorNeedsChannel]-style flow state: it changes
+     * nothing about what the app will do, only what is visible, so nothing reads
+     * it but the screen.
+     */
+    val otherWaysOpen: Boolean = false,
     /**
      * The channels this account may work with: all of them for a super
      * administrator, exactly one for a channel administrator.
@@ -213,11 +272,17 @@ data class GoodPostUiState(
     val isAdmin: Boolean get() = admin != null
 
     /**
-     * The channels the tab lists (§1, §3).
+     * The channels the tab lists (§1, §3, §4).
      *
-     * A reader sees the public catalogue, because that is what §3 asks the tab
-     * to be: the channel list, opened straight into, with no account and nothing
-     * to set up first.
+     * A reader sees the channels THEY FOLLOW — what `refreshChannels` put in
+     * [channels], which is their own list and not the catalogue. The catalogue
+     * is Explore's job, one tap away; a tab that listed every channel would make
+     * following pointless, because there would be no visible difference between
+     * a channel somebody chose and one they have never seen.
+     *
+     * The ONE case where [channels] holds the catalogue for a reader is a build
+     * with no reader identity at all (`GoodPostRepository.identifiesReaders`),
+     * where there is no list of follows to fetch and never will be.
      *
      * A signed-in account sees the channels it has access to instead — the whole
      * product for a super administrator, exactly one channel for an account
@@ -267,6 +332,30 @@ data class GoodPostUiState(
         admin?.let { session -> session.isSuperAdmin || session.channelId == channelId } == true
 
     /**
+     * This state with a channel search's term and results discarded (§9).
+     *
+     * The rule lives on the state rather than inside the ViewModel because it is
+     * a fact about the fields — which of them belong to a search — and because
+     * three transitions need it: closing the screen, backing out of it, and
+     * clearing the box. A half-cleared search is how results for one term end up
+     * under the label of another, so there is one definition of "forget it all"
+     * and every exit goes through it.
+     */
+    internal fun clearedOfChannelSearch(): GoodPostUiState = copy(
+        // The box goes too. It is on the screen that is being left, so nothing
+        // can read it afterwards — which is exactly why leaving it set is a
+        // latent leak rather than a visible one, and why it is cleared here by
+        // the same call that clears everything else.
+        channelSearchQuery = "",
+        channelSearchResults = emptyList(),
+        channelSearchCursor = null,
+        channelSearchLoading = false,
+        channelSearchLoadingMore = false,
+        channelSearchError = null,
+        channelSearchTerm = ""
+    )
+
+    /**
      * Whether the composer is editing a post that belongs to [channelId].
      *
      * Both halves are required. A non-null [editingPostId] alone only says that
@@ -284,9 +373,10 @@ data class GoodPostUiState(
  * It owns navigation, the cached-then-live read pattern, and the administrator's
  * actions. Two rules it exists to keep:
  *
- *  * **Nothing here is per-account, because there is no account.** The only
+ *  * **Nothing here is per-account, because a reader has no account.** The only
  *    credential in the app is an administrator's, and every screen a reader sees
- *    works with none.
+ *    works with none. What a reader does have is an anonymous identity (§3),
+ *    which is what their followed channels hang from and nothing else.
  *
  *  * **Nothing blocks the first frame.** [initialize] renders the cache and then
  *    refreshes behind it, which is what makes the tab feel like it opens
@@ -304,6 +394,12 @@ class GoodPostViewModel : ViewModel() {
      * which is what lets a shared link open its channel instead of the list.
      */
     private var pendingSlug: String? = null
+
+    /**
+     * The Firebase ID token of a creator who has signed in but has no channel
+     * yet (§16). In memory only: see [creatorCreateChannel].
+     */
+    private var creatorIdToken: String? = null
 
     var uiState by mutableStateOf(GoodPostUiState())
         private set
@@ -371,7 +467,19 @@ class GoodPostViewModel : ViewModel() {
     fun back(): Boolean {
         val stack = uiState.backStack
         if (stack.size <= 1) return false
-        uiState = uiState.copy(backStack = stack.dropLast(1), messageCode = null)
+
+        // Leaving a search takes its state with it. Otherwise the next channel
+        // searched would open with the previous one's term in the box — which is
+        // both wrong and confusing: the results below it belong to a different
+        // channel, and a reader who does not look at the field would read them
+        // as this channel's.
+        val leaving = stack.last()
+        val popped = uiState.copy(backStack = stack.dropLast(1), messageCode = null)
+        uiState = if (leaving is GoodPostScreen.ChannelSearch) {
+            popped.clearedOfChannelSearch()
+        } else {
+            popped
+        }
         return true
     }
 
@@ -390,15 +498,18 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
-     * Refresh the home list, which is what this reader FOLLOWS (§4).
+     * Refresh the home list, which is ONLY what this reader follows (§4).
      *
-     * The followed channels are fetched first, because §4 makes them the tab's
-     * list. The public list is the fallback, and it is a deliberately different
-     * thing: a reader who follows nothing — the state every reader starts in, and
-     * the state a build with no identity is permanently in — would otherwise
-     * open Good Post onto an empty screen with nothing to do but find Explore.
-     * Falling back keeps the tab useful and still puts follows first the moment
-     * there are any.
+     * An answer of "no follows" is a real answer and it is shown as one: the tab
+     * is the reader's own list, and filling it with the catalogue turned it into
+     * a second Explore — where the entire list was channels they had chosen not
+     * to follow. What is left for a reader with nothing on it is the way to find
+     * some, which the empty state says out loud.
+     *
+     * The ONE case that still falls back to the catalogue is not being able to ask
+     * the question at all: no identity, or a deployment that cannot verify one.
+     * There is no list of follows in that state and never will be, so an empty tab
+     * would be permanent and would be describing a build, not a reader (§23).
      */
     fun refreshChannels() {
         val repo = repository ?: return
@@ -407,29 +518,46 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val follows = repo.following()) {
                 is ApiResult.Ok -> {
-                    if (follows.value.items.isNotEmpty()) {
-                        uiState = uiState.copy(
-                            channels = follows.value.items,
-                            followedIds = follows.value.items.map { it.id }.toSet(),
-                            channelsLoading = false,
-                            channelsStale = false,
-                            channelsError = null
-                        )
-                        return@launch
-                    }
-                    // Followed nothing: an empty list is a real answer, and it
-                    // means the reader should be shown channels to follow.
-                    uiState = uiState.copy(followedIds = emptySet())
+                    uiState = uiState.copy(
+                        channels = follows.value.items,
+                        followedIds = follows.value.items.map { it.id }.toSet(),
+                        channelsLoading = false,
+                        channelsStale = false,
+                        channelsError = null
+                    )
                 }
 
-                // No identity, or a refused call: nothing is known about what
-                // this reader follows, so nothing is assumed. The public list
-                // below still loads and the tab still works (§23).
-                is ApiResult.Failed, ApiResult.Unreachable ->
-                    uiState = uiState.copy(followedIds = emptySet())
+                // Nothing is known about what this reader follows, so nothing
+                // is assumed. Two different situations arrive here and they are
+                // answered differently.
+                is ApiResult.Failed, ApiResult.Unreachable -> {
+                    if (repo.identifiesReaders) {
+                        // There IS a reader identity; the answer about what they
+                        // follow simply did not arrive. The tab keeps what it
+                        // already knows — the cache is written by this same call
+                        // — and reports the failure, rather than filling itself
+                        // with the catalogue. Listing every channel on the
+                        // platform under the heading "Channels" is the one thing
+                        // this list must never do: it is the reader's own list.
+                        uiState = uiState.copy(
+                            channelsLoading = false,
+                            channelsStale = uiState.channels.isNotEmpty(),
+                            channelsError = if (uiState.channels.isEmpty()) {
+                                if (follows is ApiResult.Failed) follows.code else "unreachable"
+                            } else {
+                                null
+                            }
+                        )
+                    } else {
+                        // No identity in this build at all: there is no list of
+                        // follows to have and never will be, so an empty tab
+                        // would be permanent and would be describing a build
+                        // rather than a reader (§23).
+                        uiState = uiState.copy(followedIds = emptySet())
+                        loadPublicChannels(repo)
+                    }
+                }
             }
-
-            loadPublicChannels(repo)
         }
     }
 
@@ -574,7 +702,14 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
-    private fun loadChannel(channelId: String) {
+    /**
+     * Fetch one channel's own record (name, description, image, share link).
+     *
+     * Public because more than one screen needs it for a channel it was opened
+     * with rather than navigated to — a search reached from a share link, for
+     * instance, has a channel id and no row behind it.
+     */
+    fun loadChannel(channelId: String) {
         val repo = repository ?: return
         viewModelScope.launch {
             // Fetched once and branched on, rather than tested and then fetched
@@ -910,6 +1045,98 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
+    // ── Search inside a channel (§9) ─────────────────────────────────────
+
+    /**
+     * Open the search screen for one channel, empty.
+     *
+     * Reset on the way in rather than carried over: a search belongs to the
+     * channel it was run in, and arriving at a new one with the last channel's
+     * term still in the box would show results that are not this channel's §9
+     * read.
+     */
+    fun openChannelSearch(channelId: String) {
+        uiState = uiState.copy(channelSearchQuery = "", messageCode = null)
+            .clearedOfChannelSearch()
+        open(GoodPostScreen.ChannelSearch(channelId))
+    }
+
+    fun onChannelSearchQueryChange(value: String) {
+        uiState = uiState.copy(channelSearchQuery = value, messageCode = null)
+    }
+
+    /**
+     * Search this channel's posts for what is in the box now.
+     *
+     * An empty term clears the results instead of asking the server for
+     * everything: "no term" is not a search, and returning the whole channel
+     * would make the box look like it had found something when the reader has
+     * asked for nothing yet.
+     */
+    fun searchChannelPosts() {
+        val repo = repository ?: return
+        val channelId = (uiState.screen as? GoodPostScreen.ChannelSearch)?.channelId ?: return
+        val term = uiState.channelSearchQuery.trim()
+
+        if (term.isEmpty()) {
+            uiState = uiState.clearedOfChannelSearch()
+            return
+        }
+
+        uiState = uiState.copy(
+            channelSearchTerm = term,
+            channelSearchLoading = true,
+            channelSearchError = null,
+            channelSearchCursor = null
+        )
+
+        viewModelScope.launch {
+            when (val result = repo.searchChannelPosts(channelId, term)) {
+                is ApiResult.Ok -> uiState = uiState.copy(
+                    channelSearchResults = result.value.items,
+                    channelSearchCursor = result.value.nextCursor,
+                    channelSearchLoading = false,
+                    channelSearchError = null
+                )
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    channelSearchLoading = false,
+                    channelSearchError = result.code
+                )
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    channelSearchLoading = false,
+                    channelSearchError = "unreachable"
+                )
+            }
+        }
+    }
+
+    /** The next page of a search (§26: lazy, cursor-paged, like every list). */
+    fun loadMoreChannelSearch() {
+        val repo = repository ?: return
+        val channelId = (uiState.screen as? GoodPostScreen.ChannelSearch)?.channelId ?: return
+        val cursor = uiState.channelSearchCursor ?: return
+        val term = uiState.channelSearchTerm.takeIf { it.isNotBlank() } ?: return
+        if (uiState.channelSearchLoadingMore) return
+
+        uiState = uiState.copy(channelSearchLoadingMore = true)
+        viewModelScope.launch {
+            when (val result = repo.searchChannelPosts(channelId, term, cursor)) {
+                is ApiResult.Ok -> uiState = uiState.copy(
+                    channelSearchResults = GoodPostCodec.merge(
+                        uiState.channelSearchResults,
+                        result.value.items
+                    ) { it.id },
+                    channelSearchCursor = result.value.nextCursor,
+                    channelSearchLoadingMore = false
+                )
+
+                else -> uiState = uiState.copy(channelSearchLoadingMore = false)
+            }
+        }
+    }
+
     // ── Administrator (§16, §19, §21) ────────────────────────────────────
 
     /**
@@ -937,7 +1164,112 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(adminPassword = value, messageCode = null)
     }
 
-    fun adminSignIn() {
+    fun onCreatorChannelNameChange(value: String) {
+        uiState = uiState.copy(creatorChannelName = value, messageCode = null)
+    }
+
+    /** Open or close the "Other ways" panel, which is a choice and not an error. */
+    fun toggleOtherWays() {
+        uiState = uiState.copy(otherWaysOpen = !uiState.otherWaysOpen, messageCode = null)
+    }
+
+    /**
+     * Land a signed-in administrator on the screen their account implies.
+     *
+     * Extracted because three flows now end here — the password form, a Google
+     * creator, and an email/password creator who finished naming their channel —
+     * and the landing rule is not a screen choice: a channel administrator gets
+     * the channel they run and nothing else (§3), while a super administrator
+     * gets the tab, whose list IS every channel they may publish to. Three
+     * copies of that would be three chances to get it subtly different.
+     */
+    private fun landAdminSession(session: AdminSession) {
+        val destination = if (session.isSuperAdmin) {
+            listOf(GoodPostScreen.Home)
+        } else {
+            session.channelId
+                ?.let { listOf(GoodPostScreen.Home, GoodPostScreen.AdminChannel(it)) }
+                ?: listOf(GoodPostScreen.Home)
+        }
+
+        uiState = uiState.copy(
+            admin = session,
+            adminPassword = "",
+            adminBusy = false,
+            messageCode = null,
+            selectedChannelIds = emptySet(),
+            creatorNeedsChannel = false,
+            creatorEmail = null,
+            creatorChannelName = "",
+            // The sign-in screen is behind us; nothing of it should be waiting
+            // open the next time it is reached.
+            otherWaysOpen = false,
+            backStack = destination
+        )
+
+        loadAdminChannels()
+        destination.lastOrNull()?.let { screen ->
+            if (screen is GoodPostScreen.AdminChannel) {
+                loadChannel(screen.channelId)
+                loadPosts(screen.channelId)
+            }
+        }
+    }
+
+    /**
+     * Continue as a creator with Google (§16).
+     *
+     * The Activity is passed in rather than read from the application context,
+     * because Credential Manager draws its account picker OVER a window: an
+     * Application context has none, and the call throws.
+     */
+    fun creatorSignInWithGoogle(activity: Activity) {
+        val repo = repository ?: return
+        uiState = uiState.copy(adminBusy = true, messageCode = null)
+
+        viewModelScope.launch {
+            when (val result = repo.googleCreatorToken(activity)) {
+                // Dismissing the picker is not a failure and gets no message.
+                GoogleSignIn.Cancelled -> uiState = uiState.copy(adminBusy = false)
+                GoogleSignIn.Failed -> uiState = uiState.copy(
+                    adminBusy = false,
+                    messageCode = "creator_signin_failed"
+                )
+
+                is GoogleSignIn.Token -> continueCreatorSignIn(repo, result.idToken)
+            }
+        }
+    }
+
+    /**
+     * The sign-in screen's ONE action (§16).
+     *
+     * Two populations reach this form and nothing on the outside tells them
+     * apart: an administrator provisioned by the deployment — the super
+     * administrator from the environment, or a channel administrator a super
+     * administrator created — holds a password that lives on the SERVER, while
+     * a creator holds a Firebase account they made themselves. The screen used
+     * to offer them as two buttons, which asked the person signing in to know
+     * which kind of account they had, and left a super administrator who
+     * pressed the wrong one reading "invalid credentials" about a password that
+     * was correct.
+     *
+     * So the app finds out instead, in the order that costs the least:
+     *
+     *  1. The server's own credentials. That is the smaller population and the
+     *     one whose answer is final, so a correct super-admin password signs in
+     *     on the first call with nothing else tried.
+     *  2. Anything else means "not a provisioned account", and the Firebase half
+     *     runs — where a creator is signed up, or signed in if the address
+     *     already has an account.
+     *
+     * Two refusals deliberately STOP rather than fall through, because the
+     * Firebase attempt cannot succeed and would only delay the truth: an account
+     * that exists and is locked or switched off, and a server that cannot be
+     * reached (Firebase needs the network too, and a second timeout is a longer
+     * wait for the same answer).
+     */
+    fun signIn() {
         val repo = repository ?: return
         val email = normalizeEmailInput(uiState.adminEmail)
         val password = uiState.adminPassword
@@ -950,58 +1282,175 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(adminBusy = true, messageCode = null)
         viewModelScope.launch {
             when (val result = repo.adminLogin(email, password)) {
-                is ApiResult.Ok -> {
-                    val session = result.value
+                // Where the account lands is the account's own shape rather
+                // than a screen choice; see [landAdminSession].
+                is ApiResult.Ok -> landAdminSession(result.value)
 
-                    // Where the account lands after signing in is the account's
-                    // own shape, not a screen choice: a channel administrator
-                    // gets the channel they run and nothing else (§3), while a
-                    // super administrator gets the tab, whose list IS every
-                    // channel they may publish to.
-                    val destination = if (session.isSuperAdmin) {
-                        listOf(GoodPostScreen.Home)
-                    } else {
-                        session.channelId
-                            ?.let { listOf(GoodPostScreen.Home, GoodPostScreen.AdminChannel(it)) }
-                            ?: listOf(GoodPostScreen.Home)
-                    }
-
-                    uiState = uiState.copy(
-                        admin = session,
-                        adminPassword = "",
-                        adminBusy = false,
-                        messageCode = null,
-                        selectedChannelIds = emptySet(),
-                        backStack = destination
-                    )
-
-                    loadAdminChannels()
-                    destination.lastOrNull()?.let { screen ->
-                        if (screen is GoodPostScreen.AdminChannel) {
-                            loadChannel(screen.channelId)
-                            loadPosts(screen.channelId)
-                        }
-                    }
-                }
-
-                // A refusal this contract cannot produce is not a credential
-                // problem: it means the backend is a different one. Naming that
-                // is the difference between "your password is wrong" and "this
-                // is not the server you think it is", and only one of those is
-                // worth acting on.
-                is ApiResult.Failed -> uiState = uiState.copy(
-                    adminBusy = false,
-                    messageCode = if (signInHitAnotherContract(result.status, result.code)) {
+                is ApiResult.Failed -> {
+                    // A refusal this contract cannot produce is not a credential
+                    // problem: it means the backend is a different one. Naming
+                    // that is the difference between "your password is wrong"
+                    // and "this is not the server you think it is", and only one
+                    // of those is worth acting on.
+                    val code = if (signInHitAnotherContract(result.status, result.code)) {
                         "admin_unavailable"
                     } else {
                         result.code
                     }
-                )
+
+                    if (adminRefusalIsFinal(goodPostErrorFor(code))) {
+                        uiState = uiState.copy(adminBusy = false, messageCode = result.code)
+                    } else {
+                        // Not a provisioned account. Firebase decides the rest:
+                        // sign up if the address is new, sign in if it is not.
+                        creatorSignInWithEmail(repo, email, password, signUp = true)
+                    }
+                }
 
                 ApiResult.Unreachable -> uiState = uiState.copy(
                     adminBusy = false,
                     messageCode = "unreachable"
                 )
+            }
+        }
+    }
+
+    /**
+     * The Firebase half of [signIn], with the credentials already validated.
+     *
+     * `signUp` decides which way round Firebase tries its two calls; it does not
+     * decide whether an account exists, because only Firebase knows that.
+     */
+    private suspend fun creatorSignInWithEmail(
+        repo: GoodPostRepository,
+        email: String,
+        password: String,
+        signUp: Boolean
+    ) {
+        val token = repo.creatorToken(email, password, signUp)
+        if (token == null) {
+            // One message for a wrong password and for an address that
+            // cannot be signed up: the distinction is a way to discover
+            // which addresses exist.
+            uiState = uiState.copy(adminBusy = false, messageCode = "invalid_credentials")
+            return
+        }
+        continueCreatorSignIn(repo, token)
+    }
+
+    /**
+     * Back from the name-a-channel step to the credentials above it (§16).
+     *
+     * The step is not a screen in the navigation stack, so it has no pop of its
+     * own: without this, the arrow on it leaves the whole flow and the half-made
+     * creator state is still set for the next visit, which re-opens the step
+     * over a sign-in that never happened.
+     *
+     * The email and password are kept — they are what somebody returning here
+     * came back to change, and the identity they signed in with is dropped so the
+     * next attempt really does use whatever they type now.
+     */
+    fun backToSignIn() {
+        creatorIdToken = null
+        uiState = uiState.copy(creatorNeedsChannel = false, messageCode = null)
+    }
+
+    /** The shared second half: trade the Firebase token for a session or a step. */
+    private suspend fun continueCreatorSignIn(repo: GoodPostRepository, idToken: String) {
+        when (val result = repo.creatorLogin(idToken)) {
+            is ApiResult.Ok -> when (val value = result.value) {
+                is CreatorSignIn.Session -> {
+                    creatorIdToken = null
+                    landAdminSession(value.session)
+                }
+
+                is CreatorSignIn.NeedsChannel -> {
+                    // Held in memory, and only until the channel exists. It is a
+                    // credential with minutes of life, so it is not written to
+                    // disk — the session that replaces it is.
+                    creatorIdToken = idToken
+                    uiState = uiState.copy(
+                        adminBusy = false,
+                        creatorNeedsChannel = true,
+                        creatorEmail = value.email,
+                        creatorChannelName = uiState.creatorChannelName,
+                        messageCode = null
+                    )
+                }
+            }
+
+            is ApiResult.Failed -> uiState = uiState.copy(
+                adminBusy = false,
+                messageCode = if (signInHitAnotherContract(result.status, result.code)) {
+                    "admin_unavailable"
+                } else {
+                    result.code
+                }
+            )
+
+            ApiResult.Unreachable -> uiState = uiState.copy(
+                adminBusy = false,
+                messageCode = "unreachable"
+            )
+        }
+    }
+
+    /**
+     * Create the creator's channel, which is also what creates their account.
+     *
+     * The token is dropped either way: on success the session replaces it, and
+     * on failure it is not reusable — the next attempt re-signs-in, which is
+     * also what refreshes it.
+     */
+    fun creatorCreateChannel() {
+        val repo = repository ?: return
+        val token = creatorIdToken
+        val name = uiState.creatorChannelName.trim()
+
+        if (token == null) {
+            uiState = uiState.copy(creatorNeedsChannel = false, messageCode = "invalid_credentials")
+            return
+        }
+        if (name.isEmpty()) {
+            uiState = uiState.copy(messageCode = "channel_name_required")
+            return
+        }
+
+        uiState = uiState.copy(adminBusy = true, messageCode = null)
+        viewModelScope.launch {
+            when (val result = repo.creatorCreateChannel(token, name)) {
+                is ApiResult.Ok -> {
+                    creatorIdToken = null
+                    landAdminSession(result.value)
+                }
+
+                is ApiResult.Failed -> {
+                    // A token the server refused cannot be retried with: it is the
+                    // same string on every attempt, so the reader would be left
+                    // pressing Continue against a dead credential forever — which
+                    // is exactly what "Something went wrong" on every retry was.
+                    //
+                    // The flow goes back to its first half instead, where the
+                    // button that obtains a NEW token is, and the typed channel
+                    // name is kept so signing in again does not cost them their
+                    // typing.
+                    //
+                    // "Refused" is read from the ONE mapping of codes to meanings
+                    // rather than from a second list of strings here: every code
+                    // that words as "your session ended" is a credential this
+                    // flow must stop holding, and a list of its own would be a
+                    // second place to remember one.
+                    val tokenRefused = goodPostErrorFor(result.code) == GoodPostError.SessionExpired
+                    if (tokenRefused) creatorIdToken = null
+
+                    uiState = uiState.copy(
+                        adminBusy = false,
+                        messageCode = result.code,
+                        creatorNeedsChannel = !tokenRefused
+                    )
+                }
+
+                ApiResult.Unreachable -> uiState = uiState.copy(adminBusy = false, messageCode = "unreachable")
             }
         }
     }
@@ -1016,16 +1465,21 @@ class GoodPostViewModel : ViewModel() {
             // Best effort. The screen changes now; the server hears about it after.
             viewModelScope.launch { repo?.revokeAdminSession(refreshToken) }
         }
+        // The CREATOR identity goes, and the reader's stays (§16). Signing out
+        // of a channel must not touch the uid this device's followed channels
+        // hang from — see [GoodPostIdentity].
+        viewModelScope.launch { repo?.creatorSignOut() }
         GoodPostImages.clear()
         uiState = uiState.copy(
             admin = null,
             adminEmail = "",
             adminPassword = "",
+            otherWaysOpen = false,
             adminChannels = emptyList(),
             selectedChannelIds = emptySet(),
             selectedPostIds = emptySet(),
             backStack = listOf(GoodPostScreen.Home)
-        )
+        ).clearedOfChannelSearch()
         // The editor belonged to an account that is no longer signed in, and the
         // channel it was aimed at may not even be in the list the tab now shows.
         resetComposer()
@@ -1097,7 +1551,11 @@ class GoodPostViewModel : ViewModel() {
             channelFormDescription = channel.description.orEmpty(),
             channelFormCategory = channel.categorySlug,
             channelFormAdminEmail = null,
-            channelFormAdminPassword = null,
+            // Empty rather than null on an edit (§20): the field is OFFERED here,
+            // and blank is what "leave the password alone" looks like. A null
+            // would hide the field entirely, which is how this form was unable
+            // to do the one thing a forgotten channel password needs.
+            channelFormAdminPassword = "",
             channelFormIcon = null,
             // Rendered from the same signed URL the list row uses, so the form
             // shows the image the channel actually has rather than a second
@@ -1218,6 +1676,24 @@ class GoodPostViewModel : ViewModel() {
         val name = uiState.channelFormName.trim()
         if (name.isBlank()) {
             uiState = uiState.copy(messageCode = "invalid_request")
+            return
+        }
+
+        // The password being minted for the channel's administrator (§10),
+        // checked HERE rather than only by the server.
+        //
+        // Not a second authority — the server still refuses a short one, and it
+        // is the only one that can be trusted. What this buys is the answer
+        // coming back with the RULE in it: the same message either way, but this
+        // one can be produced without a round trip, and it is what stops a
+        // correct-looking password being refused three times in a row by a form
+        // that never said what it wanted. See [BuildConfig.ADMIN_MIN_PASSWORD_LENGTH].
+        val mintedPassword = uiState.channelFormAdminPassword
+        if (mintedPassword != null &&
+            mintedPassword.isNotBlank() &&
+            adminPasswordTooShort(mintedPassword, BuildConfig.ADMIN_MIN_PASSWORD_LENGTH)
+        ) {
+            uiState = uiState.copy(messageCode = "weak_password")
             return
         }
 

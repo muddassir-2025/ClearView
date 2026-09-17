@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Google "G", at the 24dp the button draws it at.
+
+  Four paths rather than one, because the mark IS four colours: the blue bar, the
+  green lower arc, the yellow left arc and the red top arc. A single-tint
+  version — which is what an icon font gives you — would be a different logo, and
+  on a button whose whole job is to be recognised at a glance that is the one
+  thing it must not be.
+
+  Drawn as a vector so it needs no density buckets, and so the white surface
+  behind it is the button's rather than baked into a bitmap.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+
+    <path
+        android:fillColor="#4285F4"
+        android:pathData="M23.49,12.27c0,-0.79 -0.07,-1.54 -0.2,-2.27L12,10v4.51h6.47c-0.29,1.48 -1.13,2.73 -2.4,3.58v3h3.86c2.26,-2.09 3.56,-5.17 3.56,-8.82z" />
+
+    <path
+        android:fillColor="#34A853"
+        android:pathData="M12,24c3.24,0 5.95,-1.08 7.93,-2.91l-3.86,-3c-1.08,0.72 -2.45,1.16 -4.07,1.16 -3.13,0 -5.78,-2.11 -6.73,-4.96L1.29,17.35C3.2,21.15 7.26,24 12,24z" />
+
+    <path
+        android:fillColor="#FBBC05"
+        android:pathData="M5.27,14.29c-0.25,-0.72 -0.38,-1.49 -0.38,-2.29s0.14,-1.57 0.38,-2.29V6.66H1.29C0.47,8.28 0,10.1 0,12s0.47,3.72 1.29,5.34l3.98,-3.05z" />
+
+    <path
+        android:fillColor="#EA4335"
+        android:pathData="M12,4.75c1.77,0 3.35,0.61 4.6,1.8l3.42,-3.42C17.95,1.19 15.24,0 12,0 7.26,0 3.2,2.85 1.29,6.66l3.98,3.05C6.22,6.86 8.87,4.75 12,4.75z" />
+</vector>

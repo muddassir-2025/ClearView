@@ -106,8 +106,15 @@ first, and run the migration against that branch to verify it.
 ## 3. The first administrator (§17)
 
 Good Post has **no viewer accounts**. Readers open the app and read; nothing is
-signed up for, so there is no Firebase project, no phone verification, no email
-sign-in code and no push registration anywhere in this service.
+signed up for — no phone verification, no email sign-in code, no verification
+step, no push registration.
+
+What a reader *does* have is an **anonymous Firebase uid**, and only because a
+follow has to be remembered for somebody. The app signs in to Firebase
+anonymously behind the tab, and this service verifies the resulting ID token
+against Google's published signing certificates — which needs
+`FIREBASE_PROJECT_ID` and nothing else. There is no service-account file, no
+private key and no Firebase secret in this deployment.
 
 The only credential in the product is an administrator's, and there are exactly
 two roles:
@@ -333,17 +340,21 @@ Render — never invent or paste them by hand.
 
 | Variable | Source |
 |---|---|
-| `DATABASE_URL` | you paste (Neon **pooled**, host contains `-pooler`) |
-| `DATABASE_URL_DIRECT` | you paste (Neon **direct**) |
-| `SUPER_ADMIN_EMAIL` | you paste — the account that can publish (§3) |
+| `DATABASE_URL` | you paste (Neon **pooled**, host contains `-pooler`). **Required at boot** |
+| `DATABASE_URL_DIRECT` | you paste (Neon **direct**) — migrations only, and only on a paid plan |
+| `SUPER_ADMIN_EMAIL` | you paste — the account that can publish. **Required in production** |
 | `SUPER_ADMIN_PASSWORD_HASH` | you paste — a bcrypt hash, NOT re-hashed by the server |
+| `SUPER_ADMIN_PASSWORD` | you paste — a plaintext alternative, hashed at boot. Set this **or** the hash, not both |
+| `SUPER_ADMIN_DISPLAY_NAME` | `Good Post Admin`, in `render.yaml` |
 | `ADMIN_CONTACT_EMAIL` | you paste — shown by the app's "Don't have channel access?" line |
-| `JWT_SECRET` | **generated** (`generateValue: true`) |
-| `GOODPOST_HASH_PEPPER` | **generated** (`generateValue: true`) |
+| `JWT_SECRET` | **generated** (`generateValue: true`) — ≥32 characters in production |
+| `GOODPOST_HASH_PEPPER` | **generated** (`generateValue: true`) — ≥32 characters in production |
 | `NODE_ENV` | `production` |
-| `PUBLIC_BASE_URL` | the service's own `onrender.com` URL |
+| `PUBLIC_BASE_URL` | the service's own `onrender.com` URL. **Set it after the first deploy** — it is the base of every channel's share link |
+| `FIREBASE_PROJECT_ID` | you paste — `clearview-28413`, the project in `app/google-services.json`. Without it the reader routes answer `auth_unavailable` and follows cannot work |
+| `POST_RETENTION_DAYS` | `30`, in `render.yaml` — how long a post's copy stays on the server (§14) |
 | `AWS_REGION` | `eu-central-1`, in `render.yaml` |
-| `AWS_S3_BUCKET` | you paste — needed for image posts (§4, `docs/AWS_S3_SETUP.md`) |
+| `AWS_S3_BUCKET` | you paste — **image posts cannot be uploaded or downloaded without it** (§4, `docs/AWS_S3_SETUP.md`) |
 | `AWS_ACCESS_KEY_ID` | you paste — server-side only, never shipped in the app |
 | `AWS_SECRET_ACCESS_KEY` | you paste — server-side only |
 

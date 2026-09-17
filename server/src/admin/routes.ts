@@ -35,9 +35,16 @@ import {
   type MediaSummary,
 } from '../media/service.js';
 import type { ObjectStore } from '../media/store.js';
+import {
+  createFirebaseVerifier,
+  type IdentityVerifier,
+  type VerifiedIdentity,
+} from '../identity/verifier.js';
+import { createCreatorChannel, signInCreator } from './creator.js';
 import { can, type AdminAction, type AdminRole } from './permissions.js';
 import {
   capabilitiesOf,
+  changeChannelAdminPassword,
   createAdmin,
   listAdmins,
   listAudit,
@@ -226,6 +233,16 @@ const UpdateChannelSchema = z.object({
   categorySlug: z.string().max(60).nullish(),
   countryCode: z.string().max(2).nullish(),
   iconMediaId: z.string().uuid().nullish(),
+  /**
+   * A new password for the account that runs this channel (§20).
+   *
+   * Optional, and absent on almost every edit: the field is on the form so the
+   * one person who needs it — a super administrator handing a channel over, or a
+   * channel administrator who thinks their password is known — does not have to
+   * sign in as somebody else to change it. Never echoed back, and never
+   * remembered by the form (§30).
+   */
+  adminPassword: z.string().min(1).max(200).optional(),
 });
 
 const PostInputSchema = z.object({
@@ -279,11 +296,71 @@ const PageQuerySchema = z.object({
 
 const AuditQuerySchema = z.object({ limit: z.string().max(10).optional() });
 
+/**
+ * Creating a creator's first channel (§16).
+ *
+ * Deliberately NOT a field on [CreateChannelSchema]: this form has one job — name
+ * the channel — because the account it belongs to already exists as an identity.
+ * Everything the super-admin form can also set (a description, a category, an
+ * image) is available afterwards through the ordinary edit route, which the
+ * creator's own scope check already permits.
+ */
+const CreateCreatorChannelSchema = z.object({
+  name: z.string().min(1).max(env.MAX_CHANNEL_NAME_LENGTH),
+  description: z.string().max(env.MAX_CHANNEL_DESCRIPTION_LENGTH).nullish(),
+  categorySlug: z.string().max(60).nullish(),
+  countryCode: z.string().max(2).nullish(),
+});
+
+/** Where a verified Firebase identity is parked for the route that needs it. */
+interface CreatorRequest extends Request {
+  creator?: VerifiedIdentity;
+}
+
+/**
+ * Require a verified Firebase identity, and that it is not an anonymous one.
+ *
+ * Two refusals worth telling apart, and they are told apart by the verifier's
+ * own state: a deployment with no `FIREBASE_PROJECT_ID` answers
+ * `auth_unavailable` (503 — the operator has something to fix), while a caller
+ * who presents a bad token gets `invalid_token` (401 — retrying changes
+ * nothing). An anonymous reader is refused with `creator_required` rather than
+ * `invalid_token`, because their token IS valid; §3's sign-in is one call away
+ * for every install, so accepting it here would hand self-service channel
+ * creation to anything that can reach `/api/v1`.
+ */
+function requireCreator(verifier: IdentityVerifier): RequestHandler {
+  return async (req: Request, _res: Response, next: NextFunction) => {
+    const header = req.header('authorization') ?? '';
+    const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length).trim() : '';
+    if (!token) {
+      next(unauthorized('missing_token', 'A Firebase ID token is required.'));
+      return;
+    }
+
+    const identity = await verifier.verify(token);
+    if (identity.anonymous) {
+      next(forbidden('creator_required', 'This sign-in is not linked to an account.'));
+      return;
+    }
+
+    (req as CreatorRequest).creator = identity;
+    next();
+  };
+}
+
+function creatorOf(req: Request): VerifiedIdentity {
+  const identity = (req as CreatorRequest).creator;
+  if (!identity) throw new Error('[admin] creatorOf() called on a route without requireCreator');
+  return identity;
+}
+
 export function buildAdminRouter(
   database: Queryable,
   store: ObjectStore,
   limiter: FixedWindowRateLimiter,
-  rateLimits: RateLimitConfig
+  rateLimits: RateLimitConfig,
+  verifier: IdentityVerifier = createFirebaseVerifier(env.FIREBASE_PROJECT_ID)
 ): Router {
   const router = Router();
   const loginLimit = rateLimit(limiter, rateLimits.auth);
@@ -308,6 +385,67 @@ export function buildAdminRouter(
       expiresInSeconds: session.expiresInSeconds,
       admin: session.admin,
       permissions: capabilitiesOf(session.admin.role),
+    });
+  });
+
+  // ── Creator sign-in (§16) ────────────────────────────────────────────
+  //
+  // The second and last unauthenticated-by-session route on this prefix. The
+  // credential is a Firebase ID token rather than a password, and the answer is
+  // one of exactly two things: a session, for a creator who already runs a
+  // channel, or `needs_channel`, for one who is about to create it. The latter
+  // carries no session, because an account that does not exist yet has nothing
+  // to authenticate as.
+  router.post('/auth/firebase', loginLimit, requireCreator(verifier), async (req, res) => {
+    const result = await signInCreator(database, {
+      identity: creatorOf(req),
+      ipHash: hashIp(req.ip ?? 'unknown'),
+      userAgent: req.header('user-agent') ?? null,
+    });
+
+    if (result.kind === 'needs_channel') {
+      res.status(200).json({ needsChannel: true, email: result.email });
+      return;
+    }
+
+    res.status(200).json({
+      accessToken: result.session.accessToken,
+      refreshToken: result.session.refreshToken,
+      expiresInSeconds: result.session.expiresInSeconds,
+      admin: result.session.admin,
+      permissions: capabilitiesOf(result.session.admin.role),
+    });
+  });
+
+  /**
+   * A creator's first, and only, channel (§16).
+   *
+   * Authenticated by the Firebase identity itself rather than by a session,
+   * because there is no session yet: this call is what brings the account into
+   * existence. It answers with a signed-in session and the new channel, so the
+   * app never sees the moment between "created" and "signed in" — those are the
+   * same transaction here, and a client that had to sign in again afterwards
+   * could fail in between and strand a channel with no way to reach it.
+   */
+  router.post('/creator/channel', loginLimit, write, requireCreator(verifier), async (req, res) => {
+    const body = parseBody(CreateCreatorChannelSchema, req.body);
+    const created = await createCreatorChannel(database, {
+      identity: creatorOf(req),
+      name: body.name,
+      description: body.description ?? undefined,
+      categorySlug: body.categorySlug ?? undefined,
+      countryCode: body.countryCode ?? undefined,
+      ipHash: hashIp(req.ip ?? 'unknown'),
+      userAgent: req.header('user-agent') ?? null,
+    });
+
+    res.status(201).json({
+      accessToken: created.session.accessToken,
+      refreshToken: created.session.refreshToken,
+      expiresInSeconds: created.session.expiresInSeconds,
+      admin: created.session.admin,
+      permissions: capabilitiesOf(created.session.admin.role),
+      channel: await signedChannel(store, created.channel),
     });
   });
 
@@ -458,26 +596,41 @@ export function buildAdminRouter(
     // One transaction across the profile fields and the image. An edit that
     // changed a name and then failed on the image would leave the administrator
     // looking at a form that half-applied, and no way to tell which half.
-    const { channel, replacedObjectKey } = await database.transaction(async (tx) => {
-      const row = await updateChannel(tx, channelId, {
-        name: body.name,
-        description: body.description,
-        categorySlug: body.categorySlug,
-        countryCode: body.countryCode,
-      });
+    const { channel, replacedObjectKey, passwordAdminId } = await database.transaction(
+      async (tx) => {
+        const row = await updateChannel(tx, channelId, {
+          name: body.name,
+          description: body.description,
+          categorySlug: body.categorySlug,
+          countryCode: body.countryCode,
+        });
 
-      // Absent means "leave the image alone"; null means "remove it"; a uuid
-      // means "adopt this upload". Distinguished here rather than by a separate
-      // endpoint, so the form has one Save that does the whole edit.
-      let replaced: string | null = null;
-      if (body.iconMediaId === null) {
-        replaced = await clearChannelIconIn(tx, channelId);
-      } else if (typeof body.iconMediaId === 'string') {
-        replaced = await applyChannelIcon(tx, context.adminId, channelId, body.iconMediaId);
+        // Absent means "leave the image alone"; null means "remove it"; a uuid
+        // means "adopt this upload". Distinguished here rather than by a separate
+        // endpoint, so the form has one Save that does the whole edit.
+        let replaced: string | null = null;
+        if (body.iconMediaId === null) {
+          replaced = await clearChannelIconIn(tx, channelId);
+        } else if (typeof body.iconMediaId === 'string') {
+          replaced = await applyChannelIcon(tx, context.adminId, channelId, body.iconMediaId);
+        }
+
+        // The password changes IN the same transaction as the rest of the edit,
+        // for the same reason the image does: a form that said it saved and left
+        // the password on the old value is worse than one that failed.
+        const changedAdminId =
+          body.adminPassword === undefined
+            ? null
+            : await changeChannelAdminPassword(tx, {
+                channelId,
+                password: body.adminPassword,
+                actorAdminId: context.adminId,
+                actorIsSuperAdmin: context.role === 'super_admin',
+              });
+
+        return { channel: row, replacedObjectKey: replaced, passwordAdminId: changedAdminId };
       }
-
-      return { channel: row, replacedObjectKey: replaced };
-    });
+    );
 
     // After the commit, and never fatal — see [setChannelIcon].
     await removeObjectQuietly(store, replacedObjectKey);
@@ -495,6 +648,8 @@ export function buildAdminRouter(
       metadata: {
         fields: Object.keys(body),
         iconChanged: body.iconMediaId !== undefined,
+        // Recorded as a CHANGE, never as a value (§30).
+        adminPasswordChanged: passwordAdminId !== null,
       },
       ipHash: hashIp(req.ip ?? 'unknown'),
     });

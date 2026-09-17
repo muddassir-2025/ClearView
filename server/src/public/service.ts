@@ -12,7 +12,7 @@ import {
 } from '../channels/cursor.js';
 import { getPublicChannel, type ChannelPayload } from '../channels/service.js';
 import { mediaForPosts, signObjectUrl, type MediaSummary } from '../media/service.js';
-import type { MediaKind, ObjectStore } from '../media/store.js';
+import { UnconfiguredObjectStore, type MediaKind, type ObjectStore } from '../media/store.js';
 
 /**
  * The PUBLIC read surface (§24, §26).
@@ -71,6 +71,14 @@ export interface PublicPost {
   readonly media: readonly MediaSummary[];
   readonly createdAt: string;
   readonly editedAt: string | null;
+  /**
+   * How many times this post has been read (§9).
+   *
+   * Approximate, and documented as such where it is written — see
+   * `004_post_views.sql`. It is here because a channel's posts are its audience,
+   * and a publisher is entitled to a rough sense of whether anyone is reading.
+   */
+  readonly views: number;
   /** Present only on [getPublicPost], where a reader arrives without a channel. */
   readonly channel?: PublicChannelRef;
 }
@@ -88,9 +96,39 @@ export interface PublicMediaItem {
   readonly url: string | null;
 }
 
+/**
+ * The page query plus a search term (§9).
+ *
+ * A channel's history is long and a reader arrives knowing a word from the
+ * message rather than when it was sent, so the term narrows the SAME keyset
+ * walk rather than replacing it: results stay paged, stay newest-first, and
+ * carry the same payload as the unfiltered read.
+ */
+export interface PostQuery extends PageQuery {
+  readonly q?: string | undefined;
+}
+
+/**
+ * A search term, or null when there is nothing to search for.
+ *
+ * Whitespace-only is null rather than a term: an empty box means "everything",
+ * and `%  %`-style matching would otherwise return only the posts that contain
+ * two spaces. Capped so a term cannot be turned into a large scan by a client
+ * that sends a paragraph.
+ */
+export function searchTermOf(raw: string | undefined): string | null {
+  const term = (raw ?? '').trim();
+  if (term === '') return null;
+  return term.slice(0, MAX_SEARCH_TERM_LENGTH);
+}
+
+/** Longest term the search will use. Longer input is truncated, not refused. */
+const MAX_SEARCH_TERM_LENGTH = 100;
+
 /** Post columns every public post payload needs. Aliased `p` in every query. */
 export const POST_COLUMNS = `
-  p.id, p.channel_id, p.type, p.body, p.link_url, p.link_title, p.created_at, p.edited_at
+  p.id, p.channel_id, p.type, p.body, p.link_url, p.link_title, p.created_at, p.edited_at,
+  p.view_count
 `;
 
 export interface PostRow {
@@ -102,6 +140,7 @@ export interface PostRow {
   link_title: string | null;
   created_at: unknown;
   edited_at: unknown;
+  view_count?: number | null;
 }
 
 /**
@@ -125,6 +164,7 @@ export function mapPublicPost(row: PostRow, media: readonly MediaSummary[]): Pub
     media,
     createdAt: isoOrNull(row.created_at) ?? '',
     editedAt: isoOrNull(row.edited_at),
+    views: row.view_count ?? 0,
   };
 }
 
@@ -140,25 +180,49 @@ export async function listPublicChannelPosts(
   database: Queryable,
   store: ObjectStore,
   channelIdOrSlug: string,
-  query: PageQuery
+  query: PostQuery
 ): Promise<Page<PublicPost>> {
   const channel = await getPublicChannel(database, store, channelIdOrSlug);
 
   const limit = parsePageSize(query.limit, env.DEFAULT_PAGE_SIZE, env.MAX_PAGE_SIZE);
   const cursor = cursorOf(query.cursor);
+  const term = searchTermOf(query.q);
 
+  // Placeholders are numbered as the conditions are ADDED rather than being
+  // written out by hand: search is optional and the keyset is optional, so a
+  // hard-coded `$3` would point at the wrong value the first time the two
+  // arrive in the other order — and it would do it silently, comparing a
+  // timestamp to a search term.
   const params: unknown[] = [channel.id, limit + 1];
-  let keyset = '';
+  const conditions: string[] = [];
+
   if (cursor) {
     params.push(cursor.k, cursor.id);
-    keyset = `AND (p.created_at, p.id) < ($3::timestamptz, $4::uuid)`;
+    conditions.push(
+      `(p.created_at, p.id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`
+    );
   }
+
+  if (term !== null) {
+    params.push(term.toLowerCase());
+    // `strpos`, not `ILIKE '%' || $n || '%'`: a term containing `%` or `_` is
+    // then a literal rather than a pattern, and a reader searching for "100%"
+    // gets the posts that say 100% instead of every post in the channel. The
+    // list is already bounded by the channel, so the missing trigram index on
+    // this predicate costs a scan of one channel's history (§6).
+    const at = `$${params.length}`;
+    conditions.push(
+      `(strpos(lower(p.body), ${at}) > 0 OR strpos(lower(p.link_title), ${at}) > 0)`
+    );
+  }
+
+  const where = conditions.map((condition) => `AND ${condition}`).join('\n        ');
 
   const rows = await database.query<PostRow>(
     `SELECT ${POST_COLUMNS}
        FROM posts p
       WHERE p.channel_id = $1 AND p.deleted_at IS NULL
-        ${keyset}
+        ${where}
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT $2`,
     params
@@ -177,6 +241,56 @@ export async function listPublicChannelPosts(
     nextCursor:
       hasMore && last ? encodeCursor({ k: cursorKeyOf(last.created_at), id: last.id }) : null,
   };
+}
+
+/**
+ * Count reads of some of a channel's posts (§9).
+ *
+ * The one WRITE on the reader surface, and it is deliberately the smallest one
+ * that can work: a set of post ids in a single statement, scoped to the channel
+ * they were read in.
+ *
+ * Why it is scoped rather than "increment these ids": an endpoint that took ids
+ * alone would let anybody inflate any post in the product, including in a
+ * channel they have never opened. Requiring the channel means the worst a caller
+ * can do is add to counts they could already see, on a channel that is public by
+ * definition — and it costs one predicate.
+ *
+ * Why the ids are INTERSECTED with the channel rather than validated first: the
+ * caller is reporting what it drew, and a post that has since been removed (or
+ * belongs to another channel because a feed was paged across a change) is not an
+ * error. It simply does not match, and nothing is counted for it. Refusing the
+ * whole batch over one stale id would lose the counts for the posts that are
+ * fine.
+ *
+ * Soft-deleted posts are excluded for the same reason they are excluded from
+ * every read: a removed post is gone, and counting its reads would leave a
+ * number behind for something no reader can see.
+ */
+export async function recordPostViews(
+  database: Queryable,
+  channelIdOrSlug: string,
+  postIds: readonly string[]
+): Promise<number> {
+  // Resolved through the same lookup every other channel read uses, so a
+  // suspended or missing channel refuses here exactly as it does there — and so
+  // the ids below are known to belong to a channel a reader could see.
+  const channel = await getPublicChannel(database, new UnconfiguredObjectStore(), channelIdOrSlug);
+
+  const ids = postIds.filter((id) => isUuid(id));
+  if (ids.length === 0) return 0;
+
+  const rows = await database.query(
+    `UPDATE posts p
+        SET view_count = p.view_count + 1
+      WHERE p.channel_id = $1
+        AND p.id = ANY($2::uuid[])
+        AND p.deleted_at IS NULL
+      RETURNING p.id`,
+    [channel.id, ids]
+  );
+
+  return rows.length;
 }
 
 /**

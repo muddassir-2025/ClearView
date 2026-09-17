@@ -235,13 +235,22 @@ class GoodPostApi(
             GoodPostCodec.singleChannel(body) ?: throw ContractBreak()
         })
 
-    /** A channel's posts, newest first (§9). */
+    /**
+     * A channel's posts, newest first, optionally narrowed by a search term
+     * (§9).
+     *
+     * One call for the feed and for a search inside the channel, because the
+     * server answers both from one endpoint: a separate search path would be a
+     * second payload shape and a second paging contract for the same list.
+     */
     suspend fun channelPosts(
         idOrSlug: String,
-        cursor: String? = null
+        cursor: String? = null,
+        query: String? = null
     ): ApiResult<GoodPostPage<GoodPostPost>> =
         parsedGet(
-            "$PUBLIC_PATH/channels/${encode(idOrSlug)}/posts" + pageQuery(cursor),
+            "$PUBLIC_PATH/channels/${encode(idOrSlug)}/posts" +
+                queryParams(cursor, query?.takeIf { it.isNotBlank() }?.let { "q" to it }),
             GoodPostCodec::postPage
         )
 
@@ -280,6 +289,51 @@ class GoodPostApi(
                 put("password", password)
             },
             bearer = null,
+            parse = ::adminSessionFrom
+        )
+
+    /**
+     * Sign in as a creator with a Firebase ID token (§16).
+     *
+     * The token is the CREDENTIAL here, not a session: it goes in the
+     * `Authorization` header of a route that no bearer token of ours can call,
+     * because a creator who has not created a channel yet has no account for a
+     * session to name.
+     *
+     * Two answers, and the difference is the whole flow. A [`CreatorSignIn`]
+     * session means they already run a channel; `NeedsChannel` means this is
+     * their first time and the next screen is the one that names their channel.
+     */
+    suspend fun creatorLogin(idToken: String): ApiResult<CreatorSignIn> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/auth/firebase",
+            body = null,
+            bearer = idToken,
+            parse = { body ->
+                if (body.optBoolean("needsChannel", false)) {
+                    CreatorSignIn.NeedsChannel(body.nullableString("email"))
+                } else {
+                    CreatorSignIn.Session(adminSessionFrom(body))
+                }
+            }
+        )
+
+    /**
+     * A creator's first, and only, channel (§16).
+     *
+     * Authenticated by the Firebase token for the same reason as above: there is
+     * no session yet, and this call is what creates the account a session would
+     * name. The reply is a full sign-in, so the app never sits in the state
+     * between "channel created" and "signed in" — the server answers both at
+     * once and the client either has a session or does not.
+     */
+    suspend fun creatorCreateChannel(idToken: String, name: String): ApiResult<AdminSession> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/creator/channel",
+            body = JSONObject().apply { put("name", name) },
+            bearer = idToken,
             parse = ::adminSessionFrom
         )
 
@@ -654,8 +708,25 @@ class GoodPostApi(
         return "$PUBLIC_PATH/channels$suffix"
     }
 
-    private fun pageQuery(cursor: String?): String =
-        cursor?.takeIf { it.isNotBlank() }?.let { "?cursor=" + encode(it) }.orEmpty()
+    private fun pageQuery(cursor: String?): String = queryParams(cursor)
+
+    /**
+     * The query string a paged read carries: an optional cursor, and at most one
+     * more named pair.
+     *
+     * Built as a list rather than by concatenation so a call that carries both
+     * cannot produce `?cursor=...?q=...` — the second `?` would end the path and
+     * the term would arrive as part of the cursor.
+     */
+    private fun queryParams(cursor: String?, vararg extra: Pair<String, String>?): String {
+        val params = buildList {
+            cursor?.takeIf { it.isNotBlank() }?.let { add("cursor=" + encode(it)) }
+            extra.forEach { pair ->
+                pair?.let { (name, value) -> add("$name=" + encode(value)) }
+            }
+        }
+        return if (params.isEmpty()) "" else "?" + params.joinToString("&")
+    }
 
     /**
      * Percent-encode a path or query component.
@@ -713,7 +784,18 @@ class GoodPostApi(
                 ?.use { it.readText() }
                 ?.take(MAX_RESPONSE_BYTES)
 
-            return ApiResult.Failed(status, errorCodeFrom(status, errorText))
+            val code = errorCodeFrom(status, errorText)
+            // Logged because one sentence on screen covers many conditions: a
+            // report of "something went wrong" cannot be told apart from a
+            // rejected token, a name collision or a rate limit by reading the
+            // UI. This line is what names the condition, and it is the only
+            // record of it — the server keeps its own, and the two can be lined
+            // up by time.
+            //
+            // The code and the status ONLY. Never the body, for the reason in
+            // the catch below: on the admin surface it can echo a password.
+            Log.w(TAG, "$method $path → $status $code")
+            return ApiResult.Failed(status, code)
         } catch (e: Exception) {
             // Never log a request body: on the admin surface it carries a
             // password, and on the read surface it carries a search term.
@@ -740,6 +822,25 @@ data class GoodPostUpload(
     /** `image`, `video` or `audio`. */
     val kind: String
 )
+
+/**
+ * The two answers a creator sign-in can have (§16).
+ *
+ * A sealed pair rather than a nullable session, because "no channel yet" is a
+ * step in the flow and not a failure: a session of null would have to be told
+ * apart from a sign-in that failed, and those need completely different screens.
+ */
+sealed interface CreatorSignIn {
+
+    /** This creator already runs a channel. */
+    data class Session(val session: AdminSession) : CreatorSignIn
+
+    /**
+     * No account yet. The address is what Firebase knows, shown so the next
+     * screen can say WHICH identity is about to own a channel.
+     */
+    data class NeedsChannel(val email: String?) : CreatorSignIn
+}
 
 /** A signed-in administrator, as the app holds it (§16). */
 data class AdminSession(

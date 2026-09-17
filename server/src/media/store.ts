@@ -204,6 +204,10 @@ class S3ObjectStore implements ObjectStore {
     // key on disk.
     this.client = new S3Client({
       region: env.AWS_REGION,
+      // An S3-compatible provider, when one is configured. Omitted entirely
+      // rather than defaulted, so an Amazon bucket keeps resolving through the
+      // SDK's own region table and its virtual-hosted addressing.
+      ...(env.AWS_ENDPOINT_URL ? { endpoint: env.AWS_ENDPOINT_URL } : {}),
       ...(env.AWS_USE_INSTANCE_ROLE
         ? {}
         : {

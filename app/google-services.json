@@ -12,7 +12,12 @@
           "package_name": "com.muddassir.clearview"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyC4b60yMkLUPuN0UaDml2pJ817RGGRgKZU"
@@ -20,7 +25,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

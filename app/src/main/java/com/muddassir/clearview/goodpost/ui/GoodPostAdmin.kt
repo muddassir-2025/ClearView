@@ -1,8 +1,10 @@
 package com.muddassir.clearview.goodpost.ui
 
+import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,20 +24,24 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -65,8 +71,99 @@ import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
  * answers identically for both, so the wording here cannot leak what the API
  * withholds.
  */
+/**
+ * The last step of becoming a creator: naming the channel you will run (§16).
+ *
+ * A step rather than a screen in the navigation stack, because it is not a place
+ * the reader can navigate TO or away from - it is the second half of one
+ * sign-in, and backing out of it should leave them on the channel list with no
+ * account created, which is exactly what happens: nothing is written server-side
+ * until the button below is pressed.
+ */
+@Composable
+internal fun CreatorChannelStep(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas).imePadding()) {
+        WaTopBar(
+            title = stringResource(R.string.goodpost_create_channel),
+            navigation = {
+                WaIconAction(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    description = stringResource(R.string.goodpost_back),
+                    // Back to the credentials, not out of the flow. This step is
+                    // the second half of one sign-in, so its arrow is how somebody
+                    // who signed in with the wrong account goes back and chooses
+                    // another one — and it is the only way out that does not leave
+                    // the half-made creator state behind.
+                    onClick = viewModel::backToSignIn
+                )
+            }
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 28.dp)
+        ) {
+            Text(
+                text = stringResource(R.string.goodpost_creator_name_channel),
+                color = Wa.Text,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Medium
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            // Which identity the channel will belong to, said plainly. It is the
+            // account the reader just signed in as, so showing it here is the
+            // one place they can notice it is the wrong one before a channel
+            // exists under it.
+            state.creatorEmail?.let { email ->
+                Text(text = email, color = Wa.Accent, fontSize = 13.sp)
+                Spacer(Modifier.height(8.dp))
+            }
+
+            Text(
+                text = stringResource(R.string.goodpost_creator_name_note),
+                color = Wa.TextDim,
+                fontSize = 14.sp
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            WaField(
+                value = state.creatorChannelName,
+                onValueChange = viewModel::onCreatorChannelNameChange,
+                label = stringResource(R.string.goodpost_creator_channel_name),
+                placeholder = stringResource(R.string.goodpost_creator_channel_name_hint),
+                enabled = !state.adminBusy,
+                imeAction = ImeAction.Done,
+                onDone = viewModel::creatorCreateChannel
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            WaPrimaryButton(
+                text = stringResource(R.string.goodpost_continue),
+                // Disabled rather than refused: an empty name is a field that is
+                // not finished, not an error to be announced.
+                enabled = !state.adminBusy && state.creatorChannelName.isNotBlank(),
+                busy = state.adminBusy,
+                onClick = viewModel::creatorCreateChannel
+            )
+        }
+    }
+}
+
 @Composable
 internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    // §16: a creator who has signed in and has no channel yet. Checked here
+    // rather than in the navigation, because it belongs to this screen's flow.
+    if (state.creatorNeedsChannel) {
+        CreatorChannelStep(state, viewModel)
+        return
+    }
+
     // §19 Bug 1: the sign-in fields are the only thing on this screen, and the
     // Continue button sits below them. `imePadding()` keeps it above the keyboard
     // rather than behind it, so the form can be completed in one go.
@@ -89,86 +186,116 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
                 .padding(horizontal = 24.dp, vertical = 28.dp)
         ) {
             Text(
-                text = stringResource(R.string.goodpost_admin_signin_note),
+                text = stringResource(R.string.goodpost_creator_note),
                 color = Wa.TextDim,
                 fontSize = 14.sp
             )
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(22.dp))
 
-            WaField(
-                value = state.adminEmail,
-                onValueChange = viewModel::onAdminEmailChange,
-                label = stringResource(R.string.goodpost_email),
-                placeholder = stringResource(R.string.goodpost_email_hint),
+            // The Good Post artwork, at the top of the one screen in the product
+            // that is about the product rather than about a channel. `Fit`
+            // rather than `Crop` deliberately: the drawing is very nearly square,
+            // and cropping a near-square into a wide band is how a logo loses its
+            // edges on the one screen where it is the first thing anybody sees.
+            // Nothing here scales it up either — a fixed height and Fit mean it
+            // is drawn whole, or smaller.
+            Image(
+                painter = painterResource(id = R.drawable.goodpost),
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(190.dp)
+                    .clip(RoundedCornerShape(16.dp))
+            )
+
+            Spacer(Modifier.height(22.dp))
+
+            // Google, when this build has a web client id to send Google.
+            //
+            // The id comes from google-services.json at build time, so a build
+            // made before the Google provider was enabled in the Firebase
+            // console simply has none - and then this button is absent rather
+            // than present and guaranteed to fail.
+            //
+            // It shows the device's Google accounts, which is the flow a creator
+            // signs up through: pick the account the channel will belong to, and
+            // the next screen asks only for a name.
+            val activity = LocalContext.current as? Activity
+            if (BuildConfig.GOOGLE_WEB_CLIENT_ID.isNotBlank() && activity != null) {
+                WaGoogleButton(
+                    text = stringResource(R.string.goodpost_continue_with_google),
+                    enabled = !state.adminBusy,
+                    onClick = { viewModel.creatorSignInWithGoogle(activity) }
+                )
+
+                Spacer(Modifier.height(18.dp))
+            }
+
+            // The second way in, as a card that opens the form when it is tapped.
+            //
+            // Closed by default, and that is the whole design: a creator signs up
+            // with the card above and never sees a password field, while the super
+            // administrator and the channel administrators a deployment
+            // provisioned get to their own form without being told they are a
+            // different kind of account. See [GoodPostUiState.otherWaysOpen].
+            WaExpandableCard(
+                text = stringResource(R.string.goodpost_other_ways),
+                icon = Icons.Filled.Email,
+                expanded = state.otherWaysOpen,
                 enabled = !state.adminBusy,
-                keyboardType = KeyboardType.Email,
-                imeAction = ImeAction.Next
+                onClick = viewModel::toggleOtherWays
             )
 
-            Spacer(Modifier.height(16.dp))
+            if (state.otherWaysOpen) {
+                Spacer(Modifier.height(16.dp))
 
-            WaField(
-                value = state.adminPassword,
-                onValueChange = viewModel::onAdminPasswordChange,
-                label = stringResource(R.string.goodpost_password),
-                placeholder = stringResource(R.string.goodpost_password_hint),
-                enabled = !state.adminBusy,
-                keyboardType = KeyboardType.Password,
-                masked = true,
-                imeAction = ImeAction.Done,
-                onDone = viewModel::adminSignIn
-            )
+                WaField(
+                    value = state.adminEmail,
+                    onValueChange = viewModel::onAdminEmailChange,
+                    label = stringResource(R.string.goodpost_email),
+                    placeholder = stringResource(R.string.goodpost_email_hint),
+                    enabled = !state.adminBusy,
+                    keyboardType = KeyboardType.Email,
+                    // A login form, declared as one: this is where a saved
+                    // credential belongs, and saying so is what keeps the
+                    // service from guessing its way onto the other fields.
+                    autofillContentType = ContentType.EmailAddress,
+                    imeAction = ImeAction.Next
+                )
 
-            Spacer(Modifier.height(24.dp))
+                Spacer(Modifier.height(14.dp))
 
-            WaPrimaryButton(
-                text = stringResource(R.string.goodpost_continue),
-                enabled = !state.adminBusy &&
-                    state.adminEmail.isNotBlank() &&
-                    state.adminPassword.isNotBlank(),
-                busy = state.adminBusy,
-                onClick = viewModel::adminSignIn
-            )
+                WaField(
+                    value = state.adminPassword,
+                    onValueChange = viewModel::onAdminPasswordChange,
+                    label = stringResource(R.string.goodpost_password),
+                    placeholder = stringResource(R.string.goodpost_password_hint),
+                    enabled = !state.adminBusy,
+                    keyboardType = KeyboardType.Password,
+                    masked = true,
+                    autofillContentType = ContentType.Password,
+                    imeAction = ImeAction.Done,
+                    onDone = viewModel::signIn
+                )
 
-            Spacer(Modifier.height(28.dp))
+                Spacer(Modifier.height(18.dp))
 
-            Row(verticalAlignment = Alignment.Top) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .clip(CircleShape)
-                        .background(Wa.Bar),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.Lock,
-                        contentDescription = null,
-                        tint = Wa.TextDim,
-                        modifier = Modifier.size(17.dp)
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = stringResource(R.string.goodpost_no_access),
-                        color = Wa.Text,
-                        fontSize = 14.sp
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    // Configurable rather than baked in: the address belongs to
-                    // whoever deploys this, and a hard-coded one would be wrong for
-                    // every installation but one. A build without one configured
-                    // keeps the placeholder rather than showing a blank line.
-                    val contact = BuildConfig.GOODPOST_CONTACT_EMAIL
-                        .takeIf { it.isNotBlank() }
-                        ?: stringResource(R.string.goodpost_admin_contact)
-                    Text(
-                        text = stringResource(R.string.goodpost_contact, contact),
-                        color = Wa.TextDim,
-                        fontSize = 13.sp
-                    )
-                }
+                // ONE action for the form. It is not labeled "Sign in" or "Sign
+                // up" because it is both: the server decides whether these
+                // credentials are a provisioned administrator, and Firebase decides
+                // whether they are a creator who signed up this way. Asking the
+                // person to choose would be asking them to know something the app
+                // can find out in one round trip — see [GoodPostViewModel.signIn].
+                WaPrimaryButton(
+                    text = stringResource(R.string.goodpost_continue),
+                    enabled = !state.adminBusy &&
+                        state.adminEmail.isNotBlank() &&
+                        state.adminPassword.isNotBlank(),
+                    busy = state.adminBusy,
+                    onClick = viewModel::signIn
+                )
             }
         }
     }
@@ -285,7 +412,20 @@ private fun ChannelIconField(
 @Composable
 internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     val creating = state.channelFormId == null
+    //
+    // Two different things, and they were one field for a while:
+    //
+    //  * `mintsAdmin` — a NEW administrator is being created beside the channel,
+    //    which is what the create form does and only a super admin may do (§20).
+    //  * `editsPassword` — the password of the EXISTING account is on offer,
+    //    which is the edit form (§20). It is here so a forgotten channel password
+    //    is a field rather than a support request, and so a reset does not require
+    //    the channel to be deleted and recreated.
+    //
+    // The email field belongs to the first and NOT the second: the account
+    // already exists and its address is what it signs in with.
     val mintsAdmin = state.channelFormAdminEmail != null
+    val editsPassword = !mintsAdmin && state.channelFormAdminPassword != null
     val context = LocalContext.current
 
     val iconPicker = rememberLauncherForActivityResult(
@@ -412,33 +552,56 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                     minHeight = 90.dp
                 )
 
-                if (mintsAdmin) {
+                if (mintsAdmin || editsPassword) {
                     Spacer(Modifier.height(20.dp))
 
                     Text(
-                        text = stringResource(R.string.goodpost_channel_admin_section),
+                        text = stringResource(
+                            if (mintsAdmin) R.string.goodpost_channel_admin_section
+                            else R.string.goodpost_channel_admin_section_edit
+                        ),
                         color = Wa.TextDim,
                         fontSize = 13.sp,
                         modifier = Modifier.fillMaxWidth()
                     )
 
+                    if (editsPassword) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = stringResource(R.string.goodpost_admin_password_keep),
+                            color = Wa.TextDim,
+                            fontSize = 12.sp,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
                     Spacer(Modifier.height(10.dp))
 
-                    WaField(
-                        value = state.channelFormAdminEmail.orEmpty(),
-                        onValueChange = viewModel::onChannelFormAdminEmailChange,
-                        label = stringResource(R.string.goodpost_admin_email),
-                        placeholder = stringResource(R.string.goodpost_email_hint),
-                        enabled = !state.adminBusy,
-                        keyboardType = KeyboardType.Email
-                    )
+                    if (mintsAdmin) {
+                        WaField(
+                            value = state.channelFormAdminEmail.orEmpty(),
+                            onValueChange = viewModel::onChannelFormAdminEmailChange,
+                            label = stringResource(R.string.goodpost_admin_email),
+                            placeholder = stringResource(R.string.goodpost_email_hint),
+                            enabled = !state.adminBusy,
+                            keyboardType = KeyboardType.Email
+                        )
 
-                    Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(14.dp))
+                    }
 
                     WaField(
                         value = state.channelFormAdminPassword.orEmpty(),
                         onValueChange = viewModel::onChannelFormAdminPasswordChange,
-                        label = stringResource(R.string.goodpost_admin_password),
+                        // The floor is IN the label, not only in the refusal.
+                        // "Admin password" plus "that password is too short" is
+                        // how somebody tries four passwords in a row that were
+                        // all one character short of a rule nobody stated (§10).
+                        label = stringResource(
+                            if (mintsAdmin) R.string.goodpost_admin_password
+                            else R.string.goodpost_admin_password_new,
+                            BuildConfig.ADMIN_MIN_PASSWORD_LENGTH
+                        ),
                         placeholder = stringResource(R.string.goodpost_password_hint),
                         enabled = !state.adminBusy,
                         keyboardType = KeyboardType.Password,
@@ -446,7 +609,12 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                         // administrator: whoever is creating the channel reads it
                         // off the screen to hand it over, which is exactly why it
                         // must not be sitting in the clear while they type it.
-                        masked = true
+                        masked = true,
+                        // ...and why a SAVED password must not be offered here:
+                        // this is a new credential for somebody else, so the
+                        // field declares itself as one and the Autofill service
+                        // stops volunteering the operator's own login.
+                        autofillContentType = ContentType.NewPassword
                     )
                 }
 

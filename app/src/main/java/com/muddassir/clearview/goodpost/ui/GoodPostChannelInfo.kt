@@ -175,10 +175,17 @@ internal fun GoodPostChannelInfo(
                     label = stringResource(R.string.goodpost_share),
                     onClick = { shareChannel(context, channel.name, channel.shareLink) }
                 )
+                // §9: searches THIS channel's posts, not the channel list.
+                //
+                // It used to open Explore pre-filled with the channel's name,
+                // which searched the catalogue for a channel the reader was
+                // already looking at — a search screen whose answer is the thing
+                // you arrived from. "Search" on a channel means what the channel
+                // said.
                 ChannelAction(
                     icon = Icons.Filled.Search,
                     label = stringResource(R.string.goodpost_search),
-                    onClick = { viewModel.openExplore(channel.name) }
+                    onClick = { viewModel.openChannelSearch(channel.id) }
                 )
             }
 

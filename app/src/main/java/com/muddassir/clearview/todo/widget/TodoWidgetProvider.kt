@@ -6,18 +6,15 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.os.Build
-import android.util.TypedValue
 import android.widget.RemoteViews
 import androidx.core.content.ContextCompat
-import com.muddassir.clearview.MainActivity
+import com.muddassir.clearview.LauncherActivity
 import com.muddassir.clearview.R
 import com.muddassir.clearview.todo.data.TodoNotifier
 import com.muddassir.clearview.todo.data.TodoStats
 import com.muddassir.clearview.todo.data.TodoStore
 import com.muddassir.clearview.widget.WidgetVisuals
 import com.muddassir.clearview.widget.progressFraction
-import com.muddassir.clearview.widget.todoSquareSideDp
 import java.time.LocalDate
 
 /**
@@ -30,12 +27,13 @@ import java.time.LocalDate
  * replaced. The card taps through to the To-Do screen, which is where the list
  * lives.
  *
- * **The card is a square, and it is sized from the cell.** `match_parent` would
- * make it a tall rectangle, because a launcher's cells are taller than they are
- * wide; [squareCardToCell] therefore pins the side to the smaller of the two
- * cell dimensions. Android 12+ can read the cell it was actually placed in, so
- * the square grows to fill a wide grid and stays inside a narrow one; older
- * versions keep the 64dp the layout specifies.
+ * **The card is a square, whatever cell it lands in.** `match_parent` would make
+ * it a tall rectangle, because a launcher's cells are taller than they are wide.
+ * The provider therefore hands the launcher a square BITMAP — surface, hairline
+ * and ring drawn together by [WidgetVisuals.todoCard] — and the layout scales it
+ * with `fitCenter`, which fills the largest square its bounds allow. Nothing is
+ * measured and no launcher padding is assumed; see `WidgetVisuals` for why both
+ * of those alternatives failed on a real device.
  *
  * **Its arithmetic is the app's arithmetic.** The counts come from [TodoStats],
  * so a widget that did its own counting would be a second, wrong answer to a
@@ -67,24 +65,6 @@ class TodoWidgetProvider : AppWidgetProvider() {
         WidgetVisuals.clearCache()
     }
 
-    /**
-     * The last instance was removed, or a resize broadcast arrived.
-     *
-     * `onAppWidgetOptionsChanged` matters here more than usual: this widget's
-     * size is derived from its cell, so a launcher that reflows its grid without
-     * the user touching the widget still has to be re-rendered at the new one.
-     * Without it the card would keep the square it was given on the grid it used
-     * to be on.
-     */
-    override fun onAppWidgetOptionsChanged(
-        context: Context,
-        appWidgetManager: AppWidgetManager,
-        appWidgetId: Int,
-        newOptions: android.os.Bundle
-    ) {
-        appWidgetManager.updateAppWidget(appWidgetId, buildViews(context, appWidgetId))
-    }
-
     companion object {
 
         /**
@@ -105,38 +85,22 @@ class TodoWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        /**
-         * A square card sized to the cell this instance is placed in.
-         *
-         * `setViewLayoutWidth`/`setViewLayoutHeight` are Android 12 and later —
-         * on anything older the call would be a `NoSuchMethodError`, not a
-         * fallback — so the layout's own 64dp stands in there rather than this
-         * being the only path.
-         */
-        private fun squareCardToCell(context: Context, manager: AppWidgetManager, widgetId: Int, views: RemoteViews) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-            val options = manager.getAppWidgetOptions(widgetId)
-            val side = todoSquareSideDp(
-                widthDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH),
-                heightDp = options.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT)
-            )
-            views.setViewLayoutWidth(R.id.widget_todo_card, side.toFloat(), TypedValue.COMPLEX_UNIT_DIP)
-            views.setViewLayoutHeight(R.id.widget_todo_card, side.toFloat(), TypedValue.COMPLEX_UNIT_DIP)
-        }
-
         /** One widget's content, from the persisted to-dos. */
         private fun buildViews(context: Context, widgetId: Int): RemoteViews {
             val views = RemoteViews(context.packageName, R.layout.widget_todo)
-            squareCardToCell(context, AppWidgetManager.getInstance(context), widgetId, views)
 
             val day = TodoStats.dayStats(TodoStore(context).getItems(), LocalDate.now())
             val due = day.due
             val completed = day.completed
 
+            // The whole card in one image, so it stays square in a cell that is
+            // not; `fitCenter` in the layout does the fitting.
             views.setImageViewBitmap(
                 R.id.widget_todo_ring,
-                WidgetVisuals.progressRing(
+                WidgetVisuals.todoCard(
                     percent = if (due > 0) completed * 100 / due else 0,
+                    surface = ContextCompat.getColor(context, R.color.widget_bg),
+                    border = ContextCompat.getColor(context, R.color.widget_stroke),
                     accent = ContextCompat.getColor(context, R.color.widget_accent),
                     track = ContextCompat.getColor(context, R.color.widget_track)
                 )
@@ -157,12 +121,20 @@ class TodoWidgetProvider : AppWidgetProvider() {
             // room for a checkbox, so tapping it opens the list. It uses the same
             // extra the reminder notifications send, so there is one way in
             // rather than a second one invented for the widget.
+            //
+            // The target is LauncherActivity, NOT MainActivity. MainActivity is
+            // the `open` base class the two flavours subclass, and it is not in
+            // the manifest — only LauncherActivity is — so an intent to it throws
+            // ActivityNotFoundException in the launcher's process and the tap
+            // silently does nothing. Every other entry point in the app (the
+            // notifications, the scheduler, the audio service) already names
+            // LauncherActivity for exactly this reason.
             views.setOnClickPendingIntent(
                 R.id.widget_todo_root,
                 PendingIntent.getActivity(
                     context,
                     widgetId,
-                    Intent(context, MainActivity::class.java)
+                    Intent(context, LauncherActivity::class.java)
                         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                         .putExtra(TodoNotifier.EXTRA_OPEN_TODO, true),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE

@@ -698,7 +698,7 @@ This video cannot be played inside the app.</string>
     <!-- The empty tab points at Explore, because that is now the only way in:
          following is local, so a fresh install follows nothing (§1, §2). -->
     <string name="goodpost_empty_channels_title">No channels yet</string>
-    <string name="goodpost_empty_channels_note">Channels published in Good Post appear here.</string>
+    <string name="goodpost_empty_channels_note">Channels you follow appear here. Find some in Explore.</string>
     <string name="goodpost_empty_explore_title">Nothing found</string>
     <string name="goodpost_empty_explore_note">Try a different name or category.</string>
     <!-- An account with no channels at all. Its own note, because "follow some
@@ -707,7 +707,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_empty_admin_note">Create one to start publishing.</string>
 
     <!-- The administrator way in (§16, §19–§21). -->
-    <string name="goodpost_admin_signin_note">This is for channel administrators only. Readers do not need an account.</string>
     <string name="goodpost_email">Email</string>
     <string name="goodpost_email_hint">you@example.com</string>
     <string name="goodpost_password">Password</string>
@@ -717,9 +716,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_show_password">Show password</string>
     <string name="goodpost_hide_password">Hide password</string>
     <string name="goodpost_continue">Continue</string>
-    <string name="goodpost_no_access">Don’t have channel access?</string>
-    <string name="goodpost_contact">Contact: %1$s</string>
-    <string name="goodpost_admin_contact">admin@example.com</string>
     <string name="goodpost_edit">Edit</string>
     <string name="goodpost_edit_channel">Edit channel</string>
     <string name="goodpost_channel_name">Channel name</string>
@@ -727,8 +723,24 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_channel_description">Description</string>
     <string name="goodpost_channel_description_hint">What this channel publishes</string>
     <string name="goodpost_channel_admin_section">The account that will run this channel</string>
+    <string name="goodpost_channel_admin_section_edit">Password for the account that runs this channel</string>
+    <string name="goodpost_admin_password_keep">Leave this blank to keep the current password.</string>
     <string name="goodpost_admin_email">Admin email</string>
-    <string name="goodpost_admin_password">Admin password</string>
+    <string name="goodpost_admin_password">Admin password (%1$d characters or more)</string>
+    <string name="goodpost_admin_password_new">New password (%1$d characters or more, optional)</string>
+    <!-- §9: search inside one channel. -->
+    <string name="goodpost_search_in_channel">Search in channel</string>
+    <string name="goodpost_search_channel_hint">Search this channel</string>
+    <string name="goodpost_search_channel_prompt_title">Search this channel</string>
+    <string name="goodpost_search_channel_prompt_note">Type a word to find it in this channel\'s updates.</string>
+    <string name="goodpost_search_channel_empty_title">No matches</string>
+    <string name="goodpost_search_channel_empty_note">Nothing in this channel says “%1$s”.</string>
+    <string name="goodpost_search_channel_count">%1$d matches</string>
+    <string name="goodpost_search_channel_loading">Searching this channel…</string>
+    <!-- §17: deleting a channel is confirmed by naming it. -->
+    <string name="goodpost_delete_type_name">Type the channel\'s name to confirm</string>
+    <string name="goodpost_delete_type_word">Type “%1$s” to confirm</string>
+    <string name="goodpost_delete_confirm_word">delete</string>
 
     <string name="goodpost_write_update">Write an update</string>
     <string name="goodpost_new_channel">New channel</string>
@@ -752,6 +764,28 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_invalid_credentials">Invalid credentials.</string>
     <string name="goodpost_error_admin_unavailable">This server does not offer the administrator sign-in this app expects. It is probably running an older version of the backend.</string>
     <string name="goodpost_error_session_expired">Your session ended. Sign in again.</string>
+    <string name="goodpost_error_google_signin">Google sign-in did not finish. Try again.</string>
+    <string name="goodpost_error_email_taken">That email already runs an account. If it is yours, sign in as an administrator below.</string>
+    <string name="goodpost_error_channel_exists">This account already runs a channel.</string>
+    <string name="goodpost_error_name_taken">Another channel already uses that name. Try a different one.</string>
+    <string name="goodpost_error_sign_in_unavailable">Sign-in is not available on this server yet. Please try again later.</string>
+    <string name="goodpost_error_weak_password">That password is too short. Use at least %1$d characters.</string>
+    <string name="goodpost_error_cannot_disable_self">You cannot disable your own account.</string>
+
+    <!-- Creator sign-up (§16). Reached from "Create a channel", and the only
+         place the app asks anyone to identify themselves. Two ways in, in the
+         order a creator meets them: a Google account, which is how a channel is
+         started, and then an "Other ways" panel for the super administrator and
+         the channel administrators a deployment provisioned. -->
+    <string name="goodpost_continue_with_google">Continue with Google</string>
+    <string name="goodpost_other_ways">Other ways</string>
+    <string name="goodpost_expand">Show</string>
+    <string name="goodpost_collapse">Hide</string>
+    <string name="goodpost_creator_note">Sign in to create and run your own channel. Readers never need an account.</string>
+    <string name="goodpost_creator_name_channel">Name your channel</string>
+    <string name="goodpost_creator_name_note">This is the last step. Your channel is created with this account and you can rename it later.</string>
+    <string name="goodpost_creator_channel_name">Channel name</string>
+    <string name="goodpost_creator_channel_name_hint">e.g. Daily Reminders</string>
     <string name="goodpost_error_forbidden">This account cannot change that channel.</string>
     <string name="goodpost_error_admin_locked">Too many failed attempts, or this account is disabled. Try again later.</string>
 
