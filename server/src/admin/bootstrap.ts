@@ -1,101 +1,170 @@
+import { env } from '../env.js';
 import type { Queryable } from '../db.js';
-import { badRequest, conflict } from '../http/errors.js';
-import { ADMIN_ROLES, type AdminRole } from './permissions.js';
-import { createAdmin, type AdminAccount } from './service.js';
-import { writeAudit } from './service.js';
+import { badRequest } from '../http/errors.js';
+import { hashPassword, insertAdmin, loadAdmin, setAdminPassword, writeAudit } from './service.js';
 
 /**
- * Provisioning the first administrator (§21, §27, §40).
+ * The first administrator (§17).
  *
- * Split out of the CLI so the rules are testable without spawning a process,
- * and so the CLI holds nothing but argument parsing and printing.
+ * §17 asks for exactly one initial SUPER_ADMIN, whose credentials come from the
+ * SERVER's environment and never from the Android app. This is that: a single
+ * account, provisioned from `SUPER_ADMIN_EMAIL` and a password that is already
+ * hashed (`SUPER_ADMIN_PASSWORD_HASH`) or hashed here from
+ * `SUPER_ADMIN_PASSWORD`.
  *
- * Two refusals are deliberate:
+ * Two properties matter.
  *
- *  * **No password may come from a placeholder.** §40 says placeholders go in
- *    `.env.example` and real values never do; a bootstrap that accepted
- *    `change-me` would be the one path that turns a committed placeholder into
- *    a working administrator login.
+ *  * **It is idempotent, and it never overwrites a working password.** Run at
+ *    every boot, so a fresh deployment needs no manual step and a redeploy
+ *    cannot lock the operator out. If the account already exists it is left
+ *    exactly as it is — a boot that reset the password from an environment
+ *    variable would silently undo a rotation made through the app.
  *
- *  * **The first administrator cannot be created through the API.** There is no
- *    route that calls this. §21 requires an initial account configured on the
- *    backend, and an unauthenticated "create the first admin" endpoint is not a
- *    bootstrap, it is a backdoor.
+ *  * **It cannot create a second one.** The email is the identity: the same
+ *    address is reconciled, a different one is refused while any administrator
+ *    exists. A bootstrap that minted a fresh super administrator per deploy
+ *    would be a privilege-escalation endpoint with a config file for a key.
  */
 
-export interface BootstrapInput {
-  readonly displayName: string;
-  readonly email: string;
-  readonly phone: string;
-  readonly role: string;
-  readonly password: string;
-}
-
-export interface BootstrapResult {
-  readonly admin: AdminAccount;
-}
-
-/** Placeholder shapes, shared with the env validator's own list. */
+/** Placeholder shapes, refused so a committed template cannot become a login. */
 const PLACEHOLDER = /^(replace-with|changeme|change-me|your-|placeholder|xxx)/i;
 
-/** Is any administrator already provisioned? */
-export async function adminExists(database: Queryable): Promise<boolean> {
-  const row = await database.queryOne(`SELECT 1 FROM admin_users LIMIT 1`);
-  return row !== null;
+export interface BootstrapResult {
+  readonly created: boolean;
+  readonly adminId: string | null;
+  readonly reason: string;
 }
 
 /**
- * Create the bootstrap administrator.
+ * Ensure the configured super administrator exists.
  *
- * The audit row is written with a NULL actor and `system` in the metadata: the
- * action is a change to the administrator set, which §29 lists as auditable,
- * and there is no signed-in administrator to attribute it to. Recording it as
- * "nobody" is more honest than attributing it to the account it creates.
+ * Returns what it did rather than logging from here, so the CLI and the boot
+ * path can each report it in their own way — and so the suite can assert the
+ * outcome without capturing stdout.
  */
-export async function provisionBootstrapAdmin(
+export async function ensureSuperAdmin(
   database: Queryable,
-  input: BootstrapInput
+  /**
+   * A password supplied by the caller, which wins over the environment.
+   *
+   * Used by `create-admin --generate`, where the value must be printed once and
+   * therefore cannot live in the environment the process booted with. An
+   * explicit hash still wins over it, so a deployment that has both keeps
+   * working.
+   */
+  passwordOverride?: string | undefined
 ): Promise<BootstrapResult> {
-  const role = input.role.trim();
-  if (!ADMIN_ROLES.includes(role as AdminRole)) {
-    throw badRequest('invalid_role', `Role must be one of: ${ADMIN_ROLES.join(', ')}.`);
+  const email = (env.SUPER_ADMIN_EMAIL ?? '').trim();
+  const passwordHash = (env.SUPER_ADMIN_PASSWORD_HASH ?? '').trim();
+  const password = (passwordOverride ?? env.SUPER_ADMIN_PASSWORD ?? '').trim();
+
+  if (email === '') {
+    return { created: false, adminId: null, reason: 'no_super_admin_configured' };
   }
 
-  const password = input.password;
-  if (password.trim() === '' || PLACEHOLDER.test(password)) {
+  const emailNormalized = email.toLowerCase();
+
+  const existing = await database.queryOne<{ id: string }>(
+    `SELECT id FROM admin_users WHERE email_normalized = $1`,
+    [emailNormalized]
+  );
+
+  if (existing) {
+    // Reconciled, not reconfigured: the account is left alone. A boot that
+    // re-wrote the password from the environment would undo a rotation the
+    // operator made on purpose.
+    return { created: false, adminId: existing.id, reason: 'already_provisioned' };
+  }
+
+  const others = await database.queryOne<{ id: string }>(`SELECT id FROM admin_users LIMIT 1`);
+  if (others) {
+    // One initial super administrator, by construction. Once any administrator
+    // exists, which addresses may sign in is decided inside the product (a super
+    // admin creating a channel admin), not by whoever controls the environment.
+    return {
+      created: false,
+      adminId: null,
+      reason: 'administrators_already_exist',
+    };
+  }
+
+  if (passwordHash !== '' && PLACEHOLDER.test(passwordHash)) {
+    throw badRequest('weak_password', 'SUPER_ADMIN_PASSWORD_HASH is still a placeholder value.');
+  }
+  if (passwordHash === '' && (password === '' || PLACEHOLDER.test(password))) {
     throw badRequest(
       'weak_password',
-      'A real password is required. A placeholder value is refused here so it cannot become a working login.'
+      'Set SUPER_ADMIN_PASSWORD_HASH, or SUPER_ADMIN_PASSWORD with a real value. A placeholder is refused so it cannot become a working login.'
     );
   }
 
-  const existing = await database.queryOne<{ id: string; email_normalized: string }>(
-    `SELECT id, email_normalized FROM admin_users WHERE email_normalized = $1`,
-    [input.email.trim().toLowerCase()]
-  );
-  if (existing) {
-    throw conflict('email_taken', 'An administrator already uses that email.');
-  }
-
-  const admin = await createAdmin(database, {
-    displayName: input.displayName,
-    email: input.email,
-    phone: input.phone,
-    role: role as AdminRole,
-    password,
+  const admin = await insertAdmin(database, {
+    displayName: env.SUPER_ADMIN_DISPLAY_NAME,
+    email,
+    role: 'super_admin',
+    channelId: null,
     createdByAdminId: null,
+    // A hash from the environment is used as-is (re-hashing it would hash the
+    // hash and the configured password would not work); a plaintext value is
+    // hashed here, once.
+    passwordHash: passwordHash !== '' ? passwordHash : await hashPassword(password),
   });
 
   await writeAudit(database, {
     adminId: null,
     adminEmail: null,
     actorRole: null,
-    action: 'admin.create',
+    action: 'admin.bootstrap',
     targetType: 'admin',
     targetId: admin.id,
-    outcome: 'success',
-    metadata: { role: admin.role, email: admin.email, via: 'bootstrap-script' },
+    metadata: { role: 'super_admin', email: admin.email, via: 'environment' },
   });
 
-  return { admin };
+  return { created: true, adminId: admin.id, reason: 'created' };
 }
+
+/**
+ * Re-hash and store a new password for the configured super administrator.
+ *
+ * Used by `npm run super-admin -- --password <new>` when the account exists and
+ * its credentials have been lost. Deliberately not automatic: an automatic
+ * reset would mean anyone able to set an environment variable can take over the
+ * account on the next deploy.
+ */
+export async function resetSuperAdminPassword(
+  database: Queryable,
+  newPassword: string
+): Promise<void> {
+  const emailNormalized = (env.SUPER_ADMIN_EMAIL ?? '').trim().toLowerCase();
+  if (emailNormalized === '') {
+    throw badRequest('invalid_request', 'SUPER_ADMIN_EMAIL is not set.');
+  }
+
+  const row = await database.queryOne<{ id: string }>(
+    `SELECT id FROM admin_users WHERE email_normalized = $1`,
+    [emailNormalized]
+  );
+  if (!row) throw badRequest('admin_not_found', 'No administrator uses SUPER_ADMIN_EMAIL.');
+
+  // Validate before writing, so a too-short password is refused rather than
+  // stored, and log the change without the password — the audit table is the
+  // one place §30's rule could be broken by accident.
+  await setAdminPassword(database, row.id, newPassword);
+  await writeAudit(database, {
+    adminId: row.id,
+    adminEmail: emailNormalized,
+    actorRole: 'super_admin',
+    action: 'admin.password.reset',
+    targetType: 'admin',
+    targetId: row.id,
+    metadata: { via: 'cli' },
+  });
+}
+
+/** Whether any administrator exists at all — the app's own readiness signal. */
+export async function hasAnyAdmin(database: Queryable): Promise<boolean> {
+  return (await database.queryOne(`SELECT 1 FROM admin_users LIMIT 1`)) !== null;
+}
+
+/** A loaded account, for the CLI to print (never the hash). */
+export { loadAdmin, hashPassword };

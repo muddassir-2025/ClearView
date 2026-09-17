@@ -1,54 +1,52 @@
 import { randomBytes } from 'node:crypto';
 import { closePool, db } from './db.js';
 import { env } from './env.js';
-import { adminExists, provisionBootstrapAdmin } from './admin/bootstrap.js';
+import { ensureSuperAdmin, hasAnyAdmin, resetSuperAdminPassword } from './admin/bootstrap.js';
 
 /**
- * Provision the initial SUPER_ADMIN (§21, §27, §40).
+ * Provision the initial SUPER_ADMIN (§17).
  *
- * The `create-admin` npm script has pointed at this file since M0; M6 is the
- * milestone that makes it exist. It is how the FIRST administrator is created,
- * and it is the only way, on purpose:
+ * The `create-admin` npm script has pointed at this file since the first
+ * milestone; this is the milestone that makes it match the model. It is how the
+ * FIRST administrator comes to exist — and the only way, on purpose:
  *
- *  * **Not an endpoint.** §21 forbids a public "create admin" route, and §48
- *    forbids the user registration flow from producing one. A CLI run by
- *    whoever has deploy access is the smallest possible surface.
+ *  * **Not an endpoint.** An unauthenticated "create the first admin" route is
+ *    not a bootstrap, it is a backdoor. A CLI, run by whoever has deploy access,
+ *    is the smallest possible surface.
  *
- *  * **No password in the repository.** The password comes from
- *    `BOOTSTRAP_ADMIN_PASSWORD` in the environment — or, if that is unset, is
- *    generated and printed ONCE so it can be stored in a password manager.
- *    Nothing is written to a file, and §40's "do not commit real values" is
- *    satisfied by construction rather than by discipline.
+ *  * **The credentials come from the environment**, which is what §17 requires:
+ *    `SUPER_ADMIN_EMAIL` with either `SUPER_ADMIN_PASSWORD_HASH` (bcrypt, the
+ *    supported value) or `SUPER_ADMIN_PASSWORD`, which is hashed here. Nothing
+ *    lands in the Android app and nothing is written to a file.
  *
- *  * **Idempotent and non-destructive.** If an administrator already exists,
- *    this refuses unless `--force`, and it never silently overwrites an
- *    existing account's password.
+ *  * **Idempotent and non-destructive.** Running it against a deployment that
+ *    already has its administrator reports what it found and changes nothing.
+ *    Overwriting a working password from an environment variable would undo a
+ *    rotation somebody made deliberately.
  *
  * Usage:
- *   npm run create-admin                       # uses BOOTSTRAP_ADMIN_* env vars
- *   npm run create-admin -- --force            # add one even if an admin exists
- *   npm run create-admin -- --email a@b.c --phone +92300... --name "A" --role admin
- *
- * The role defaults to SUPER_ADMIN because the point of this script is the
- * account that can create the others.
+ *   npm run create-admin                     # provision from SUPER_ADMIN_* env vars
+ *   npm run create-admin -- --generate       # generate a password and print it once
+ *   npm run create-admin -- --reset --password <new>   # rotate a lost password
  */
 
 interface Args {
-  readonly email?: string | undefined;
-  readonly phone?: string | undefined;
-  readonly name?: string | undefined;
-  readonly role?: string | undefined;
+  readonly generate: boolean;
+  readonly reset: boolean;
   readonly password?: string | undefined;
-  readonly force: boolean;
 }
 
 function parseArgs(argv: readonly string[]): Args {
-  const out: { [key: string]: string | boolean | undefined } = { force: false };
+  const out: { [key: string]: string | boolean | undefined } = {};
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
     if (token === undefined) continue;
-    if (token === '--force') {
-      out.force = true;
+    if (token === '--generate') {
+      out.generate = true;
+      continue;
+    }
+    if (token === '--reset') {
+      out.reset = true;
       continue;
     }
     if (!token.startsWith('--')) continue;
@@ -59,12 +57,9 @@ function parseArgs(argv: readonly string[]): Args {
     i += 1;
   }
   return {
-    email: out.email as string | undefined,
-    phone: out.phone as string | undefined,
-    name: out.name as string | undefined,
-    role: out.role as string | undefined,
+    generate: out.generate === true,
+    reset: out.reset === true,
     password: out.password as string | undefined,
-    force: out.force === true,
   };
 }
 
@@ -72,9 +67,8 @@ function parseArgs(argv: readonly string[]): Args {
  * A random, printable password.
  *
  * Base64url of 18 bytes, which is ~24 characters of high-entropy text. Chosen
- * over a word list because this is a credential that gets pasted into a
- * password manager and typed rarely, and over a hex string because
- * `ADMIN_MIN_PASSWORD_LENGTH` would accept something far weaker.
+ * over a hex string because `ADMIN_MIN_PASSWORD_LENGTH` would otherwise accept
+ * something far weaker, and printed exactly once.
  */
 function generatePassword(): string {
   return randomBytes(18).toString('base64url');
@@ -83,56 +77,71 @@ function generatePassword(): string {
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
 
-  const email = args.email ?? env.BOOTSTRAP_ADMIN_EMAIL ?? '';
-  const phone = args.phone ?? env.BOOTSTRAP_ADMIN_PHONE ?? '';
-  const displayName = args.name ?? env.BOOTSTRAP_ADMIN_DISPLAY_NAME;
-
-  if (email === '' || phone === '') {
-    console.error(
-      '[create-admin] An email and a mobile number are required.\n' +
-        '  Set BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PHONE in the environment,\n' +
-        '  or pass --email <address> --phone <+E.164>.'
-    );
-    process.exit(1);
+  if (args.reset) {
+    const password = args.password ?? '';
+    if (password === '') {
+      console.error('[create-admin] --reset needs --password <new password>.');
+      process.exit(1);
+    }
+    await resetSuperAdminPassword(db, password);
+    console.log(`[create-admin] password rotated for ${env.SUPER_ADMIN_EMAIL ?? '(unset)'}`);
+    return;
   }
 
-  if (!args.force && (await adminExists(db))) {
-    console.error(
-      '[create-admin] An administrator already exists. Refusing to add another.\n' +
-        '  The bootstrap script is for the FIRST administrator; create the rest from\n' +
-        '  the dashboard (Administrators → Create), which is audited (§27).\n' +
-        '  Pass --force to add one anyway.'
-    );
-    process.exit(1);
+  if (args.generate) {
+    // Generated here rather than in the bootstrap, so it can be printed once.
+    // Passed in rather than put in the environment: `env` was parsed when this
+    // process started, so writing to `process.env` now would change nothing and
+    // the account would be created with no usable password.
+    const password = generatePassword();
+    const result = await ensureSuperAdmin(db, password);
+
+    if (result.created) {
+      console.log('');
+      console.log('  Super administrator created');
+      console.log(`    email  ${env.SUPER_ADMIN_EMAIL ?? ''}`);
+      console.log('');
+      console.log('  Password (shown once — store it in a password manager):');
+      console.log(`    ${password}`);
+      console.log('');
+      return;
+    }
+
+    console.log(`[create-admin] nothing to do: ${result.reason}`);
+    return;
   }
 
-  const providedPassword = args.password ?? env.BOOTSTRAP_ADMIN_PASSWORD ?? '';
-  const password = providedPassword === '' ? generatePassword() : providedPassword;
+  const result = await ensureSuperAdmin(db);
 
-  const created = await provisionBootstrapAdmin(db, {
-    displayName,
-    email,
-    phone,
-    role: args.role ?? 'super_admin',
-    password,
-  });
-
-  // The password is printed ONLY when this script generated it. If an operator
-  // supplied it, echoing it back would put a real credential into a shell
-  // history and a CI log for no benefit — they already have it.
-  console.log('');
-  console.log('  Administrator created');
-  console.log(`    id     ${created.admin.id}`);
-  console.log(`    email  ${created.admin.email}`);
-  console.log(`    role   ${created.admin.role}`);
-  console.log('');
-  if (providedPassword === '') {
-    console.log('  Password (shown once, store it in a password manager):');
-    console.log(`    ${password}`);
-    console.log('');
+  if (!result.created) {
+    // The reason is the useful part: "no_super_admin_configured" is a
+    // configuration mistake, "already_provisioned" is not a problem at all.
+    console.log(`[create-admin] nothing to do: ${result.reason}`);
+    if (result.reason === 'no_super_admin_configured') {
+      console.error(
+        '[create-admin] Set SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD_HASH (or SUPER_ADMIN_PASSWORD) in the environment.'
+      );
+      process.exitCode = 1;
+    }
+    if (result.reason === 'administrators_already_exist') {
+      console.error(
+        '[create-admin] Another administrator already exists. The first super administrator is\n' +
+          '  provisioned once; the rest are created from the app by a super admin (§17).'
+      );
+    }
+    return;
   }
-  console.log('  Sign in at /admin on the service URL.');
+
   console.log('');
+  console.log('  Super administrator created');
+  console.log(`    id     ${result.adminId ?? ''}`);
+  console.log(`    email  ${env.SUPER_ADMIN_EMAIL ?? ''}`);
+  console.log('');
+}
+
+/** True when this deployment can be signed into at all. */
+export async function adminsReady(): Promise<boolean> {
+  return hasAnyAdmin(db);
 }
 
 // Never let a credential reach a log through an unhandled rejection: the

@@ -13,10 +13,9 @@ import java.net.URLEncoder
 /**
  * The outcome of a backend call.
  *
- * [Failed] and [Unreachable] are deliberately distinct. "The server said no"
- * and "we never reached the server" need different words in front of a user,
- * and §36 requires the app not to claim success it has not been told about —
- * which starts with not conflating a refusal with an outage.
+ * [Failed] and [Unreachable] are deliberately distinct. "The server said no" and
+ * "we never reached the server" need different words in front of a reader, and
+ * a screen must never claim a success it was not told about.
  */
 sealed interface ApiResult<out T> {
     data class Ok<T>(val value: T) : ApiResult<T>
@@ -29,10 +28,10 @@ sealed interface ApiResult<out T> {
 /**
  * Maps a non-2xx response to the error code the UI branches on.
  *
- * Pure, so it is unit-tested directly. Two rules it enforces: a body carrying
- * an `error` code is always preferred over a guess from the status line, and
- * when there is no body the status is still turned into something meaningful
- * rather than an empty string that would silently match no branch.
+ * Pure, so it is unit-tested directly. Two rules: a body carrying an `error`
+ * code always wins over a guess from the status line, and when there is no body
+ * the status is still turned into something meaningful rather than an empty
+ * string that would silently match no branch.
  */
 internal fun errorCodeFrom(status: Int, rawBody: String?): String {
     if (!rawBody.isNullOrBlank()) {
@@ -56,22 +55,24 @@ internal fun errorCodeFrom(status: Int, rawBody: String?): String {
 }
 
 /**
- * Good Post authentication client (§35: `HttpURLConnection` + coroutines +
- * `org.json`, the pattern already used by `ClearViewBackendClient`,
- * `MediaRepository` and `QuranApi`).
+ * The Good Post transport (§35: `HttpURLConnection` + coroutines + `org.json`,
+ * the pattern the rest of ClearView already uses).
  *
- * No Retrofit, OkHttp or serialization library is introduced — §35 asks for
- * the existing stack, and this endpoint set is small enough that the shared
- * convention costs nothing.
+ * No Retrofit, OkHttp or serialization library is introduced. One transport
+ * serves every endpoint, so a new call cannot arrive with different timeouts,
+ * different error extraction, or its own way of forgetting the dispatcher.
  *
- * Targets `/api/v1/...` on its OWN base URL, not the Block tab's moderation
- * backend: the two are separate services with separate deploy lifecycles, and
- * the version prefix keeps the two meanings of "channel" from colliding.
+ * **The read half carries no credential, and that is the product.** Browsing,
+ * searching, opening a channel and reading its posts are anonymous calls, which
+ * is what makes Good Post usable with no signup, no login and no account (§1).
  *
- * One transport serves every Good Post endpoint. `call` takes an absolute API
- * path, so M2's channels and discovery routes reuse the same timeouts, the
- * same error-code extraction and the same "never log the request body" rule
- * instead of a second HTTP implementation drifting from this one.
+ * **The write half is the admin surface only**, and it is a different path
+ * prefix with a different token: `/admin/api`. A reader's device holds no token
+ * at all, so there is nothing on it that could be used to publish.
+ *
+ * Media is the one thing that does NOT travel through this API on its way out:
+ * the bytes go straight to the bucket with a presigned URL, so a hundred-
+ * megabyte video never passes through the backend process at all (§22).
  */
 class GoodPostApi(
     private val baseUrl: () -> String = { BuildConfig.GOODPOST_BASE_URL }
@@ -79,500 +80,402 @@ class GoodPostApi(
 
     private companion object {
         const val TAG = "GoodPostApi"
-        const val AUTH_PATH = "/api/v1/auth"
-        const val CHANNELS_PATH = "/api/v1/channels"
-        const val DISCOVER_PATH = "/api/v1/discover"
-        const val POSTS_PATH = "/api/v1/posts"
-        const val MEDIA_PATH = "/api/v1/media"
-        const val POLLS_PATH = "/api/v1/polls"
-        const val REPORTS_PATH = "/api/v1/reports"
-        const val BLOCKS_PATH = "/api/v1/blocks"
-        const val CONVERSATIONS_PATH = "/api/v1/conversations"
-        const val NOTIFICATIONS_PATH = "/api/v1/notifications"
-        const val NOTICES_PATH = "/api/v1/notices"
-        const val DEVICES_PATH = "/api/v1/devices"
+
+        /**
+         * Anonymous reads (§24).
+         *
+         * The root of the versioned API, not a `/public` sub-prefix: with the
+         * reader-facing surface the only thing under `/api/v1`, those paths ARE
+         * the product's own and `/api/v1/channels` is the shortest honest URL
+         * for a phone to fetch on cold start (§26).
+         */
+        const val PUBLIC_PATH = "/api/v1"
+
+        /** The administrator surface, on its own prefix and its own token. */
+        const val ADMIN_PATH = "/admin/api"
+
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_RESPONSE_BYTES = 512_000
+
+        /**
+         * Uploads get a longer budget than a JSON call, because the body is a
+         * file rather than a few hundred bytes. Still bounded: a stalled upload
+         * must fail with something the composer can word, not hang forever
+         * behind a spinner.
+         */
+        const val UPLOAD_CONNECT_TIMEOUT_MS = 15_000
+        const val UPLOAD_READ_TIMEOUT_MS = 120_000
     }
 
     /** True when a backend URL has been configured for this build. */
     val isConfigured: Boolean get() = baseUrl().isNotBlank()
 
-    // ── Endpoints ───────────────────────────────────────────────────────
+    // ── Public reads (§3–§13) ───────────────────────────────────────────
 
     /**
-     * Register the intent to verify a number and take one slot out of the
-     * hourly allowance. Called BEFORE Firebase sends the SMS, so a banned or
-     * rate-limited number never costs an SMS.
-     */
-    suspend fun requestOtp(phone: String, purpose: String): ApiResult<Unit> {
-        val body = JSONObject().apply {
-            put("phone", phone)
-            put("purpose", purpose)
-        }
-        return when (val result = call("POST", AUTH_PATH + "/otp/request", body)) {
-            is ApiResult.Ok -> ApiResult.Ok(Unit)
-            is ApiResult.Failed -> result
-            ApiResult.Unreachable -> ApiResult.Unreachable
-        }
-    }
-
-    /**
-     * Step 1 by email — the same contract as [requestOtp].
+     * Channel list and search (§3, §7).
      *
-     * The server answers 200 whether or not the address has an account, on
-     * purpose, so a success here must not be read as "this email is
-     * registered". Nothing is known until the code comes back.
+     * One endpoint for both: browsing is a search with an empty term, and the
+     * list screen renders the same rows either way.
      */
-    suspend fun requestEmailOtp(email: String, purpose: String? = null): ApiResult<Unit> {
-        val body = JSONObject().apply {
-            put("email", email)
-            // "register" when the caller already knows this is a new account.
-            // The server accepts either purpose at either step, so this only
-            // ever saves a round trip — it never decides what may happen.
-            if (purpose != null) put("purpose", purpose)
-        }
-        return when (val result = call("POST", AUTH_PATH + "/email/otp", body)) {
-            is ApiResult.Ok -> ApiResult.Ok(Unit)
-            is ApiResult.Failed -> result
-            ApiResult.Unreachable -> ApiResult.Unreachable
-        }
-    }
-
-    /** Step 2 by email. Issues the same device session as the phone flow. */
-    suspend fun emailSignIn(
-        email: String,
-        code: String,
-        deviceLabel: String?
-    ): ApiResult<GoodPostSession> {
-        val body = JSONObject().apply {
-            put("email", email)
-            put("code", code)
-        }
-        return authCall("/email/signin", body, deviceLabel)
-    }
-
-    /**
-     * Step 2 for an address with no account: the same code, plus a name.
-     *
-     * Reached only after `/email/signin` answered `email_not_registered` — the
-     * server re-checks that fact, so a client cannot register an address that
-     * already has an account.
-     */
-    suspend fun emailRegister(
-        email: String,
-        code: String,
-        displayName: String,
-        deviceLabel: String?
-    ): ApiResult<GoodPostSession> {
-        val body = JSONObject().apply {
-            put("email", email)
-            put("code", code)
-            put("displayName", displayName)
-        }
-        return authCall("/email/register", body, deviceLabel)
-    }
-
-    suspend fun signIn(idToken: String, deviceLabel: String?): ApiResult<GoodPostSession> {
-        val body = JSONObject().apply { put("idToken", idToken) }
-        return authCall("/signin", body, deviceLabel)
-    }
-
-    suspend fun register(
-        idToken: String,
-        displayName: String,
-        email: String,
-        deviceLabel: String?
-    ): ApiResult<GoodPostSession> {
-        val body = JSONObject().apply {
-            put("idToken", idToken)
-            put("displayName", displayName)
-            put("email", email)
-        }
-        return authCall("/register", body, deviceLabel)
-    }
-
-    suspend fun refresh(refreshToken: String, deviceLabel: String?): ApiResult<GoodPostSession> {
-        val body = JSONObject().apply { put("refreshToken", refreshToken) }
-        return authCall("/refresh", body, deviceLabel)
-    }
-
-    /** Validate a stored token and read the account back. */
-    suspend fun me(accessToken: String): ApiResult<GoodPostAccount> =
-        withContext(Dispatchers.IO) {
-            when (val result = call("GET", AUTH_PATH + "/me", null, accessToken)) {
-                is ApiResult.Ok ->
-                    GoodPostSessionCodec.accountFromResponse(result.value)
-                        ?.let { ApiResult.Ok(it) }
-                        ?: ApiResult.Unreachable
-                is ApiResult.Failed -> result
-                ApiResult.Unreachable -> ApiResult.Unreachable
-            }
-        }
-
-    suspend fun logout(accessToken: String, refreshToken: String): ApiResult<Unit> {
-        val body = JSONObject().apply {
-            put("refreshToken", refreshToken)
-            put("all", false)
-        }
-        return when (val result = call("POST", AUTH_PATH + "/logout", body, accessToken)) {
-            is ApiResult.Ok -> ApiResult.Ok(Unit)
-            is ApiResult.Failed -> result
-            ApiResult.Unreachable -> ApiResult.Unreachable
-        }
-    }
-
-    // ── Channels (§5, §6, §7, §12) ──────────────────────────────────────
-    //
-    // These return the parsed JSON body rather than a typed object: turning it
-    // into [GoodPostChannel] is the codec's job, kept pure and unit-tested
-    // separately. The API layer's contract stops at "the server said this".
-
-    suspend fun channelCategories(accessToken: String): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/categories", accessToken)
-
-    /** §4 Channels view. `cursor` resumes a previous page. */
-    suspend fun followingChannels(accessToken: String, cursor: String? = null): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/following" + pageQuery(cursor), accessToken)
-
-    /** §7 The channels the caller owns or helps run. */
-    suspend fun managedChannels(accessToken: String): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/mine", accessToken)
-
-    suspend fun channelDetail(accessToken: String, channelId: String): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/" + encode(channelId), accessToken)
-
-    /**
-     * §6 resolve a share link.
-     *
-     * The slug is the only identifier a shared link carries, so this is the one
-     * call that turns a pasted `clearview://goodpost/channel/<slug>` back into a
-     * channel. The route is a sibling of [channelDetail] rather than a query on
-     * it, which is why the path segment differs.
-     */
-    suspend fun channelBySlug(accessToken: String, slug: String): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/by-slug/" + encode(slug), accessToken)
-
-    /** §5 Discover. Blank filters are omitted rather than sent empty. */
-    suspend fun discoverChannels(
-        accessToken: String,
+    suspend fun channels(
         query: String? = null,
         category: String? = null,
-        country: String? = null,
-        sort: ChannelSort = ChannelSort.Popular,
+        sort: String? = null,
         cursor: String? = null
-    ): ApiResult<JSONObject> {
-        val params = buildList {
-            query?.takeIf { it.isNotBlank() }?.let { add("q=" + encode(it)) }
-            category?.takeIf { it.isNotBlank() }?.let { add("category=" + encode(it)) }
-            country?.takeIf { it.isNotBlank() }?.let { add("country=" + encode(it)) }
-            add("sort=" + encode(sort.wire))
-            cursor?.takeIf { it.isNotBlank() }?.let { add("cursor=" + encode(it)) }
-        }
-        return get(DISCOVER_PATH + "/channels?" + params.joinToString("&"), accessToken)
-    }
+    ): ApiResult<GoodPostPage<GoodPostChannel>> =
+        parsedGet(channelsPath(query, category, sort, cursor), GoodPostCodec::channelPage)
 
-    suspend fun createChannel(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
-        call("POST", CHANNELS_PATH, body, accessToken)
+    /** The categories Explore can filter by. */
+    suspend fun categories(): ApiResult<List<GoodPostCategory>> =
+        parsedGet("$PUBLIC_PATH/categories", GoodPostCodec::categories)
 
-    suspend fun updateChannel(
-        accessToken: String,
-        channelId: String,
-        body: JSONObject
-    ): ApiResult<JSONObject> =
-        call("PATCH", CHANNELS_PATH + "/" + encode(channelId), body, accessToken)
+    /** One channel, by uuid or by the slug a share link carries (§6). */
+    suspend fun channel(idOrSlug: String): ApiResult<GoodPostChannel> =
+        parsedGet("$PUBLIC_PATH/channels/${encode(idOrSlug)}", { body ->
+            GoodPostCodec.singleChannel(body) ?: throw ContractBreak()
+        })
 
-    /** @param follow true to follow, false to unfollow. */
-    suspend fun setFollow(
-        accessToken: String,
-        channelId: String,
-        follow: Boolean
-    ): ApiResult<JSONObject> {
-        val method = if (follow) "POST" else "DELETE"
-        return call(method, CHANNELS_PATH + "/" + encode(channelId) + "/follow", null, accessToken)
-    }
-
-    /** §17 mute (`enabled = false`) or unmute. */
-    suspend fun setNotifications(
-        accessToken: String,
-        channelId: String,
-        enabled: Boolean
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply { put("enabled", enabled) }
-        return call(
-            "PUT",
-            CHANNELS_PATH + "/" + encode(channelId) + "/notifications",
-            body,
-            accessToken
-        )
-    }
-
-    /** §12 block, which also ends the follow, or unblock. */
-    suspend fun setBlocked(
-        accessToken: String,
-        channelId: String,
-        blocked: Boolean
-    ): ApiResult<JSONObject> {
-        val method = if (blocked) "POST" else "DELETE"
-        return call(method, CHANNELS_PATH + "/" + encode(channelId) + "/block", null, accessToken)
-    }
-
-    /** §4 clear the unread flag. */
-    suspend fun markRead(accessToken: String, channelId: String): ApiResult<JSONObject> =
-        call("POST", CHANNELS_PATH + "/" + encode(channelId) + "/read", null, accessToken)
-
-    // ── Posts (§4, §8) ──────────────────────────────────────────────────
-
-    /** §4 the aggregated feed: posts from every channel the caller follows. */
-    suspend fun feed(accessToken: String, cursor: String? = null): ApiResult<JSONObject> =
-        get(POSTS_PATH + "/feed" + pageQuery(cursor), accessToken)
-
-    /** §8 one channel's history, newest first. */
+    /** A channel's posts, newest first (§9). */
     suspend fun channelPosts(
-        accessToken: String,
-        channelId: String,
+        idOrSlug: String,
         cursor: String? = null
-    ): ApiResult<JSONObject> =
-        get(
-            CHANNELS_PATH + "/" + encode(channelId) + "/posts" + pageQuery(cursor),
-            accessToken
+    ): ApiResult<GoodPostPage<GoodPostPost>> =
+        parsedGet(
+            "$PUBLIC_PATH/channels/${encode(idOrSlug)}/posts" + pageQuery(cursor),
+            GoodPostCodec::postPage
         )
 
-    suspend fun publishPost(
-        accessToken: String,
+    /** A channel's images and videos, for the profile gallery (§13). */
+    suspend fun channelMedia(
+        idOrSlug: String,
+        cursor: String? = null
+    ): ApiResult<GoodPostPage<GoodPostMediaItem>> =
+        parsedGet(
+            "$PUBLIC_PATH/channels/${encode(idOrSlug)}/media" + pageQuery(cursor),
+            GoodPostCodec::mediaPage
+        )
+
+    /** One post, reachable on its own from a link or a share (§9). */
+    suspend fun post(postId: String): ApiResult<GoodPostPost> =
+        parsedGet("$PUBLIC_PATH/posts/${encode(postId)}", { body ->
+            GoodPostCodec.singlePost(body) ?: throw ContractBreak()
+        })
+
+    // ── Administrator sign-in (§16) ─────────────────────────────────────
+
+    /**
+     * Sign in as an administrator.
+     *
+     * This is NOT a viewer account and creates nothing: the addresses that work
+     * here were provisioned by the deployment, never by the app. The one message
+     * for every refusal comes from the server (`invalid_credentials`), so the
+     * screen cannot reveal whether an address exists.
+     */
+    suspend fun adminLogin(email: String, password: String): ApiResult<AdminSession> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/auth/login",
+            body = JSONObject().apply {
+                put("email", email)
+                put("password", password)
+            },
+            bearer = null,
+            parse = { body ->
+                AdminSession(
+                    token = body.optString("accessToken").ifBlank {
+                        // A body without a token is a contract break, not a
+                        // signed-in administrator.
+                        throw ContractBreak()
+                    },
+                    role = body.optJSONObject("admin")?.optString("role").orEmpty(),
+                    email = body.optJSONObject("admin")?.optString("email").orEmpty(),
+                    channelId = body.optJSONObject("admin")?.nullableString("channelId")
+                )
+            }
+        )
+
+    /** The channels this administrator may publish to (§17, §18). */
+    suspend fun adminChannels(token: String): ApiResult<List<GoodPostChannel>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/channels",
+            body = null,
+            bearer = token,
+            parse = { body ->
+                val items = body.optJSONArray("channels") ?: JSONArray()
+                val parsed = ArrayList<GoodPostChannel>(items.length())
+                for (i in 0 until items.length()) {
+                    items.optJSONObject(i)?.let { GoodPostCodec.channel(it)?.let(parsed::add) }
+                }
+                parsed
+            }
+        )
+
+    /** Create a channel, and the administrator account that runs it (§20). */
+    suspend fun adminCreateChannel(token: String, body: JSONObject): ApiResult<GoodPostChannel> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/channels",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singleChannel(it) ?: throw ContractBreak() }
+        )
+
+    /** Change a channel's name, description or category (§19). */
+    suspend fun adminUpdateChannel(
+        token: String,
         channelId: String,
         body: JSONObject
-    ): ApiResult<JSONObject> =
-        call("POST", CHANNELS_PATH + "/" + encode(channelId) + "/posts", body, accessToken)
+    ): ApiResult<GoodPostChannel> =
+        parsedCall(
+            method = "PATCH",
+            path = "$ADMIN_PATH/channels/${encode(channelId)}",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singleChannel(it) ?: throw ContractBreak() }
+        )
 
-    suspend fun updatePost(
-        accessToken: String,
+    /** Publish a post (§21). The type follows from what is attached. */
+    suspend fun adminCreatePost(
+        token: String,
         channelId: String,
+        body: JSONObject
+    ): ApiResult<GoodPostPost> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/channels/${encode(channelId)}/posts",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singlePost(it) ?: throw ContractBreak() }
+        )
+
+    /** Edit a post's text or link (§21). */
+    suspend fun adminUpdatePost(
+        token: String,
         postId: String,
         body: JSONObject
-    ): ApiResult<JSONObject> =
-        call(
-            "PATCH",
-            CHANNELS_PATH + "/" + encode(channelId) + "/posts/" + encode(postId),
-            body,
-            accessToken
+    ): ApiResult<GoodPostPost> =
+        parsedCall(
+            method = "PATCH",
+            path = "$ADMIN_PATH/posts/${encode(postId)}",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singlePost(it) ?: throw ContractBreak() }
         )
 
-    /** §7 remove a post. The server soft-deletes it, so it can be restored. */
-    suspend fun deletePost(
-        accessToken: String,
-        channelId: String,
-        postId: String
-    ): ApiResult<JSONObject> =
-        call(
-            "DELETE",
-            CHANNELS_PATH + "/" + encode(channelId) + "/posts/" + encode(postId),
-            null,
-            accessToken
+    /** Remove a post (§17). Soft on the server, so it stays reversible. */
+    suspend fun adminDeletePost(token: String, postId: String): ApiResult<Unit> =
+        parsedCall(
+            method = "DELETE",
+            path = "$ADMIN_PATH/posts/${encode(postId)}",
+            body = null,
+            bearer = token,
+            parse = { Unit }
         )
 
-    // ── Media (§9, §10) ─────────────────────────────────────────────────
+    // ── Media uploads (§21, §22) ────────────────────────────────────────
 
     /**
-     * Ask for a presigned upload URL.
+     * Ask for a place to put one file.
      *
-     * The body carries a content type and a size and NOTHING ELSE. There is no
-     * field for a destination: the server derives the object key from the media
-     * row's own id, so no request can influence where its bytes land.
+     * The response carries a presigned URL, the headers that go with it, and a
+     * media id. What it deliberately does NOT carry is the object key: the
+     * server derives that from a uuid it generates, so no request this app makes
+     * can choose where its bytes land. The file's content type and size are
+     * declared here because the URL SIGNs both — the bucket refuses an upload
+     * that differs, which puts the authoritative check at the bucket rather than
+     * in our own validation.
+     *
+     * A deployment with no storage answers `media_unavailable` (503), which the
+     * composer words explicitly rather than as a generic failure: text and link
+     * posts still work there (§22).
      */
-    suspend fun requestUpload(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
-        call("POST", MEDIA_PATH + "/uploads", body, accessToken)
+    suspend fun adminRequestUpload(
+        token: String,
+        contentType: String,
+        byteSize: Long,
+        width: Int? = null,
+        height: Int? = null,
+        durationMs: Long? = null
+    ): ApiResult<GoodPostUpload> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/media/uploads",
+            body = JSONObject().apply {
+                put("contentType", contentType)
+                put("byteSize", byteSize)
+                width?.let { put("width", it) }
+                height?.let { put("height", it) }
+                durationMs?.let { put("durationMs", it) }
+            },
+            bearer = token,
+            parse = { body ->
+                val upload = body.optJSONObject("upload") ?: throw ContractBreak()
+                val mediaId = upload.optString("mediaId")
+                val url = upload.optString("uploadUrl")
+                if (mediaId.isBlank() || url.isBlank()) throw ContractBreak()
 
-    /** Confirm the object arrived. The server verifies it against the bucket. */
-    suspend fun confirmUpload(accessToken: String, mediaId: String): ApiResult<JSONObject> =
-        call("POST", MEDIA_PATH + "/uploads/" + encode(mediaId) + "/confirm", null, accessToken)
+                GoodPostUpload(
+                    mediaId = mediaId,
+                    uploadUrl = url,
+                    uploadHeaders = headersOf(upload.optJSONObject("uploadHeaders")),
+                    kind = upload.optString("kind")
+                )
+            }
+        )
 
     /**
-     * A fresh presigned read URL for one asset (§10).
+     * Tell the server the bytes are there, and let it check.
      *
-     * Used for a manual download and for playback, because the URL embedded in
-     * a post payload expires and a post cached from ten minutes ago holds a
-     * dead link.
+     * Idempotent on the server side, so a retry after a dropped response is not
+     * punished. Only after this does the media become claimable by a post.
      */
-    suspend fun mediaUrl(accessToken: String, mediaId: String): ApiResult<JSONObject> =
-        get(MEDIA_PATH + "/" + encode(mediaId) + "/url", accessToken)
-
-    // ── Engagement (§13, §14, §15) ──────────────────────────────────────
+    suspend fun adminConfirmUpload(token: String, mediaId: String): ApiResult<GoodPostMedia> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/media/uploads/${encode(mediaId)}/confirm",
+            body = null,
+            bearer = token,
+            parse = { body ->
+                val media = body.optJSONObject("media") ?: throw ContractBreak()
+                GoodPostCodec.media(media) ?: throw ContractBreak()
+            }
+        )
 
     /**
-     * §13 react, change a reaction, or clear it with `reaction = null`.
+     * PUT the file to the presigned URL.
      *
-     * `null` is SENT as an explicit JSON null rather than omitted, because the
-     * server reads an absent key as a client bug and an explicit null as
-     * "clear mine" — a distinction that would silently delete reactions if this
-     * collapsed the two.
-     */
-    suspend fun setReaction(
-        accessToken: String,
-        postId: String,
-        reaction: String?
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply { put("reaction", reaction ?: JSONObject.NULL) }
-        return call(
-            "POST",
-            POSTS_PATH + "/" + encode(postId) + "/reactions",
-            body,
-            accessToken
-        )
-    }
-
-    /**
-     * §15 record a view.
+     * Streams, and never buffers the file: a video is potentially a hundred
+     * megabytes, and reading one into a byte array to hand to a socket is how a
+     * mid-range phone runs out of heap while publishing (§26).
      *
-     * A POST, matching the server: a GET would be prefetched, cached and
-     * retried by every intermediary, turning one look into several.
+     * The URL is absolute and goes to the bucket, not to our API — which is the
+     * point of presigning. It carries its own signature, so no credential of
+     * ours is involved and the token that authorised it is not sent anywhere.
+     * A non-2xx answer (an expired signature, a size the bucket refused) is
+     * reported as a failure with the status, so the composer can say something
+     * true rather than claiming the upload worked.
      */
-    suspend fun recordView(accessToken: String, postId: String): ApiResult<JSONObject> =
-        call("POST", POSTS_PATH + "/" + encode(postId) + "/views", null, accessToken)
+    suspend fun putFile(
+        uploadUrl: String,
+        headers: Map<String, String>,
+        byteSize: Long,
+        open: () -> java.io.InputStream?
+    ): ApiResult<Unit> = withContext(Dispatchers.IO) {
+        var conn: HttpURLConnection? = null
+        try {
+            conn = (URL(uploadUrl).openConnection() as HttpURLConnection).apply {
+                requestMethod = "PUT"
+                doOutput = true
+                connectTimeout = UPLOAD_CONNECT_TIMEOUT_MS
+                readTimeout = UPLOAD_READ_TIMEOUT_MS
+                // Fixed length rather than chunked: it is what the signature
+                // signed, so the bucket can reject a truncated send instead of
+                // storing half a file.
+                setFixedLengthStreamingMode(byteSize)
+                headers.forEach { (name, value) -> setRequestProperty(name, value) }
+            }
 
-    /** §14 vote, or change a vote. Aggregate results come back, never voters. */
-    suspend fun votePoll(
-        accessToken: String,
-        pollId: String,
-        optionIds: List<String>
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply { put("optionIds", JSONArray(optionIds)) }
-        return call("POST", POLLS_PATH + "/" + encode(pollId) + "/votes", body, accessToken)
-    }
+            val input = open() ?: return@withContext ApiResult.Unreachable
+            input.use { source ->
+                conn.outputStream.use { sink -> source.copyTo(sink, DEFAULT_BUFFER_SIZE * 16) }
+            }
 
-    /** §15 a channel's own numbers. Owner/editor only — the server decides. */
-    suspend fun analytics(
-        accessToken: String,
-        channelId: String,
-        days: Int? = null
-    ): ApiResult<JSONObject> {
-        val suffix = days?.let { "?days=" + encode(it.toString()) }.orEmpty()
-        return get(CHANNELS_PATH + "/" + encode(channelId) + "/analytics" + suffix, accessToken)
-    }
-
-    // ── Reports and blocks (§12, §18) ───────────────────────────────────
-
-    suspend fun createReport(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
-        call("POST", REPORTS_PATH, body, accessToken)
-
-    /** The caller's own reports, so a reporter can see what happened (§18). */
-    suspend fun ownReports(accessToken: String): ApiResult<JSONObject> =
-        get(REPORTS_PATH + "/mine", accessToken)
-
-    /** §12 block another account, or unblock. */
-    suspend fun setUserBlocked(
-        accessToken: String,
-        userId: String,
-        blocked: Boolean
-    ): ApiResult<JSONObject> {
-        val method = if (blocked) "POST" else "DELETE"
-        return call(method, BLOCKS_PATH + "/" + encode(userId), null, accessToken)
-    }
-
-    // ── Private messages (§16) ──────────────────────────────────────────
-
-    /** Open (or find) the caller's conversation with a channel. */
-    suspend fun openConversation(accessToken: String, channelId: String): ApiResult<JSONObject> =
-        call(
-            "POST",
-            CHANNELS_PATH + "/" + encode(channelId) + "/conversations",
-            null,
-            accessToken
-        )
-
-    /** The channel's inbox: the admin side of §16. */
-    suspend fun channelConversations(
-        accessToken: String,
-        channelId: String
-    ): ApiResult<JSONObject> =
-        get(CHANNELS_PATH + "/" + encode(channelId) + "/conversations", accessToken)
-
-    /** Conversations the caller opened as a follower. */
-    suspend fun ownConversations(accessToken: String): ApiResult<JSONObject> =
-        get(CONVERSATIONS_PATH, accessToken)
-
-    suspend fun conversationMessages(
-        accessToken: String,
-        conversationId: String,
-        cursor: String? = null
-    ): ApiResult<JSONObject> =
-        get(
-            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/messages" + pageQuery(cursor),
-            accessToken
-        )
-
-    suspend fun sendConversationMessage(
-        accessToken: String,
-        conversationId: String,
-        body: JSONObject
-    ): ApiResult<JSONObject> =
-        call(
-            "POST",
-            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/messages",
-            body,
-            accessToken
-        )
-
-    suspend fun setConversationBlocked(
-        accessToken: String,
-        conversationId: String,
-        blocked: Boolean
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply { put("blocked", blocked) }
-        return call(
-            "POST",
-            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/block",
-            body,
-            accessToken
-        )
-    }
-
-    // ── Notifications and notices (§17, §26) ────────────────────────────
-
-    suspend fun notifications(accessToken: String): ApiResult<JSONObject> =
-        get(NOTIFICATIONS_PATH, accessToken)
-
-    /** Mark the whole inbox read, or just [ids] when they are given. */
-    suspend fun markNotificationsRead(
-        accessToken: String,
-        ids: List<String>
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply {
-            if (ids.isNotEmpty()) put("ids", JSONArray(ids))
+            val status = conn.responseCode
+            if (status in 200..299) ApiResult.Ok(Unit)
+            else ApiResult.Failed(status, errorCodeFrom(status, null))
+        } catch (e: Exception) {
+            // The URL is a signed capability and is never logged; neither is the
+            // exception's message, which can quote the URL back.
+            Log.d(TAG, "PUT to storage failed: ${e.javaClass.simpleName}")
+            ApiResult.Unreachable
+        } finally {
+            conn?.disconnect()
         }
-        return call("POST", NOTIFICATIONS_PATH + "/read", body, accessToken)
     }
 
-    suspend fun notices(accessToken: String): ApiResult<JSONObject> =
-        get(NOTICES_PATH, accessToken)
-
-    suspend fun markNoticesRead(
-        accessToken: String,
-        ids: List<String>
-    ): ApiResult<JSONObject> {
-        val body = JSONObject().apply { put("ids", JSONArray(ids)) }
-        return call("POST", NOTICES_PATH + "/read", body, accessToken)
+    /** The signable headers for an upload, as the server listed them. */
+    private fun headersOf(json: JSONObject?): Map<String, String> {
+        if (json == null) return emptyMap()
+        val out = LinkedHashMap<String, String>()
+        val keys = json.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            out[key] = json.optString(key)
+        }
+        return out
     }
-
-    /** Tell the server where to push for this account (§17). */
-    suspend fun registerDevice(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
-        call("POST", DEVICES_PATH, body, accessToken)
-
-    /**
-     * Stop pushing to this device, on sign-out.
-     *
-     * The token rides in the path because sign-out has already discarded the
-     * rest of the session state by the time this runs — a request body built
-     * from state that no longer exists is a request that never gets sent.
-     */
-    suspend fun unregisterDevice(accessToken: String, token: String): ApiResult<JSONObject> =
-        call("DELETE", DEVICES_PATH + "/" + encode(token), null, accessToken)
 
     // ── Internals ───────────────────────────────────────────────────────
 
-    private suspend fun get(path: String, accessToken: String): ApiResult<JSONObject> =
-        withContext(Dispatchers.IO) { call("GET", path, null, accessToken) }
+    /**
+     * A read that never carries a token, decoded into a domain shape.
+     *
+     * Kept separate from [parsedCall] so no read call site can acquire a
+     * credential by accident: an anonymous request is not a call with a null
+     * token, it is a call whose signature has nowhere to put one.
+     */
+    private suspend fun <T> parsedGet(
+        path: String,
+        parse: (JSONObject) -> T
+    ): ApiResult<T> = withContext(Dispatchers.IO) {
+        when (val result = callBlocking("GET", path, null, null)) {
+            is ApiResult.Ok -> decode(result.value, parse)
+            is ApiResult.Failed -> result
+            ApiResult.Unreachable -> ApiResult.Unreachable
+        }
+    }
+
+    private suspend fun <T> parsedCall(
+        method: String,
+        path: String,
+        body: JSONObject?,
+        bearer: String?,
+        parse: (JSONObject) -> T
+    ): ApiResult<T> = withContext(Dispatchers.IO) {
+        when (val result = callBlocking(method, path, body, bearer)) {
+            is ApiResult.Ok -> decode(result.value, parse)
+            is ApiResult.Failed -> result
+            ApiResult.Unreachable -> ApiResult.Unreachable
+        }
+    }
+
+    /**
+     * Run the parser, turning a contract break into a retryable state.
+     *
+     * A 2xx whose body does not fit the shape is not a success — storing or
+     * rendering half of it would put a channel with no name on screen. Reported
+     * as unreachable so the caller retries, which is the only sane response to
+     * "the server said something we do not understand".
+     */
+    private fun <T> decode(body: JSONObject, parse: (JSONObject) -> T): ApiResult<T> =
+        try {
+            ApiResult.Ok(parse(body))
+        } catch (e: Exception) {
+            Log.d(TAG, "unparseable 2xx body: ${e.javaClass.simpleName}")
+            ApiResult.Unreachable
+        }
+
+    /** Marks a body that parsed as JSON but not as the expected shape. */
+    private class ContractBreak : Exception("unexpected payload shape")
+
+    private fun channelsPath(
+        query: String?,
+        category: String?,
+        sort: String?,
+        cursor: String?
+    ): String {
+        val params = buildList {
+            query?.takeIf { it.isNotBlank() }?.let { add("q=" + encode(it)) }
+            category?.takeIf { it.isNotBlank() }?.let { add("category=" + encode(it)) }
+            sort?.takeIf { it.isNotBlank() }?.let { add("sort=" + encode(it)) }
+            cursor?.takeIf { it.isNotBlank() }?.let { add("cursor=" + encode(it)) }
+        }
+        val suffix = if (params.isEmpty()) "" else "?" + params.joinToString("&")
+        return "$PUBLIC_PATH/channels$suffix"
+    }
 
     private fun pageQuery(cursor: String?): String =
         cursor?.takeIf { it.isNotBlank() }?.let { "?cursor=" + encode(it) }.orEmpty()
@@ -580,61 +483,23 @@ class GoodPostApi(
     /**
      * Percent-encode a path or query component.
      *
-     * A cursor is base64url, which can contain `-` and `_` but is still encoded
-     * defensively: a raw `&` or `#` reaching the URL would silently truncate
-     * the request and look like an empty page rather than a bug.
+     * A cursor is base64url, which can contain `-` and `_`, and is still encoded
+     * defensively: a raw `&` or `#` reaching the URL would silently truncate the
+     * request and look like an empty page rather than like a bug.
      */
     private fun encode(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
 
-    private suspend fun authCall(
-        path: String,
-        body: JSONObject,
-        deviceLabel: String?
-    ): ApiResult<GoodPostSession> = withContext(Dispatchers.IO) {
-        when (val result = call("POST", AUTH_PATH + path, body, null, deviceLabel)) {
-            is ApiResult.Ok ->
-                GoodPostSessionCodec.fromAuthResponse(result.value, System.currentTimeMillis())
-                    ?.let { ApiResult.Ok(it) }
-                    // A 2xx we cannot parse is a backend contract break, not a
-                    // success. Reported as unreachable so the caller retries
-                    // rather than storing a half-session.
-                    ?: ApiResult.Unreachable
-            is ApiResult.Failed -> result
-            ApiResult.Unreachable -> ApiResult.Unreachable
-        }
-    }
-
     /**
-     * Every network call goes through here, so the dispatcher cannot be
-     * forgotten.
-     *
-     * This wrapper exists because of a real defect: [callBlocking] is blocking,
-     * and a caller that invoked it straight from `viewModelScope` (which is
-     * `Dispatchers.Main`) hit `NetworkOnMainThreadException` — which the
-     * catch-all below swallowed, turning a main-thread bug into a permanent
-     * "unreachable" that looked exactly like the user being offline. Phone
-     * sign-in failed at step one with a misleading error.
-     *
-     * Dispatching inside the transport rather than at each call site means a
-     * new endpoint cannot reintroduce it.
+     * The blocking transport. Call it only from a coroutine on the IO
+     * dispatcher — [parsedGet] and [parsedCall] are the only callers and both
+     * dispatch.
      */
-    private suspend fun call(
-        method: String,
-        path: String,
-        body: JSONObject? = null,
-        bearer: String? = null,
-        deviceLabel: String? = null
-    ): ApiResult<JSONObject> =
-        withContext(Dispatchers.IO) { callBlocking(method, path, body, bearer, deviceLabel) }
-
-    /** The blocking implementation. Call it only through [call]. */
     private fun callBlocking(
         method: String,
         path: String,
-        body: JSONObject? = null,
-        bearer: String? = null,
-        deviceLabel: String? = null
+        body: JSONObject?,
+        bearer: String?
     ): ApiResult<JSONObject> {
         val root = baseUrl().trimEnd('/')
         if (root.isBlank()) return ApiResult.Unreachable
@@ -648,9 +513,6 @@ class GoodPostApi(
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("User-Agent", "ClearView-Android")
                 bearer?.let { setRequestProperty("Authorization", "Bearer $it") }
-                deviceLabel?.takeIf { it.isNotBlank() }?.let {
-                    setRequestProperty("X-Device-Label", it)
-                }
                 if (body != null) {
                     doOutput = true
                     setRequestProperty("Content-Type", "application/json")
@@ -676,7 +538,8 @@ class GoodPostApi(
 
             return ApiResult.Failed(status, errorCodeFrom(status, errorText))
         } catch (e: Exception) {
-            // Never log the request body — it carries the ID token.
+            // Never log a request body: on the admin surface it carries a
+            // password, and on the read surface it carries a search term.
             Log.d(TAG, "$method $path failed: ${e.javaClass.simpleName}")
             return ApiResult.Unreachable
         } finally {
@@ -684,3 +547,35 @@ class GoodPostApi(
         }
     }
 }
+
+/**
+ * A presigned upload, plus the media id every later step refers to (§21).
+ *
+ * [uploadUrl] is a capability scoped to one object, one method and a short
+ * expiry. It is held only for the duration of the PUT and never persisted: it
+ * expires, and a cached one would be a stale key rather than a saved round trip.
+ */
+data class GoodPostUpload(
+    val mediaId: String,
+    val uploadUrl: String,
+    /** `Content-Type`, and anything else the signature covers. */
+    val uploadHeaders: Map<String, String>,
+    /** `image`, `video` or `audio`. */
+    val kind: String
+)
+
+/** A signed-in administrator, as the app holds it (§16). */
+data class AdminSession(
+    val token: String,
+    /** `super_admin` or `channel_admin`. The server decides; the app words it. */
+    val role: String,
+    val email: String,
+    /** The channel a `channel_admin` is confined to; null for a super admin. */
+    val channelId: String?
+) {
+    val isSuperAdmin: Boolean get() = role == "super_admin"
+}
+
+/** A value that is absent or JSON-null reads as null, not as "". */
+private fun JSONObject.nullableString(key: String): String? =
+    if (isNull(key)) null else optString(key).takeIf { it.isNotBlank() }

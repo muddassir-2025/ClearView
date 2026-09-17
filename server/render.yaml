@@ -109,56 +109,30 @@ services:
       - key: PUBLIC_BASE_URL
         sync: false
 
-      # Firebase Admin service account (Firebase → Project settings →
-      # Service accounts → Generate new private key). All three are REQUIRED:
-      # production refuses to boot with PHONE_VERIFY_MODE=firebase and no
-      # credentials, because phone sign-in would otherwise be unable to verify
-      # any token.
+      # The one account that can publish at all (§17).
       #
-      # FIREBASE_PRIVATE_KEY must keep its `\n` escapes on a single line. The
-      # helper in scripts/set-firebase-env.mjs produces exactly that.
-      - key: FIREBASE_PROJECT_ID
+      # There is no route that creates the first administrator — an
+      # unauthenticated "create the first admin" endpoint is a backdoor, not a
+      # bootstrap — so this is provisioned from the environment at boot.
+      #
+      # SUPER_ADMIN_PASSWORD_HASH is a bcrypt hash. Generate one with:
+      #   node -e "console.log(require('bcryptjs').hashSync(process.argv[1], 12))" 'secret'
+      # It is stored as-is; re-hashing it would hash the hash and the password
+      # would not work. SUPER_ADMIN_PASSWORD is accepted as an alternative and
+      # hashed once, so a deployment holding only a plaintext secret still works.
+      #
+      # Once this account exists it is never overwritten from here: a redeploy
+      # must not undo a password rotation made in the app.
+      - key: SUPER_ADMIN_EMAIL
         sync: false
-      - key: FIREBASE_CLIENT_EMAIL
+      - key: SUPER_ADMIN_PASSWORD_HASH
         sync: false
-      - key: FIREBASE_PRIVATE_KEY
-        sync: false
+      - key: SUPER_ADMIN_DISPLAY_NAME
+        value: Good Post Admin
 
-      # Email sign-in — the second method for entering Good Post.
-      #
-      # Two routes, and the mode is deliberately NOT pinned here: setting it in
-      # this file would let a blueprint sync silently revert a working choice
-      # back to one that cannot deliver. Set it in the dashboard.
-      #
-      #   smtp    → send through an authenticated mailbox (Gmail + an app
-      #             password). Reaches ANY recipient with no domain to own.
-      #             Costs the account's daily limit and reputation.
-      #   resend  → a provider API. Needs a sending domain VERIFIED in Resend;
-      #             `onboarding@resend.dev` only reaches your own address, which
-      #             is not a production value.
-      #   console → refused in production by src/env.ts: it writes live sign-in
-      #             codes into the process log.
-      #   disabled (default) → the endpoint answers `email_unavailable` and
-      #             everything else keeps working.
-      #
-      # Whichever is chosen, a half-configured deployment is already safe:
-      # src/email/sender.ts uses the provider only when its credentials are
-      # present, and otherwise answers `email_unavailable` on that one endpoint.
-      # In production src/env.ts refuses to boot on a chosen-but-unconfigured
-      # mode, so the mistake surfaces at deploy time rather than at sign-in.
-      #
-      # Steps for both routes: docs/EMAIL_SETUP.md.
-      - key: EMAIL_DELIVERY_MODE
-        sync: false
-      - key: RESEND_API_KEY
-        sync: false
-      - key: EMAIL_FROM
-        sync: false
-      # Only read when EMAIL_DELIVERY_MODE=smtp. SMTP_PASS is a Gmail APP
-      # PASSWORD (16 characters), never the account password.
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASS
+      # Shown by the app's "Don't have channel access?" line (§16). Public, and
+      # the deployment's own address rather than ours.
+      - key: ADMIN_CONTACT_EMAIL
         sync: false
 
       # ── Non-secret tuning, safe in git ────────────────────────────────
@@ -170,14 +144,14 @@ services:
       # S3 objects on the next run.
       - key: PURGE_GRACE_DAYS
         value: 0
-      # §19. env.ts refuses `false` in production; keeping it here makes the
-      # enforcement visible in the dashboard rather than implied by a default.
-      - key: BAN_PHONE_ENFORCED
-        value: true
-      - key: PHONE_VERIFY_MODE
-        value: firebase
-      - key: FCM_ENABLED
-        value: true
+      # The administrator sign-in budget: a ten-minute access token and a
+      # seven-day session, both refreshed rather than re-typed.
+      - key: ADMIN_ACCESS_TOKEN_TTL
+        value: 10m
+      - key: ADMIN_SESSION_TTL_DAYS
+        value: 7
+      - key: ADMIN_MIN_PASSWORD_LENGTH
+        value: 12
       - key: RETENTION_JOB_ENABLED
         value: true
       - key: RETENTION_CRON
@@ -186,14 +160,14 @@ services:
       # ── Deliberately ABSENT, and why ──────────────────────────────────
       #
       # CORS_ORIGINS — the Android client sends no Origin header, so it needs
-      #   no CORS at all. src/app.ts already refuses browsers outright when
-      #   this is empty, which is the correct posture until a browser client
-      #   exists. The admin dashboard's real origin goes here in M6. Never "*".
+      #   no CORS at all. src/app.ts already refuses browsers outright when this
+      #   is empty, which is the correct posture for an app-only client. Never
+      #   "*".
       #
-      # EMAIL_OTP_TTL_MINUTES / EMAIL_OTP_MAX_SENDS_PER_HOUR /
-      #   EMAIL_OTP_MAX_ATTEMPTS — same reasoning as the rate limits below:
-      #   they have code defaults (10 / 5 / 5) and belong in the dashboard if
-      #   you want to tune them, not duplicated here.
+      # PHONE_VERIFY_MODE / FIREBASE_* / EMAIL_* / OTP_* — gone with the
+      #   modules they configured. Good Post has no viewer accounts, so there is
+      #   no phone verification, no email sign-in code and no push token to
+      #   register. The only credential in the product is an administrator's.
       #
       # AWS_* — the media code is written (M3) but the credentials are not
       #   supplied yet, so the variables stay absent and the service keeps

@@ -1,6 +1,7 @@
 import { buildApp } from './app.js';
-import { closePool } from './db.js';
+import { closePool, db } from './db.js';
 import { env } from './env.js';
+import { ensureSuperAdmin } from './admin/bootstrap.js';
 import { describeActiveLimits, rateLimitConfigFromEnv } from './http/rateLimit.js';
 import { startRetentionJob } from './jobs/retention.js';
 
@@ -11,6 +12,30 @@ import { startRetentionJob } from './jobs/retention.js';
 for (const line of describeActiveLimits(rateLimitConfigFromEnv())) {
   console.log(line);
 }
+
+// §17: the super administrator comes from the environment and is reconciled at
+// boot, so a fresh deployment needs no manual step and a redeploy cannot lock
+// the operator out. Never awaited before `listen` — a database that is briefly
+// unreachable must delay provisioning, not the health check Render polls.
+void ensureSuperAdmin(db)
+  .then((result) => {
+    if (result.created) console.log(`[admin] super administrator provisioned (${result.adminId})`);
+    else if (result.reason === 'no_super_admin_configured') {
+      console.warn(
+        '[admin] no SUPER_ADMIN_EMAIL configured: readers can browse, but nobody can publish.'
+      );
+    } else if (result.reason === 'administrators_already_exist') {
+      console.warn(
+        '[admin] an administrator already exists, so SUPER_ADMIN_EMAIL was not applied. Sign in with the existing account.'
+      );
+    }
+  })
+  .catch((err: unknown) => {
+    // Never fatal: the reader surface does not depend on an administrator
+    // existing, and refusing to boot would take the whole product down over a
+    // configuration detail.
+    console.error('[admin] bootstrap failed:', (err as Error).message);
+  });
 
 const server = buildApp().listen(env.PORT, () => {
   console.log(`[api] listening on :${env.PORT} (${env.NODE_ENV})`);

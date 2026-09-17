@@ -628,7 +628,6 @@ This video cannot be played inside the app.</string>
     <!-- Good Post (§4). Its own tab behind an account; nothing else in ClearView
          requires one, and every string here is only ever shown inside it. -->
     <string name="goodpost_tab">Good Post</string>
-    <string name="goodpost_subtitle">Channels you follow</string>
     <string name="goodpost_not_configured_title">Good Post is not set up in this build</string>
     <string name="goodpost_not_configured_note">No backend URL is configured, so sign-in cannot work. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
     <string name="goodpost_retry">Retry</string>
@@ -667,10 +666,10 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_appearance">Appearance</string>
     <string name="goodpost_appearance_note">Make it yours. Saved on this device only.</string>
     <string name="goodpost_appearance_accent">Accent</string>
-    <string name="goodpost_appearance_backdrop">Backdrop</string>
-    <string name="goodpost_appearance_glass">Glass</string>
+    <string name="goodpost_appearance_theme">Theme</string>
     <string name="goodpost_media_tap_to_view">Tap to view</string>
     <string name="goodpost_media_fetching">Downloading…</string>
+    <string name="goodpost_media_preview_failed">Preview unavailable</string>
     <string name="goodpost_my_channel">My channel</string>
     <string name="goodpost_channel_posted_media">📷 Photo</string>
     <string name="goodpost_email_register_title">Create your account</string>
@@ -738,7 +737,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_followers">%1$s followers</string>
     <string name="goodpost_owner_note">You own this channel</string>
     <string name="goodpost_channel_no_description">No description yet</string>
-    <string name="goodpost_create_channel">New channel</string>
+    <string name="goodpost_create_channel">Create a channel</string>
     <string name="goodpost_create_title">Create a channel</string>
     <string name="goodpost_channel_name_label">Channel name</string>
     <string name="goodpost_channel_description_label">Description (optional)</string>
@@ -889,4 +888,106 @@ This video cannot be played inside the app.</string>
          silence the rest of the app with it. -->
     <string name="goodpost_notification_channel">Good Post</string>
     <string name="goodpost_notification_channel_desc">Posts from channels you follow, replies, and official notices.</string>
+
+    <!-- Good Post — the public channel browser (§3–§14).
+
+         Every string here is read by someone who has no account, so none of
+         them may mention signing in, following, or any other account concept. -->
+    <string name="goodpost_channels">Channels</string>
+    <string name="goodpost_explore">Explore</string>
+    <string name="goodpost_back">Back</string>
+    <string name="goodpost_dismiss">Dismiss</string>
+    <string name="goodpost_search_channels">Search channels…</string>
+    <string name="goodpost_sort_recent">Recent</string>
+    <string name="goodpost_sort_name">Name</string>
+    <string name="goodpost_channel">Channel</string>
+    <string name="goodpost_public_channel">Public channel</string>
+    <string name="goodpost_no_description">No description yet</string>
+    <string name="goodpost_channel_info">Channel info</string>
+    <string name="goodpost_forward">Forward</string>
+    <string name="goodpost_read_more">Read more</string>
+    <string name="goodpost_created_on">Created on %1$s</string>
+    <string name="goodpost_media_and_links">Media and links</string>
+    <string name="goodpost_notifications">Notifications</string>
+    <string name="goodpost_notifications_note">Saved on this device. Deliveries are not switched on yet.</string>
+    <string name="goodpost_media_unavailable">Media unavailable</string>
+    <string name="goodpost_play_video">Play video</string>
+
+    <!-- What a row says when the newest post carries no text (§5). -->
+    <string name="goodpost_posted_photo">Photo</string>
+    <string name="goodpost_posted_video">Video</string>
+    <string name="goodpost_posted_audio">Audio</string>
+    <string name="goodpost_posted_link">Link</string>
+    <string name="goodpost_posted_something">New post</string>
+
+    <string name="goodpost_empty_channels_title">No channels yet</string>
+    <string name="goodpost_empty_channels_note">Channels will appear here once they are published.</string>
+    <string name="goodpost_empty_explore_title">Nothing found</string>
+    <string name="goodpost_empty_explore_note">Try a different name or category.</string>
+    <string name="goodpost_empty_admin_title">No channels</string>
+    <string name="goodpost_empty_admin_note">Create one to start publishing.</string>
+
+    <!-- The administrator way in (§16, §19–§21). -->
+    <string name="goodpost_admin_signin_note">This is for channel administrators only. Readers do not need an account.</string>
+    <string name="goodpost_email">Email</string>
+    <string name="goodpost_email_hint">you@example.com</string>
+    <string name="goodpost_password">Password</string>
+    <string name="goodpost_password_hint">Your password</string>
+    <string name="goodpost_continue">Continue</string>
+    <string name="goodpost_no_access">Don’t have channel access?</string>
+    <string name="goodpost_contact">Contact: %1$s</string>
+    <string name="goodpost_admin_contact">admin@example.com</string>
+    <string name="goodpost_my_channels">My channels</string>
+    <string name="goodpost_edit">Edit</string>
+    <string name="goodpost_edit_channel">Edit channel</string>
+    <string name="goodpost_channel_name">Channel name</string>
+    <string name="goodpost_channel_name_hint">ClearView</string>
+    <string name="goodpost_channel_description">Description</string>
+    <string name="goodpost_channel_description_hint">What this channel publishes</string>
+    <string name="goodpost_category">Category</string>
+    <string name="goodpost_no_category">None</string>
+    <string name="goodpost_channel_admin_section">The account that will run this channel</string>
+    <string name="goodpost_admin_email">Admin email</string>
+    <string name="goodpost_admin_password">Admin password</string>
+
+    <string name="goodpost_create_post">Create post</string>
+    <string name="goodpost_post_text">Text</string>
+    <string name="goodpost_post_text_hint">What do you want to share?</string>
+    <string name="goodpost_post_link">Link (optional)</string>
+    <string name="goodpost_post_link_hint">https://…</string>
+    <string name="goodpost_video">Video</string>
+    <string name="goodpost_edit_post">Edit post</string>
+    <string name="goodpost_delete_post">Delete post</string>
+
+    <!-- Rare failures of the public surface (§24). Kept short: a reader can act
+         on "try again", and nothing else here is actionable. -->
+    <string name="goodpost_error_offline">Could not reach the server. Check your connection and try again.</string>
+    <string name="goodpost_error_not_configured">Good Post is not set up in this build.</string>
+    <string name="goodpost_error_not_found">That channel is not available.</string>
+    <string name="goodpost_error_invalid_credentials">Invalid credentials.</string>
+    <string name="goodpost_error_admin_unavailable">This server does not offer administrator access yet.</string>
+    <string name="goodpost_error_forbidden">This account cannot change that channel.</string>
+    <string name="goodpost_error_admin_locked">Too many failed attempts, or this account is disabled. Try again later.</string>
+
+    <!-- Attaching a file (§21, §22). Three answers rather than one, because
+         each needs a different thing from the person holding the phone:
+         pick another file, wait, or try again later. -->
+    <string name="goodpost_error_media_too_large">That file is too large to upload. Try a smaller one.</string>
+    <string name="goodpost_error_media_type">That file type cannot be posted. Images, video and audio only.</string>
+    <string name="goodpost_error_attachment_uploading">A file is still uploading. Wait for it to finish, then post.</string>
+    <string name="goodpost_error_attachment_failed">A file could not be attached. Remove it, or post without it.</string>
+
+    <!-- The composer's media strip (§21). -->
+    <string name="goodpost_add_media">Add photo or video</string>
+    <string name="goodpost_media_limit">That is the most files one post can hold</string>
+    <string name="goodpost_add_media_note">Images, video or audio.</string>
+    <string name="goodpost_remove_media">Remove %1$s</string>
+    <string name="goodpost_attachment_uploading">Uploading…</string>
+    <string name="goodpost_attachment_ready">Ready</string>
+    <string name="goodpost_attachment_failed">Failed</string>
+    <string name="goodpost_attachment_image">Image</string>
+    <string name="goodpost_attachment_video">Video</string>
+    <string name="goodpost_attachment_audio">Audio</string>
+    <string name="goodpost_media_unsupported">That file cannot be attached. Images, video and audio only.</string>
+    <string name="goodpost_media_edit_note">A post\u2019s files cannot be changed after publishing.</string>
 </resources>

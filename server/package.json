@@ -14,8 +14,6 @@
     "test": "vitest run",
     "migrate": "tsx src/migrate.ts",
     "migrate:prod": "node dist/migrate.js",
-    "firebase:env": "node scripts/set-firebase-env.mjs",
-    "firebase:verify": "tsx scripts/verify-firebase.ts",
     "env:check": "node scripts/normalize-env.mjs --check",
     "env:fix": "node scripts/normalize-env.mjs",
     "create-admin": "tsx src/create-admin.ts"
@@ -27,11 +25,9 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "firebase-admin": "^14.4.0",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.6.0",
-    "nodemailer": "^10.0.10",
     "pg": "^8.23.0",
     "zod": "^4.6.5"
   },
@@ -41,7 +37,6 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.20.3",
-    "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "supertest": "^7.2.2",

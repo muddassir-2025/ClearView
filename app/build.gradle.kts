@@ -156,14 +156,11 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
+    // Analytics only. Good Post deliberately does NOT bring in Firebase Auth or
+    // Cloud Messaging any more: its readers have no accounts to authenticate and
+    // no inbox to push to, so both dependencies were an unused surface that only
+    // widened what the app asks for at install time. Administrators sign in
+    // against the ClearView backend, and channel notifications are a device-local
+    // preference until real push infrastructure exists (§14).
     implementation("com.google.firebase:firebase-analytics")
-    // Firebase Phone Auth for Good Post (§2, §3). Version comes from the BOM.
-    // Firebase's only job is sending and checking the SMS — account, session,
-    // ban and channel state all live on the ClearView backend, which verifies
-    // the resulting ID token with the Admin SDK before trusting a number.
-    implementation("com.google.firebase:firebase-auth")
-    // Firebase Cloud Messaging for Good Post channel notifications (§17). The
-    // server writes the notification row BEFORE it pushes, so this only ever
-    // rings the phone — the inbox is correct whether or not a push arrives.
-    implementation("com.google.firebase:firebase-messaging")
 }

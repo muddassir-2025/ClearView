@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    // Applying five migrations to PGlite (a real Postgres compiled to WASM)
+    // Applying thirteen migrations to PGlite (a real Postgres compiled to WASM)
     // takes roughly ten seconds on its own — exactly the default hook timeout.
     // Every suite creates its own database in `beforeAll`, so under parallel
     // load files would intermittently fail there, and vitest reports a failed
@@ -25,37 +25,20 @@ export default defineConfig({
       JWT_REFRESH_SECRET: 'test-refresh-secret-padded-to-32-chars-min',
       PHONE_HASH_PEPPER: 'test-pepper-padded-to-32-characters-min',
       RETENTION_JOB_ENABLED: 'false',
-      FCM_ENABLED: 'false',
-      // Placeholders, and deliberately NOT real credentials. They exist so
-      // `firebaseConfigured` is deterministically true in the suite instead of
-      // depending on whether the machine running it happens to have a
-      // server/.env — a test that silently takes the "not configured" branch
-      // passes without exercising anything. Nothing here reaches Google: every
-      // suite injects its own verifier, and tests/firebase.test.ts injects the
-      // Admin app resolution with one that throws on purpose.
-      FIREBASE_PROJECT_ID: 'clearview-test-placeholder',
-      FIREBASE_CLIENT_EMAIL: 'test-placeholder@clearview-test-placeholder.iam.gserviceaccount.com',
-      FIREBASE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest-placeholder-not-a-real-key\n-----END PRIVATE KEY-----\n',
-      // Named rather than left empty, so the SMTP mailer's assertions are about
-      // a sender that could be wrong instead of two empty strings matching.
-      EMAIL_FROM: 'ClearView <test@example.test>',
+      // Left UNSET on purpose. `SUPER_ADMIN_EMAIL` is what a deployment uses to
+      // provision its first administrator, and the suite never boots the server
+      // — it builds the app directly and inserts its own fixture accounts. A
+      // value here would let a fixture accidentally depend on the environment
+      // instead of saying what it needs.
       RATE_LIMIT_MAX: '100000',
       AUTH_RATE_LIMIT_MAX: '100000',
-      // Every rule needs raising here, not just the ones that existed when
-      // this file was written. At the shipped default (40 writes/min/IP) the
-      // channel suite exhausts the budget part way through and reports 429s,
-      // which reads like a failing feature rather than a working limiter.
-      // The limiter is still asserted on purpose, with small windows, in
-      // tests/rate-limit.test.ts — so raising it here hides nothing.
+      // Every rule needs raising here, not just the ones that existed when this
+      // file was written. At the shipped default (40 writes/min/IP) an admin
+      // suite that publishes and uploads exhausts the budget part way through
+      // and reports 429s, which reads like a failing feature rather than a
+      // working limiter. The limiter is still asserted on purpose, with small
+      // windows, in tests/rate-limit.test.ts — so raising it here hides nothing.
       WRITE_RATE_LIMIT_MAX: '100000',
-      // Same reasoning as the write rule, and the same class of bug avoided:
-      // M5's report rule has a much tighter shipped default (10/min/IP) because
-      // a moderation queue is a shared resource, and the moderation suite files
-      // more reports than that from one address. Left at the default it fails
-      // as 429 part way through, which reads like a broken feature rather than
-      // a working limiter. The rule is asserted on purpose, with a small
-      // window, in tests/rate-limit.test.ts.
-      REPORT_RATE_LIMIT_MAX: '100000',
     },
   },
 });

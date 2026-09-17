@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { createHash, createHmac } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 // Only zod primitives that behave identically across zod 3 and 4 are used
@@ -37,14 +37,34 @@ const schema = z.object({
   ACCESS_TOKEN_TTL: z.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
+  // The pepper for every irreversible hash this service stores — IP hashes in
+  // the audit log, and refresh-token digests. The name is a leftover from the
+  // phone-identity model that migration 012 removed; renaming it would mean
+  // every deployment re-setting a secret it already has, for no change in
+  // behaviour.
   PHONE_HASH_PEPPER: z.string().min(1, 'PHONE_HASH_PEPPER is required'),
-  PHONE_HASH_PEPPER_VERSION: z.coerce.number().int().positive().default(1),
 
-  // ── Bootstrap owner (one-time; consumed by `npm run create-admin`) ──
-  BOOTSTRAP_ADMIN_EMAIL: z.string().optional(),
-  BOOTSTRAP_ADMIN_PASSWORD: z.string().optional(),
-  BOOTSTRAP_ADMIN_PHONE: z.string().optional(),
-  BOOTSTRAP_ADMIN_DISPLAY_NAME: z.string().default('ClearView Admin'),
+  // ── The first administrator (§17) ──
+  //
+  // §17 requires exactly one initial SUPER_ADMIN, configured on the SERVER and
+  // never in the Android app. `SUPER_ADMIN_PASSWORD_HASH` is a bcrypt hash and
+  // is the supported value; `SUPER_ADMIN_PASSWORD` is accepted so a deployment
+  // can be provisioned with a plaintext secret it already holds, and is hashed
+  // at boot rather than stored.
+  //
+  // There is no route that creates the first administrator. An unauthenticated
+  // "create the first admin" endpoint is not a bootstrap, it is a backdoor.
+  SUPER_ADMIN_EMAIL: z.string().optional(),
+  SUPER_ADMIN_PASSWORD_HASH: z.string().optional(),
+  SUPER_ADMIN_PASSWORD: z.string().optional(),
+  SUPER_ADMIN_DISPLAY_NAME: z.string().default('Good Post Admin'),
+  /**
+   * Shown by the app's "Don't have channel access?" line (§16).
+   *
+   * A deployment detail rather than a secret, and configurable because a
+   * hard-coded address is wrong for every installation but one.
+   */
+  ADMIN_CONTACT_EMAIL: z.string().default(''),
 
   // ── S3 ──
   AWS_REGION: z.string().default('eu-central-1'),
@@ -68,6 +88,8 @@ const schema = z.object({
   // their own storage forever and is never touched by this window, so a post
   // expiring here removes the server's copy and nothing else.
   GOODPOST_HISTORY_DAYS: z.coerce.number().int().positive().default(30),
+  /** Notifications are a DEVICE-LOCAL preference until real push exists (§14). */
+  DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
   // How long an expired post's rows survive before the physical delete.
   //
   // Zero, because the rule is "nothing sits on the server past the history
@@ -78,57 +100,19 @@ const schema = z.object({
   // the moment of the action, not carried in the post's own row.
   PURGE_GRACE_DAYS: z.coerce.number().int().nonnegative().default(0),
   EDIT_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
-  BAN_PHONE_ENFORCED: bool.default(true),
   MAX_TEXT_LENGTH: z.coerce.number().int().positive().default(4000),
   MAX_CHANNEL_NAME_LENGTH: z.coerce.number().int().positive().default(80),
   MAX_CHANNEL_DESCRIPTION_LENGTH: z.coerce.number().int().positive().default(500),
   DEFAULT_PAGE_SIZE: z.coerce.number().int().positive().default(30),
   MAX_PAGE_SIZE: z.coerce.number().int().positive().default(100),
-  DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
-  // One channel per account. Product decision, not a technical limit: a
-  // broadcaster has a single identity in Discover, so the feed cannot be
-  // flooded by one person registering fifty channels. Raise it only with that
-  // in mind — the create path already refuses past this number.
-  MAX_CHANNELS_PER_USER: z.coerce.number().int().positive().default(1),
 
-  // ── Engagement (§13, §14, §15) ──
-  // How long a second look at the same post counts as the SAME view. §15 asks
-  // for dedupe that a scroll loop cannot defeat; a window rather than "once
-  // ever" keeps the number meaningful (a post re-read next week is a view)
-  // while a pull-to-refresh cannot inflate it.
-  VIEW_DEDUPE_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
-  POLL_MIN_OPTIONS: z.coerce.number().int().min(2).default(2),
-  POLL_MAX_OPTIONS: z.coerce.number().int().positive().default(10),
-  /** The window a channel's analytics charts cover. */
-  ANALYTICS_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
-
-  // ── Moderation (§18) ──
-  MAX_REPORT_DETAILS_LENGTH: z.coerce.number().int().positive().default(2000),
-
-  // ── Admins (§20–§30) ──
-  // Shorter than a user session on purpose: the admin surface can ban
-  // identities and read every report, so a stolen token has a smaller window.
+  // ── Admins (§17, §18) ──
+  // Shorter than any reader-facing session on purpose: this token can publish
+  // and delete on a channel's behalf.
   ADMIN_ACCESS_TOKEN_TTL: z.string().default('10m'),
   ADMIN_SESSION_TTL_DAYS: z.coerce.number().int().positive().default(7),
-  /** §27's floor for a new administrator's password. */
+  /** §16's floor for a channel administrator's password. */
   ADMIN_MIN_PASSWORD_LENGTH: z.coerce.number().int().positive().default(12),
-  /** Official admin messages per hour, per administrator. */
-  ADMIN_MESSAGE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(30),
-
-  // ── Notifications (§17) ──
-  /** Device registrations accepted per account, so tokens cannot pile up. */
-  MAX_DEVICE_TOKENS_PER_USER: z.coerce.number().int().positive().default(10),
-  /** How long a delivered notification is kept before the sweep prunes it. */
-  NOTIFICATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
-  /**
-   * How long a push token may go unrefreshed before it is disabled.
-   *
-   * Longer than a phone's typical upgrade cycle is not the goal — the goal is
-   * "long enough that a working install always refreshes first". The client
-   * re-registers on every sign-in and launch, so this only ever catches a device
-   * that is gone.
-   */
-  DEVICE_TOKEN_STALE_DAYS: z.coerce.number().int().positive().default(120),
 
   // A carousel bound (§8). Enforced by the API rather than by a constraint,
   // because it is a product rule and not an invariant of the data.
@@ -139,56 +123,8 @@ const schema = z.object({
   RATE_LIMIT_MAX: z.coerce.number().int().positive().default(180),
   AUTH_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(12),
   WRITE_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(40),
-  REPORT_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
   LOGIN_MAX_FAILED_ATTEMPTS: z.coerce.number().int().positive().default(8),
   LOGIN_LOCKOUT_MINUTES: z.coerce.number().int().positive().default(15),
-  OTP_MAX_SENDS_PER_HOUR: z.coerce.number().int().positive().default(5),
-  OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
-  OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
-
-  // ── Phone verification / Firebase ──
-  PHONE_VERIFY_MODE: z.enum(['firebase', 'disabled']).default('firebase'),
-  FIREBASE_PROJECT_ID: z.string().default(''),
-  FIREBASE_CLIENT_EMAIL: z.string().default(''),
-  // Service-account keys are stored with literal \n sequences (a real newline
-  // cannot survive most secret stores or a .env line), so restore them here —
-  // once, at the edge — rather than in every caller of the Admin SDK.
-  FIREBASE_PRIVATE_KEY: z
-    .string()
-    .default('')
-    .transform((v) => v.replace(/\\n/g, '\n')),
-  FCM_ENABLED: bool.default(true),
-
-  // ── Email delivery (email sign-in codes) ──
-  // 'disabled' by default on purpose. Email sign-in is an ADDITION, so a
-  // deployment that has no email provider yet must keep working and answer
-  // `email_unavailable` on the one endpoint that needs it — not refuse to
-  // boot and take mobile sign-in down with it.
-  EMAIL_DELIVERY_MODE: z.enum(['resend', 'smtp', 'console', 'disabled']).default('disabled'),
-  RESEND_API_KEY: z.string().default(''),
-  /**
-   * The From: header, e.g. `ClearView <noreply@yourdomain>`.
-   *
-   * Under `smtp` this must be the authenticated mailbox (or an alias it may send
-   * as), because the password signs in as that account — a From: the provider
-   * has not authorised is a good way to have a message rejected outright.
-   */
-  EMAIL_FROM: z.string().default(''),
-  /**
-   * SMTP delivery, for a deployment with no sending domain to verify.
-   *
-   * Gmail's own SMTP is the case this exists for: the sender is a real mailbox
-   * that Google authenticates and signs for, so codes reach ANY recipient
-   * without owning a domain. `SMTP_HOST` defaults to Gmail and is overridable
-   * for any other provider.
-   */
-  SMTP_HOST: z.string().default('smtp.gmail.com'),
-  SMTP_PORT: z.coerce.number().int().positive().default(465),
-  SMTP_USER: z.string().default(''),
-  SMTP_PASS: z.string().default(''),
-  EMAIL_OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
-  EMAIL_OTP_MAX_SENDS_PER_HOUR: z.coerce.number().int().positive().default(5),
-  EMAIL_OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
 
   // ── Retention job (§11, §34) ──
   RETENTION_CRON: z.string().default('*/30 * * * *'),
@@ -219,61 +155,34 @@ export const isProduction = env.NODE_ENV === 'production';
 const PLACEHOLDER = /^(replace-with|changeme|change-me|your-|placeholder|xxx)/i;
 
 function assertReal(name: string, value: string): void {
-  if (!value) return; // emptiness is reported per-capability (S3/Firebase) below
+  if (!value) return;
   if (PLACEHOLDER.test(value) || value.includes('PASSWORD@')) {
     throw new Error(`[env] ${name} is still a placeholder value. Set a real secret before running in production.`);
   }
 }
 
 if (isProduction) {
-  for (const name of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'PHONE_HASH_PEPPER']) {
+  for (const name of ['JWT_SECRET', 'PHONE_HASH_PEPPER']) {
     assertReal(name, String((env as Record<string, unknown>)[name] ?? ''));
-  }
-  if (env.JWT_SECRET === env.JWT_REFRESH_SECRET) {
-    throw new Error('[env] JWT_SECRET and JWT_REFRESH_SECRET must differ.');
   }
   if (env.JWT_SECRET.length < 32 || env.PHONE_HASH_PEPPER.length < 32) {
     throw new Error('[env] JWT_SECRET and PHONE_HASH_PEPPER must each be at least 32 characters.');
   }
 
-  // Capabilities that exist for tests and staging, and that would be a silent
-  // hole in production. Refusing to boot is the same policy the secrets above
-  // follow: a service that starts with authentication disabled is far worse
-  // than one that refuses to start and says why.
-  if (env.PHONE_VERIFY_MODE === 'disabled') {
+  // §17: there is exactly ONE initial super administrator and it comes from the
+  // server's own configuration. A production deployment that has none can serve
+  // readers but nobody can publish, and the first person to discover that would
+  // be a user looking at a channel list that never changes — so it is refused at
+  // boot, with the variable named, instead.
+  if (!env.SUPER_ADMIN_EMAIL) {
+    throw new Error('[env] SUPER_ADMIN_EMAIL is required in production: no one could sign in to publish.');
+  }
+  if (!env.SUPER_ADMIN_PASSWORD_HASH && !env.SUPER_ADMIN_PASSWORD) {
     throw new Error(
-      '[env] PHONE_VERIFY_MODE=disabled is refused in production: it would accept a "phone:<E.164>" string as proof of number ownership.'
+      '[env] SUPER_ADMIN_PASSWORD_HASH (or SUPER_ADMIN_PASSWORD, hashed at boot) is required in production.'
     );
   }
-  if (!env.BAN_PHONE_ENFORCED) {
-    throw new Error(
-      '[env] BAN_PHONE_ENFORCED=false is refused in production: bans on a mobile identity would not be enforced (§19).'
-    );
-  }
-  if (env.EMAIL_DELIVERY_MODE === 'console') {
-    throw new Error(
-      '[env] EMAIL_DELIVERY_MODE=console is refused in production: it writes live sign-in codes into the process log.'
-    );
-  }
-  // Chosen but unconfigured is refused rather than degraded to `disabled`:
-  // silently answering `email_unavailable` to every request is exactly the
-  // failure this check turns into a one-line fix at boot.
-  if (env.EMAIL_DELIVERY_MODE === 'smtp' && (!env.SMTP_USER || !env.SMTP_PASS)) {
-    throw new Error(
-      '[env] EMAIL_DELIVERY_MODE=smtp requires SMTP_USER and SMTP_PASS (for Gmail, a 16-character app password).'
-    );
-  }
-  if (env.EMAIL_DELIVERY_MODE === 'resend' && !env.RESEND_API_KEY) {
-    throw new Error('[env] EMAIL_DELIVERY_MODE=resend requires RESEND_API_KEY.');
-  }
-  if (
-    env.PHONE_VERIFY_MODE === 'firebase' &&
-    (!env.FIREBASE_PROJECT_ID || !env.FIREBASE_CLIENT_EMAIL || !env.FIREBASE_PRIVATE_KEY)
-  ) {
-    throw new Error(
-      '[env] PHONE_VERIFY_MODE=firebase requires FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and FIREBASE_PRIVATE_KEY.'
-    );
-  }
+  assertReal('SUPER_ADMIN_PASSWORD', env.SUPER_ADMIN_PASSWORD ?? '');
 }
 
 /** Parse and normalise a URL from the environment. Throws on garbage. */
@@ -294,35 +203,12 @@ export const s3Configured = Boolean(env.AWS_S3_BUCKET) &&
   (env.AWS_USE_INSTANCE_ROLE || Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY));
 
 /**
- * Privacy-preserving phone identity (§19 / §38).
+ * Hash a client IP, so the audit log never keeps a raw address (§29).
  *
- * A phone number only ever exists in memory between Firebase verifying it and
- * this function hashing it. HMAC (not a bare hash) is used so that a leaked
- * `phone_hash` column cannot be reversed by brute-forcing the ~10^10 possible
- * E.164 numbers — without the pepper, that table is enumerable in minutes.
+ * HMAC rather than a bare digest: an IPv4 address has only ~4 billion possible
+ * values, so an unpeppered column would be a list of addresses that anyone with
+ * a copy of the table could enumerate in minutes.
  */
-export function hashPhone(e164: string): string {
-  return createHash('sha256')
-    .update(`${env.PHONE_HASH_PEPPER}:${e164}`)
-    .digest('hex');
-}
-
-/**
- * HMAC of an email sign-in code — the only form that is ever stored.
- *
- * HMAC rather than a bare digest, and the address mixed into the input, for two
- * reasons that both matter here: a 6-digit code has only a million possible
- * values, so an unsalted digest in a leaked dump would be reversed from a
- * precomputed table in seconds; and the same code sent to two different
- * addresses must not produce the same stored value.
- */
-export function hashEmailCode(emailNormalized: string, code: string): string {
-  return createHmac('sha256', env.PHONE_HASH_PEPPER)
-    .update(`email-otp:${emailNormalized}:${code}`)
-    .digest('hex');
-}
-
-/** Hash a client IP the same way, so §29 correlation never keeps a raw IP. */
 export function hashIp(ip: string): string {
   return createHash('sha256').update(`${env.PHONE_HASH_PEPPER}:ip:${ip}`).digest('hex');
 }

@@ -120,27 +120,36 @@ export function asQueryable(pglite: PGlite): Queryable {
 }
 
 /**
- * Delete every row of the Good Post tables, leaving the schema in place.
+ * Reset the content tables between tests, leaving the schema in place.
  *
  * Cheaper and far more honest than re-creating the database per test: the
  * indexes, triggers and enums under test are created once, exactly as
  * `migrate` would create them, and only the data is reset.
+ *
+ * Two things are deliberately NOT reset, and both are consequences of the
+ * schema rather than conveniences:
+ *
+ *  * **`admin_users` and `admin_audit_logs` survive.** The audit log is
+ *    append-only by a database trigger, and its `admin_id` reference is NO
+ *    ACTION, so an administrator who has ever acted cannot be deleted — by
+ *    `DELETE` or by `TRUNCATE` reaching them through the cascade. That is the
+ *    property the table exists for. Suites therefore create their own accounts
+ *    with unique addresses and never assume an empty table.
+ *
+ *  * **Channels bound to an administrator are kept**, for the same reason: they
+ *    are reachable from those rows. Channels seeded directly by a test have no
+ *    administrator and are removed, which is what makes a fixture's own rows
+ *    disappear between cases.
+ *
+ * `channel_categories` is absent for the original reason: it holds
+ * migration-seeded reference data, and deleting it would leave every channel
+ * creation in the suite failing on a missing category.
  */
 export async function resetData(pglite: PGlite): Promise<void> {
-  // Explicit table list rather than relying on TRUNCATE's CASCADE to reach the
-  // channel tables through their foreign keys. The cascade would work, but it
-  // would also silently swallow a future table that references `users`, and a
-  // test that resets "some of" the data is worse than one that fails loudly.
-  //
-  // `channel_categories` is deliberately absent: it holds migration-seeded
-  // reference data, not test data, and deleting it would leave every channel
-  // creation in the suite failing on a missing category.
+  await pglite.exec(`TRUNCATE post_media, posts CASCADE`);
   await pglite.exec(
-    `TRUNCATE poll_votes, poll_options, polls, post_views, post_reactions, post_media,
-              posts, channel_blocks, channel_followers, channel_admins,
-              channels, banned_identities, email_verifications, phone_verifications,
-              user_sessions, users
-     RESTART IDENTITY CASCADE`
+    `DELETE FROM channels
+      WHERE id NOT IN (SELECT channel_id FROM admin_users WHERE channel_id IS NOT NULL)`
   );
 }
 
@@ -151,32 +160,61 @@ export function one<T>(rows: T[]): T {
   return row;
 }
 
-let phoneCounter = 0;
+let adminCounter = 0;
 
 /**
- * Inserts a user with plausible values, overridable per test. The default
- * phone hash is unique per call so tests that do not care about the abuse
- * identity are not fighting the uniqueness constraint.
+ * Insert an administrator directly.
+ *
+ * Deliberately not through the API, because the API has no route that creates
+ * the FIRST administrator — §17 provisions it from the deployment's environment
+ * and nothing else, and that absence is part of what the suite pins. Tests that
+ * need a signed-in account therefore stand in for the deployment's own
+ * configuration.
  */
-export async function insertUser(
+export async function insertAdmin(
   db: PGlite,
   overrides: Record<string, unknown> = {}
 ): Promise<string> {
-  phoneCounter += 1;
+  adminCounter += 1;
+  const suffix = `${adminCounter}-${Math.random().toString(36).slice(2, 8)}`;
+  const email = `admin-${suffix}@example.test`;
+
   const values = {
-    display_name: `user-${phoneCounter}`,
-    email: `user${phoneCounter}@example.test`,
-    email_normalized: `user${phoneCounter}@example.test`,
-    phone_hash: `hash-${phoneCounter}`,
+    display_name: `admin-${suffix}`,
+    email,
+    email_normalized: email,
+    // A REAL bcrypt hash of the password the suite signs in with, so the login
+    // path under test is the login path in production rather than a stub.
+    password_hash: await testPasswordHash(),
+    role: 'super_admin',
+    status: 'active',
     ...overrides,
   };
 
   const columns = Object.keys(values);
   const placeholders = columns.map((_, i) => `$${i + 1}`).join(', ');
   const rows = await db.query<{ id: string }>(
-    `INSERT INTO users (${columns.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+    `INSERT INTO admin_users (${columns.join(', ')}) VALUES (${placeholders}) RETURNING id`,
     Object.values(values)
   );
 
   return one(rows.rows).id;
+}
+
+/** The password every fixture account is created with. */
+export const TEST_PASSWORD = 'test-password-long-enough';
+
+/**
+ * bcrypt of [TEST_PASSWORD], computed once per process.
+ *
+ * Twelve rounds is deliberately slow, and a suite that re-hashed it per fixture
+ * would spend most of its time in the hash function.
+ */
+let hashPromise: Promise<string> | null = null;
+
+async function testPasswordHash(): Promise<string> {
+  if (!hashPromise) {
+    hashPromise = import('../../src/admin/service.js').then((m) => m.hashPassword(TEST_PASSWORD));
+  }
+  return hashPromise;
 }

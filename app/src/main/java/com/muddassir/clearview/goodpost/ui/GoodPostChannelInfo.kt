@@ -1,0 +1,425 @@
+package com.muddassir.clearview.goodpost.ui
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Forward
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.GoodPostUiState
+import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.GoodPostImages
+import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
+import com.muddassir.clearview.goodpost.data.parseIsoMillis
+
+/**
+ * A channel's information page (§11–§14).
+ *
+ * The structure is the one a channel profile has: a large circular picture with
+ * the name under it, one neutral label saying what this is, three actions, the
+ * description with the rest of it behind "Read more", when the channel started,
+ * a strip of what it has published, and its notification switch.
+ *
+ * The label is "Public channel" rather than a follower count (§11), and that is
+ * not a placeholder-to-be. Good Post has no accounts, so it has no follower
+ * accounts to count — a number there would be invented, and an invented number
+ * under a channel's name is the single most dishonest thing this screen could
+ * do.
+ */
+@Composable
+internal fun GoodPostChannelInfo(
+    state: GoodPostUiState,
+    channelId: String,
+    viewModel: GoodPostViewModel
+) {
+    val context = LocalContext.current
+    val channel = state.channel
+
+    LaunchedEffect(channelId) { viewModel.loadMedia(channelId) }
+
+    Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
+        WaTopBar(
+            title = "",
+            navigation = {
+                WaIconAction(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    description = stringResource(R.string.goodpost_back),
+                    onClick = { viewModel.back() }
+                )
+            },
+            actions = {
+                channel?.let { known ->
+                    WaOverflowMenu(
+                        items = listOf(
+                            WaMenuItem(
+                                label = stringResource(R.string.goodpost_share),
+                                onClick = { shareChannel(context, known.name, known.shareLink) }
+                            )
+                        )
+                    )
+                }
+            }
+        )
+
+        if (channel == null) {
+            CenteredProgress()
+            return@Column
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+        ) {
+            Spacer(Modifier.height(28.dp))
+
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                WaAvatar(name = channel.name, size = 104.dp, url = channel.iconUrl)
+            }
+
+            Spacer(Modifier.height(18.dp))
+
+            Text(
+                text = channel.name,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                color = Wa.Text,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            // §11: "Public channel" label
+            Text(
+                text = stringResource(R.string.goodpost_public_channel),
+                modifier = Modifier.fillMaxWidth(),
+                color = Wa.TextDim,
+                fontSize = 14.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                ChannelAction(
+                    icon = Icons.AutoMirrored.Filled.Forward,
+                    label = stringResource(R.string.goodpost_forward),
+                    onClick = { shareChannel(context, channel.name, channel.shareLink) }
+                )
+                ChannelAction(
+                    icon = Icons.Filled.Share,
+                    label = stringResource(R.string.goodpost_share),
+                    onClick = { shareChannel(context, channel.name, channel.shareLink) }
+                )
+                ChannelAction(
+                    icon = Icons.Filled.Search,
+                    label = stringResource(R.string.goodpost_search),
+                    onClick = { viewModel.openExplore(channel.name) }
+                )
+            }
+
+            Spacer(Modifier.height(28.dp))
+
+            ChannelDescription(
+                description = channel.description,
+                expanded = state.descriptionExpanded,
+                onToggle = viewModel::toggleDescription
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            val createdAt = parseIsoMillis(channel.createdAt)
+            if (createdAt != null) {
+                Text(
+                    text = stringResource(R.string.goodpost_created_on, waShortDate(createdAt)),
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                    color = Wa.TextDim,
+                    fontSize = 13.sp
+                )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            MediaAndLinks(
+                items = state.media,
+                loading = state.mediaLoading,
+                onOpen = { item -> openMediaUrl(context, item.url) }
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            NotificationsRow(
+                muted = state.hasMuted(channel.id),
+                onToggle = { muted -> viewModel.toggleMuted(channel.id, muted) }
+            )
+
+            Spacer(Modifier.height(40.dp))
+        }
+    }
+}
+
+/**
+ * One of the three channel actions: an icon in a round control with its label
+ * underneath (§11, Screenshot 3).
+ */
+@Composable
+private fun ChannelAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(Wa.Bar)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = label, tint = Wa.Text, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(text = label, color = Wa.Text, fontSize = 12.5.sp, fontWeight = FontWeight.Medium)
+    }
+}
+
+/**
+ * The channel's description, with the rest of it behind "Read more" (§12).
+ *
+ * Collapsed by line count rather than by character count: what has to fit is the
+ * screen, and a character budget that looks right on one device is two lines on
+ * another and five on a third.
+ */
+@Composable
+private fun ChannelDescription(description: String?, expanded: Boolean, onToggle: () -> Unit) {
+    val text = description?.takeIf { it.isNotBlank() }
+        ?: stringResource(R.string.goodpost_no_description)
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        Text(
+            text = stringResource(R.string.goodpost_channel_description),
+            color = Wa.Text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = text,
+            color = Wa.TextDim,
+            fontSize = 14.sp,
+            maxLines = if (expanded) Int.MAX_VALUE else 3,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (!expanded && description != null && description.length > 80) {
+            Text(
+                text = stringResource(R.string.goodpost_read_more),
+                color = Wa.StampRecent,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clickable(onClick = onToggle)
+                    .padding(top = 4.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Recent images and videos (§13, Screenshot 3).
+ */
+@Composable
+private fun MediaAndLinks(
+    items: List<GoodPostMediaItem>,
+    loading: Boolean,
+    onOpen: (GoodPostMediaItem) -> Unit
+) {
+    if (items.isEmpty() && !loading) return
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.goodpost_media_and_links),
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            if (items.isNotEmpty()) {
+                Text(
+                    text = "${items.size} >",
+                    color = Wa.TextDim,
+                    fontSize = 14.sp
+                )
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        LazyRow(
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(items, key = { it.id }) { item ->
+                MediaThumbnail(item = item, onClick = { onOpen(item) })
+            }
+        }
+    }
+}
+
+/** One square thumbnail in the strip. */
+@Composable
+private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
+    var bitmap by remember(item.url) { mutableStateOf(GoodPostImages.peek(item.url)) }
+
+    LaunchedEffect(item.url) {
+        if (bitmap == null) bitmap = GoodPostImages.load(item.url, maxWidthPx = 240)
+    }
+
+    Box(
+        modifier = Modifier
+            .size(104.dp)
+            .clip(WaMediaShape)
+            .background(Wa.Pressed)
+            .clickable(enabled = !item.url.isNullOrBlank(), onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        val current = bitmap
+        if (current != null) {
+            Image(
+                bitmap = current.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        if (item.isVideo) {
+            Box(
+                modifier = Modifier
+                    .size(30.dp)
+                    .clip(CircleShape)
+                    .background(Wa.Canvas),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = Wa.Text,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The notification switch (§14).
+ *
+ * The preference is stored on this device, and the row says what it is: with no
+ * accounts there is nowhere else to keep it, and with no push infrastructure
+ * behind it the switch records an intent rather than promising a delivery. The
+ * note under it is the honest half of that — a switch that silently does nothing
+ * is worse than one that says what it does.
+ */
+@Composable
+private fun NotificationsRow(muted: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            Icons.Filled.Notifications,
+            contentDescription = null,
+            tint = Wa.TextDim,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(14.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.goodpost_notifications),
+                color = Wa.Text,
+                fontSize = 15.sp
+            )
+            Text(
+                text = stringResource(R.string.goodpost_notifications_note),
+                color = Wa.TextDim,
+                fontSize = 12.sp
+            )
+        }
+        Switch(
+            checked = !muted,
+            onCheckedChange = { enabled -> onToggle(!enabled) },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Wa.OnAccent,
+                checkedTrackColor = Wa.Accent
+            )
+        )
+    }
+}
+
+/** Hand a URL to whatever the device opens it with. */
+private fun openMediaUrl(context: android.content.Context, url: String?) {
+    if (url.isNullOrBlank()) return
+    try {
+        context.startActivity(
+            android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(url)
+            )
+        )
+    } catch (e: Exception) {
+        // Nothing on the device can open it. Silent on purpose: the tap simply
+        // has no handler, which is not worth an interruption.
+    }
+}

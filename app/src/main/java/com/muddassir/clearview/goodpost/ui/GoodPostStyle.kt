@@ -1,6 +1,6 @@
 package com.muddassir.clearview.goodpost.ui
 
-import android.os.Build
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,19 +15,18 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -37,29 +36,32 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
-import com.muddassir.clearview.goodpost.data.GoodPostThemeStore
+import com.muddassir.clearview.goodpost.GoodPostError
+import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.goodPostErrorFor
 import java.time.Instant
 import java.time.LocalDate
@@ -69,121 +71,76 @@ import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Good Post's presentation layer, styled as a messaging app.
+ * Good Post's presentation layer: the palette and the primitives every screen is
+ * built from.
  *
- * WhatsApp Channels is the reference, so this file holds the palette and the
- * handful of primitives every screen is built from: a bar, an avatar, a list
- * row, a bubble, a pill, an input bar. Screens compose these rather than
- * reaching for Material defaults, because the point of the redesign is that the
- * whole tab looks like ONE product — a stray `Button` in the Material theme is
- * exactly what made the previous screens read as a form rather than a chat.
+ * The reference is WhatsApp's Updates → Channels screen, and what is borrowed is
+ * the LAYOUT and the HIERARCHY: an almost-black list on a slightly darker
+ * canvas, 49dp circular avatars, a bold one-line name over a gray one-line
+ * preview, a timestamp on the right, hairline separators inset past the avatar,
+ * compact rows rather than cards, and one green accent used sparingly. No
+ * WhatsApp asset, logo or font is reproduced — the icons are Material's and the
+ * palette is stated below.
  *
- * What is borrowed is the LAYOUT and the BEHAVIOUR: where things sit, how rows
- * are spaced, how a bubble wraps its own timestamp, that a poll shows bars once
- * you have voted. No WhatsApp asset, logo, icon or font is reproduced here —
- * the icons are Material's and the palette is stated below.
- *
- * Colours are fixed rather than read from the app theme. Good Post is a dark
- * surface on purpose: the rest of ClearView is a reader people open in low
- * light, and a bright chat tab beside it would look like a different app.
- * Everything is named after its role, so a light theme later is a change to
- * this object and nothing else.
+ * The palette is FLAT and DARK by design (§2, §29). Good Post has no light mode
+ * and no theme picker: a channel list is read at a glance in a hallway, and the
+ * dark surface is the one that makes the white names and the green timestamps
+ * the loudest things on it. Nothing here is translucent, blurred or shadowed —
+ * a channel row is separated by a hairline and a surface, which is what keeps a
+ * list of fifty channels scannable.
  */
 internal object Wa {
 
-    /**
-     * The user's choices, read live.
-     *
-     * Every colour below that the user can change goes through this, and
-     * reading `GoodPostThemeStore.current` inside a composable is what makes a
-     * new accent take effect without restarting anything. Nothing else about
-     * the palette moved: fixed neutrals stay fixed, because a chat has to stay
-     * legible whatever accent is chosen.
-     */
-    private val theme get() = GoodPostThemeStore.current
-
-    /** Behind a chat canvas — a thread, a channel's posts. */
+    /** Behind the list and every pushed screen. */
     val Canvas = Color(0xFF0B141A)
 
-    /** Behind a list — channels, Discover, the inbox. */
-    val List = Color(0xFF111B21)
+    /** Top bar surface - seamless with dark canvas */
+    val TopBar = Color(0xFF0B141A)
 
-    /** The bars: top bar, search field, an incoming bubble. */
+    /** Behind a list — channels, Explore, the administrator list. */
+    val List = Color(0xFF0B141A)
+
+    /** The bars: search field, pill button, dialog surfaces. */
     val Bar = Color(0xFF202C33)
 
     /** A pressed row, and any control that is present but inert. */
-    val Pressed = Color(0xFF2A3942)
+    val Pressed = Color(0xFF182229)
 
-    val BubbleIn = Color(0xFF202C33)
+    /** A post's container on the feed - WhatsApp channel update olive green (§9, Screenshot 4). */
+    val Bubble = Color(0xFF1F3C2C)
 
-    /**
-     * An outgoing bubble.
-     *
-     * Derived from the accent rather than fixed, so the messages a user writes
-     * wear their own colour — and darkened towards the canvas first, because an
-     * accent bright enough to be a button is too bright to read 15sp of text
-     * against.
-     */
-    val BubbleOut: Color get() = darkened(Color(theme.accent.pressed), 0.18f)
+    /** Text inside the post bubble */
+    val BubbleText = Color(0xFFE9EDEF)
 
-    /** The accent: buttons, the send button, the unread badge, a FAB. */
-    val Accent: Color get() = Color(theme.accent.fill)
-    val AccentPressed: Color get() = Color(theme.accent.pressed)
+    /** Subtle sage-green timestamp inside the olive bubble */
+    val BubbleTime = Color(0xFF8AA89B)
+
+    /** Small forward button background next to post bubbles */
+    val ForwardBg = Color(0xFF182229)
+
+    /** Background for centered date separators */
+    val DatePillBg = Color(0xFF182229)
+
+    /** The accent: WhatsApp green, unread stamps, FAB, primary button. */
+    val Accent = Color(0xFF00A884)
+
+    /** Ink that goes ON the accent. */
+    val OnAccent = Color(0xFF0B141A)
 
     val Text = Color(0xFFE9EDEF)
     val TextDim = Color(0xFF8696A0)
-    val Divider = Color(0xFF222D34)
+    val Divider = Color(0xFF1F2C34)
 
-    /** A channel's own name inside its bubble — WhatsApp tints it. */
-    val NameTint = Color(0xFF7FDBCA)
-
-    /** The read-receipt blue. */
-    val Tick = Color(0xFF53BDEB)
+    /** A recent timestamp, tinted WhatsApp vibrant green (§4). */
+    val StampRecent = Color(0xFF25D366)
 
     val Danger = Color(0xFFF15C6D)
-
-    // ── Glass ───────────────────────────────────────────────────────────
-    //
-    // The surfaces above are flat, and everything below makes a few of them
-    // translucent so the backdrop shows through. Glassmorphism here is a LAYER,
-    // not a repaint: the bars, sheets, dialogs and cards float, while a message
-    // bubble stays opaque — text you read has to sit on something solid, and a
-    // blurred bubble is a readability bug wearing a trend.
-
-    /** A panel that floats above the canvas: bars, sheets, cards, dialogs. */
-    val Glass: Color get() = Color(theme.glass.fill)
-
-    /** A lighter glass, for a panel on top of another panel. */
-    val GlassHigh: Color get() = Color(theme.glass.high)
-
-    /** How far the backdrop is blurred behind a panel, in dp. */
-    val GlassBlur: Dp get() = theme.glass.blur.dp
-
-    /** The 1px edge that makes a translucent panel read as a pane of glass. */
-    val GlassBorder = Color(0x33FFFFFF)
-
-    /**
-     * The dreamy canvas: two stops, painted top to bottom.
-     *
-     * A gradient rather than a colour because a flat dark surface reads as
-     * "terminal". These are the same two hues as [Canvas] and [List] with a
-     * little more blue in them, so every existing screen stays legible and only
-     * the mood changes.
-     */
-    val DreamTop: Color get() = Color(theme.backdrop.top)
-    val DreamBottom: Color get() = Color(theme.backdrop.bottom)
-
-    /** The two soft glows that sit behind the gradient. */
-    val GlowOne = Color(0x3327C4A6)
-    val GlowTwo = Color(0x2E4C6FE8)
 
     /**
      * Avatar fills, picked by name so a channel keeps its colour.
      *
      * A stable colour per name is what makes a list scannable: the eye learns
-     * "the teal one" and finds it again without reading the label. Deriving it
-     * from the id instead would be equally stable and equally useless to look
-     * at, which is why the name wins.
+     * "the teal one" and finds it again without reading the label.
      */
     private val AvatarFills = listOf(
         Color(0xFF6A7175),
@@ -199,115 +156,26 @@ internal object Wa {
     fun avatarFill(seed: String): Color =
         if (seed.isEmpty()) AvatarFills.first()
         else AvatarFills[abs(seed.hashCode()) % AvatarFills.size]
-
-    /**
-     * A colour darkened towards black.
-     *
-     * Used to turn a button-bright accent into a bubble's background: the two
-     * have to be different tints of the same hue, and scaling the channels is
-     * the only honest way to keep them related when the accent is a choice.
-     */
-    private fun darkened(color: Color, amount: Float): Color = Color(
-        red = color.red * (1f - amount),
-        green = color.green * (1f - amount),
-        blue = color.blue * (1f - amount),
-        alpha = color.alpha
-    )
 }
 
-// ── The dreamy layer ────────────────────────────────────────────────────
+// ── Surfaces ────────────────────────────────────────────────────────────
 
-/**
- * The background every Good Post screen is painted on.
- *
- * Two stops, top to bottom, plus two wide radial glows near the top corners.
- * The glows are what the glass panels above actually show through — a
- * translucent bar over a flat colour looks like a grey bar, and the same bar
- * over a gradient looks like glass, which is the whole effect.
- *
- * Drawn with plain [Box]es rather than a shader or an image: a gradient and two
- * radial gradients are cheap, they cost nothing to scroll over, and they scale
- * to any screen. An asset would need density buckets and would still not be
- * smoother.
- */
+/** The background every Good Post screen is painted on. A flat colour (§29). */
 @Composable
-internal fun WaDreamyBackdrop(
+internal fun WaBackdrop(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
-    Box(modifier = modifier.fillMaxSize().background(Wa.DreamBottom)) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(listOf(Wa.DreamTop, Wa.DreamBottom))
-                )
-        )
-
-        // The teal glow, off the top-left corner.
-        Box(
-            modifier = Modifier
-                .size(360.dp)
-                .offset(x = (-120).dp, y = (-140).dp)
-                .background(Brush.radialGradient(listOf(Wa.GlowOne, Color.Transparent)))
-        )
-
-        // The blue one, top-right, so the two never read as a single light
-        // source and the canvas has a direction.
-        Box(
-            modifier = Modifier
-                .size(320.dp)
-                .align(Alignment.TopEnd)
-                .offset(x = 120.dp, y = (-100).dp)
-                .background(Brush.radialGradient(listOf(Wa.GlowTwo, Color.Transparent)))
-        )
-
-        content()
-    }
-}
-
-/**
- * A translucent panel: the bar, the composer tray, a card, a dialog.
- *
- * `blurBehind` applies a real blur to whatever is drawn BENEATH it, which is
- * what makes a scrolling list look like it is passing under glass. It is
- * opt-in because it costs a render pass, and it is skipped below API 31 where
- * `Modifier.blur` does nothing — the translucent fill and the hairline border
- * already carry the look on their own, so the fallback is a slightly flatter
- * panel rather than a missing one.
- */
-@Composable
-internal fun WaGlass(
-    modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(0.dp),
-    color: Color = Wa.Glass,
-    border: Color = Wa.GlassBorder,
-    blurBehind: Dp = 0.dp,
-    content: @Composable () -> Unit
-) {
-    val glassy = if (blurBehind > 0.dp && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        modifier.clip(shape).blur(blurBehind)
-    } else {
-        modifier
-    }
-
-    Box(
-        modifier = glassy
-            .background(color, shape)
-            .border(width = 0.5.dp, color = border, shape = shape)
-    ) {
-        content()
-    }
+    Box(modifier = modifier.fillMaxSize().background(Wa.List)) { content() }
 }
 
 // ── Bars ────────────────────────────────────────────────────────────────
 
 /**
- * The top bar: one line of title, an optional second line, up to two actions.
+ * The top bar: a title, an optional back arrow, and the bar's actions.
  *
- * Hand-built rather than Material's `TopAppBar` because this bar is 56dp with a
- * 19sp medium title, and those two numbers are most of what makes a screen read
- * as familiar.
+ * The title is large and bold (§3) rather than Material's 19sp medium, because
+ * "Good Post" here is the name of the screen rather than the name of a document.
  */
 @Composable
 internal fun WaTopBar(
@@ -315,53 +183,57 @@ internal fun WaTopBar(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     navigation: (@Composable () -> Unit)? = null,
+    /**
+     * Opens the channel's information page when the title is tapped.
+     */
+    onTitleClick: (() -> Unit)? = null,
+    showDivider: Boolean = false,
     actions: @Composable () -> Unit = {}
 ) {
-    WaGlass(
-        modifier = modifier.fillMaxWidth(),
-        color = Wa.Glass,
-        // A real backdrop blur on the bar is what makes a list slide under it
-        // like a sheet of glass rather than behind an opaque strip. Its
-        // strength follows the glass setting, so choosing "Airy" thickens the
-        // blur as well as thinning the fill.
-        blurBehind = Wa.GlassBlur
-    ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(56.dp)
-            .padding(start = 4.dp, end = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        navigation?.invoke()
-
-        Column(
+    Column(modifier = modifier.fillMaxWidth().background(Wa.TopBar)) {
+        Row(
             modifier = Modifier
-                .weight(1f)
-                .padding(start = if (navigation == null) 16.dp else 4.dp),
-            verticalArrangement = Arrangement.Center
+                .fillMaxWidth()
+                .height(60.dp)
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = title,
-                color = Wa.Text,
-                fontSize = 19.sp,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    color = Wa.TextDim,
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+            navigation?.invoke()
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .then(if (onTitleClick != null) Modifier.clickable(onClick = onTitleClick) else Modifier)
+                    .padding(start = if (navigation == null) 16.dp else 4.dp),
+                verticalArrangement = Arrangement.Center
+            ) {
+                if (title.isNotEmpty()) {
+                    Text(
+                        text = title,
+                        color = Wa.Text,
+                        fontSize = if (subtitle == null) 24.sp else 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        color = Wa.TextDim,
+                        fontSize = 13.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
+
+            actions()
         }
 
-        actions()
-    }
+        if (showDivider) {
+            Box(Modifier.fillMaxWidth().height(1.dp).background(Wa.Divider))
+        }
     }
 }
 
@@ -382,18 +254,43 @@ internal fun WaIconAction(
 // ── Avatar ──────────────────────────────────────────────────────────────
 
 /**
- * A round avatar holding the first letter of [name].
+ * A channel's circular profile image, or its initial (§2, §4).
  *
- * A channel has no icon column in its payload (§6), so a letter is the only
- * honest thing to draw. It is coloured from the name, which is what keeps it
- * recognisable between a list row and the channel header.
+ * One component for both states rather than two, because every screen that
+ * draws a channel draws this: the list row, Explore, the feed header, the
+ * channel information page and the admin list. A second "avatar with image"
+ * variant is how one of those ends up showing letters while the rest show faces.
+ *
+ * The image is loaded through the same downsampling loader a post's media uses,
+ * at the avatar's own pixel width — so a 49dp row decodes a 49dp bitmap rather
+ * than a 4000px photo, and scrolling a long channel list reuses the bitmaps
+ * instead of re-fetching them (§26).
+ *
+ * The initial is not a placeholder that flashes: it is drawn until (and unless)
+ * a bitmap exists, and it stays for a null URL, an expired signature or a
+ * deployment with no bucket — all of which are normal states rather than errors
+ * (§22).
  */
 @Composable
 internal fun WaAvatar(
     name: String,
-    size: Dp = 48.dp,
-    modifier: Modifier = Modifier
+    size: Dp = 49.dp,
+    modifier: Modifier = Modifier,
+    /** A signed URL for the channel's image, or null to draw the initial. */
+    url: String? = null
 ) {
+    val density = LocalDensity.current
+    val widthPx = with(density) { size.roundToPx() }
+
+    // Keyed on the URL, so a refresh that re-signs the same image does not
+    // re-render the avatar from scratch — and a changed image does.
+    var image by remember(url) { mutableStateOf(GoodPostImages.peek(url)) }
+
+    LaunchedEffect(url) {
+        if (url == null) return@LaunchedEffect
+        image = GoodPostImages.load(url, widthPx)
+    }
+
     Box(
         modifier = modifier
             .size(size)
@@ -401,40 +298,48 @@ internal fun WaAvatar(
             .background(Wa.avatarFill(name)),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = name.trim().take(1).uppercase(Locale.getDefault()),
-            color = Color.White,
-            fontSize = (size.value * 0.42f).sp,
-            fontWeight = FontWeight.Medium
-        )
+        val bitmap = image
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = name.trim().take(1).uppercase(Locale.getDefault()),
+                color = Color.White,
+                fontSize = (size.value * 0.42f).sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
     }
 }
 
 // ── Lists ───────────────────────────────────────────────────────────────
 
 /**
- * One row of a chat list: avatar, two lines of text, a right-hand column of
- * time over status.
+ * One channel row: circular avatar, bold name, gray preview, right-aligned time.
  *
- * The shape is the familiar one, and each part of it earns its place: the time
- * is right-aligned so the eye can scan a single column of them, and the preview
- * is one ellipsised line because rows of different heights stop being scannable
- * — what a reader needs from a preview is whether the row is worth opening, not
- * everything it says.
- *
- * [timestamp] is what makes a channel list read as a conversation list: the
- * time sits in the preview line rather than in the trailing corner, which is
- * where a messaging app puts it and where it answers "when" at the same glance
- * as "what".
+ * The shape is the familiar one and each part earns its place. The preview is
+ * ONE ellipsised line because rows of different heights stop being scannable —
+ * what a reader needs from a preview is whether the row is worth opening, not
+ * everything it says. The stamp is right-aligned so the eye can scan a single
+ * column of them, which is how a list answers "what is new" without any of the
+ * numbers this product deliberately does not have (§1, §5).
  */
 @Composable
-internal fun WaListRow(
+internal fun WaChannelRow(
     title: String,
     preview: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     timestamp: String? = null,
+    /** True for today's posts, which tint the stamp green (§4). */
+    timestampRecent: Boolean = false,
     avatar: @Composable () -> Unit,
+    previewIcon: ImageVector? = null,
     trailing: @Composable () -> Unit = {}
 ) {
     Column(modifier = modifier.fillMaxWidth().clickable(onClick = onClick)) {
@@ -447,37 +352,33 @@ internal fun WaListRow(
         ) {
             avatar()
 
-            Spacer(Modifier.width(16.dp))
+            Spacer(Modifier.width(15.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
                     color = Wa.Text,
                     fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(2.dp))
-
-                if (timestamp == null) {
+                Spacer(Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The media indicator is a small icon BEFORE the preview, so
+                    // a channel whose latest post is a photo says so without the
+                    // row having to invent words for it (§5).
+                    if (previewIcon != null) {
+                        Icon(
+                            previewIcon,
+                            contentDescription = null,
+                            tint = Wa.TextDim,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                    }
                     Text(
                         text = preview,
-                        color = Wa.TextDim,
-                        fontSize = 14.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                } else {
-                    // One Text with two spans rather than a Row: a Row would
-                    // ellipsise each part independently, so a long preview
-                    // would push the time out of the line instead of the two
-                    // sharing the space.
-                    Text(
-                        text = androidx.compose.ui.text.buildAnnotatedString {
-                            append(timestamp)
-                            append("  •  ")
-                            append(preview)
-                        },
                         color = Wa.TextDim,
                         fontSize = 14.sp,
                         maxLines = 1,
@@ -486,20 +387,28 @@ internal fun WaListRow(
                 }
             }
 
-            Spacer(Modifier.width(8.dp))
+            Spacer(Modifier.width(10.dp))
 
             Column(
                 horizontalAlignment = Alignment.End,
                 verticalArrangement = Arrangement.Center
             ) {
+                if (timestamp != null) {
+                    Text(
+                        text = timestamp,
+                        color = if (timestampRecent) Wa.StampRecent else Wa.TextDim,
+                        fontSize = 12.sp,
+                        maxLines = 1
+                    )
+                }
                 trailing()
             }
         }
 
-        // Inset past the avatar, the way a WhatsApp list separates rows: a
+        // Inset past the avatar, the way a channel list separates rows: a
         // full-width rule would cut each avatar off from its own text.
         Box(
-            modifier = Modifier
+            Modifier
                 .fillMaxWidth()
                 .padding(start = 80.dp)
                 .height(1.dp)
@@ -508,205 +417,58 @@ internal fun WaListRow(
     }
 }
 
-/** The green unread pill. Caps at `99+` rather than growing without limit. */
+/** A green dot marking a channel the reader has not opened yet. */
 @Composable
-internal fun WaUnreadBadge(count: Int) {
-    if (count <= 0) return
+internal fun WaUnreadDot(modifier: Modifier = Modifier) {
     Box(
-        modifier = Modifier
-            .heightIn(min = 20.dp)
+        modifier = modifier
+            .padding(top = 4.dp)
+            .size(10.dp)
             .clip(CircleShape)
             .background(Wa.Accent)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = if (count > 99) "99+" else count.toString(),
-            color = Wa.Canvas,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-        )
-    }
-}
-
-/** One tab: its label, and how much unread mail is waiting under it. */
-internal data class WaTab(val label: String, val badge: Int = 0)
-
-/**
- * A tab strip with a green underline, the shape used by a messaging app's
- * Updates screen.
- *
- * Scrollable rather than evenly weighted: Good Post has four sections with
- * names of three different lengths, and four equal columns would ellipsise the
- * longer ones on a narrow phone.
- */
-@Composable
-internal fun WaTabRow(
-    tabs: List<WaTab>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(Wa.Bar)
-            .horizontalScroll(rememberScrollState()),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        tabs.forEachIndexed { index, tab ->
-            val selected = index == selectedIndex
-            Column(
-                modifier = Modifier.clickable { onSelect(index) },
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = tab.label,
-                        color = if (selected) Wa.Accent else Wa.TextDim,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1
-                    )
-                    if (tab.badge > 0) {
-                        Spacer(Modifier.width(6.dp))
-                        WaUnreadBadge(tab.badge)
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(if (selected) Wa.Accent else Color.Transparent)
-                )
-            }
-        }
-    }
-}
-
-/**
- * The two-option segmented control from a messaging app's Updates screen.
- *
- * Evenly weighted, unlike [WaTabRow]: with two options there is no ellipsis
- * risk, and equal halves are what makes the control read as a switch rather
- * than a pair of tabs.
- */
-@Composable
-internal fun WaSegmentedControl(
-    segments: List<String>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    WaGlass(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        shape = RoundedCornerShape(20.dp),
-        color = Wa.Glass,
-        border = Wa.GlassBorder
-    ) {
-        Row(
-            modifier = Modifier.padding(3.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-        segments.forEachIndexed { index, label ->
-            val selected = index == selectedIndex
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(17.dp))
-                    .background(if (selected) Wa.Accent else Color.Transparent)
-                    .clickable { onSelect(index) }
-                    .padding(vertical = 8.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = label,
-                    color = if (selected) Wa.Canvas else Wa.TextDim,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1
-                )
-            }
-        }
-        }
-    }
-}
-
-/**
- * The "Find channels" row that heads a channel list.
- *
- * A list row rather than a search field, which is what a messaging app uses:
- * tapping it opens a screen with room for categories and sorts, where a field
- * inline would have to render the results under itself and lose the list it was
- * filtering.
- */
-@Composable
-internal fun WaFindChannelsRow(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(Wa.Bar),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = Wa.Accent,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            Spacer(Modifier.width(16.dp))
-
-            Text(
-                text = stringResource(R.string.goodpost_find_channels),
-                color = Wa.Text,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 72.dp)
-                .height(1.dp)
-                .background(Wa.Divider)
-        )
-    }
-}
-
-/** A section label above a list, e.g. "Channels you follow". */
-@Composable
-internal fun WaSectionLabel(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        modifier = modifier.padding(start = 16.dp, top = 16.dp, bottom = 6.dp),
-        color = Wa.Accent,
-        fontSize = 14.sp,
-        fontWeight = FontWeight.Medium
     )
 }
 
-// ── Controls ────────────────────────────────────────────────────────────
+/** A section heading above a list, e.g. "Channels" (§3). */
+@Composable
+internal fun WaSectionTitle(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        modifier = modifier.padding(start = 16.dp, top = 18.dp, bottom = 8.dp),
+        color = Wa.Text,
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Bold
+    )
+}
+
+/** The small green pill used by "Explore" and the channel page's action (§3). */
+@Composable
+internal fun WaPillButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    filled: Boolean = false
+) {
+    Box(
+        modifier = modifier
+            .clip(CircleShape)
+            .background(if (filled) Wa.Accent else Wa.Bar)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = if (filled) Wa.OnAccent else Wa.Text,
+            fontSize = 13.5.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
 
 /**
- * A pill search field, matching the one at the top of a WhatsApp list.
+ * A rounded search field, matching the one at the top of a channel list.
  *
  * The field is the target and the trailing icon is the action, because a search
  * bar whose only way in is a small icon is a search bar people miss.
@@ -717,6 +479,7 @@ internal fun WaSearchField(
     onValueChange: (String) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onSearch: () -> Unit = {},
     onClear: () -> Unit = {}
 ) {
@@ -741,10 +504,13 @@ internal fun WaSearchField(
         TextField(
             value = value,
             onValueChange = onValueChange,
+            enabled = enabled,
             singleLine = true,
             placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
             textStyle = TextStyle(fontSize = 16.sp),
             colors = WaFieldColors(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { onSearch() }),
             modifier = Modifier.weight(1f)
         )
 
@@ -765,84 +531,7 @@ internal fun WaSearchField(
     }
 }
 
-/**
- * The bottom input bar: a rounded field and a round send button.
- *
- * [leading] is the attachment slot, which the composer and a thread both use.
- */
-@Composable
-internal fun WaInputBar(
-    value: String,
-    onValueChange: (String) -> Unit,
-    placeholder: String,
-    onSend: () -> Unit,
-    modifier: Modifier = Modifier,
-    enabled: Boolean = true,
-    sending: Boolean = false,
-    leading: (@Composable () -> Unit)? = null,
-    trailing: (@Composable () -> Unit)? = null
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(Wa.Bar)
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.Bottom
-    ) {
-        leading?.invoke()
-
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(22.dp))
-                .background(Wa.List)
-                .padding(horizontal = 14.dp, vertical = 2.dp)
-        ) {
-            TextField(
-                value = value,
-                onValueChange = onValueChange,
-                enabled = enabled,
-                maxLines = 4,
-                placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
-                textStyle = TextStyle(fontSize = 16.sp),
-                colors = WaFieldColors(),
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        if (trailing != null) {
-            trailing()
-        } else {
-            Spacer(Modifier.width(6.dp))
-            val canSend = enabled && value.isNotBlank() && !sending
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(if (canSend) Wa.Accent else Wa.Pressed)
-                    .clickable(enabled = canSend, onClick = onSend),
-                contentAlignment = Alignment.Center
-            ) {
-                if (sending) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = Wa.Text
-                    )
-                } else {
-                    Icon(
-                        Icons.Filled.Send,
-                        contentDescription = null,
-                        tint = if (canSend) Wa.Canvas else Wa.TextDim,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** A full-width green action, the shape of every "Continue" in the app. */
+/** A full-width green action: "Sign in", "Create channel", "Create post". */
 @Composable
 internal fun WaPrimaryButton(
     text: String,
@@ -864,12 +553,12 @@ internal fun WaPrimaryButton(
             CircularProgressIndicator(
                 modifier = Modifier.size(20.dp),
                 strokeWidth = 2.dp,
-                color = Wa.Canvas
+                color = Wa.OnAccent
             )
         } else {
             Text(
                 text = text,
-                color = if (enabled) Wa.Canvas else Wa.TextDim,
+                color = if (enabled) Wa.OnAccent else Wa.TextDim,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium
             )
@@ -897,32 +586,55 @@ internal fun WaTextAction(
     )
 }
 
-/** A selectable pill, used for categories and sorts. */
+/**
+ * A labelled field, for the administrator forms.
+ *
+ * `TextField` rather than `OutlinedTextField`: on a dark surface an outline fights
+ * the fill, and every field here sits on the same background anyway.
+ */
 @Composable
-internal fun WaFilterPill(
+internal fun WaField(
+    value: String,
+    onValueChange: (String) -> Unit,
     label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    singleLine: Boolean = true,
+    minHeight: Dp = 0.dp,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    imeAction: ImeAction = ImeAction.Next,
+    onDone: () -> Unit = {}
 ) {
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (selected) Wa.Accent else Wa.Bar)
-            .border(
-                width = 1.dp,
-                color = if (selected) Wa.Accent else Wa.Divider,
-                shape = RoundedCornerShape(16.dp)
+    Column(modifier = modifier.fillMaxWidth()) {
+        Text(text = label, color = Wa.Accent, fontSize = 13.sp)
+        Spacer(Modifier.height(5.dp))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Wa.Bar)
+                .border(1.dp, Wa.Divider, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp)
+        ) {
+            TextField(
+                value = value,
+                onValueChange = onValueChange,
+                enabled = enabled,
+                singleLine = singleLine,
+                placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
+                textStyle = TextStyle(fontSize = 16.sp),
+                colors = WaFieldColors(),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = keyboardType,
+                    imeAction = imeAction
+                ),
+                keyboardActions = KeyboardActions(onDone = { onDone() }),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = minHeight)
             )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp)
-    ) {
-        Text(
-            text = label,
-            color = if (selected) Wa.Canvas else Wa.Text,
-            fontSize = 14.sp,
-            maxLines = 1
-        )
+        }
     }
 }
 
@@ -933,13 +645,7 @@ internal data class WaMenuItem(
     val destructive: Boolean = false
 )
 
-/**
- * The overflow menu: three dots in the bar, a list of actions in a dark card.
- *
- * This is where a channel's management actions live, which is where WhatsApp
- * puts them too — the difference being that a reader who is not an owner is
- * offered only the actions the server would accept (§32).
- */
+/** The overflow menu: three dots in the bar, a list of actions in a dark card. */
 @Composable
 internal fun WaOverflowMenu(
     items: List<WaMenuItem>,
@@ -973,8 +679,7 @@ internal fun WaOverflowMenu(
 }
 
 /**
- * The green FAB: a rounded square, which is the shape a messaging app uses for
- * "start something new".
+ * The green FAB: a rounded square, the shape used for "start something new".
  *
  * Positioned by its parent rather than by itself, so a screen that also has a
  * bottom bar can lift it above the bar instead of on top of it.
@@ -994,151 +699,162 @@ internal fun WaFab(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            icon,
-            contentDescription = description,
-            tint = Wa.Canvas,
-            modifier = Modifier.size(26.dp)
+        Icon(icon, contentDescription = description, tint = Wa.OnAccent, modifier = Modifier.size(26.dp))
+    }
+}
+
+/** A horizontally scrolling strip of filter chips, for category and sort. */
+@Composable
+internal fun WaFilterRow(
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        content()
+    }
+}
+
+/** A selectable pill, used for categories and sorts. */
+@Composable
+internal fun WaFilterPill(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (selected) Wa.Accent else Wa.Bar)
+            .border(
+                width = 1.dp,
+                color = if (selected) Wa.Accent else Wa.Divider,
+                shape = RoundedCornerShape(16.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (selected) Wa.OnAccent else Wa.Text,
+            fontSize = 14.sp,
+            maxLines = 1
         )
     }
 }
 
-// ── Surfaces ────────────────────────────────────────────────────────────
+// ── Posts ───────────────────────────────────────────────────────────────
 
 /**
- * A dark card, the container every dialog here uses.
+ * One post's container (§9).
  *
- * Padded and rounded rather than Material's `AlertDialog`, whose light surface
- * and centred title would be the one bright rectangle in the tab.
+ * A rounded dark panel, not a chat bubble with a tail: a channel broadcasts, so
+ * every post is on the same side. The radius is generous and the surface is one
+ * step lighter than the canvas, which is what makes a run of posts read as a
+ * single column rather than as a list of separate rows.
  */
 @Composable
-internal fun WaDialog(
-    onDismiss: () -> Unit,
+internal fun WaPostContainer(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
-        // A pane of glass rather than an opaque card: the dialog sits over a
-        // screen the user can still see, which is what makes it a sheet on top
-        // of the app instead of a new page.
-        WaGlass(
-            modifier = modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(20.dp),
-            color = Wa.GlassHigh,
-            border = Wa.GlassBorder,
-            blurBehind = 20.dp
-        ) {
-            Column(modifier = Modifier.padding(20.dp), content = content)
-        }
-    }
-}
-
-/**
- * A sheet that fills the screen — a channel, a thread, the composer.
- *
- * [background] paints an optional translucent layer over the dreamy backdrop,
- * which is how a channel's canvas (darker) is told apart from a list (lighter)
- * without either of them losing the gradient behind it.
- */
-@Composable
-internal fun WaFullScreen(
-    onDismiss: () -> Unit,
-    modifier: Modifier = Modifier,
-    background: Color? = null,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        WaDreamyBackdrop {
-            Column(
-                modifier = modifier
-                    .fillMaxSize()
-                    .then(
-                        if (background != null) {
-                            Modifier.background(background.copy(alpha = 0.55f))
-                        } else {
-                            Modifier
-                        }
-                    ),
-                content = content
-            )
-        }
-    }
-}
-
-/** One bubble, with the tail corner WhatsApp leaves flat. */
-@Composable
-internal fun WaBubble(
-    outgoing: Boolean,
-    modifier: Modifier = Modifier,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    val shape = if (outgoing) {
-        RoundedCornerShape(12.dp, 12.dp, 2.dp, 12.dp)
-    } else {
-        RoundedCornerShape(12.dp, 12.dp, 12.dp, 2.dp)
-    }
-
     Column(
         modifier = modifier
-            .clip(shape)
-            .background(if (outgoing) Wa.BubbleOut else Wa.BubbleIn)
-            .padding(horizontal = 10.dp, vertical = 6.dp),
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Wa.Bubble)
+            .padding(horizontal = 9.dp, vertical = 8.dp),
         content = content
     )
 }
 
-/** The timestamp line inside or under a bubble. */
+/** The timestamp line under a post's content, right-aligned. */
 @Composable
 internal fun WaTimeLabel(
     text: String,
     modifier: Modifier = Modifier,
-    color: Color = Wa.TextDim,
-    read: Boolean = false
+    color: Color = Wa.BubbleTime
 ) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(text = text, color = color, fontSize = 11.sp)
-        if (read) {
-            Spacer(Modifier.width(4.dp))
-            Icon(
-                Icons.Filled.DoneAll,
-                contentDescription = null,
-                tint = Wa.Tick,
-                modifier = Modifier.size(14.dp)
-            )
-        }
-    }
+    Text(text = text, modifier = modifier, color = color, fontSize = 11.sp)
 }
 
-/** A centred pill for a date, an unread marker, and other separators. */
+/** A centred dark pill for a date separator (§10, Screenshot 4). */
 @Composable
 internal fun WaDatePill(text: String, modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = text,
             modifier = Modifier
                 .clip(RoundedCornerShape(8.dp))
-                .background(Wa.Bar)
-                .padding(horizontal = 12.dp, vertical = 5.dp),
+                .background(Wa.DatePillBg)
+                .padding(horizontal = 12.dp, vertical = 4.5.dp),
             color = Wa.TextDim,
-            fontSize = 12.sp
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
         )
     }
 }
 
+/** A large rounded media placeholder: a photo still loading, or a video. */
+@Composable
+internal fun WaMediaPlaceholder(
+    modifier: Modifier = Modifier,
+    label: String? = null,
+    icon: ImageVector? = null,
+    content: @Composable () -> Unit = {}
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Wa.Pressed),
+        contentAlignment = Alignment.Center
+    ) {
+        content()
+        if (icon != null || label != null) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (icon != null) {
+                    Icon(icon, contentDescription = null, tint = Wa.TextDim, modifier = Modifier.size(28.dp))
+                    Spacer(Modifier.height(6.dp))
+                }
+                if (label != null) {
+                    Text(text = label, color = Wa.TextDim, fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+/** A small rounded chip describing media, e.g. `Photo · 1.2 MB`. */
+@Composable
+internal fun WaChip(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text,
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Wa.Pressed)
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        color = Wa.TextDim,
+        fontSize = 12.sp
+    )
+}
+
+// ── States ──────────────────────────────────────────────────────────────
+
 /**
- * The offline notice (§36).
+ * The offline notice (§27).
  *
- * A bar, not a dialog: saved content is still readable, and interrupting
- * someone to tell them they are offline tells them something they can already
- * see.
+ * A bar, not a dialog: saved content is still readable, and interrupting someone
+ * to tell them they are offline tells them something they can already see.
  */
 @Composable
 internal fun WaStaleBanner(onRetry: () -> Unit, modifier: Modifier = Modifier) {
@@ -1171,7 +887,7 @@ internal fun WaEmptyState(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 32.dp, vertical = 48.dp),
+            .padding(horizontal = 32.dp, vertical = 56.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(text = title, color = Wa.Text, fontSize = 17.sp, fontWeight = FontWeight.Medium)
@@ -1186,12 +902,7 @@ internal fun WaEmptyState(
     }
 }
 
-/**
- * An error line, coloured for this surface.
- *
- * The wording still comes from [goodPostErrorMessage], so there is exactly one
- * place that decides what a backend code means; this only says where it sits.
- */
+/** An error line, coloured for this surface. */
 @Composable
 internal fun WaErrorNotice(code: String, modifier: Modifier = Modifier) {
     Text(
@@ -1204,6 +915,31 @@ internal fun WaErrorNotice(code: String, modifier: Modifier = Modifier) {
         color = Wa.Danger,
         fontSize = 13.sp
     )
+}
+
+/**
+ * The single translation from a [GoodPostError] to words a person can read.
+ *
+ * One place, so two screens cannot word the same failure differently — and so
+ * that the screens which never show an error code stay that way.
+ */
+internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
+    GoodPostError.Offline -> R.string.goodpost_error_offline
+    GoodPostError.NotConfigured -> R.string.goodpost_error_not_configured
+    GoodPostError.NotFound -> R.string.goodpost_error_not_found
+    GoodPostError.InvalidCredentials -> R.string.goodpost_error_invalid_credentials
+    GoodPostError.RateLimited -> R.string.goodpost_error_rate_limited
+    GoodPostError.Forbidden -> R.string.goodpost_error_forbidden
+    GoodPostError.ServerFault -> R.string.goodpost_error_server
+    GoodPostError.InvalidInput -> R.string.goodpost_error_invalid_input
+    GoodPostError.MediaUnavailable -> R.string.goodpost_error_media_unavailable
+    GoodPostError.AdminLocked -> R.string.goodpost_error_admin_locked
+    GoodPostError.MediaTooLarge -> R.string.goodpost_error_media_too_large
+    GoodPostError.UnsupportedMedia -> R.string.goodpost_error_media_type
+    GoodPostError.AttachmentUploading -> R.string.goodpost_error_attachment_uploading
+    GoodPostError.AttachmentFailed -> R.string.goodpost_error_attachment_failed
+    GoodPostError.AdminUnavailable -> R.string.goodpost_error_admin_unavailable
+    GoodPostError.Unknown -> R.string.goodpost_error_unknown
 }
 
 /** The colour set shared by every text field on this surface. */
@@ -1221,33 +957,30 @@ private fun WaFieldColors() = TextFieldDefaults.colors(
     disabledTextColor = Wa.TextDim,
     focusedPlaceholderColor = Wa.TextDim,
     unfocusedPlaceholderColor = Wa.TextDim,
-    disabledPlaceholderColor = Wa.TextDim,
-    focusedLabelColor = Wa.Accent,
-    unfocusedLabelColor = Wa.TextDim
+    disabledPlaceholderColor = Wa.TextDim
 )
 
-// ── Time ────────────────────────────────────────────────────────────────
+/** The shape a post's media uses, so an image and a video agree. */
+internal val WaMediaShape: Shape = RoundedCornerShape(10.dp)
 
+// ── Time (§4, §10) ──────────────────────────────────────────────────────
 
-/**
- * The clock time inside a bubble: `9:41 AM`.
- *
- * No date. A bubble already sits under a date pill when the day changes, and
- * repeating the date on every message is noise. An unreadable timestamp
- * formats to an empty string rather than to "1970" — a wrong date is worse than
- * no date at all.
- */
+private val clockFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
+
+private val listStampFormat: DateTimeFormatter =
+    DateTimeFormatter.ofPattern("dd/MM/yy", Locale.getDefault())
+
+/** The clock time inside a post: `9:41 AM`. */
 internal fun waClock(epochMs: Long?): String {
     if (epochMs == null) return ""
-    return Instant.ofEpochMilli(epochMs)
-        .atZone(ZoneId.systemDefault())
-        .format(clockFormat)
+    return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(clockFormat)
 }
 
 /**
- * The stamp in a list row: the time today, "Yesterday", a weekday within the
- * last week, and a short date beyond it — the progression WhatsApp uses, and
- * narrow enough to sit in a column without wrapping.
+ * The stamp in a channel row: the time today, "Yesterday", a weekday within the
+ * last week, and a short date beyond it — the progression a channel list uses,
+ * and narrow enough to sit in a column without wrapping (§4).
  */
 internal fun waListStamp(epochMs: Long?): String {
     if (epochMs == null) return ""
@@ -1262,11 +995,23 @@ internal fun waListStamp(epochMs: Long?): String {
         day.isAfter(today.minusDays(7)) ->
             at.format(DateTimeFormatter.ofPattern("EEE", Locale.getDefault()))
 
-        else -> at.format(DateTimeFormatter.ofPattern("dd/MM/yy", Locale.getDefault()))
+        else -> at.format(listStampFormat)
     }
 }
 
-/** The separator between days in a thread: "Today", "Yesterday", or a date. */
+/**
+ * Whether a stamp should be tinted as recent.
+ *
+ * Today's posts are the ones a reader is looking for (§4), so they get the
+ * accent; anything older is gray, which keeps a long list quiet.
+ */
+internal fun waStampIsRecent(epochMs: Long?): Boolean {
+    if (epochMs == null) return false
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochMilli(epochMs).atZone(zone).toLocalDate() == LocalDate.now(zone)
+}
+
+/** The separator between days in a feed: "Today", "Yesterday", or a date (§10). */
 internal fun waDayLabel(epochMs: Long): String {
     val zone = ZoneId.systemDefault()
     val at = Instant.ofEpochMilli(epochMs).atZone(zone)
@@ -1279,21 +1024,29 @@ internal fun waDayLabel(epochMs: Long): String {
         day.isAfter(today.minusDays(7)) ->
             at.format(DateTimeFormatter.ofPattern("EEEE", Locale.getDefault()))
 
-        else -> at.format(DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.getDefault()))
+        else -> at.format(DateTimeFormatter.ofPattern("dd/MM/yy", Locale.getDefault()))
     }
 }
 
-/** Whether two instants fall on the same calendar day, for a date pill. */
+/** Whether two instants fall on the same calendar day, for a date separator. */
 internal fun waSameDay(a: Long, b: Long): Boolean {
     val zone = ZoneId.systemDefault()
     return Instant.ofEpochMilli(a).atZone(zone).toLocalDate() ==
         Instant.ofEpochMilli(b).atZone(zone).toLocalDate()
 }
 
-private val clockFormat: DateTimeFormatter =
-    DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
+/**
+ * `dd/MM/yy`, for the channel page's "Created on" (§12).
+ *
+ * An unreadable instant formats to an empty string rather than to a wrong date:
+ * "01/01/70" on a channel is worse than saying nothing.
+ */
+internal fun waShortDate(epochMs: Long?): String {
+    if (epochMs == null) return ""
+    return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(listStampFormat)
+}
 
-/** `Photo · 53 KB` — the one-line description of an asset. */
+/** `Photo · 1.2 MB` — a one-line description of an asset (§9). */
 internal fun waDescribeBytes(kind: String, bytes: Long): String = when {
     bytes >= 1_048_576 -> "$kind · ${String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)}"
     bytes >= 1024 -> "$kind · ${String.format(Locale.US, "%.0f KB", bytes / 1024.0)}"

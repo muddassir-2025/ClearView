@@ -47,8 +47,9 @@ import com.muddassir.clearview.phonelimit.PhoneLimitCoordinator
 import com.muddassir.clearview.quran.worker.QuranWorkScheduler
 import com.muddassir.clearview.todo.data.TodoNotifier
 import com.muddassir.clearview.todo.data.TodoScheduler
-import com.muddassir.clearview.goodpost.data.GoodPostMessagingService
 import com.muddassir.clearview.goodpost.ui.GoodPostTab
+import com.muddassir.clearview.goodpost.ui.Wa
+import com.muddassir.clearview.goodpost.ui.ApplyGoodPostStatusBar
 import com.muddassir.clearview.ui.BlockTab
 import com.muddassir.clearview.ui.ContentHubTabContent
 import com.muddassir.clearview.ui.ContentHubTopBar
@@ -95,10 +96,6 @@ open class MainActivity : ComponentActivity() {
             intent.removeExtra(TodoNotifier.EXTRA_OPEN_TODO)
             todoRequestState.value = true
         }
-        if (intent.getBooleanExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST, false)) {
-            intent.removeExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST)
-            goodPostRequestState.value = true
-        }
         // Phone Limit deep link (widget START fallback / expiry notification).
         if (intent.getBooleanExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT, false)) {
             intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
@@ -109,21 +106,6 @@ open class MainActivity : ComponentActivity() {
     /** Clears the warm-start request after MainScreen has handled it. */
     fun consumeTodoScreenRequest() {
         todoRequestState.value = false
-    }
-
-    /**
-     * A tapped Good Post notification (§17).
-     *
-     * Only a request to OPEN the tab — the notification itself carries no
-     * content, because the durable row is already in the user's inbox and
-     * reading it from there is what marks it read.
-     */
-    private val goodPostRequestState = mutableStateOf(false)
-    val goodPostScreenRequested: Boolean get() = goodPostRequestState.value
-
-    /** Clears the warm-start request after MainScreen has handled it. */
-    fun consumeGoodPostScreenRequest() {
-        goodPostRequestState.value = false
     }
 
     // ── Phone Limit deep link (widget fallback / expiry notification) ──
@@ -317,27 +299,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         viewModel.checkAccessibilityStatus(context)
     }
 
-    // A tapped Good Post notification (§17) opens the Good Post tab, from a
-    // cold start or a warm one. It opens the tab and nothing more: the inbox is
-    // where the notification is read, and that is what marks it read.
-    LaunchedEffect(Unit) {
-        if (activity?.intent?.getBooleanExtra(
-                GoodPostMessagingService.EXTRA_OPEN_GOODPOST,
-                false
-            ) == true
-        ) {
-            activity.intent.removeExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST)
-            selectedTab = MainTab.GOODPOST
-        }
-    }
-    val goodPostRequested = activity?.goodPostScreenRequested == true
-    LaunchedEffect(goodPostRequested) {
-        if (goodPostRequested) {
-            activity?.consumeGoodPostScreenRequest()
-            selectedTab = MainTab.GOODPOST
-        }
-    }
-
     // A shared channel link (§6) opens Good Post with that channel already
     // open. Cold start: the launch intent carries the data, consumed here so a
     // configuration change cannot open it again. Warm start: onNewIntent stored
@@ -418,8 +379,18 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         (landscape && (hub.playingVideo != null || hub.showHaramaynLive)) ||
             (hub.playerFullscreen && hub.playingVideo != null)
     ApplyImmersiveIfNeeded(isFullscreen)
+    ApplyGoodPostStatusBar(enabled = selectedTab == MainTab.GOODPOST)
 
     Scaffold(
+        // Good Post paints its own dark surfaces and has no light mode, so the
+        // window behind it follows that rather than the app theme. Otherwise the
+        // transparent status bar shows a strip of the app's background above the
+        // tab's own dark bar, which reads as a rendering fault.
+        containerColor = if (selectedTab == MainTab.GOODPOST) {
+            Wa.Bar
+        } else {
+            MaterialTheme.colorScheme.background
+        },
         topBar = {
             if (!isFullscreen) {
                 if (selectedTab == MainTab.BLOCK) {
@@ -465,28 +436,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         )
                     )
                 } else if (selectedTab == MainTab.GOODPOST) {
-                    // Good Post is not a content-hub tab, so it gets a plain
-                    // header rather than the hub bar (which is player-aware and
-                    // would show playback controls for a video that is not
-                    // playing).
-                    TopAppBar(
-                        title = {
-                            Column {
-                                Text(
-                                    "ClearView",
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    stringResource(R.string.goodpost_subtitle),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        )
-                    )
+                    // Nothing. Good Post draws its own bar, and it has to: its
+                    // bar is dark in every state, so a ClearView bar above it
+                    // would be the one strip on screen that ignored that — and
+                    // it duplicated the title as well. Leaving the slot empty
+                    // hands the whole height to the tab.
                 } else {
                     // The main app has nothing to navigate back to on the content
                     // tabs; the shared top bar's player branch handles its own

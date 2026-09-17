@@ -1,4 +1,5 @@
 import request from 'supertest';
+import type { Express } from 'express';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { closePool } from '../src/db.js';
@@ -108,53 +109,62 @@ describe('rate limit configuration', () => {
 
   it('reports every declared limit as enforced, and keeps reporting the exemptions', () => {
     // The failure this guards against is an operator reading .env, seeing a
-    // limit name, and believing it protects something. That was a real gap: for
-    // three milestones REPORT_RATE_LIMIT_MAX was documented and consumed by
-    // nothing. The boot log must therefore name each rule as ACTIVE — and still
-    // admit what is deliberately NOT limited.
+    // limit name, and believing it protects something. The boot log must
+    // therefore name each remaining rule as ACTIVE — and still admit what is
+    // deliberately NOT limited.
+    //
+    // Every rule HERE has a route behind it. The report and official-message
+    // rules that used to be reported went with the moderation and notification
+    // modules, and a rule with no route to protect is exactly the gap this
+    // module exists to prevent.
     const reported = describeActiveLimits(rateLimitConfigFromEnv()).join('\n');
 
     expect(reported).toContain('ACTIVE  global');
     expect(reported).toContain('ACTIVE  auth');
     expect(reported).toContain('ACTIVE  write');
-    expect(reported).toContain('ACTIVE  report');
-    expect(reported).toContain('ACTIVE  admin_message');
     // No rule may still claim to be reserved: an unenforced limit must be
     // impossible to mistake for an enforced one.
     expect(reported).not.toContain('RESERVED');
+    expect(reported).not.toContain('report');
     expect(reported).toContain('NOT LIMITED: /health');
   });
 });
 
 describe('rate limiting through the app', () => {
-  /** A tiny auth allowance so the limit is reachable in a test. */
+  /** A tiny allowance on one rule, so the limit is reachable in a test. */
   const appWith = (authMax: number, globalMax = 1_000) =>
     buildApp({
       rateLimits: {
         global: { name: 'global', windowMs: 60_000, max: globalMax },
         auth: { name: 'auth', windowMs: 60_000, max: authMax },
         // Generous by default so a test about the auth rule is not also
-        // measuring the write rule; the channel suites set their own.
+        // measuring the write rule.
         write: { name: 'write', windowMs: 60_000, max: 10_000 },
-        // The M5 report rule shares the limiter instance but not the bucket, so
-        // a generous allowance here cannot mask a problem with `write`.
-        report: { name: 'report', windowMs: 60_000, max: 10_000 },
-        adminMessage: { name: 'admin_message', windowMs: 60_000, max: 10_000 },
       },
     });
+
+  /**
+   * An anonymous request to the sign-in route.
+   *
+   * The body is deliberately invalid, so the handler REFUSES it with a 400
+   * without a database read: the limiter is what is under test, and a route
+   * that reached Postgres would be measuring the connection instead.
+   */
+  const hitLogin = (app: Express, ip?: string) => {
+    const call = request(app).post('/admin/api/auth/login').send({});
+    return ip ? call.set('X-Forwarded-For', ip) : call;
+  };
 
   it('returns 429 with Retry-After once the auth allowance is spent', async () => {
     const app = appWith(3);
 
-    // No bearer token: requireAuth answers 401 without touching the database,
-    // so this exercises the limiter and nothing else.
     for (let i = 0; i < 3; i += 1) {
-      const res = await request(app).get('/api/v1/auth/me');
-      expect(res.status).toBe(401);
+      const res = await hitLogin(app);
+      expect(res.status).toBe(400);
       expect(res.headers['x-ratelimit-remaining']).toBe(String(2 - i));
     }
 
-    const blocked = await request(app).get('/api/v1/auth/me');
+    const blocked = await hitLogin(app);
     expect(blocked.status).toBe(429);
     expect(blocked.body).toEqual({ error: 'rate_limited' });
     expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
@@ -163,20 +173,20 @@ describe('rate limiting through the app', () => {
   it('limits each client independently', async () => {
     const app = appWith(1);
 
-    expect((await request(app).get('/api/v1/auth/me').set('X-Forwarded-For', '203.0.113.9')).status).toBe(401);
-    expect((await request(app).get('/api/v1/auth/me').set('X-Forwarded-For', '203.0.113.9')).status).toBe(429);
+    expect((await hitLogin(app, '203.0.113.9')).status).toBe(400);
+    expect((await hitLogin(app, '203.0.113.9')).status).toBe(429);
 
     // A different address keeps its own allowance. If `trust proxy`
     // regressed, every client would share one bucket and this would be 429.
-    expect((await request(app).get('/api/v1/auth/me').set('X-Forwarded-For', '198.51.100.7')).status).toBe(401);
+    expect((await hitLogin(app, '198.51.100.7')).status).toBe(400);
   });
 
   it('does NOT limit the health endpoints, which Render polls', async () => {
     const app = appWith(1);
 
-    await request(app).get('/api/v1/auth/me');
-    await request(app).get('/api/v1/auth/me');
-    expect((await request(app).get('/api/v1/auth/me')).status).toBe(429);
+    await hitLogin(app);
+    await hitLogin(app);
+    expect((await hitLogin(app)).status).toBe(429);
 
     // Rate limiting these would turn legitimate health checks into failures,
     // and a failing health check into a Render restart loop.
@@ -184,9 +194,11 @@ describe('rate limiting through the app', () => {
     expect((await request(app).get('/health/db')).status).toBe(503);
   });
 
-  it('applies the global limit beyond the auth routes', async () => {
+  it('applies the global limit to the reader surface, which has no auth rule of its own', async () => {
     const app = appWith(1_000, 2);
 
+    // Anonymous reads are limited by the global rule alone — there is no
+    // per-reader allowance to spend, because Good Post has no reader accounts.
     expect((await request(app).get('/api/v1/does-not-exist')).status).toBe(404);
     expect((await request(app).get('/api/v1/does-not-exist')).status).toBe(404);
 
@@ -200,7 +212,7 @@ describe('rate limiting through the app', () => {
     // would look like flakiness rather than a misconfiguration.
     const app = buildApp();
     for (let i = 0; i < 20; i += 1) {
-      expect((await request(app).get('/api/v1/auth/me')).status).toBe(401);
+      expect((await hitLogin(app)).status).toBe(400);
     }
   });
 });

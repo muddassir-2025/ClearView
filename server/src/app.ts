@@ -4,19 +4,9 @@ import helmet from 'helmet';
 import { env, isProduction } from './env.js';
 import { db, pingDatabase, type Queryable } from './db.js';
 import { ApiError } from './http/errors.js';
-import { buildAuthRouter } from './auth/routes.js';
-import { createMailer, type Mailer } from './email/sender.js';
-import { buildChannelsRouter, buildDiscoverRouter } from './channels/routes.js';
-import { buildChannelPostsRouter, buildPostsRouter } from './posts/routes.js';
-import { buildMediaRouter } from './media/routes.js';
-import { buildEngagementRouter } from './engagement/routes.js';
-import { buildModerationRouter } from './moderation/routes.js';
-import { buildNotificationsRouter } from './notifications/routes.js';
-import { createPushSender, type PushSender } from './notifications/push.js';
+import { buildPublicRouter } from './public/routes.js';
 import { buildAdminRouter } from './admin/routes.js';
-import { buildDashboardRouter } from './admin/dashboard.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
-import { createPhoneVerifier, type PhoneIdentityVerifier } from './auth/firebase.js';
 import {
   FixedWindowRateLimiter,
   rateLimit,
@@ -100,7 +90,6 @@ function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFun
  */
 export interface AppDeps {
   readonly database?: Queryable;
-  readonly verifier?: PhoneIdentityVerifier;
   /** Overridable so the suite can assert limiting with tiny windows. */
   readonly rateLimits?: RateLimitConfig;
   /**
@@ -110,28 +99,12 @@ export interface AppDeps {
    * would mean they were never tested.
    */
   readonly store?: ObjectStore;
-  /**
-   * Outbound email for email sign-in. Overridable for the same reason as the
-   * verifier: the flow's own rules (hashed codes, attempt limits, no
-   * enumeration) must be testable without a provider account and without a
-   * single message leaving the process.
-   */
-  readonly mailer?: Mailer;
-  /**
-   * Push delivery (§17). Overridable for the same reason as the store: the
-   * rules that matter — who is notified, who is excluded, what is deduped — are
-   * ours, and a suite that needed a device to test them would not test them.
-   */
-  readonly push?: PushSender;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
   const database = deps.database ?? db;
-  const verifier = deps.verifier ?? createPhoneVerifier();
   const rateLimits = deps.rateLimits ?? rateLimitConfigFromEnv();
   const store = deps.store ?? createObjectStore();
-  const mailer = deps.mailer ?? createMailer();
-  const push = deps.push ?? createPushSender();
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -180,43 +153,26 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   });
 
   // ── API routes ────────────────────────────────────────────────────────
-  // Good Post auth (M1). Channels (M2), posts + media (M3), engagement (M4),
-  // moderation (M5) and the admin API (M6) mount here alongside it.
   //
-  // Versioned and namespaced so it cannot collide with the pre-existing
-  // moderation API (`/api/rules`, `/api/channels/check`) the Block tab calls —
-  // "channel" means a moderated YouTube channel there and a broadcast feed
-  // here, and the two must never share a path.
+  // Two prefixes, and the split is the product (§24): `/api/v1` is everything a
+  // reader may fetch without an account, `/admin/api` is everything an
+  // administrator may change with one. There is no third surface, because there
+  // is no viewer account to build one for.
+  //
   // Mounted on the API path rather than app-wide so the health endpoints are
   // exempt: Render polls them, and a rate-limited health check reads as a dead
   // service and triggers a restart loop.
   app.use('/api/v1', rateLimit(limiter, rateLimits.global));
-  app.use('/api/v1/auth', rateLimit(limiter, rateLimits.auth));
 
-  app.use('/api/v1/auth', buildAuthRouter(database, verifier, mailer));
+  // ── Public reads (§24) ────────────────────────────────────────────────
+  // Anonymous, read-only, and the only surface a phone touches on cold start —
+  // which is why it is mounted first (§26).
+  app.use('/api/v1', buildPublicRouter(database, store));
 
-  // Engagement (M4). Registered before the channel and post routers because it
-  // answers paths under both prefixes (`/posts/:id/reactions`,
-  // `/channels/:id/analytics`); matching first keeps a reaction from being
-  // seen by the posts router, whose blanket `requireAuth` would then verify the
-  // same session twice. The suite asserts neither router swallows the other's
-  // paths rather than assuming it.
-  app.use('/api/v1', buildEngagementRouter(database, limiter, rateLimits));
-
-  // Moderation and private messaging (M5). Same shared prefix and the same
-  // registration-order reasoning as engagement above: `/channels/:id/conversations`
-  // belongs to this router even though it lives under the channel prefix.
-  app.use('/api/v1', buildModerationRouter(database, limiter, rateLimits, push));
-
-  // Notifications (M7/M9). The inbox and device registration sit on the same
-  // prefix as everything else user-facing; the fan-out itself is triggered from
-  // the publish, message and admin-message paths.
-  app.use('/api/v1', buildNotificationsRouter(database, limiter, rateLimits));
-
-  // ── Platform administration (M6, §20–§30) ─────────────────────────────
+  // ── Platform administration (§16–§21, §25, §27) ───────────────────────
   //
-  // A DIFFERENT PATH PREFIX from every user endpoint, and a different token
-  // audience and signing key behind it (§48). No user token can satisfy these
+  // A DIFFERENT PATH PREFIX from every reader endpoint, and a different token
+  // audience and signing key behind it. No reader request can satisfy these
   // routes and no admin token can satisfy `/api/v1`, so the two surfaces cannot
   // be reached from each other by guessing a path.
   //
@@ -224,33 +180,7 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // limiting — and `/admin/api/auth/login` additionally takes the tighter auth
   // rule inside the router.
   app.use('/admin/api', rateLimit(limiter, rateLimits.global));
-  app.use('/admin/api', buildAdminRouter(database, limiter, rateLimits, push));
-
-  // The dashboard itself: server-rendered HTML, its own CSS and JS served from
-  // this origin. Same process, same API, no second framework (§31), and no
-  // CDN or inline script — helmet's default CSP then applies unmodified.
-  app.use('/admin', buildDashboardRouter());
-
-  // Channels and discovery (M2). Both take the same limiter instance, so the
-  // `write` rule shares one bounded bucket structure with the other rules
-  // instead of each router carrying its own window for the same rule name.
-  // Posts and media (M3). Every router here is self-contained: each applies its
-  // own `requireAuth`, so none can be mounted somewhere and silently lose
-  // authentication.
-  //
-  // The channel-scoped post routes mount on the SAME `/api/v1/channels` prefix
-  // as the channel router, registered BEFORE it. Express matches in order and
-  // mounts no route for a two-segment `/x/posts` path, so a post request is
-  // answered here without ever entering the channel router — which is what
-  // keeps it to one session verification per request. The channel router's
-  // blanket `requireSession` would otherwise run first for every post request
-  // and verify the same token twice. The suite asserts that neither router
-  // swallows the other's paths rather than assuming it.
-  app.use('/api/v1/channels', buildChannelPostsRouter(database, store, limiter, rateLimits, push));
-  app.use('/api/v1/channels', buildChannelsRouter(database, limiter, rateLimits));
-  app.use('/api/v1/discover', buildDiscoverRouter(database));
-  app.use('/api/v1/posts', buildPostsRouter(database, store));
-  app.use('/api/v1/media', buildMediaRouter(database, store, limiter, rateLimits));
+  app.use('/admin/api', buildAdminRouter(database, store, limiter, rateLimits));
 
   app.use(notFound);
   app.use(errorHandler);

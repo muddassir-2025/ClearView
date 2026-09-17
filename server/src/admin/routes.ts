@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { Router, type NextFunction, type Request, type RequestHandler, type Response } from 'express';
 import { z } from 'zod';
 import { env, hashIp } from '../env.js';
@@ -6,12 +5,39 @@ import type { Queryable } from '../db.js';
 import { badRequest, forbidden, notFound, unauthorized } from '../http/errors.js';
 import { parseBody, pathIdParam } from '../http/validate.js';
 import { rateLimit, type FixedWindowRateLimiter, type RateLimitConfig } from '../http/rateLimit.js';
-import { setAccountStatus, setChannelStatus } from '../moderation/service.js';
-import { fanOutPlatformNotice } from '../notifications/service.js';
-import type { PushSender } from '../notifications/push.js';
-import { revokeAllSessions } from '../auth/service.js';
-import { can, permissionsFor, type AdminAction, type AdminRole } from './permissions.js';
 import {
+  applyChannelIcon,
+  clearChannelIcon,
+  clearChannelIconIn,
+  createChannel,
+  deleteChannel,
+  listChannelsForAdmin,
+  loadChannelRow,
+  mapChannel,
+  requireChannelScope,
+  setChannelIcon,
+  setChannelStatus,
+  updateChannel,
+  type ChannelRow,
+} from '../channels/service.js';
+import {
+  deletePost,
+  listChannelPostsForAdmin,
+  loadPostRow,
+  publishPost,
+  updatePost,
+} from '../posts/service.js';
+import {
+  confirmMediaUpload,
+  removeObjectQuietly,
+  requestMediaUpload,
+  signObjectUrl,
+  type MediaSummary,
+} from '../media/service.js';
+import type { ObjectStore } from '../media/store.js';
+import { can, type AdminAction, type AdminRole } from './permissions.js';
+import {
+  capabilitiesOf,
   createAdmin,
   listAdmins,
   listAudit,
@@ -20,56 +46,43 @@ import {
   logoutAdmin,
   refreshAdminSession,
   revokeAdminSessions,
-  setAdminRole,
   setAdminStatus,
-  writeAudit,
   isAdminSessionLive,
+  writeAudit,
   type AdminAccount,
 } from './service.js';
 import { verifyAdminAccessToken } from './tokens.js';
-import {
-  getChannelDetail,
-  getReport,
-  getReportContext,
-  getUserDetail,
-  listAdminMessages,
-  listBannedIdentities,
-  listReports,
-  overview,
-  searchChannels,
-  searchPosts,
-  searchUsers,
-} from './query.js';
 
 /**
- * The admin API (§21–§30), mounted at `/admin/api`.
+ * The administrator API (§16–§21, §25, §27), mounted at `/admin/api`.
  *
- * Four things about this router are load-bearing.
+ * Five things about this router are load-bearing.
  *
- *  * **A separate path prefix from `/api/v1`.** No user endpoint can be reached
- *    with an admin token, and no admin endpoint with a user token: the tokens
- *    are signed with different keys AND the paths do not overlap, so a mistake
- *    in either layer alone does not open a hole (§48).
+ *  * **A separate path prefix from `/api/v1`.** The reader surface is anonymous
+ *    and read-only; this one requires a token on every route. Two prefixes mean
+ *    a route cannot be added to the wrong one by accident, and no reader
+ *    request can reach a publishing endpoint by guessing a path.
  *
- *  * **The permission check is per route, server-side** (§32). The client sends
- *    no role, no permission and no "I am an admin" flag that is believed; the
- *    role is read from `admin_users` on every request.
+ *  * **The role is read from `admin_users` on every request** (§18). The client
+ *    sends no role, no scope and no channel id that is believed. A channel
+ *    administrator's `channel_id` comes from their own row, so \"only my
+ *    channel\" is a fact about the request rather than a filter somebody has to
+ *    remember.
  *
- *  * **Every sensitive action is audited, including refusals** (§29), written
- *    AFTER the action commits so the log records what actually happened rather
- *    than what was attempted.
+ *  * **A channel a channel admin may not touch answers 404, not 403.** Telling
+ *    them a channel exists but is not theirs would confirm a channel they have
+ *    no business knowing about.
  *
- *  * **Mutations require a CSRF header.** The dashboard is same-origin, holds
- *    its access token in memory and is intended to be usable straight from a
- *    browser, so the token for the session itself is carried in a cookie. A
- *    cookie-authenticated write endpoint without CSRF protection is the classic
- *    way a moderation dashboard gets weaponised; `SameSite=Strict` plus a
- *    double-submit header is what replaces a CSRF library here.
+ *  * **No cookies, and therefore no CSRF token.** The only client is the Android
+ *    app, which sends a bearer token in a header; nothing here is authenticated
+ *    by an ambient credential a browser would attach on its own. A cookie-based
+ *    session would need the double-submit machinery back, so it is deliberately
+ *    absent rather than forgotten.
+ *
+ *  * **Mutations are audited AFTER they commit**, so the log records what
+ *    happened rather than what was attempted — and a refusal is audited too,
+ *    because the only evidence that anyone tried is in the log.
  */
-
-const ADMIN_SESSION_COOKIE = 'gp_admin_session';
-const ADMIN_CSRF_COOKIE = 'gp_admin_csrf';
-const CSRF_HEADER = 'x-csrf-token';
 
 interface AdminRequest extends Request {
   admin?: AdminContext;
@@ -79,19 +92,14 @@ export interface AdminContext {
   readonly adminId: string;
   readonly sessionId: string;
   readonly role: AdminRole;
+  /** The channel a channel admin is confined to; null for a super admin. */
+  readonly channelId: string | null;
   readonly account: AdminAccount;
 }
 
-/** Cookies, parsed without a dependency. Values are opaque, so no decoding. */
-function cookiesOf(req: Request): Record<string, string> {
-  const header = req.header('cookie') ?? '';
-  const out: Record<string, string> = {};
-  for (const part of header.split(';')) {
-    const index = part.indexOf('=');
-    if (index <= 0) continue;
-    out[part.slice(0, index).trim()] = part.slice(index + 1).trim();
-  }
-  return out;
+/** The account context, for the scope checks. Derived from the session. */
+function scopeOf(context: AdminContext): { role: string; channelId: string | null } {
+  return { role: context.role, channelId: context.channelId };
 }
 
 function adminOf(req: Request): AdminContext {
@@ -101,12 +109,12 @@ function adminOf(req: Request): AdminContext {
 }
 
 /**
- * Require a live admin session AND a specific permission.
+ * Require a live session AND a specific permission (§18, §25).
  *
- * Both halves matter and neither is optional: authentication without the
- * permission check is how a MODERATOR ends up able to create administrators,
- * and the permission check without re-reading the status is how a disabled
- * administrator keeps working until their 10-minute token expires.
+ * Both halves matter. Authentication without the permission check is how a
+ * channel administrator ends up able to mint another administrator, and the
+ * permission check without re-reading the row is how a disabled administrator
+ * keeps working until their token lapses.
  */
 export function requireAdmin(database: Queryable, action: AdminAction): RequestHandler {
   return async (req: Request, _res: Response, next: NextFunction) => {
@@ -140,8 +148,6 @@ export function requireAdmin(database: Queryable, action: AdminAction): RequestH
     }
 
     if (!can(account.role, action)) {
-      // A refused attempt is one of the more interesting audit rows: it is the
-      // only evidence that anyone tried.
       await writeAudit(database, {
         adminId: account.id,
         adminEmail: account.email,
@@ -161,544 +167,589 @@ export function requireAdmin(database: Queryable, action: AdminAction): RequestH
       adminId: account.id,
       sessionId: claims.sid,
       role: account.role,
+      channelId: account.channelId,
       account,
     };
-
-    // Reads are deliberately NOT audited here. §29 lists sensitive ACTIONS, and
-    // an audit log that records every dashboard refresh stops being readable by
-    // the people who need it — a log nobody reads is not a control. Mutations
-    // audit themselves, and a refusal is audited below.
     next();
   };
 }
 
-/**
- * A permission check that depends on the REQUEST BODY rather than the route.
- *
- * Account status is one endpoint with three statuses, and §28 gives them to
- * different roles: `admin` may suspend, only `super_admin` may ban. Route
- * middleware cannot express that, so the check runs inside the handler — and it
- * runs before anything touches the account, so a refusal is a refusal and not a
- * partial action.
- */
-async function assertMay(
-  database: Queryable,
-  context: AdminContext,
-  action: AdminAction,
-  req: Request
-): Promise<void> {
-  if (can(context.role, action)) return;
-
-  await writeAudit(database, {
-    adminId: context.adminId,
-    adminEmail: context.account.email,
-    actorRole: context.role,
-    action: `denied.${action}`,
-    targetType: 'route',
-    targetId: `${req.method} ${req.baseUrl}${req.path}`,
-    outcome: 'denied',
-    metadata: { requiredAction: action },
-    ipHash: hashIp(req.ip ?? 'unknown'),
-  });
-
-  throw forbidden('admin_forbidden', 'Your role does not permit that action.');
-}
+/** A name, a description and a category, shared by create and update (§19, §20). */
+const ChannelInputSchema = z.object({
+  name: z.string().min(1).max(env.MAX_CHANNEL_NAME_LENGTH),
+  description: z.string().max(env.MAX_CHANNEL_DESCRIPTION_LENGTH).nullish(),
+  categorySlug: z.string().max(60).nullish(),
+  countryCode: z.string().max(2).nullish(),
+});
 
 /**
- * Double-submit CSRF check for every non-GET admin request.
+ * The profile image, as a field on the channel form (§21).
  *
- * The token must be present in BOTH the readable cookie and the header. An
- * attacker who can make a browser send the session cookie cannot read the CSRF
- * cookie (same-origin policy) and therefore cannot set the header — which is
- * the whole mechanism. `SameSite=Strict` on the session cookie is the second
- * layer, not a substitute.
+ * A media ID rather than a file or a URL: the bytes have already gone to the
+ * bucket through the same presign → PUT → confirm handshake as post media, and
+ * all that is left to say is WHICH confirmed upload this channel should adopt.
+ * A URL would be a client-chosen pointer, which is the one thing object keys
+ * are never allowed to be.
  */
-function requireCsrf(req: Request, _res: Response, next: NextFunction): void {
-  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
-    next();
-    return;
-  }
-  const cookies = cookiesOf(req);
-  const fromCookie = cookies[ADMIN_CSRF_COOKIE] ?? '';
-  const fromHeader = req.header(CSRF_HEADER) ?? '';
+const ChannelIconSchema = z.object({
+  iconMediaId: z.string().uuid().nullish(),
+});
 
-  if (fromCookie === '' || fromHeader === '' || fromCookie !== fromHeader) {
-    next(forbidden('csrf_failed', 'This request is missing its CSRF token.'));
-    return;
-  }
-  next();
-}
+/**
+ * Creating a channel also creates the login that runs it (§20).
+ *
+ * Both credential fields are optional so a super admin may create a channel
+ * they run themselves, but they travel together: an address with no password
+ * could not sign in.
+ */
+const CreateChannelSchema = ChannelInputSchema.extend({
+  adminEmail: z.string().min(3).max(254).optional(),
+  adminPassword: z.string().min(1).max(200).optional(),
+  adminDisplayName: z.string().min(1).max(80).optional(),
+  iconMediaId: z.string().uuid().optional(),
+});
+
+/**
+ * An edit, where the profile image is a THREE-way field:
+ *
+ *   absent  → leave the image alone
+ *   a uuid  → adopt that confirmed upload as the image
+ *   null    → remove the image
+ *
+ * The same convention the description and category already use, so "clear the
+ * field" and "do not touch it" are one rule across the endpoint rather than one
+ * rule per column.
+ */
+const UpdateChannelSchema = z.object({
+  name: z.string().min(1).max(env.MAX_CHANNEL_NAME_LENGTH).optional(),
+  description: z.string().max(env.MAX_CHANNEL_DESCRIPTION_LENGTH).nullish(),
+  categorySlug: z.string().max(60).nullish(),
+  countryCode: z.string().max(2).nullish(),
+  iconMediaId: z.string().uuid().nullish(),
+});
+
+const PostInputSchema = z.object({
+  body: z.string().max(env.MAX_TEXT_LENGTH).optional(),
+  linkUrl: z.string().max(2048).optional(),
+  linkTitle: z.string().max(200).optional(),
+  /**
+   * Uploads to attach, in order (§21).
+   *
+   * The type of the post is NOT accepted here: it is derived from these files,
+   * so a client cannot describe its own post as a video while attaching a JPEG
+   * and have every reader render it wrongly.
+   */
+  mediaIds: z.array(z.string().uuid()).max(env.MAX_POST_MEDIA).optional(),
+});
+
+const UpdatePostSchema = z.object({
+  body: z.string().max(env.MAX_TEXT_LENGTH).nullish(),
+  linkUrl: z.string().max(2048).nullish(),
+  linkTitle: z.string().max(200).nullish(),
+});
+
+const UploadRequestSchema = z.object({
+  contentType: z.string().min(3).max(120),
+  byteSize: z.number().int().positive(),
+  width: z.number().int().positive().optional(),
+  height: z.number().int().positive().optional(),
+  durationMs: z.number().int().positive().optional(),
+});
 
 const LoginSchema = z.object({
-  identifier: z.string().min(3).max(254),
+  email: z.string().min(3).max(254),
   password: z.string().min(1).max(200),
 });
 
-const RefreshSchema = z.object({ refreshToken: z.string().min(1).max(256).optional() });
-
-const UserStatusSchema = z.object({
-  status: z.enum(['active', 'suspended', 'banned']),
-  reason: z.string().min(3).max(200),
-  note: z.string().max(2000).optional(),
-});
-
-const ChannelStatusSchema = z.object({
-  status: z.enum(['active', 'suspended', 'banned']),
-  reason: z.string().min(3).max(200).optional(),
-});
-
-const RemovePostSchema = z.object({ reason: z.string().min(3).max(200) });
-
-const ResolveReportSchema = z.object({
-  status: z.enum(['reviewing', 'resolved', 'dismissed']),
-  actionTaken: z.string().max(200).optional(),
-  resolutionNote: z.string().max(2000).optional(),
-});
-
-const AdminMessageSchema = z.object({
-  targetUserId: z.string().min(1).max(64).optional(),
-  targetChannelId: z.string().min(1).max(64).optional(),
-  subject: z.string().min(1).max(200),
-  body: z.string().min(1).max(8000),
-});
+const RefreshSchema = z.object({ refreshToken: z.string().min(1).max(256) });
 
 const CreateAdminSchema = z.object({
   displayName: z.string().min(1).max(80),
   email: z.string().min(3).max(254),
-  phone: z.string().min(8).max(20),
-  role: z.enum(['super_admin', 'admin', 'moderator']),
   password: z.string().min(1).max(200),
+  channelId: z.string().uuid(),
 });
 
-const RoleSchema = z.object({
-  role: z.enum(['super_admin', 'admin', 'moderator']),
-});
+const AdminStatusSchema = z.object({ status: z.enum(['active', 'disabled']) });
 
-const PageSchema = z.object({
+const PageQuerySchema = z.object({
   limit: z.string().max(10).optional(),
   cursor: z.string().max(512).optional(),
-  q: z.string().max(120).optional(),
-  status: z.string().max(20).optional(),
-  targetType: z.string().max(20).optional(),
-  channelId: z.string().max(64).optional(),
-  removed: z.string().max(5).optional(),
-  days: z.string().max(4).optional(),
 });
+
+const AuditQuerySchema = z.object({ limit: z.string().max(10).optional() });
 
 export function buildAdminRouter(
   database: Queryable,
+  store: ObjectStore,
   limiter: FixedWindowRateLimiter,
-  rateLimits: RateLimitConfig,
-  push: PushSender
+  rateLimits: RateLimitConfig
 ): Router {
   const router = Router();
   const loginLimit = rateLimit(limiter, rateLimits.auth);
-  const messageLimit = rateLimit(limiter, rateLimits.adminMessage);
+  const write = rateLimit(limiter, rateLimits.write);
 
-  /**
-   * Establish the CSRF cookie for a browser session.
-   *
-   * Issued on login and refresh, and readable by the dashboard's JavaScript by
-   * design — that is what makes the double submit possible.
-   */
-  function issueCsrf(res: Response): string {
-    const token = randomBytes(24).toString('base64url');
-    // Not `Secure` when running locally: a Secure cookie is dropped over plain
-    // HTTP, which would make the dashboard unusable in development while
-    // silently looking like a CSRF failure.
-    const secure = env.NODE_ENV === 'production' ? '; Secure' : '';
-    res.setHeader('Set-Cookie', [
-      `${ADMIN_CSRF_COOKIE}=${token}; Path=/; SameSite=Strict${secure}`,
-    ]);
-    return token;
-  }
-
-  /** The session cookie, httpOnly so no script can read it (§30). */
-  function issueSession(res: Response, refreshToken: string): void {
-    const secure = env.NODE_ENV === 'production' ? '; Secure' : '';
-    const maxAge = env.ADMIN_SESSION_TTL_DAYS * 86_400;
-    res.append(
-      'Set-Cookie',
-      `${ADMIN_SESSION_COOKIE}=${refreshToken}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`
-    );
-  }
-
-  // ── Authentication (§21, §30) ───────────────────────────────────────
-
+  // ── Sign-in (§16) ────────────────────────────────────────────────────
+  // The one unauthenticated route on this prefix, and the only place a password
+  // crosses this boundary. It carries the tighter `auth` rule rather than the
+  // global one.
   router.post('/auth/login', loginLimit, async (req, res) => {
     const body = parseBody(LoginSchema, req.body);
     const session = await loginAdmin(database, {
-      identifier: body.identifier,
+      email: body.email,
       password: body.password,
       ipHash: hashIp(req.ip ?? 'unknown'),
       userAgent: req.header('user-agent') ?? null,
     });
 
-    const csrf = issueCsrf(res);
-    issueSession(res, session.refreshToken);
-    res.status(200).json({ ...session, csrfToken: csrf });
+    res.status(200).json({
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresInSeconds: session.expiresInSeconds,
+      admin: session.admin,
+      permissions: capabilitiesOf(session.admin.role),
+    });
   });
-
-  // EVERY route below this line requires the double-submit token on any
-  // non-GET request. Applied as router-level middleware rather than per route
-  // precisely so a new mutating endpoint cannot be added without it — the
-  // failure mode of a forgotten `requireCsrf` is a moderation action a web page
-  // can trigger on a signed-in administrator's behalf.
-  //
-  // Login is above it on purpose: there is no session yet, so there is nothing
-  // to protect, and requiring a token to sign in would break the first request
-  // of any new browser.
-  router.use(requireCsrf);
 
   router.post('/auth/refresh', async (req, res) => {
     const body = parseBody(RefreshSchema, req.body);
-    // The cookie is preferred; the body is accepted so a non-browser client
-    // (a script, a test) can rotate without pretending to be one.
-    const token = cookiesOf(req)[ADMIN_SESSION_COOKIE] ?? body.refreshToken ?? '';
-    if (token === '') throw unauthorized('invalid_refresh_token', 'Sign in again.');
-
-    const session = await refreshAdminSession(database, token, hashIp(req.ip ?? 'unknown'));
-    const csrf = issueCsrf(res);
-    issueSession(res, session.refreshToken);
-    res.status(200).json({ ...session, csrfToken: csrf });
+    const session = await refreshAdminSession(
+      database,
+      body.refreshToken,
+      hashIp(req.ip ?? 'unknown')
+    );
+    res.status(200).json({
+      accessToken: session.accessToken,
+      refreshToken: session.refreshToken,
+      expiresInSeconds: session.expiresInSeconds,
+      admin: session.admin,
+      permissions: capabilitiesOf(session.admin.role),
+    });
   });
 
   router.post('/auth/logout', async (req, res) => {
     const body = parseBody(RefreshSchema, req.body);
-    const token = cookiesOf(req)[ADMIN_SESSION_COOKIE] ?? body.refreshToken ?? '';
-    if (token !== '') await logoutAdmin(database, token);
-
-    const secure = env.NODE_ENV === 'production' ? '; Secure' : '';
-    res.setHeader('Set-Cookie', [
-      `${ADMIN_CSRF_COOKIE}=; Path=/; Max-Age=0; SameSite=Strict${secure}`,
-      // Scoped to the same path it was issued on, or the browser keeps it.
-      `${ADMIN_SESSION_COOKIE}=; Path=/admin; HttpOnly; Max-Age=0; SameSite=Strict${secure}`,
-    ]);
-    res.status(200).json({ signedOut: true });
+    res.status(200).json({ signedOut: await logoutAdmin(database, body.refreshToken) });
   });
 
-  /** Who am I, and what may I do? The dashboard's only source of capabilities. */
-  router.get('/auth/me', requireAdmin(database, 'overview.read'), async (req, res) => {
+  /** Who am I, and what may I do? The app's only source of capabilities. */
+  router.get('/auth/me', requireAdmin(database, 'channels.read'), async (req, res) => {
     const context = adminOf(req);
     res.status(200).json({
       admin: context.account,
-      permissions: permissionsFor(context.role),
+      permissions: capabilitiesOf(context.role),
     });
   });
 
-  // ── Overview (§22) ──────────────────────────────────────────────────
-
-  router.get('/overview', requireAdmin(database, 'overview.read'), async (req, res) => {
-    const context = adminOf(req);
-    res.status(200).json({
-      counts: await overview(database),
-      permissions: permissionsFor(context.role),
-      role: context.role,
-    });
-  });
-
-  // ── Users (§23) ─────────────────────────────────────────────────────
-
-  router.get('/users', requireAdmin(database, 'users.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(await searchUsers(database, query));
-  });
-
-  router.get('/users/:userId', requireAdmin(database, 'users.read'), async (req, res) => {
-    const userId = pathIdParam(req.params.userId, 'invalid_user_id');
-    res.status(200).json(await getUserDetail(database, userId));
-  });
+  // ── Channels (§17, §18, §19, §20) ────────────────────────────────────
 
   /**
-   * Change an account's status (§23).
+   * The channels this account may publish to.
    *
-   * A ban is checked against `users.ban` rather than `users.moderate`: §28 gives
-   * "ban users" to SUPER_ADMIN only, so the two statuses come through the same
-   * endpoint but not through the same permission.
+   * A super administrator sees all of them; a channel administrator sees the
+   * one they are bound to. The restriction is in the WHERE clause of the query,
+   * so it is not a filter a route could forget.
    */
-  router.post('/users/:userId/status', requireAdmin(database, 'users.read'), async (req, res) => {
-    const context = adminOf(req);
-    const body = parseBody(UserStatusSchema, req.body);
-    await assertMay(
-      database,
-      context,
-      body.status === 'banned' ? 'users.ban' : 'users.moderate',
-      req
-    );
-
-    const userId = pathIdParam(req.params.userId, 'invalid_user_id');
-    const result = await setAccountStatus(database, userId, body.status, {
-      adminId: context.adminId,
-      reason: body.reason,
-      note: body.note,
-    });
-
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: `user.${body.status}`,
-      targetType: 'user',
-      targetId: userId,
-      metadata: { reason: body.reason, sessionsRevoked: result.sessionsRevoked },
-    });
-    res.status(200).json(result);
-  });
-
-  /** Force a user to sign in again on every device (§23). */
-  router.post('/users/:userId/sessions/revoke', requireAdmin(database, 'users.moderate'), async (req, res) => {
-    const context = adminOf(req);
-    const userId = pathIdParam(req.params.userId, 'invalid_user_id');
-    const revoked = await revokeAllSessions(database, userId, 'revoked_by_admin');
-
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: 'user.sessions.revoke',
-      targetType: 'user',
-      targetId: userId,
-      metadata: { revoked },
-    });
-    res.status(200).json({ revoked });
-  });
-
-  // ── Channels (§24) ──────────────────────────────────────────────────
-
   router.get('/channels', requireAdmin(database, 'channels.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(await searchChannels(database, query));
+    const context = adminOf(req);
+    res.status(200).json({
+      channels: await listChannelsForAdmin(database, store, scopeOf(context)),
+    });
   });
 
   router.get('/channels/:channelId', requireAdmin(database, 'channels.read'), async (req, res) => {
-    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
-    res.status(200).json(await getChannelDetail(database, channelId));
-  });
-
-  router.post('/channels/:channelId/status', requireAdmin(database, 'channels.moderate'), async (req, res) => {
     const context = adminOf(req);
     const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
-    const body = parseBody(ChannelStatusSchema, req.body);
+    const channel = await requireChannelScope(database, scopeOf(context), channelId);
+    res.status(200).json({
+      channel: mapChannel(channel, true, await signObjectUrl(store, channel.icon_object_key)),
+    });
+  });
 
-    const result = await setChannelStatus(database, channelId, body.status, body.reason);
+  /**
+   * Create a channel, and in the same transaction the login that runs it (§20).
+   *
+   * The order is deliberate: the administrator row references the channel, so
+   * the channel must exist first, and both must succeed together — a channel
+   * with no administrator would be one nobody could publish to, and an
+   * administrator bound to no channel could sign in and do nothing.
+   */
+  router.post('/channels', requireAdmin(database, 'channels.create'), write, async (req, res) => {
+    const context = adminOf(req);
+    const body = parseBody(CreateChannelSchema, req.body);
+
+    const hasEmail = Boolean(body.adminEmail?.trim());
+    const hasPassword = Boolean(body.adminPassword?.trim());
+    if (hasEmail !== hasPassword) {
+      throw badRequest(
+        'admin_credentials_incomplete',
+        'Provide both an administrator email and password, or neither.'
+      );
+    }
+
+    const created = await database.transaction(async (tx) => {
+      const channel = await createChannel(tx, {
+        name: body.name,
+        description: body.description ?? undefined,
+        categorySlug: body.categorySlug ?? undefined,
+        countryCode: body.countryCode ?? undefined,
+      });
+
+      let admin: AdminAccount | null = null;
+      if (hasEmail) {
+        admin = await createAdmin(tx, {
+          displayName: body.adminDisplayName?.trim() || channel.name,
+          email: body.adminEmail ?? '',
+          role: 'channel_admin',
+          password: body.adminPassword ?? '',
+          channelId: channel.id,
+          createdByAdminId: context.adminId,
+        });
+      }
+
+      // The image is claimed inside the SAME transaction as the channel's
+      // creation: a channel that exists because its form was submitted, but
+      // without the image that was chosen on it, is not what the administrator
+      // asked for. The claim can only replace an icon that already exists, so
+      // the returned key is always null here — a brand-new channel has none.
+      let replacedObjectKey: string | null = null;
+      if (body.iconMediaId) {
+        replacedObjectKey = await applyChannelIcon(
+          tx,
+          context.adminId,
+          channel.id,
+          body.iconMediaId
+        );
+      }
+
+      return { channel, admin, replacedObjectKey };
+    });
+
+    await removeObjectQuietly(store, created.replacedObjectKey);
+
     await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'channel.create',
+      targetType: 'channel',
+      targetId: created.channel.id,
+      metadata: {
+        slug: created.channel.slug,
+        adminEmail: created.admin?.email ?? null,
+      },
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    // The administrator's password is never echoed, and the hash is not part of
+    // AdminAccount either.
+    res.status(201).json({
+      channel: await signedChannel(store, created.channel),
+    });
+  });
+
+  router.patch('/channels/:channelId', requireAdmin(database, 'channels.update'), write, async (req, res) => {
+    const context = adminOf(req);
+    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
+    await requireChannelScope(database, scopeOf(context), channelId);
+
+    const body = parseBody(UpdateChannelSchema, req.body);
+
+    // One transaction across the profile fields and the image. An edit that
+    // changed a name and then failed on the image would leave the administrator
+    // looking at a form that half-applied, and no way to tell which half.
+    const { channel, replacedObjectKey } = await database.transaction(async (tx) => {
+      const row = await updateChannel(tx, channelId, {
+        name: body.name,
+        description: body.description,
+        categorySlug: body.categorySlug,
+        countryCode: body.countryCode,
+      });
+
+      // Absent means "leave the image alone"; null means "remove it"; a uuid
+      // means "adopt this upload". Distinguished here rather than by a separate
+      // endpoint, so the form has one Save that does the whole edit.
+      let replaced: string | null = null;
+      if (body.iconMediaId === null) {
+        replaced = await clearChannelIconIn(tx, channelId);
+      } else if (typeof body.iconMediaId === 'string') {
+        replaced = await applyChannelIcon(tx, context.adminId, channelId, body.iconMediaId);
+      }
+
+      return { channel: row, replacedObjectKey: replaced };
+    });
+
+    // After the commit, and never fatal — see [setChannelIcon].
+    await removeObjectQuietly(store, replacedObjectKey);
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'channel.update',
+      targetType: 'channel',
+      targetId: channelId,
+      // The image is recorded as a CHANGE rather than as its value: §30 forbids
+      // logging anything that could be a credential, and an object key is the
+      // sort of thing that ends up in a bug report.
+      metadata: {
+        fields: Object.keys(body),
+        iconChanged: body.iconMediaId !== undefined,
+      },
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({
+      channel: await signedChannel(store, await loadChannelRow(database, { by: 'id', value: channel.id })),
+    });
+  });
+
+  /**
+   * Set or remove a channel's profile image on its own (§21).
+   *
+   * The form uses PATCH; this exists for a tap on the image itself, and so the
+   * two operations have an obvious place to live when a client wants one and
+   * not the other. The body is the same field, with the same three meanings.
+   */
+  router.put('/channels/:channelId/icon', requireAdmin(database, 'channels.update'), write, async (req, res) => {
+    const context = adminOf(req);
+    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
+    await requireChannelScope(database, scopeOf(context), channelId);
+
+    const body = parseBody(ChannelIconSchema, req.body);
+
+    if (body.iconMediaId === undefined || body.iconMediaId === null) {
+      await clearChannelIcon(database, store, channelId);
+    } else {
+      await setChannelIcon(database, store, context.adminId, channelId, body.iconMediaId);
+    }
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: body.iconMediaId ? 'channel.icon.set' : 'channel.icon.clear',
+      targetType: 'channel',
+      targetId: channelId,
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({
+      channel: await signedChannel(store, await loadChannelRow(database, { by: 'id', value: channelId })),
+    });
+  });
+
+  /** Switch a channel off, or back on (§17). Super administrators only. */
+  router.post('/channels/:channelId/status', requireAdmin(database, 'channels.status'), write, async (req, res) => {
+    const context = adminOf(req);
+    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
+    const body = parseBody(z.object({ status: z.enum(['active', 'suspended']) }), req.body);
+
+    const channel = await setChannelStatus(database, channelId, body.status);
+    await writeAudit(database, {
+
       adminId: context.adminId,
       adminEmail: context.account.email,
       actorRole: context.role,
       action: `channel.${body.status}`,
       targetType: 'channel',
       targetId: channelId,
-      metadata: { reason: body.reason ?? null },
+      ipHash: hashIp(req.ip ?? 'unknown'),
     });
-    res.status(200).json(result);
+
+    res.status(200).json({ channel: await signedChannel(store, channel) });
+  });
+
+  /** Soft-delete a channel (§17). Super administrators only. */
+  router.delete('/channels/:channelId', requireAdmin(database, 'channels.delete'), write, async (req, res) => {
+    const context = adminOf(req);
+    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
+    await deleteChannel(database, channelId);
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'channel.delete',
+      targetType: 'channel',
+      targetId: channelId,
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({ deleted: true, channelId });
+  });
+
+  // ── Posts (§17, §18, §21) ────────────────────────────────────────────
+
+  /**
+   * A channel's posts, for the administrator who runs it.
+   *
+   * Deliberately not the public read: this answers for a suspended channel too,
+   * so an administrator whose channel was switched off can still see what they
+   * are being asked to fix.
+   */
+  router.get('/channels/:channelId/posts', requireAdmin(database, 'posts.read'), async (req, res) => {
+    const context = adminOf(req);
+    const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
+    await requireChannelScope(database, scopeOf(context), channelId);
+
+    const query = parseBody(PageQuerySchema, req.query);
+    res.status(200).json(await listChannelPostsForAdmin(database, store, channelId, query));
   });
 
   /**
-   * A channel's private follower conversations (§24, §26).
+   * Publish a post (§21).
    *
-   * Guarded by `conversations.read`, which only ADMIN and SUPER_ADMIN hold: a
-   * follower's private messages are the most sensitive content in the product,
-   * and §16's promise to them is only as strong as who can read the thread.
+   * Text, image, video and link posts are all this one route: the type follows
+   * from what is attached, and a media-less post needs no bucket at all — which
+   * is what keeps S3 optional (§22).
    */
-  router.get('/channels/:channelId/conversations', requireAdmin(database, 'conversations.read'), async (req, res) => {
+  router.post('/channels/:channelId/posts', requireAdmin(database, 'posts.create'), write, async (req, res) => {
+    const context = adminOf(req);
     const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
-    const detail = await getChannelDetail(database, channelId);
+    await requireChannelScope(database, scopeOf(context), channelId);
 
-    // Deliberately the channel-level list only: subject, participant display
-    // name and message counts. A moderator reads an individual message through
-    // a REPORT (§18), which is a bounded, recorded act — not by browsing.
-    res.status(200).json({
-      channelId,
-      conversationCount: detail.conversations,
-      allowFollowerMessages: detail.allowFollowerMessages,
-    });
-  });
-
-  // ── Posts (§25) ─────────────────────────────────────────────────────
-
-  router.get('/posts', requireAdmin(database, 'posts.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(await searchPosts(database, query));
-  });
-
-  /** Remove a post (§25). Soft, so §18's reversibility holds. */
-  router.post('/posts/:postId/remove', requireAdmin(database, 'posts.moderate'), async (req, res) => {
-    const context = adminOf(req);
-    const postId = pathIdParam(req.params.postId, 'invalid_post_id');
-    const body = parseBody(RemovePostSchema, req.body);
-
-    const removed = await removeOrRestorePost(database, postId, true, body.reason);
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: 'post.remove',
-      targetType: 'post',
-      targetId: postId,
-      metadata: { reason: body.reason, channelId: removed.channelId },
-    });
-    res.status(200).json(removed);
-  });
-
-  router.post('/posts/:postId/restore', requireAdmin(database, 'posts.moderate'), async (req, res) => {
-    const context = adminOf(req);
-    const postId = pathIdParam(req.params.postId, 'invalid_post_id');
-
-    const restored = await removeOrRestorePost(database, postId, false, null);
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: 'post.restore',
-      targetType: 'post',
-      targetId: postId,
-      metadata: { channelId: restored.channelId },
-    });
-    res.status(200).json(restored);
-  });
-
-  // ── Reports (§18) ───────────────────────────────────────────────────
-
-  router.get('/reports', requireAdmin(database, 'reports.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(await listReports(database, query));
-  });
-
-  router.get('/reports/:reportId', requireAdmin(database, 'reports.read'), async (req, res) => {
-    const reportId = pathIdParam(req.params.reportId, 'invalid_report_id');
-    const report = await getReport(database, reportId);
-    if (!report) throw notFound('report_not_found');
-
-    // §18's queue is only useful if a moderator can judge a report without
-    // hunting for its subject, so the target's own content comes back with it.
-    res.status(200).json({
-      report,
-      context: await getReportContext(database, report.targetType, report.targetId),
-    });
-  });
-
-  /** Claim a report, or close it. §18's status machine, in one endpoint. */
-  router.post('/reports/:reportId/resolve', requireAdmin(database, 'reports.work'), async (req, res) => {
-    const context = adminOf(req);
-    const reportId = pathIdParam(req.params.reportId, 'invalid_report_id');
-    const body = parseBody(ResolveReportSchema, req.body);
-
-    if (body.status === 'resolved' && !body.actionTaken?.trim()) {
-      throw badRequest('action_required', 'Say what action was taken before resolving a report.');
-    }
-
-    const updated = await resolveReport(database, reportId, context.adminId, body);
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: `report.${body.status}`,
-      targetType: 'report',
-      targetId: reportId,
-      metadata: {
-        actionTaken: body.actionTaken ?? null,
-        hasNote: Boolean(body.resolutionNote?.trim()),
-      },
-    });
-    res.status(200).json({ report: updated });
-  });
-
-  // ── Banned identities (§19, §23) ────────────────────────────────────
-
-  router.get('/identities', requireAdmin(database, 'identities.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(
-      await listBannedIdentities(database, { ...query, activeOnly: query.status !== 'all' })
-    );
-  });
-
-  router.post('/identities/:identityId/lift', requireAdmin(database, 'identities.lift'), async (req, res) => {
-    const context = adminOf(req);
-    const identityId = pathIdParam(req.params.identityId, 'invalid_identity_id');
-
-    const lifted = await liftIdentity(database, identityId);
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: 'identity.lift',
-      targetType: 'identity',
-      targetId: identityId,
-      metadata: { userId: lifted.userId },
-    });
-    res.status(200).json(lifted);
-  });
-
-  // ── Official messages (§26) ─────────────────────────────────────────
-
-  router.get('/messages', requireAdmin(database, 'messages.send'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    res.status(200).json(await listAdminMessages(database, query));
-  });
-
-  router.post('/messages', requireAdmin(database, 'messages.send'), messageLimit, async (req, res) => {
-    const context = adminOf(req);
-    const body = parseBody(AdminMessageSchema, req.body);
-
-    const hasUser = Boolean(body.targetUserId);
-    const hasChannel = Boolean(body.targetChannelId);
-    if (hasUser === hasChannel) {
-      throw badRequest('invalid_target', 'Send to either a user or a channel, not both.');
-    }
-
-    const message = await sendOfficialMessage(database, context.adminId, {
-      targetUserId: body.targetUserId,
-      targetChannelId: body.targetChannelId,
-      subject: body.subject,
+    const body = parseBody(PostInputSchema, req.body);
+    const post = await publishPost(database, store, context.adminId, channelId, {
       body: body.body,
+      linkUrl: body.linkUrl,
+      linkTitle: body.linkTitle,
+      mediaIds: body.mediaIds,
     });
 
     await writeAudit(database, {
       adminId: context.adminId,
       adminEmail: context.account.email,
       actorRole: context.role,
-      action: 'message.send',
-      targetType: hasUser ? 'user' : 'channel',
-      targetId: body.targetUserId ?? body.targetChannelId ?? null,
-      metadata: { messageId: message.id, subject: body.subject },
+      action: 'post.create',
+      targetType: 'post',
+      targetId: post.id,
+      metadata: { channelId, type: post.type, mediaCount: post.media.length },
+      ipHash: hashIp(req.ip ?? 'unknown'),
     });
 
-    // §26's inbox copy, then the push attempt (§17). AFTER the audit row and the
-    // message are committed, and never fatal: an official notice that reached
-    // the recipient's inbox is a completed action even if their phone was
-    // unreachable, and failing the request would revoke a notice the reviewer
-    // already sent — and would leave the audit log claiming it was sent.
-    try {
-      await fanOutPlatformNotice(database, push, {
-        adminMessageId: message.id,
-        targetUserId: body.targetUserId,
-        targetChannelId: body.targetChannelId,
-        subject: body.subject,
-        body: body.body,
-      });
-    } catch (err) {
-      console.error('[notifications] platform notice fan-out failed:', (err as Error).message);
-    }
-
-    res.status(201).json({ message });
+    res.status(201).json({ post });
   });
 
-  // ── Administrators (§27) ────────────────────────────────────────────
+  /**
+   * Edit a post's text or link (§21).
+   *
+   * The post's channel is resolved first and the scope checked against it, so a
+   * channel administrator cannot reach another channel's post by naming its id.
+   */
+  router.patch('/posts/:postId', requireAdmin(database, 'posts.update'), write, async (req, res) => {
+    const context = adminOf(req);
+    const postId = pathIdParam(req.params.postId, 'invalid_post_id');
+    const existing = await loadPostRow(database, postId);
+    await requireChannelScope(database, scopeOf(context), existing.channel_id);
+
+    const body = parseBody(UpdatePostSchema, req.body);
+    const post = await updatePost(database, store, postId, {
+      body: body.body,
+      linkUrl: body.linkUrl,
+      linkTitle: body.linkTitle,
+    });
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'post.update',
+      targetType: 'post',
+      targetId: postId,
+      metadata: { channelId: existing.channel_id },
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({ post });
+  });
+
+  /** Remove a post (§17). Soft, so it stays reversible. */
+  router.delete('/posts/:postId', requireAdmin(database, 'posts.delete'), write, async (req, res) => {
+    const context = adminOf(req);
+    const postId = pathIdParam(req.params.postId, 'invalid_post_id');
+    const existing = await loadPostRow(database, postId);
+    await requireChannelScope(database, scopeOf(context), existing.channel_id);
+
+    await deletePost(database, postId);
+
+    await writeAudit(database, {
+      adminId: context.adminId,
+      adminEmail: context.account.email,
+      actorRole: context.role,
+      action: 'post.delete',
+      targetType: 'post',
+      targetId: postId,
+      metadata: { channelId: existing.channel_id },
+      ipHash: hashIp(req.ip ?? 'unknown'),
+    });
+
+    res.status(200).json({ deleted: true, postId });
+  });
+
+  // ── Media (§21, §22) ─────────────────────────────────────────────────
+
+  /**
+   * Ask for a presigned upload URL.
+   *
+   * Three steps, in the order the composer uses them: presign, PUT the file to
+   * the bucket, confirm. No AWS credential crosses this boundary — only a
+   * capability scoped to one object, one method and a short expiry — and the
+   * object key is derived from a uuid the server generates, so a request cannot
+   * choose where its bytes land.
+   *
+   * Answered with `media_unavailable` (503) on a deployment with no bucket,
+   * which is a state the app words explicitly rather than a generic failure:
+   * text and link posts still work there (§22).
+   */
+  router.post('/media/uploads', requireAdmin(database, 'media.upload'), write, async (req, res) => {
+    const context = adminOf(req);
+    const body = parseBody(UploadRequestSchema, req.body);
+    const upload = await requestMediaUpload(database, store, context.adminId, body);
+    res.status(201).json({ upload });
+  });
+
+  /**
+   * Confirm the file arrived, by asking the bucket rather than the client.
+   *
+   * Idempotent: a client that retried after a dropped response is not punished
+   * for having got through the first time. A row only becomes claimable once a
+   * HEAD has found the object, so a publish can never attach an asset that was
+   * never uploaded.
+   */
+  router.post('/media/uploads/:mediaId/confirm', requireAdmin(database, 'media.upload'), write, async (req, res) => {
+    const context = adminOf(req);
+    const mediaId = pathIdParam(req.params.mediaId, 'invalid_media_id');
+    const media = await confirmMediaUpload(database, store, context.adminId, mediaId);
+    res.status(200).json({ media });
+  });
+
+  // ── Administrators (§17, §27) ────────────────────────────────────────
 
   router.get('/admins', requireAdmin(database, 'admins.read'), async (_req, res) => {
     res.status(200).json({ items: await listAdmins(database) });
   });
 
-  router.post('/admins', requireAdmin(database, 'admins.manage'), async (req, res) => {
+  /**
+   * Create a channel administrator (§18).
+   *
+   * Takes a channel id rather than a role: every account this route can create
+   * is bound to one channel, which is the whole of §18. Super administrators
+   * come from the deployment's configuration (§17), never from here.
+   */
+  router.post('/admins', requireAdmin(database, 'admins.manage'), write, async (req, res) => {
     const context = adminOf(req);
     const body = parseBody(CreateAdminSchema, req.body);
+
+    // The channel must exist before it can be administered.
+    await loadChannelRow(database, { by: 'id', value: body.channelId });
 
     const created = await createAdmin(database, {
       displayName: body.displayName,
       email: body.email,
-      phone: body.phone,
-      role: body.role,
+      role: 'channel_admin',
       password: body.password,
+      channelId: body.channelId,
       createdByAdminId: context.adminId,
     });
 
@@ -709,19 +760,24 @@ export function buildAdminRouter(
       action: 'admin.create',
       targetType: 'admin',
       targetId: created.id,
-      metadata: { role: created.role, email: created.email },
+      metadata: { role: created.role, email: created.email, channelId: body.channelId },
+      ipHash: hashIp(req.ip ?? 'unknown'),
     });
+
     res.status(201).json({ admin: created });
   });
 
-  router.post('/admins/:adminId/status', requireAdmin(database, 'admins.manage'), async (req, res) => {
+  /**
+   * Disable or re-enable an administrator (§27).
+   *
+   * Disabling yourself is refused: it is not moderation, it is a mistake, and
+   * with the last super administrator it is unrecoverable.
+   */
+  router.post('/admins/:adminId/status', requireAdmin(database, 'admins.manage'), write, async (req, res) => {
     const context = adminOf(req);
     const adminId = pathIdParam(req.params.adminId, 'invalid_admin_id');
-    const body = parseBody(z.object({ status: z.enum(['active', 'disabled']) }), req.body);
+    const body = parseBody(AdminStatusSchema, req.body);
 
-    // Locking yourself out is not moderation, it is a mistake — and with the
-    // last SUPER_ADMIN it is unrecoverable, which is why it is refused rather
-    // than merely warned about.
     if (adminId === context.adminId && body.status === 'disabled') {
       throw badRequest('cannot_disable_self', 'You cannot disable your own account.');
     }
@@ -735,29 +791,13 @@ export function buildAdminRouter(
       targetType: 'admin',
       targetId: adminId,
       metadata: { sessionsRevoked: result.sessionsRevoked },
+      ipHash: hashIp(req.ip ?? 'unknown'),
     });
+
     res.status(200).json(result);
   });
 
-  router.post('/admins/:adminId/role', requireAdmin(database, 'admins.manage'), async (req, res) => {
-    const context = adminOf(req);
-    const adminId = pathIdParam(req.params.adminId, 'invalid_admin_id');
-    const body = parseBody(RoleSchema, req.body);
-
-    const updated = await setAdminRole(database, adminId, body.role);
-    await writeAudit(database, {
-      adminId: context.adminId,
-      adminEmail: context.account.email,
-      actorRole: context.role,
-      action: 'admin.role',
-      targetType: 'admin',
-      targetId: adminId,
-      metadata: { role: body.role },
-    });
-    res.status(200).json({ admin: updated });
-  });
-
-  router.post('/admins/:adminId/sessions/revoke', requireAdmin(database, 'admins.manage'), async (req, res) => {
+  router.post('/admins/:adminId/sessions/revoke', requireAdmin(database, 'admins.manage'), write, async (req, res) => {
     const context = adminOf(req);
     const adminId = pathIdParam(req.params.adminId, 'invalid_admin_id');
 
@@ -770,203 +810,87 @@ export function buildAdminRouter(
       targetType: 'admin',
       targetId: adminId,
       metadata: { revoked },
+      ipHash: hashIp(req.ip ?? 'unknown'),
     });
+
     res.status(200).json({ revoked });
   });
 
-  // ── Audit and settings (§29, §30) ───────────────────────────────────
+  // ── Audit and settings (§22, §29) ────────────────────────────────────
 
   router.get('/audit', requireAdmin(database, 'audit.read'), async (req, res) => {
-    const query = parseBody(PageSchema, req.query);
-    const limit = query.limit === undefined ? 100 : Number(query.limit);
+    const query = parseBody(AuditQuerySchema, req.query);
+    const limit = Number(query.limit ?? '100');
     res.status(200).json({
-      items: await listAudit(database, {
-        limit: Number.isFinite(limit) ? limit : 100,
-      }),
+      items: await listAudit(database, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 100),
     });
   });
 
   /**
-   * Effective, NON-SECRET configuration (§22 "Settings").
+   * Effective, NON-SECRET configuration.
    *
-   * Read-only in M6, and `settings.write` is deliberately not wired to any
-   * mutating route: §28 grants it to SUPER_ADMIN, and every setting that
-   * matters here (`GOODPOST_HISTORY_DAYS`, retention, limits) is an environment
-   * variable on Render. A dashboard that changed them would be a second,
-   * unaudited source of truth for the deployment's behaviour.
+   * Read-only on purpose: every setting that matters here is an environment
+   * variable on the host, and a dashboard that changed them would be a second,
+   * unaudited source of truth for how the deployment behaves.
    */
-  router.get('/settings', requireAdmin(database, 'settings.read'), async (_req, res) => {
+  router.get('/settings', requireAdmin(database, 'channels.read'), async (req, res) => {
+    const context = adminOf(req);
     res.status(200).json({
       settings: {
         historyDays: env.GOODPOST_HISTORY_DAYS,
-        purgeGraceDays: env.PURGE_GRACE_DAYS,
         editWindowDays: env.EDIT_WINDOW_DAYS,
         maxTextLength: env.MAX_TEXT_LENGTH,
         maxPostMedia: env.MAX_POST_MEDIA,
-        maxChannelsPerUser: env.MAX_CHANNELS_PER_USER,
         defaultPageSize: env.DEFAULT_PAGE_SIZE,
         maxPageSize: env.MAX_PAGE_SIZE,
-        viewDedupeWindowMinutes: env.VIEW_DEDUPE_WINDOW_MINUTES,
-        pollOptions: { min: env.POLL_MIN_OPTIONS, max: env.POLL_MAX_OPTIONS },
-        banPhoneEnforced: env.BAN_PHONE_ENFORCED,
-        phoneVerifyMode: env.PHONE_VERIFY_MODE,
-        emailDeliveryMode: env.EMAIL_DELIVERY_MODE,
-        fcmEnabled: env.FCM_ENABLED,
-        s3Configured: Boolean(env.AWS_S3_BUCKET),
-        adminSessionTtlDays: env.ADMIN_SESSION_TTL_DAYS,
-        adminAccessTokenTtl: env.ADMIN_ACCESS_TOKEN_TTL,
+        maxChannelNameLength: env.MAX_CHANNEL_NAME_LENGTH,
+        maxChannelDescriptionLength: env.MAX_CHANNEL_DESCRIPTION_LENGTH,
+        // The app uses this to decide whether to offer the media picker at all,
+        // and to word `media_unavailable` honestly when it is off (§22).
+        mediaEnabled: store.configured,
+        maxUploadBytes: env.S3_MAX_UPLOAD_BYTES,
+        contactEmail: env.ADMIN_CONTACT_EMAIL,
       },
+      role: context.role,
     });
   });
 
   return router;
 }
 
-// ── Writes that are not in service.ts ───────────────────────────────────
+/** Re-exported for the app: the media summary shape a confirm step returns. */
+export type { MediaSummary };
 
 /**
- * Remove or restore a post (§25).
+ * A channel as an administrator sees it, or a 404.
  *
- * Lives here rather than in the moderation service because it is the only
- * caller that removes a post without being its channel's admin — the owner's
- * path (`deletePost`) authenticates the channel instead. The two must agree on
- * what removal MEANS, so both set the same columns and both keep
- * `post_count` and `last_post_at` honest.
+ * Unused by the routes above — they reach [requireChannelScope] directly — and
+ * kept because it is the documented entry point for a caller that has only an
+ * id and wants the scope check in one step.
  */
-async function removeOrRestorePost(
+export async function loadScopedChannel(
   database: Queryable,
-  postId: string,
-  remove: boolean,
-  reason: string | null
-): Promise<{ postId: string; channelId: string; removed: boolean }> {
-  return database.transaction(async (tx) => {
-    const row = await tx.queryOne<{ id: string; channel_id: string; deleted_at: unknown }>(
-      `SELECT id, channel_id, deleted_at FROM posts WHERE id = $1`,
-      [postId]
-    );
-    if (!row) throw notFound('post_not_found');
-
-    const alreadyRemoved = row.deleted_at !== null;
-    if (remove && alreadyRemoved) throw badRequest('already_removed', 'That post is already removed.');
-    if (!remove && !alreadyRemoved) throw badRequest('not_removed', 'That post is not removed.');
-
-    await tx.query(
-      `UPDATE posts
-          SET deleted_at = CASE WHEN $2::boolean THEN now() ELSE NULL END,
-              deleted_reason = CASE WHEN $2::boolean THEN $3::text ELSE NULL END
-        WHERE id = $1`,
-      [postId, remove, reason]
-    );
-
-    // Recounted from the rows, exactly as the owner's delete path does, so the
-    // channel's counters cannot disagree with its content.
-    await tx.query(
-      `UPDATE channels
-          SET post_count = (SELECT count(*) FROM posts WHERE channel_id = $1 AND deleted_at IS NULL),
-              last_post_at = (SELECT max(created_at) FROM posts WHERE channel_id = $1 AND deleted_at IS NULL)
-        WHERE id = $1`,
-      [row.channel_id]
-    );
-
-    return { postId, channelId: row.channel_id, removed: remove };
-  });
+  context: AdminContext,
+  channelId: string
+): Promise<ChannelRow> {
+  return requireChannelScope(database, scopeOf(context), channelId);
 }
 
-/** §18's decision record: status, action taken, note, resolver and timestamp. */
-async function resolveReport(
-  database: Queryable,
-  reportId: string,
-  adminId: string,
-  input: { status: 'reviewing' | 'resolved' | 'dismissed'; actionTaken?: string | undefined; resolutionNote?: string | undefined }
-): Promise<unknown> {
-  const closing = input.status === 'resolved' || input.status === 'dismissed';
-
-  const updated = await database.query(
-    `UPDATE reports
-        SET status = $2::report_status,
-            action_taken = COALESCE($3, action_taken),
-            resolution_note = COALESCE($4, resolution_note),
-            resolved_by_admin_id = CASE WHEN $5::boolean THEN $6::uuid ELSE resolved_by_admin_id END,
-            resolved_at = CASE WHEN $5::boolean THEN now() ELSE resolved_at END
-      WHERE id = $1
-      RETURNING id`,
-    [reportId, input.status, input.actionTaken ?? null, input.resolutionNote ?? null, closing, adminId]
-  );
-  if (updated.length === 0) throw notFound('report_not_found');
-
-  // Read back through the same mapper as the queue, so the response to the act
-  // and the next queue fetch cannot describe the same report differently.
-  return getReport(database, reportId);
+/**
+ * A channel row as a payload, with its image signed.
+ *
+ * One helper for the single-channel responses so none of them can come back
+ * with an icon that a LIST response would have included: a channel whose avatar
+ * appears after a refresh but not after a save is the kind of inconsistency that
+ * gets blamed on the network.
+ */
+async function signedChannel(store: ObjectStore, row: ChannelRow) {
+  return mapChannel(row, true, await signObjectUrl(store, row.icon_object_key));
 }
 
-/** Lift a mobile-identity ban (§19, §23), reinstating the affected account. */
-async function liftIdentity(
-  database: Queryable,
-  identityId: string
-): Promise<{ identityId: string; userId: string | null }> {
-  return database.transaction(async (tx) => {
-    const row = await tx.queryOne<{ id: string; phone_hash: string; lifted_at: unknown }>(
-      `SELECT id, phone_hash, lifted_at FROM banned_identities WHERE id = $1`,
-      [identityId]
-    );
-    if (!row) throw notFound('identity_not_found');
-    if (row.lifted_at !== null) throw badRequest('already_lifted', 'That ban has already been lifted.');
-
-    await tx.query(`UPDATE banned_identities SET lifted_at = now() WHERE id = $1`, [identityId]);
-
-    // The account that holds this identity goes back to active. Without this the
-    // number would be registrable again while the existing account stayed
-    // banned, which is a state no policy describes.
-    const account = await tx.queryOne<{ id: string }>(
-      `UPDATE users SET status = 'active', banned_at = NULL
-        WHERE phone_hash = $1 AND status = 'banned'
-        RETURNING id`,
-      [row.phone_hash]
-    );
-
-    return { identityId, userId: account?.id ?? null };
-  });
-}
-
-/** Send an official platform message (§26). */
-async function sendOfficialMessage(
-  database: Queryable,
-  adminId: string,
-  input: {
-    readonly targetUserId?: string | undefined;
-    readonly targetChannelId?: string | undefined;
-    readonly subject: string;
-    readonly body: string;
-  }
-): Promise<{ id: string }> {
-  if (input.targetUserId) {
-    const exists = await database.queryOne(
-      `SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL`,
-      [input.targetUserId]
-    );
-    if (!exists) throw notFound('user_not_found');
-  } else if (input.targetChannelId) {
-    const exists = await database.queryOne(
-      `SELECT 1 FROM channels WHERE id = $1 AND deleted_at IS NULL`,
-      [input.targetChannelId]
-    );
-    if (!exists) throw notFound('channel_not_found');
-  }
-
-  const inserted = await database.query<{ id: string }>(
-    `INSERT INTO admin_messages (admin_id, target_user_id, target_channel_id, subject, body)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id`,
-    [
-      adminId,
-      input.targetUserId ?? null,
-      input.targetChannelId ?? null,
-      input.subject.trim(),
-      input.body.trim(),
-    ]
-  );
-
-  const row = inserted[0];
-  if (!row) throw new Error('[admin] message insert returned no row');
-  return { id: row.id };
+/** A post's channel, for a caller that needs the scope check without the post. */
+export async function channelOfPost(database: Queryable, postId: string): Promise<string> {
+  const row = await loadPostRow(database, postId);
+  if (!row) throw notFound('post_not_found');
+  return row.channel_id;
 }

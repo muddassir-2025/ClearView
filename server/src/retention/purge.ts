@@ -36,7 +36,6 @@ export interface RetentionReport {
   readonly purged: number;
   readonly objectsRemoved: number;
   readonly objectsFailed: number;
-  readonly notificationsRemoved: number;
 }
 
 /**
@@ -104,8 +103,10 @@ export async function purgeExpiredPosts(
       [postIds]
     );
 
-    // The channel each post belonged to, so its counters can be recomputed
-    // rather than decremented by a guessed amount.
+    // The channel each post belonged to, so `last_post_at` can be recomputed
+    // rather than guessed at. That column is what the channel list sorts by and
+    // what a row's timestamp describes, so a sweep that left it pointing at a
+    // purged post would leave the list claiming activity that no longer exists.
     const channels = await tx.query<{ channel_id: string }>(
       `SELECT DISTINCT channel_id FROM posts WHERE id = ANY($1::uuid[])`,
       [postIds]
@@ -113,14 +114,10 @@ export async function purgeExpiredPosts(
 
     await tx.query(`DELETE FROM posts WHERE id = ANY($1::uuid[])`, [postIds]);
 
-    // Recounted, exactly as the owner's delete path and the admin path do. A
-    // retention sweep that decremented a counter would leave a channel claiming
-    // posts that no longer exist.
     for (const channel of channels) {
       await tx.query(
         `UPDATE channels
-            SET post_count = (SELECT count(*) FROM posts WHERE channel_id = $1 AND deleted_at IS NULL),
-                last_post_at = (SELECT max(created_at) FROM posts WHERE channel_id = $1 AND deleted_at IS NULL)
+            SET last_post_at = (SELECT max(created_at) FROM posts WHERE channel_id = $1 AND deleted_at IS NULL)
           WHERE id = $1`,
         [channel.channel_id]
       );
@@ -184,5 +181,5 @@ export async function runRetentionPass(
   const expired = await expireOldPosts(database);
   const { purged, objectsRemoved, objectsFailed } = await purgeExpiredPosts(database, store);
 
-  return { expired, purged, objectsRemoved, objectsFailed, notificationsRemoved: 0 };
+  return { expired, purged, objectsRemoved, objectsFailed };
 }

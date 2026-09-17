@@ -41,29 +41,17 @@ export interface RateLimitRule {
 
 export interface RateLimitConfig {
   readonly global: RateLimitRule;
+  /**
+   * Signing in (§16). Tighter than the global rule, and the one limit that
+   * protects the only credential in the product: an administrator's password.
+   * There is no per-viewer authentication left to limit.
+   */
   readonly auth: RateLimitRule;
   /**
-   * State-changing Good Post routes (§6/§7 writes). Added in M2 with the first
-   * routes that need it — `WRITE_RATE_LIMIT_MAX` had been declared since M0
-   * while nothing consumed it, which is the same "documented but not enforced"
-   * gap the auth limits had.
+   * Every state-changing administrator route: publishing, editing, deleting and
+   * the media upload handshake.
    */
   readonly write: RateLimitRule;
-  /**
-   * Filing a report (§18). Tighter than `write` because a report is a shared
-   * resource: the moderation queue is read by people, and one account must not
-   * be able to fill it. `REPORT_RATE_LIMIT_MAX` had been declared since M0 and
-   * was reported as RESERVED at boot until M5 built the routes that consume it.
-   */
-  readonly report: RateLimitRule;
-  /**
-   * Official platform messages (§26), from ADMIN_MESSAGE_RATE_LIMIT_MAX.
-   *
-   * Its own rule rather than the admin `write` one because a notice goes to a
-   * person's inbox: sending several hundred is not a burst of edits, it is
-   * harassment with a platform letterhead.
-   */
-  readonly adminMessage: RateLimitRule;
 }
 
 export interface RateLimitDecision {
@@ -164,10 +152,11 @@ export class FixedWindowRateLimiter {
 /**
  * The active rules, read from the environment.
  *
- * Every declared limit now has a consumer. This function used to report
- * REPORT_RATE_LIMIT_MAX as RESERVED — declared in .env, documented as a limit,
- * and enforced by nothing — which is the same "config implies protection" gap
- * that made this module necessary. M5's report routes closed it.
+ * Every declared limit has a consumer. The report and official-message rules
+ * that used to live here went with the moderation and notification modules —
+ * a rule with no route to protect is the "config implies protection" gap this
+ * module exists to prevent, and leaving it in place would report a limit that
+ * nothing enforces.
  */
 export function rateLimitConfigFromEnv(): RateLimitConfig {
   return {
@@ -186,16 +175,6 @@ export function rateLimitConfigFromEnv(): RateLimitConfig {
       windowMs: env.RATE_LIMIT_WINDOW_MS,
       max: env.WRITE_RATE_LIMIT_MAX,
     },
-    report: {
-      name: 'report',
-      windowMs: env.RATE_LIMIT_WINDOW_MS,
-      max: env.REPORT_RATE_LIMIT_MAX,
-    },
-    adminMessage: {
-      name: 'admin_message',
-      windowMs: env.RATE_LIMIT_WINDOW_MS,
-      max: env.ADMIN_MESSAGE_RATE_LIMIT_MAX,
-    },
   };
 }
 
@@ -208,14 +187,11 @@ export function rateLimitConfigFromEnv(): RateLimitConfig {
 export function describeActiveLimits(config: RateLimitConfig): string[] {
   const lines = [
     `[rate-limit] ACTIVE  ${config.global.name}: ${config.global.max} req / ${config.global.windowMs}ms per IP (/api/v1)`,
-    `[rate-limit] ACTIVE  ${config.auth.name}: ${config.auth.max} req / ${config.auth.windowMs}ms per IP (/api/v1/auth)`,
-    `[rate-limit] ACTIVE  ${config.write.name}: ${config.write.max} req / ${config.write.windowMs}ms per IP (channel, post + media writes)`,
+    `[rate-limit] NOTE: anonymous reads are covered by the global rule only — that is the whole reader-facing allowance, since Good Post has no accounts to limit (§24)`,
+    `[rate-limit] ACTIVE  ${config.write.name}: ${config.write.max} req / ${config.write.windowMs}ms per IP (every administrator write, including the media handshake)`,
+    `[rate-limit] ACTIVE  ${config.auth.name}: ${config.auth.max} req / ${config.auth.windowMs}ms per IP (/admin/api/auth/login)`,
     `[rate-limit] NOT LIMITED: /health and /health/db (Render polls these; limiting them causes restart loops)`,
-    `[rate-limit] ACTIVE  ${config.report.name}: ${config.report.max} req / ${config.report.windowMs}ms per IP (filing a report)`,
-    `[rate-limit] NOTE: reads are covered by the global rule only; WRITE_RATE_LIMIT_MAX=${env.WRITE_RATE_LIMIT_MAX} applies to every POST/PATCH/PUT/DELETE in the Good Post API`,
-    `[rate-limit] ACTIVE  ${config.adminMessage.name}: ${config.adminMessage.max} req / ${config.adminMessage.windowMs}ms per IP (sending an official admin message)`,
-    `[rate-limit] NOTE: the admin API is limited by the global rule; /admin/api/auth/login shares the auth rule`,
-    `[rate-limit] NOTE: rate limiting is by IP; the OTP, login-attempt and admin-lockout limits are per IDENTITY and are enforced in the service layer (OTP_MAX_SENDS_PER_HOUR=${env.OTP_MAX_SENDS_PER_HOUR}, LOGIN_MAX_FAILED_ATTEMPTS=${env.LOGIN_MAX_FAILED_ATTEMPTS})`,
+    `[rate-limit] NOTE: rate limiting is by IP; the per-IDENTITY admin lockout is enforced in the service layer (LOGIN_MAX_FAILED_ATTEMPTS=${env.LOGIN_MAX_FAILED_ATTEMPTS}, LOGIN_LOCKOUT_MINUTES=${env.LOGIN_LOCKOUT_MINUTES})`,
     `[rate-limit] storage: in-process fixed window — per instance, not shared`,
   ];
   return lines;

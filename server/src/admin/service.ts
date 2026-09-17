@@ -1,39 +1,41 @@
 import bcrypt from 'bcryptjs';
-import { env, hashPhone, hashToken, normalizeEmail } from '../env.js';
-import { isoOrNull, one, type Queryable } from '../db.js';
-import { badRequest, conflict, forbidden, notFound, tooManyRequests, unauthorized } from '../http/errors.js';
-import { isValidEmail } from '../auth/service.js';
-import { ADMIN_ROLES, type AdminRole, type AdminStatus } from './permissions.js';
-import {
-  adminSessionExpiry,
-  mintAdminRefreshToken,
-  signAdminAccessToken,
-} from './tokens.js';
+import { env, hashIp, hashToken, normalizeEmail } from '../env.js';
+import { one, type Queryable } from '../db.js';
+import { badRequest, conflict, forbidden, notFound, unauthorized } from '../http/errors.js';
+import { adminSessionExpiry, mintAdminRefreshToken, signAdminAccessToken } from './tokens.js';
+import { isAdminRole, permissionsFor, type AdminRole } from './permissions.js';
 
 /**
- * Administrator identity, sessions and the audit log (§20, §21, §27, §29, §30).
+ * Administrators: sign-in, sessions and the audit log (§16–§19, §25, §29).
  *
- * Rules this module exists to enforce:
+ * This is the whole of the authenticated surface. There is no viewer account
+ * anywhere in this service, because there is no viewer account anywhere in the
+ * product: a reader of Good Post has no identity, so the only thing that can
+ * hold a session is a channel's publisher or the platform's super
+ * administrator.
  *
- *  * **Admin login is not the user flow.** A separate table, a separate token
- *    audience, a separate signing key and password authentication instead of
- *    an OTP. §21 is explicit, and §48 explains why: a Good Post registration
- *    must never be able to produce an administrator.
+ * Four rules shape this file.
  *
- *  * **No enumeration.** An unknown address, a wrong password and a disabled
- *    account answer the same thing, `invalid_credentials`. The one exception is
- *    deliberate and safe: once the PASSWORD is correct, a disabled account is
- *    told it is disabled, because the caller has already proved they own it and
- *    "you cannot sign in" without a reason is a support ticket.
+ *  * **A refusal says nothing.** A wrong address, a wrong password and a
+ *    disabled account are three different facts and one answer. `admin_users`
+ *    is a list of staff addresses, and a sign-in form that answered
+ *    differently would be a way to read it.
  *
- *  * **Failed attempts are counted in the database**, per administrator, so a
- *    restart does not hand an attacker a fresh allowance (§30).
+ *  * **The role is read on every request, never trusted from a token.** The
+ *    token carries a session id; [loadAdmin] re-reads the row, so disabling an
+ *    administrator or changing their role takes effect on the next request
+ *    rather than when their token expires.
  *
- *  * **Every sensitive action is audited**, including refusals — §29's log is
- *    where "did anyone try?" has to be answerable.
+ *  * **Passwords are bcrypt, with a per-row salt.** Compared via
+ *    [passwordMatches], which runs a dummy comparison when there is no such
+ *    administrator, so the response time does not say whether an address
+ *    exists.
+ *
+ *  * **Every sensitive act is audited, including a refusal.** The log is
+ *    append-only in the database (migration 008's trigger), which is what makes
+ *    it worth writing to.
  */
 
-/** bcrypt cost. 12 is the current sane default: ~250ms on commodity hardware. */
 const BCRYPT_ROUNDS = 12;
 
 export interface AdminAccount {
@@ -41,88 +43,80 @@ export interface AdminAccount {
   readonly displayName: string;
   readonly email: string;
   readonly role: AdminRole;
-  readonly status: AdminStatus;
+  readonly status: 'active' | 'disabled';
+  /** `null` for a super administrator. The channel a channel admin is bound to. */
+  readonly channelId: string | null;
   readonly createdAt: string;
-  readonly lastLoginAt: string | null;
 }
 
 export interface AdminSessionResult {
   readonly accessToken: string;
   readonly refreshToken: string;
-  readonly expiresIn: number;
+  readonly expiresInSeconds: number;
   readonly admin: AdminAccount;
 }
+
+const ADMIN_COLUMNS = `id, display_name, email, role, status, channel_id, created_at`;
 
 interface AdminRow {
   id: string;
   display_name: string;
   email: string;
-  email_normalized: string;
-  phone_hash: string;
-  password_hash: string;
-  role: AdminRole;
-  status: AdminStatus;
-  failed_login_count: number;
-  locked_until: unknown;
-  last_login_at: unknown;
+  role: string;
+  status: 'active' | 'disabled';
+  channel_id: string | null;
   created_at: unknown;
 }
 
-/**
- * Columns for an `AdminAccount`. `password_hash` is absent on purpose: the only
- * shapes this module returns are built from this list, so a hash cannot reach a
- * response body by accident.
- */
-const ADMIN_COLUMNS = `id, display_name, email, email_normalized, role, status,
-  failed_login_count, locked_until, last_login_at, created_at`;
-
-function toAdminAccount(row: AdminRow): AdminAccount {
+function toAccount(row: AdminRow): AdminAccount {
   return {
     id: row.id,
     displayName: row.display_name,
     email: row.email,
-    role: row.role,
+    // A legacy value can only be read here, never written: migration 013
+    // disables any row that is not one of the two roles and constrains the
+    // column. Falling back to the least powerful role means a stray row cannot
+    // be treated as a super administrator by this mapper.
+    role: isAdminRole(row.role) ? row.role : 'channel_admin',
     status: row.status,
-    createdAt: isoOrNull(row.created_at) ?? '',
-    lastLoginAt: isoOrNull(row.last_login_at),
+    channelId: row.channel_id,
+    createdAt: toIso(row.created_at),
   };
 }
 
-// ── Password handling ───────────────────────────────────────────────────
+function toIso(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
 
+// ── Passwords (§16) ─────────────────────────────────────────────────────
+
+/** A bcrypt hash, never a reversible form. */
 export async function hashPassword(password: string): Promise<string> {
-  assertPasswordAcceptable(password);
   return bcrypt.hash(password, BCRYPT_ROUNDS);
 }
 
 /**
- * §27's floor, checked in one place.
+ * §16's floor for a channel administrator's password.
  *
- * Deliberately NOT a complexity rule ("one digit, one symbol"): those push
- * people toward `Password1!` and are actively counterproductive. Length is the
- * property that correlates with strength, and this is a password only ever
- * typed by staff into a dashboard.
+ * Enforced here rather than only in the route, because the bootstrap path and
+ * the create-a-channel path both set passwords and only one of them is a route.
  */
 export function assertPasswordAcceptable(password: string): void {
   if (password.length < env.ADMIN_MIN_PASSWORD_LENGTH) {
     throw badRequest(
       'weak_password',
-      `An administrator password must be at least ${env.ADMIN_MIN_PASSWORD_LENGTH} characters.`
+      `A password must be at least ${env.ADMIN_MIN_PASSWORD_LENGTH} characters.`
     );
-  }
-  if (password.length > 200) {
-    // bcrypt silently truncates beyond 72 bytes; refusing an absurd length is
-    // friendlier than accepting a password whose tail does nothing.
-    throw badRequest('weak_password', 'That password is too long.');
   }
 }
 
 /**
- * Compare a password, always doing the bcrypt work.
+ * A hash that is compared against when no administrator matches.
  *
- * A missing account is compared against a fixed dummy hash so the response time
- * does not reveal whether the address exists. This is a real side channel on an
- * endpoint that answers `invalid_credentials` for both cases.
+ * A sign-in for an unknown address that returns in 1 ms while a real one takes
+ * 60 ms is an address oracle. This is a valid bcrypt hash of a value nobody
+ * knows, so the comparison always runs and always costs the same.
  */
 const DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEeO7ZBpVQvV9zPWJMoZbWqBBBBBBBBBBBBB';
 
@@ -130,6 +124,8 @@ async function passwordMatches(password: string, hash: string | undefined): Prom
   try {
     return await bcrypt.compare(password, hash ?? DUMMY_HASH);
   } catch {
+    // A malformed stored hash must read as \"wrong password\", not as a 500 that
+    // says the row is malformed.
     return false;
   }
 }
@@ -139,19 +135,18 @@ async function passwordMatches(password: string, hash: string | undefined): Prom
 export interface AuditEntry {
   readonly adminId: string | null;
   readonly adminEmail: string | null;
-  readonly actorRole: AdminRole | null;
+  readonly actorRole: string | null;
   readonly action: string;
   readonly targetType?: string | null;
   readonly targetId?: string | null;
   readonly outcome?: 'success' | 'denied' | 'failed';
-  /** Never a credential: §30 forbids logging passwords, tokens and OTP codes. */
   readonly metadata?: Record<string, unknown> | null;
   readonly ipHash?: string | null;
 }
 
-/** Counted so a failing append is visible rather than merely printed once. */
 let auditWriteFailures = 0;
 
+/** Counted, so a deployment can tell that its audit log has a problem. */
 export function auditFailureCount(): number {
   return auditWriteFailures;
 }
@@ -159,19 +154,17 @@ export function auditFailureCount(): number {
 /**
  * Append one audit row.
  *
- * It does NOT fail the request that caused it. That trade-off is deliberate and
- * worth stating: by the time this runs the action is already committed, so
- * throwing would report a failed suspension that actually happened — the
- * moderator would retry and suspend someone twice. A write failure is
- * therefore logged loudly, counted, and surfaced on the dashboard's overview,
- * which is where a broken audit trail gets noticed.
+ * Never throws. An audit write that failed must not roll back the action it
+ * describes — a channel that was created and then lost because its log entry
+ * failed is worse than a log with a gap in it. The failure is counted and
+ * logged instead, and the count is what makes the gap visible.
  */
 export async function writeAudit(database: Queryable, entry: AuditEntry): Promise<void> {
   try {
     await database.query(
       `INSERT INTO admin_audit_logs
          (admin_id, admin_email, actor_role, action, target_type, target_id, outcome, metadata, ip_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)`,
+       VALUES ($1, $2, $3::admin_role, $4, $5, $6, $7::audit_outcome, $8::jsonb, $9)`,
       [
         entry.adminId,
         entry.adminEmail,
@@ -180,371 +173,317 @@ export async function writeAudit(database: Queryable, entry: AuditEntry): Promis
         entry.targetType ?? null,
         entry.targetId ?? null,
         entry.outcome ?? 'success',
-        entry.metadata === undefined || entry.metadata === null
-          ? null
-          : JSON.stringify(entry.metadata),
+        entry.metadata ? JSON.stringify(entry.metadata) : null,
         entry.ipHash ?? null,
       ]
     );
   } catch (err) {
     auditWriteFailures += 1;
-    console.error(
-      `[audit] FAILED to append "${entry.action}" (target ${entry.targetType ?? '-'}/${
-        entry.targetId ?? '-'
-      }): ${(err as Error).message} — the action itself was already committed`
-    );
+    console.error('[admin] could not write an audit row:', (err as Error).message);
   }
-}
-
-/** The audit view (§29), newest first. Append-only, so there is nothing else. */
-export async function listAudit(
-  database: Queryable,
-  filter: { readonly adminId?: string | undefined; readonly limit?: number | undefined } = {}
-): Promise<readonly AuditRecord[]> {
-  const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
-
-  const rows = await database.query<{
-    id: string;
-    admin_id: string | null;
-    admin_email: string | null;
-    actor_role: AdminRole | null;
-    action: string;
-    target_type: string | null;
-    target_id: string | null;
-    outcome: 'success' | 'denied' | 'failed';
-    metadata: unknown;
-    created_at: unknown;
-  }>(
-    `SELECT id, admin_id, admin_email, actor_role, action, target_type, target_id,
-            outcome, metadata, created_at
-       FROM admin_audit_logs
-      WHERE ($1::uuid IS NULL OR admin_id = $1::uuid)
-      ORDER BY created_at DESC, id DESC
-      LIMIT $2`,
-    [filter.adminId ?? null, limit]
-  );
-
-  return rows.map((row) => ({
-    id: row.id,
-    adminId: row.admin_id,
-    adminEmail: row.admin_email,
-    actorRole: row.actor_role,
-    action: row.action,
-    targetType: row.target_type,
-    targetId: row.target_id,
-    outcome: row.outcome,
-    metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-    createdAt: isoOrNull(row.created_at) ?? '',
-  }));
 }
 
 export interface AuditRecord {
   readonly id: string;
-  readonly adminId: string | null;
   readonly adminEmail: string | null;
-  readonly actorRole: AdminRole | null;
+  readonly actorRole: string | null;
   readonly action: string;
   readonly targetType: string | null;
   readonly targetId: string | null;
-  readonly outcome: 'success' | 'denied' | 'failed';
-  readonly metadata: Record<string, unknown> | null;
+  readonly outcome: string;
   readonly createdAt: string;
 }
 
-// ── Login (§21, §30) ────────────────────────────────────────────────────
+/** Newest first. Bounded, because an unbounded log read is a denial of service. */
+export async function listAudit(
+  database: Queryable,
+  limit: number
+): Promise<readonly AuditRecord[]> {
+  const rows = await database.query<{
+    id: string;
+    admin_email: string | null;
+    actor_role: string | null;
+    action: string;
+    target_type: string | null;
+    target_id: string | null;
+    outcome: string;
+    created_at: unknown;
+  }>(
+    `SELECT id, admin_email, actor_role, action, target_type, target_id, outcome, created_at
+       FROM admin_audit_logs
+      ORDER BY created_at DESC, id DESC
+      LIMIT $1`,
+    [limit]
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    adminEmail: r.admin_email,
+    actorRole: r.actor_role,
+    action: r.action,
+    targetType: r.target_type,
+    targetId: r.target_id,
+    outcome: r.outcome,
+    createdAt: toIso(r.created_at),
+  }));
+}
+
+// ── Sign-in (§16) ───────────────────────────────────────────────────────
 
 export interface LoginInput {
-  /** An email address or an E.164 mobile number; both are accepted (§21). */
-  readonly identifier: string;
+  readonly email: string;
   readonly password: string;
-  readonly ipHash?: string | null;
-  readonly userAgent?: string | null;
+  readonly ipHash: string;
+  readonly userAgent: string | null;
 }
 
-function isE164(value: string): boolean {
-  return /^\+[1-9]\d{6,14}$/.test(value);
-}
-
-/** Find an administrator by email or phone, without revealing which matched. */
-async function findAdmin(
-  database: Queryable,
-  identifier: string
-): Promise<AdminRow | null> {
-  const trimmed = identifier.trim();
-
-  if (isE164(trimmed)) {
-    return database.queryOne<AdminRow>(
-      `SELECT ${ADMIN_COLUMNS}, password_hash FROM admin_users WHERE phone_hash = $1`,
-      [hashPhone(trimmed)]
-    );
-  }
-
-  return database.queryOne<AdminRow>(
-    `SELECT ${ADMIN_COLUMNS}, password_hash FROM admin_users WHERE email_normalized = $1`,
-    [normalizeEmail(trimmed)]
-  );
+interface LoginRow extends AdminRow {
+  password_hash: string;
+  failed_login_count: number;
+  locked_until: unknown;
 }
 
 /**
- * Sign an administrator in (§21).
+ * Sign an administrator in.
  *
- * The order matters. The lockout and the password check happen BEFORE anything
- * about the account's state is returned, so a disabled account and a wrong
- * password are indistinguishable to someone who does not know the password.
+ * The failed-attempt counter and the lockout live in the row, not in memory, so
+ * a restart does not hand an attacker a fresh allowance — the same reasoning
+ * that put the old OTP attempts in the database.
+ *
+ * A locked account is refused with `admin_locked` rather than the generic
+ * message. That is a deliberate exception to the \"one answer\" rule: an
+ * administrator who is being locked out by an attacker needs to know why their
+ * password stopped working, and the lock can only be triggered by somebody who
+ * knows the address.
  */
 export async function loginAdmin(
   database: Queryable,
   input: LoginInput
 ): Promise<AdminSessionResult> {
-  const row = await findAdmin(database, input.identifier);
+  const emailNormalized = normalizeEmail(input.email);
 
-  const auditFor = (outcome: 'success' | 'denied' | 'failed', reason: string): AuditEntry => ({
-    adminId: row?.id ?? null,
-    adminEmail: row?.email ?? null,
-    actorRole: row?.role ?? null,
-    action: 'admin.login',
-    targetType: 'admin',
-    targetId: row?.id ?? null,
-    outcome,
-    metadata: { reason },
-    ipHash: input.ipHash ?? null,
-  });
+  const row = await database.queryOne<LoginRow>(
+    `SELECT ${ADMIN_COLUMNS}, password_hash, failed_login_count, locked_until
+       FROM admin_users
+      WHERE email_normalized = $1`,
+    [emailNormalized]
+  );
 
-  if (row && isoOrNull(row.locked_until) !== null) {
-    const until = Date.parse(String(row.locked_until));
-    if (Number.isFinite(until) && until > Date.now()) {
-      await writeAudit(database, auditFor('denied', 'locked'));
-      throw tooManyRequests(
-        'admin_locked',
-        'Too many failed sign-in attempts. Try again later.'
-      );
-    }
+  const locked = row?.locked_until ? new Date(toIso(row.locked_until)).getTime() > Date.now() : false;
+  if (locked) {
+    await writeAudit(database, {
+      adminId: row?.id ?? null,
+      adminEmail: row?.email ?? null,
+      actorRole: row?.role ?? null,
+      action: 'admin.login',
+      outcome: 'denied',
+      metadata: { reason: 'locked' },
+      ipHash: input.ipHash,
+    });
+    throw forbidden('admin_locked', 'Too many failed attempts. Try again later.');
   }
 
-  const ok = await passwordMatches(input.password, row?.password_hash);
+  const matches = await passwordMatches(input.password, row?.password_hash);
 
-  if (!row || !ok) {
-    // The counter is only meaningful for a real account; a guessed address must
-    // not create rows or locks, so this branch does nothing when `row` is null.
-    if (row) {
-      const failed = row.failed_login_count + 1;
-      const locked = failed >= env.LOGIN_MAX_FAILED_ATTEMPTS;
-      await database.query(
-        `UPDATE admin_users
-            SET failed_login_count = $2,
-                locked_until = CASE WHEN $3::boolean THEN now() + ($4::int * interval '1 minute') ELSE locked_until END
-          WHERE id = $1`,
-        [row.id, locked ? 0 : failed, locked, env.LOGIN_LOCKOUT_MINUTES]
-      );
-      await writeAudit(
-        database,
-        auditFor(locked ? 'denied' : 'failed', locked ? 'lockout_triggered' : 'bad_password')
-      );
-    }
-    throw unauthorized('invalid_credentials', 'That email or password is not correct.');
+  if (!row || !matches) {
+    if (row) await recordFailedLogin(database, row);
+    await writeAudit(database, {
+      adminId: row?.id ?? null,
+      adminEmail: row?.email ?? null,
+      actorRole: row?.role ?? null,
+      action: 'admin.login',
+      outcome: 'denied',
+      metadata: { reason: 'invalid_credentials' },
+      ipHash: input.ipHash,
+    });
+    // Identical for both cases. The row's id is not part of the response, and
+    // the message does not distinguish \"no such address\" from \"wrong
+    // password\".
+    throw unauthorized('invalid_credentials', 'That email and password do not match.');
   }
 
-  if (row.status === 'disabled') {
-    // Reachable only with the CORRECT password, so this reveals nothing that
-    // the caller has not already proved they are entitled to know.
-    await writeAudit(database, auditFor('denied', 'disabled'));
+  if (row.status !== 'active') {
+    await writeAudit(database, {
+      adminId: row.id,
+      adminEmail: row.email,
+      actorRole: row.role,
+      action: 'admin.login',
+      outcome: 'denied',
+      metadata: { reason: 'disabled' },
+      ipHash: input.ipHash,
+    });
     throw forbidden('admin_disabled', 'This administrator account is disabled.');
   }
 
-  const session = await database.transaction(async (tx) => {
+  const account = toAccount(row);
+  return database.transaction(async (tx) => {
+    const session = await createSession(tx, account, input);
+
     await tx.query(
       `UPDATE admin_users
           SET failed_login_count = 0, locked_until = NULL, last_login_at = now()
         WHERE id = $1`,
-      [row.id]
+      [account.id]
     );
 
-    const { token, hash } = mintAdminRefreshToken();
-    const inserted = await tx.query<{ id: string }>(
-      `INSERT INTO admin_sessions (admin_id, refresh_token_hash, ip_hash, user_agent, expires_at)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id`,
-      [
-        row.id,
-        hash,
-        input.ipHash ?? null,
-        input.userAgent?.slice(0, 400) ?? null,
-        adminSessionExpiry(),
-      ]
-    );
+    await writeAudit(tx, {
+      adminId: account.id,
+      adminEmail: account.email,
+      actorRole: account.role,
+      action: 'admin.login',
+      targetType: 'admin',
+      targetId: account.id,
+      metadata: { role: account.role },
+      ipHash: input.ipHash,
+    });
 
-    return { id: one(inserted).id, token };
+    return session;
   });
+}
 
-  await writeAudit(database, {
-    ...auditFor('success', 'password'),
-    metadata: { sessionId: session.id },
-  });
+/** Count a failure and lock the account once the allowance is gone. */
+async function recordFailedLogin(database: Queryable, row: LoginRow): Promise<void> {
+  const next = row.failed_login_count + 1;
+  const lock = next >= env.LOGIN_MAX_FAILED_ATTEMPTS;
+  await database.query(
+    `UPDATE admin_users
+        SET failed_login_count = $2,
+            locked_until = CASE WHEN $3::boolean
+              THEN now() + ($4::int * interval '1 minute') ELSE locked_until END
+      WHERE id = $1`,
+    [row.id, lock ? 0 : next, lock, env.LOGIN_LOCKOUT_MINUTES]
+  );
+}
+
+/** Mint a session row plus the access token that names it. */
+async function createSession(
+  database: Queryable,
+  account: AdminAccount,
+  input: { readonly ipHash: string; readonly userAgent: string | null }
+): Promise<AdminSessionResult> {
+  const { token, hash } = mintAdminRefreshToken();
+
+  const rows = await database.query<{ id: string; expires_at: unknown }>(
+    `INSERT INTO admin_sessions (admin_id, refresh_token_hash, ip_hash, user_agent, expires_at)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, expires_at`,
+    [account.id, hash, input.ipHash, input.userAgent, adminSessionExpiry()]
+  );
+
+  const session = one(rows);
+  const expiresAt = new Date(toIso(session.expires_at)).getTime();
 
   return {
-    accessToken: signAdminAccessToken({ sub: row.id, sid: session.id }, row.role),
-    refreshToken: session.token,
-    expiresIn: accessTokenTtlSeconds(env.ADMIN_ACCESS_TOKEN_TTL),
-    admin: toAdminAccount(row),
+    accessToken: signAdminAccessToken({ sub: account.id, sid: session.id }, account.role),
+    refreshToken: token,
+    expiresInSeconds: Math.max(0, Math.round((expiresAt - Date.now()) / 1000)),
+    admin: account,
   };
 }
 
-/** Mirrors the user-side helper: a duration string to seconds. */
-function accessTokenTtlSeconds(raw: string): number {
-  const match = /^(\d+)\s*([smhd])?$/.exec(raw.trim());
-  if (!match) return 600;
-  const amount = Number(match[1]);
-  const unit = match[2] ?? 's';
-  const multiplier = unit === 'm' ? 60 : unit === 'h' ? 3600 : unit === 'd' ? 86400 : 1;
-  return amount * multiplier;
-}
-
 /**
- * Rotate an admin refresh token (§30).
+ * Rotate a refresh token (§30).
  *
- * Reuse detection matches the user side: a token presented twice means the
- * stored one was copied, so every session for that administrator is revoked
- * rather than quietly rotated.
+ * The superseded hash is kept in `previous_refresh_token_hash`: presenting a
+ * token that has already been rotated away means a copy exists, and that is
+ * only detectable if the old hash is still on record. A replayed token revokes
+ * every session that administrator holds, because the honest assumption is that
+ * the account itself is compromised.
  */
 export async function refreshAdminSession(
   database: Queryable,
   refreshToken: string,
-  ipHash?: string | null
+  ipHash: string
 ): Promise<AdminSessionResult> {
   const hash = hashToken(refreshToken);
 
   const row = await database.queryOne<{
     id: string;
     admin_id: string;
-    revoked_at: unknown;
     expires_at: unknown;
-    status: AdminStatus;
-    email: string;
-    display_name: string;
-    role: AdminRole;
-    created_at: unknown;
-    last_login_at: unknown;
+    revoked_at: unknown;
   }>(
-    `SELECT s.id, s.admin_id, s.revoked_at, s.expires_at,
-            a.status, a.email, a.display_name, a.role, a.created_at, a.last_login_at
-       FROM admin_sessions s
-       JOIN admin_users a ON a.id = s.admin_id
-      WHERE s.refresh_token_hash = $1`,
+    `SELECT id, admin_id, expires_at, revoked_at
+       FROM admin_sessions
+      WHERE refresh_token_hash = $1 OR previous_refresh_token_hash = $1`,
     [hash]
   );
 
-  if (!row) {
-    // Not the current token. It may be one this session already rotated away
-    // from, which is evidence of a copy rather than a stale client — so every
-    // session for that administrator is revoked rather than quietly refused.
-    const reused = await database.queryOne<{ admin_id: string; email: string; role: AdminRole }>(
-      `SELECT s.admin_id, a.email, a.role
-         FROM admin_sessions s JOIN admin_users a ON a.id = s.admin_id
-        WHERE s.previous_refresh_token_hash = $1
-        LIMIT 1`,
-      [hash]
-    );
+  if (!row) throw unauthorized('invalid_refresh_token', 'Sign in again.');
 
-    if (reused) {
-      const revoked = await database.query(
-        `UPDATE admin_sessions
-            SET revoked_at = now(), revoked_reason = 'refresh_token_reuse_detected'
-          WHERE admin_id = $1 AND revoked_at IS NULL`,
-        [reused.admin_id]
-      );
-      await writeAudit(database, {
-        adminId: reused.admin_id,
-        adminEmail: reused.email,
-        actorRole: reused.role,
-        action: 'admin.session.reuse_detected',
-        targetType: 'admin',
-        targetId: reused.admin_id,
-        outcome: 'denied',
-        metadata: { revokedSessions: revoked.length },
-        ipHash: ipHash ?? null,
-      });
-    }
+  if (row.revoked_at !== null) throw unauthorized('session_revoked', 'Sign in again.');
 
-    throw unauthorized('invalid_refresh_token', 'Sign in again.');
+  if (toIso(row.expires_at) <= new Date().toISOString()) {
+    throw unauthorized('session_expired', 'Sign in again.');
   }
 
-  if (isoOrNull(row.revoked_at) !== null) {
-    throw unauthorized('session_revoked', 'This session has been revoked. Sign in again.');
-  }
-
-  const expires = Date.parse(String(row.expires_at));
-  if (!Number.isFinite(expires) || expires <= Date.now()) {
-    throw unauthorized('session_expired', 'This session has expired. Sign in again.');
-  }
-
-  if (row.status === 'disabled') {
-    await writeAudit(database, {
-      adminId: row.admin_id,
-      adminEmail: row.email,
-      actorRole: row.role,
-      action: 'admin.session.refresh',
-      targetType: 'admin',
-      targetId: row.admin_id,
-      outcome: 'denied',
-      metadata: { reason: 'disabled' },
-      ipHash: ipHash ?? null,
-    });
+  const account = await loadAdmin(database, row.admin_id);
+  if (!account) throw unauthorized('session_revoked', 'Sign in again.');
+  if (account.status !== 'active') {
     throw forbidden('admin_disabled', 'This administrator account is disabled.');
   }
 
   return database.transaction(async (tx) => {
     const { token, hash: nextHash } = mintAdminRefreshToken();
 
-    // Rotated in place — one session row per device, so revoking "the session
-    // that leaked" does not require guessing which of several rows it is —
-    // while the SUPERSEDED hash is retained beside it. That retention is what
-    // makes the reuse check above possible at all.
-    await tx.query(
+    const updated = await tx.query(
       `UPDATE admin_sessions
-          SET previous_refresh_token_hash = refresh_token_hash,
-              refresh_token_hash = $2,
-              last_used_at = now(),
-              expires_at = $3
-        WHERE id = $1`,
-      [row.id, nextHash, adminSessionExpiry()]
+          SET refresh_token_hash = $2,
+              previous_refresh_token_hash = $3,
+              last_used_at = now()
+        WHERE id = $1 AND revoked_at IS NULL
+        RETURNING id`,
+      [row.id, nextHash, hash]
     );
 
+    // Zero rows means a concurrent rotation won the race, which is exactly the
+    // replay this is meant to catch.
+    if (updated.length === 0) {
+      await revokeAdminSessions(tx, row.admin_id, 'refresh_replay');
+      throw unauthorized('session_revoked', 'Sign in again.');
+    }
+
+    await writeAudit(tx, {
+      adminId: account.id,
+      adminEmail: account.email,
+      actorRole: account.role,
+      action: 'admin.session.refresh',
+      targetType: 'admin',
+      targetId: account.id,
+      ipHash,
+    });
+
     return {
-      accessToken: signAdminAccessToken({ sub: row.admin_id, sid: row.id }, row.role),
+      accessToken: signAdminAccessToken({ sub: account.id, sid: row.id }, account.role),
       refreshToken: token,
-      expiresIn: accessTokenTtlSeconds(env.ADMIN_ACCESS_TOKEN_TTL),
-      admin: {
-        id: row.admin_id,
-        displayName: row.display_name,
-        email: row.email,
-        role: row.role,
-        status: row.status,
-        createdAt: isoOrNull(row.created_at) ?? '',
-        lastLoginAt: isoOrNull(row.last_login_at),
-      },
+      expiresInSeconds: env.ADMIN_SESSION_TTL_DAYS * 86_400,
+      admin: account,
     };
   });
 }
 
-/** Revoke one admin session (logout) by its refresh token. */
+/** Sign out. Returns whether a session was actually closed. */
 export async function logoutAdmin(database: Queryable, refreshToken: string): Promise<boolean> {
-  const rows = await database.query(
-    `UPDATE admin_sessions SET revoked_at = now(), revoked_reason = 'logout'
+  if (refreshToken === '') return false;
+  const rows = await database.query<{ admin_id: string }>(
+    `UPDATE admin_sessions
+        SET revoked_at = now(), revoked_reason = 'signed_out'
       WHERE refresh_token_hash = $1 AND revoked_at IS NULL
-      RETURNING id`,
+      RETURNING admin_id`,
     [hashToken(refreshToken)]
   );
   return rows.length > 0;
 }
 
-/** Kill every session for an administrator (§27's "reset/revoke sessions"). */
+/** Revoke every live session an administrator holds (§27). */
 export async function revokeAdminSessions(
   database: Queryable,
   adminId: string,
   reason: string
 ): Promise<number> {
   const rows = await database.query(
-    `UPDATE admin_sessions SET revoked_at = now(), revoked_reason = $2
+    `UPDATE admin_sessions
+        SET revoked_at = now(), revoked_reason = $2
       WHERE admin_id = $1 AND revoked_at IS NULL
       RETURNING id`,
     [adminId, reason]
@@ -552,26 +491,29 @@ export async function revokeAdminSessions(
   return rows.length;
 }
 
-/** Is this admin session live, and is its administrator still usable? (§32) */
+// ── Per-request verification (§18, §25) ─────────────────────────────────
+
+/**
+ * Is this administrator's session still live?
+ *
+ * Asks the database on every request rather than trusting the token's expiry.
+ * That is what makes disabling an administrator immediate instead of taking
+ * effect whenever their token happens to lapse.
+ */
 export async function isAdminSessionLive(
   database: Queryable,
   adminId: string,
   sessionId: string
 ): Promise<boolean> {
   const row = await database.queryOne(
-    `SELECT 1 FROM admin_sessions s
-       JOIN admin_users a ON a.id = s.admin_id
-      WHERE s.id = $1 AND s.admin_id = $2
-        AND s.revoked_at IS NULL
-        AND s.expires_at > now()
-        AND a.status = 'active'`,
+    `SELECT 1 FROM admin_sessions
+      WHERE id = $1 AND admin_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
     [sessionId, adminId]
   );
   return row !== null;
 }
 
-// ── Administrator accounts (§27) ────────────────────────────────────────
-
+/** The account behind an id, or null. Read fresh, never cached. */
 export async function loadAdmin(
   database: Queryable,
   adminId: string
@@ -580,203 +522,160 @@ export async function loadAdmin(
     `SELECT ${ADMIN_COLUMNS} FROM admin_users WHERE id = $1`,
     [adminId]
   );
-  return row ? toAdminAccount(row) : null;
+  return row ? toAccount(row) : null;
 }
+
+// ── Administrator management (§17, §18, §27) ────────────────────────────
 
 export interface CreateAdminInput {
   readonly displayName: string;
   readonly email: string;
-  readonly phone?: string | undefined;
   readonly role: AdminRole;
   readonly password: string;
-  readonly createdByAdminId?: string | null;
+  /** The channel a `channel_admin` is confined to. Must be null for a super admin. */
+  readonly channelId: string | null;
+  readonly createdByAdminId: string | null;
 }
 
 /**
- * Create an administrator (§27).
+ * Create an administrator.
  *
- * Only ever called by a route that has already checked `admins.manage`, or by
- * the bootstrap script. §21 forbids a public "create admin" endpoint, and §48
- * forbids the user registration flow from reaching this: the check is at the
- * call sites, and this function's own guard is the role value being valid.
+ * Refuses before it hashes: a duplicate address and a wrong role are both
+ * cheaper to detect than a bcrypt round, and the address is unique in the
+ * database anyway — the pre-check only turns a constraint violation into a
+ * sentence.
  */
 export async function createAdmin(
   database: Queryable,
   input: CreateAdminInput
 ): Promise<AdminAccount> {
-  if (!ADMIN_ROLES.includes(input.role)) {
-    throw badRequest('invalid_role', 'That is not an administrator role.');
-  }
-  const displayName = input.displayName.trim();
-  if (displayName.length === 0 || displayName.length > 80) {
-    throw badRequest('invalid_name', 'A name must be between 1 and 80 characters.');
-  }
-
-  const email = input.email.trim();
-  if (!isValidEmail(email)) {
-    throw badRequest('invalid_email', 'That does not look like an email address.');
-  }
-
-  const phone = input.phone?.trim() ?? '';
-  if (!isE164(phone)) {
-    // Required, not optional: §21 wants sign-in by email OR mobile, and §27
-    // lists a mobile number among what creating an administrator collects.
-    throw badRequest('invalid_phone', 'A mobile number in E.164 format is required.');
-  }
-
-  const passwordHash = await hashPassword(input.password);
-
-  // A unique violation is turned into a wordable conflict rather than a 500,
-  // and the two columns are checked separately so the message can say WHICH
-  // detail is taken without echoing the value.
-  const clash = await database.queryOne<{ email_normalized: string | null; phone_hash: string | null }>(
-    `SELECT
-       (SELECT email_normalized FROM admin_users WHERE email_normalized = $1) AS email_normalized,
-       (SELECT phone_hash FROM admin_users WHERE phone_hash = $2) AS phone_hash`,
-    [normalizeEmail(email), hashPhone(phone)]
-  );
-  if (clash?.email_normalized) throw conflict('email_taken', 'An administrator already uses that email.');
-  if (clash?.phone_hash) throw conflict('phone_taken', 'An administrator already uses that mobile number.');
-
-  const inserted = await database.query<AdminRow>(
-    `INSERT INTO admin_users
-       (display_name, email, email_normalized, phone_hash, password_hash, role, created_by_admin_id,
-        password_changed_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, now())
-     RETURNING ${ADMIN_COLUMNS}`,
-    [
-      displayName,
-      email,
-      normalizeEmail(email),
-      hashPhone(phone),
-      passwordHash,
-      input.role,
-      input.createdByAdminId ?? null,
-    ]
-  );
-
-  return toAdminAccount(one(inserted));
-}
-
-export async function listAdmins(database: Queryable): Promise<readonly AdminAccount[]> {
-  const rows = await database.query<AdminRow>(
-    `SELECT ${ADMIN_COLUMNS} FROM admin_users ORDER BY created_at ASC`
-  );
-  return rows.map(toAdminAccount);
+  assertPasswordAcceptable(input.password);
+  return insertAdmin(database, {
+    displayName: input.displayName,
+    email: input.email,
+    role: input.role,
+    channelId: input.channelId,
+    createdByAdminId: input.createdByAdminId,
+    passwordHash: await hashPassword(input.password),
+  });
 }
 
 /**
- * Enable or disable an administrator (§27).
+ * Create an administrator from an ALREADY-HASHED password.
  *
- * Disabling also revokes their sessions, in the same transaction: an access
- * token is valid for minutes, and "disabled" that leaves the dashboard working
- * until it expires is not disabled. `requireAdmin` re-reads the status on every
- * request too, so the two together make it immediate.
+ * Split out for the bootstrap path, where the hash arrives in the environment
+ * (§17): re-hashing a stored bcrypt value would hash the hash, and the operator
+ * would find that the password they configured does not work. Nothing that takes
+ * a plaintext password reaches the database without going through bcrypt.
+ */
+export async function insertAdmin(
+  database: Queryable,
+  input: {
+    readonly displayName: string;
+    readonly email: string;
+    readonly role: AdminRole;
+    readonly channelId: string | null;
+    readonly createdByAdminId: string | null;
+    readonly passwordHash: string;
+  }
+): Promise<AdminAccount> {
+  if (!isAdminRole(input.role)) throw badRequest('invalid_role', 'Unknown administrator role.');
+
+  if (input.role === 'channel_admin' && !input.channelId) {
+    throw badRequest('channel_required', 'A channel administrator must be bound to a channel.');
+  }
+  if (input.role === 'super_admin' && input.channelId) {
+    throw badRequest('channel_not_allowed', 'A super administrator is not bound to a channel.');
+  }
+
+  const emailNormalized = normalizeEmail(input.email);
+  const existing = await database.queryOne(
+    `SELECT 1 FROM admin_users WHERE email_normalized = $1`,
+    [emailNormalized]
+  );
+  if (existing) throw conflict('email_taken', 'That email already runs an account.');
+
+  const rows = await database.query<AdminRow>(
+    `INSERT INTO admin_users
+       (display_name, email, email_normalized, password_hash, role, status,
+        channel_id, created_by_admin_id, password_changed_at)
+     VALUES ($1, $2, $3, $4, $5::admin_role, 'active', $6, $7, now())
+     RETURNING ${ADMIN_COLUMNS}`,
+    [
+      input.displayName.trim(),
+      input.email.trim(),
+      emailNormalized,
+      input.passwordHash,
+      input.role,
+      input.channelId,
+      input.createdByAdminId,
+    ]
+  );
+
+  return toAccount(one(rows));
+}
+
+/** Change an administrator's password. Used by the channel-creation flow. */
+export async function setAdminPassword(
+  database: Queryable,
+  adminId: string,
+  password: string
+): Promise<void> {
+  assertPasswordAcceptable(password);
+  const hash = await hashPassword(password);
+  const rows = await database.query(
+    `UPDATE admin_users
+        SET password_hash = $2, password_changed_at = now(),
+            failed_login_count = 0, locked_until = NULL
+      WHERE id = $1
+      RETURNING id`,
+    [adminId, hash]
+  );
+  if (rows.length === 0) throw notFound('admin_not_found');
+}
+
+/** Every administrator, for a super admin's dashboard. Never the password hash. */
+export async function listAdmins(database: Queryable): Promise<readonly AdminAccount[]> {
+  const rows = await database.query<AdminRow>(
+    `SELECT ${ADMIN_COLUMNS} FROM admin_users ORDER BY LOWER(email) ASC`
+  );
+  return rows.map(toAccount);
+}
+
+/**
+ * Disable or re-enable an administrator (§27).
+ *
+ * Disabling revokes their sessions in the same transaction: an administrator
+ * whose access was switched off must not keep working until their access token
+ * happens to expire.
  */
 export async function setAdminStatus(
   database: Queryable,
   adminId: string,
-  status: AdminStatus
+  status: 'active' | 'disabled'
 ): Promise<{ readonly admin: AdminAccount; readonly sessionsRevoked: number }> {
   return database.transaction(async (tx) => {
-    // The boolean parameter keeps `$2` typed once: comparing one parameter as
-    // `admin_status` and as text makes Postgres unable to deduce a single type
-    // for it ("inconsistent types deduced for parameter").
-    const updated = await tx.query<AdminRow>(
+    const rows = await tx.query<AdminRow>(
       `UPDATE admin_users
           SET status = $2::admin_status,
-              disabled_at = CASE WHEN $3::boolean THEN now() ELSE NULL END
+              disabled_at = CASE WHEN $2 = 'disabled' THEN now() ELSE NULL END
         WHERE id = $1
         RETURNING ${ADMIN_COLUMNS}`,
-      [adminId, status, status === 'disabled']
+      [adminId, status]
     );
-    if (updated.length === 0) throw notFound('admin_not_found');
+    if (rows.length === 0) throw notFound('admin_not_found');
 
     const revoked =
       status === 'disabled' ? await revokeAdminSessions(tx, adminId, 'admin_disabled') : 0;
 
-    return { admin: toAdminAccount(one(updated)), sessionsRevoked: revoked };
+    return { admin: toAccount(one(rows)), sessionsRevoked: revoked };
   });
 }
 
-/**
- * Change an administrator's role (§27).
- *
- * Refuses to remove the LAST super administrator: §27 makes SUPER_ADMIN the
- * only role that can create administrators, so demoting the last one would
- * leave a deployment nobody can administer — a self-inflicted lockout that no
- * API call could undo.
- */
-export async function setAdminRole(
-  database: Queryable,
-  adminId: string,
-  role: AdminRole
-): Promise<AdminAccount> {
-  if (!ADMIN_ROLES.includes(role)) {
-    throw badRequest('invalid_role', 'That is not an administrator role.');
-  }
-
-  return database.transaction(async (tx) => {
-    const current = await tx.queryOne<{ role: AdminRole }>(
-      `SELECT role FROM admin_users WHERE id = $1`,
-      [adminId]
-    );
-    if (!current) throw notFound('admin_not_found');
-
-    if (current.role === 'super_admin' && role !== 'super_admin') {
-      const remaining = await tx.queryOne<{ count: string }>(
-        `SELECT count(*)::text AS count FROM admin_users
-          WHERE role = 'super_admin' AND status = 'active' AND id <> $1`,
-        [adminId]
-      );
-      if (Number(remaining?.count ?? 0) === 0) {
-        throw conflict(
-          'last_super_admin',
-          'This is the only active super administrator. Promote another before changing this one.'
-        );
-      }
-    }
-
-    const updated = await tx.query<AdminRow>(
-      `UPDATE admin_users SET role = $2 WHERE id = $1 RETURNING ${ADMIN_COLUMNS}`,
-      [adminId, role]
-    );
-    return toAdminAccount(one(updated));
-  });
+/** What this account may do, for the app's own display and for the audit view. */
+export function capabilitiesOf(role: AdminRole): readonly string[] {
+  return permissionsFor(role);
 }
 
-/**
- * Change an administrator's own password.
- *
- * Not exposed as an admin-API route in M6: §27 lists reset/revoke, and a
- * password reset for someone else would need a delivery channel this milestone
- * does not have. The current password is still required, so the function is
- * safe to expose the moment an endpoint is added.
- */
-export async function changeOwnPassword(
-  database: Queryable,
-  adminId: string,
-  currentPassword: string,
-  newPassword: string
-): Promise<void> {
-  const row = await database.queryOne<{ password_hash: string }>(
-    `SELECT password_hash FROM admin_users WHERE id = $1`,
-    [adminId]
-  );
-  if (!row) throw notFound('admin_not_found');
-
-  if (!(await passwordMatches(currentPassword, row.password_hash))) {
-    throw unauthorized('invalid_credentials', 'That password is not correct.');
-  }
-
-  const hash = await hashPassword(newPassword);
-  await database.transaction(async (tx) => {
-    await tx.query(
-      `UPDATE admin_users SET password_hash = $2, password_changed_at = now() WHERE id = $1`,
-      [adminId, hash]
-    );
-    // A password change ends every other session: the usual reason to change
-    // one is that somebody else may have it.
-    await revokeAdminSessions(tx, adminId, 'password_changed');
-  });
-}
+/** Re-exported so a route can hash an IP without importing env directly. */
+export { hashIp };
