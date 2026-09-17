@@ -713,7 +713,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_section_posts">Posts</string>
     <string name="goodpost_channels_you_follow">Channels you follow</string>
     <string name="goodpost_section_channels">Channels</string>
-    <string name="goodpost_section_discover">Discover</string>
     <string name="goodpost_refresh">Refresh</string>
     <string name="goodpost_more">Load more</string>
     <string name="goodpost_search_label">Search channels</string>
@@ -749,10 +748,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_share">Share link</string>
     <string name="goodpost_share_chooser">Share channel</string>
     <string name="goodpost_channel_actions">Channel actions</string>
-    <string name="goodpost_empty_following_title">No channels yet</string>
-    <string name="goodpost_empty_following_note">Channels you follow appear here, with new posts first. Find some in Discover.</string>
-    <string name="goodpost_empty_discover_title">Nothing found</string>
-    <string name="goodpost_empty_discover_note">Try a different search or category.</string>
     <string name="goodpost_stale_note">Showing saved data — the server could not be reached.</string>
 
     <string name="goodpost_error_channel_limit">You have reached the limit of channels one account can create.</string>
@@ -776,8 +771,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_file_unreadable">That file could not be read. Try choosing it again.</string>
 
     <string name="goodpost_empty_feed_title">No posts yet</string>
-    <string name="goodpost_empty_feed_note">Posts from the channels you follow appear here. Follow a few in Discover.</string>
-    <string name="goodpost_empty_channel_posts">No posts in this channel yet.</string>
+    <string name="goodpost_empty_channel_posts">New updates from this channel will appear here.</string>
 
     <string name="goodpost_compose">New post</string>
     <string name="goodpost_composer_title">New post</string>
@@ -887,7 +881,6 @@ This video cannot be played inside the app.</string>
     <!-- Push delivery (§17). One channel, so a user who mutes Good Post does not
          silence the rest of the app with it. -->
     <string name="goodpost_notification_channel">Good Post</string>
-    <string name="goodpost_notification_channel_desc">Posts from channels you follow, replies, and official notices.</string>
 
     <!-- Good Post — the public channel browser (§3–§14).
 

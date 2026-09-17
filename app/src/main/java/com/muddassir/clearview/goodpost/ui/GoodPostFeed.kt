@@ -206,9 +206,14 @@ internal fun GoodPostFeed(
 
                     if (state.posts.isEmpty() && !state.postsLoading && state.postsError == null) {
                         item(key = "empty") {
+                            // This screen is ONE channel's history, so it says so.
+                            // The string it used to show told the reader that posts
+                            // from the channels they follow appear here, and to go
+                            // find some in Discover — following, and Discover, are
+                            // both things this product removed (§1).
                             WaEmptyState(
                                 title = stringResource(R.string.goodpost_empty_feed_title),
-                                note = stringResource(R.string.goodpost_empty_feed_note)
+                                note = stringResource(R.string.goodpost_empty_channel_posts)
                             )
                         }
                     }

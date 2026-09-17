@@ -75,9 +75,11 @@ services:
       # Do NOT set PORT — Render injects it and the app reads it.
 
       # ── Secrets Render generates, so nobody has to invent them ────────
-      # In production src/env.ts refuses to boot on a placeholder, a short
-      # value, or JWT_SECRET == JWT_REFRESH_SECRET — so these must be real and
-      # distinct. generateValue guarantees that, and means no human ever
+      # In production src/env.ts refuses to boot on a placeholder value, or on a
+      # JWT_SECRET or PHONE_HASH_PEPPER shorter than 32 characters. It does NOT
+      # compare JWT_SECRET with JWT_REFRESH_SECRET — this comment used to claim
+      # it did, which would send someone hunting for a check that is not there.
+      # generateValue guarantees a real value either way, and means no human ever
       # writes them down or pastes them anywhere they could leak.
       - key: JWT_SECRET
         generateValue: true

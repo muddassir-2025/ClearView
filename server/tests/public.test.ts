@@ -213,6 +213,60 @@ describe('public channel list', () => {
   });
 });
 
+/**
+ * A post with nothing to show (§9).
+ *
+ * Migration 012 dropped the tables behind polls, not the poll POSTS, so a real
+ * deployment carries rows with `type = 'poll'` and a null body — this suite's own
+ * fixtures can now produce one. They were being served as text posts with no
+ * text: an empty bubble in the feed, a channel row whose preview and timestamp
+ * pointed at it, and a direct link that opened nothing.
+ */
+describe('a post a reader cannot see anything in', () => {
+  it('is left out of the feed, the channel row and a direct fetch', async () => {
+    const slug = unique('polls');
+    const channelId = await seedChannel({ slug, name: 'Polls' });
+    const readable = await seedPost(channelId, {
+      body: 'Still readable',
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const leftover = await seedPost(channelId, {
+      type: 'poll',
+      body: null,
+      createdAt: new Date().toISOString(),
+    });
+
+    const feed = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    expect(feed.body.items.map((p: { id: string }) => p.id)).toEqual([readable]);
+
+    // The row describes the newest VISIBLE post, not the newest row: its preview
+    // and its timestamp have to belong to the same post, and a timestamp that
+    // outruns the feed is how a list and its detail start disagreeing (§4).
+    const detail = await request(app).get(`/api/v1/channels/${slug}`);
+    expect(detail.body.channel.lastPostPreview).toBe('Still readable');
+    expect(detail.body.channel.lastPostType).toBe('text');
+    // Exactly the post the feed returns, not merely a non-empty date.
+    expect(detail.body.channel.lastPostAt).toBe(feed.body.items[0].createdAt);
+
+    expect((await request(app).get(`/api/v1/posts/${leftover}`)).status).toBe(404);
+  });
+
+  it('leaves a channel that has only ever polled looking like one that never posted', async () => {
+    const slug = unique('onlypolls');
+    const channelId = await seedChannel({ slug, name: 'Only polls' });
+    await seedPost(channelId, { type: 'poll', body: null });
+
+    const detail = await request(app).get(`/api/v1/channels/${slug}`);
+    // Null rather than the poll's timestamp: `channels.last_post_at` still holds
+    // that value, and reporting it would date the row by a post nobody can read.
+    expect(detail.body.channel.lastPostAt).toBeNull();
+    expect(detail.body.channel.lastPostType).toBeNull();
+    expect(detail.body.channel.lastPostPreview).toBeNull();
+
+    expect((await request(app).get(`/api/v1/channels/${slug}/posts`)).body.items).toEqual([]);
+  });
+});
+
 describe('public channel detail', () => {
   it('resolves by slug and by id', async () => {
     const slug = unique('cv');

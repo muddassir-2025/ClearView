@@ -106,6 +106,31 @@ export const CHANNEL_COLUMNS = `
  * indexed — but a preview and its timestamp must describe the same post, and two
  * sources can disagree (§4).
  */
+/**
+ * A post a reader can actually see something in (§9).
+ *
+ * Good Post has five shapes: text, image, video, audio and link. The previous
+ * version also had polls, and migration 012 dropped the tables behind them while
+ * leaving the posts themselves — rows with `type = 'poll'` and a null body. Those
+ * were being served as TEXT posts with no text, so they arrived in a channel's
+ * feed as an empty bubble, and a channel row's preview and timestamp could point
+ * at one — describing a post that cannot be read.
+ *
+ * So the rule is stated once, here, and applied everywhere posts are selected: a
+ * row must be one of the five shapes AND have something to render. Every post
+ * this server writes already satisfies it (publishing refuses an empty update),
+ * which is what makes it right to filter on read instead of mutating the rows the
+ * previous version left behind.
+ */
+export const RENDERABLE_POST_SQL = `
+  p.type IN ('text', 'image', 'video', 'audio', 'link')
+  AND (
+    COALESCE(BTRIM(p.body), '') <> ''
+    OR p.link_url IS NOT NULL
+    OR p.type IN ('image', 'video', 'audio')
+  )
+`;
+
 export const LAST_POST_JOIN = `
   LEFT JOIN LATERAL (
     SELECT p.type AS preview_type,
@@ -113,6 +138,7 @@ export const LAST_POST_JOIN = `
            LEFT(BTRIM(COALESCE(p.body, '')), 120) AS preview_body
       FROM posts p
      WHERE p.channel_id = c.id AND p.deleted_at IS NULL
+       AND ${RENDERABLE_POST_SQL}
      ORDER BY p.created_at DESC, p.id DESC
       LIMIT 1
   ) lp ON true
@@ -176,9 +202,13 @@ export function mapChannel(
     categoryLabel: row.category_label,
     countryCode: row.country_code,
     createdAt: isoOrNull(row.created_at) ?? '',
-    // From the lateral join when it is there, falling back to the denormalised
-    // column for the reads that deliberately do not pay for the join.
-    lastPostAt: isoOrNull(row.preview_at ?? row.last_post_at),
+    // From the lateral join, always — every query that reads these columns joins
+    // on it. The denormalised `channels.last_post_at` is deliberately NOT a
+    // fallback: with [RENDERABLE_POST_SQL] the join can find nothing while that
+    // column still points at a post a reader cannot open, and a row whose
+    // timestamp describes an invisible post is the disagreement §4 forbids.
+    // Sorting still uses it (`activity_at`), where it is the right key.
+    lastPostAt: isoOrNull(row.preview_at),
     lastPostType: row.last_post_type ?? null,
     lastPostPreview: row.last_post_preview ?? null,
     shareLink: channelShareLink(row.slug),

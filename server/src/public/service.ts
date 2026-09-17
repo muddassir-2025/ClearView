@@ -10,7 +10,7 @@ import {
   type Page,
   type PageQuery,
 } from '../channels/cursor.js';
-import { getPublicChannel, type ChannelPayload } from '../channels/service.js';
+import { getPublicChannel, RENDERABLE_POST_SQL, type ChannelPayload } from '../channels/service.js';
 import { mediaForPosts, signObjectUrl, type MediaSummary } from '../media/service.js';
 import type { MediaKind, ObjectStore } from '../media/store.js';
 
@@ -107,9 +107,10 @@ export interface PostRow {
 /**
  * A row as a reader sees it.
  *
- * `poll` is mapped to `text`: the poll tables were dropped, and a row left over
- * from the previous version must render as its caption rather than as a control
- * the client cannot draw.
+ * `poll` is still mapped to `text`, but only as a default: [RENDERABLE_POST_SQL]
+ * keeps a leftover poll row out of every read, because its body is null and it
+ * would render as an empty bubble. The mapping is what stops a future type from
+ * reaching a client that cannot draw it.
  */
 export function mapPublicPost(row: PostRow, media: readonly MediaSummary[]): PublicPost {
   return {
@@ -155,6 +156,7 @@ export async function listPublicChannelPosts(
     `SELECT ${POST_COLUMNS}
        FROM posts p
       WHERE p.channel_id = $1 AND p.deleted_at IS NULL
+        AND ${RENDERABLE_POST_SQL}
         ${keyset}
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT $2`,
@@ -198,6 +200,7 @@ export async function getPublicPost(
        JOIN channels c ON c.id = p.channel_id
       WHERE p.id = $1
         AND p.deleted_at IS NULL
+        AND ${RENDERABLE_POST_SQL}
         AND c.deleted_at IS NULL
         AND c.status = 'active'`,
     [postId]

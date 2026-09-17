@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.muddassir.clearview.BuildConfig
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
@@ -150,14 +151,15 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
                         fontSize = 14.sp
                     )
                     Spacer(Modifier.height(4.dp))
+                    // Configurable rather than baked in: the address belongs to
+                    // whoever deploys this, and a hard-coded one would be wrong for
+                    // every installation but one. A build without one configured
+                    // keeps the placeholder rather than showing a blank line.
+                    val contact = BuildConfig.GOODPOST_CONTACT_EMAIL
+                        .takeIf { it.isNotBlank() }
+                        ?: stringResource(R.string.goodpost_admin_contact)
                     Text(
-                        // Configurable rather than baked in: the address belongs
-                        // to whoever deploys this, and a hard-coded one would be
-                        // wrong for every installation but one.
-                        text = stringResource(
-                            R.string.goodpost_contact,
-                            stringResource(R.string.goodpost_admin_contact)
-                        ),
+                        text = stringResource(R.string.goodpost_contact, contact),
                         color = Wa.TextDim,
                         fontSize = 13.sp
                     )

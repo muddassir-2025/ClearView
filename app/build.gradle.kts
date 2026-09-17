@@ -42,6 +42,14 @@ android {
         // says so plainly instead of failing with a confusing network error.
         val goodPostBaseUrl = (project.findProperty("goodPostBaseUrl") as String?).orEmpty()
         buildConfigField("String", "GOODPOST_BASE_URL", "\"$goodPostBaseUrl\"")
+
+        // The address the sign-in screen shows under "Don't have channel access?"
+        // (§16). Configured here for the same reason as the base URL: it belongs
+        // to whoever deploys this backend, so baking one into the source would be
+        // wrong everywhere but one installation. Empty is a valid state — the
+        // screen falls back to its placeholder rather than showing nothing.
+        val goodPostContactEmail = (project.findProperty("goodPostContactEmail") as String?).orEmpty()
+        buildConfigField("String", "GOODPOST_CONTACT_EMAIL", "\"$goodPostContactEmail\"")
     }
 
     signingConfigs {
