@@ -10,7 +10,7 @@ import {
   type Page,
   type PageQuery,
 } from '../channels/cursor.js';
-import { getPublicChannel, RENDERABLE_POST_SQL, type ChannelPayload } from '../channels/service.js';
+import { getPublicChannel, type ChannelPayload } from '../channels/service.js';
 import { mediaForPosts, signObjectUrl, type MediaSummary } from '../media/service.js';
 import type { MediaKind, ObjectStore } from '../media/store.js';
 
@@ -52,7 +52,7 @@ export interface PublicChannelRef {
   readonly name: string;
 }
 
-export type PublicPostType = 'text' | 'image' | 'video' | 'audio' | 'link';
+export type PublicPostType = 'text' | 'image' | 'video' | 'link';
 
 /**
  * A post as a reader sees it.
@@ -107,16 +107,17 @@ export interface PostRow {
 /**
  * A row as a reader sees it.
  *
- * `poll` is still mapped to `text`, but only as a default: [RENDERABLE_POST_SQL]
- * keeps a leftover poll row out of every read, because its body is null and it
- * would render as an empty bubble. The mapping is what stops a future type from
- * reaching a client that cannot draw it.
+ * The cast is honest because the database enforces its own range: migration 015
+ * constrains `posts.type` to the four shapes in [PublicPostType], and the write
+ * path derives that type from the attachments rather than trusting a client. The
+ * previous version's `poll -> text` translation is gone with the rows it existed
+ * for — there is no longer a type that needs drawing as something it is not.
  */
 export function mapPublicPost(row: PostRow, media: readonly MediaSummary[]): PublicPost {
   return {
     id: row.id,
     channelId: row.channel_id,
-    type: row.type === 'poll' ? 'text' : (row.type as PublicPostType),
+    type: row.type as PublicPostType,
     body: row.body,
     linkUrl: row.link_url,
     linkTitle: row.link_title,
@@ -156,7 +157,6 @@ export async function listPublicChannelPosts(
     `SELECT ${POST_COLUMNS}
        FROM posts p
       WHERE p.channel_id = $1 AND p.deleted_at IS NULL
-        AND ${RENDERABLE_POST_SQL}
         ${keyset}
       ORDER BY p.created_at DESC, p.id DESC
       LIMIT $2`,
@@ -200,8 +200,6 @@ export async function getPublicPost(
        JOIN channels c ON c.id = p.channel_id
       WHERE p.id = $1
         AND p.deleted_at IS NULL
-        AND ${RENDERABLE_POST_SQL}
-        AND c.deleted_at IS NULL
         AND c.status = 'active'`,
     [postId]
   );

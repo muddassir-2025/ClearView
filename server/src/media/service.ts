@@ -149,7 +149,7 @@ export async function requestMediaUpload(
   if (!kind || !extension) {
     throw badRequest(
       'unsupported_media_type',
-      'That file type cannot be posted. Images, video and audio only.'
+      'That file type cannot be posted. Images and video only.'
     );
   }
 

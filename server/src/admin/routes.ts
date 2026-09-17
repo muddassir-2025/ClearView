@@ -560,11 +560,21 @@ export function buildAdminRouter(
     res.status(200).json({ channel: await signedChannel(store, channel) });
   });
 
-  /** Soft-delete a channel (§17). Super administrators only. */
+  /**
+   * Delete a channel, with its posts, its media and the login created to run it
+   * (§17). Super administrators only: a channel administrator holds no
+   * `channels.delete`, so the account that runs a channel cannot destroy its
+   * history.
+   */
   router.delete('/channels/:channelId', requireAdmin(database, 'channels.delete'), write, async (req, res) => {
     const context = adminOf(req);
     const channelId = pathIdParam(req.params.channelId, 'invalid_channel_id');
-    await deleteChannel(database, channelId);
+
+    // The rows go first, in one transaction; the bucket objects are named by the
+    // keys this returns. The order matters and is not interchangeable — see
+    // [deleteChannel].
+    const objectKeys = await deleteChannel(database, channelId);
+    for (const key of objectKeys) await removeObjectQuietly(store, key);
 
     await writeAudit(database, {
       adminId: context.adminId,
@@ -574,6 +584,10 @@ export function buildAdminRouter(
       targetType: 'channel',
       targetId: channelId,
       ipHash: hashIp(req.ip ?? 'unknown'),
+      // A count rather than the keys, for the same reason the icon change logs a
+      // change and not its value: an object key is the sort of thing that ends
+      // up pasted into a bug report.
+      metadata: { objectsRemoved: objectKeys.length },
     });
 
     res.status(200).json({ deleted: true, channelId });

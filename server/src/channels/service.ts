@@ -42,10 +42,14 @@ import { SLUG_MAX_LENGTH, SLUG_PATTERN, slugCandidate } from './slug.js';
  *    temporary, and handing one out would let it be used forever — so it is not
  *    a field on any payload, and `iconUrl` is the only form it takes.
  *
- *  * **Visibility is decided in SQL.** A public read filters
- *    `deleted_at IS NULL AND status = 'active'` in the WHERE clause rather than
- *    after the fact, so no route can forget to hide a channel that was taken
- *    down.
+ *  * **Visibility is decided in SQL.** A public read filters `status = 'active'`
+ *    in the WHERE clause rather than after the fact, so no route can forget to
+ *    hide a channel that was taken down.
+ *
+ *  * **There is one delete, and it is real.** A channel is removed rather than
+ *    flagged (migration 015). Nothing here reads a `deleted_at` column on
+ *    `channels`, because there is no longer such a column — the state that a
+ *    soft delete would have represented is the absence of the row.
  */
 
 /** Mirrors `channel_status` in migration 003. */
@@ -107,30 +111,17 @@ export const CHANNEL_COLUMNS = `
  * sources can disagree (§4).
  */
 /**
- * A post a reader can actually see something in (§9).
+ * Nothing filters a post into renderability any more.
  *
- * Good Post has five shapes: text, image, video, audio and link. The previous
- * version also had polls, and migration 012 dropped the tables behind them while
- * leaving the posts themselves — rows with `type = 'poll'` and a null body. Those
- * were being served as TEXT posts with no text, so they arrived in a channel's
- * feed as an empty bubble, and a channel row's preview and timestamp could point
- * at one — describing a post that cannot be read.
- *
- * So the rule is stated once, here, and applied everywhere posts are selected: a
- * row must be one of the five shapes AND have something to render. Every post
- * this server writes already satisfies it (publishing refuses an empty update),
- * which is what makes it right to filter on read instead of mutating the rows the
- * previous version left behind.
+ * The previous version of this file carried a `RENDERABLE_POST_SQL` predicate
+ * that every post read had to remember: it excluded the poll rows migration 012
+ * left behind and required a post to have something in it. Both halves are now
+ * facts about the data rather than rules a query can forget — migration 015
+ * deleted those rows and constrained `posts.type` to the four shapes the
+ * composer produces, and publishing refuses an empty update at the point of
+ * writing it. A reader therefore has no legacy case to filter, and the queries
+ * below say only what they mean.
  */
-export const RENDERABLE_POST_SQL = `
-  p.type IN ('text', 'image', 'video', 'audio', 'link')
-  AND (
-    COALESCE(BTRIM(p.body), '') <> ''
-    OR p.link_url IS NOT NULL
-    OR p.type IN ('image', 'video', 'audio')
-  )
-`;
-
 export const LAST_POST_JOIN = `
   LEFT JOIN LATERAL (
     SELECT p.type AS preview_type,
@@ -138,7 +129,6 @@ export const LAST_POST_JOIN = `
            LEFT(BTRIM(COALESCE(p.body, '')), 120) AS preview_body
       FROM posts p
      WHERE p.channel_id = c.id AND p.deleted_at IS NULL
-       AND ${RENDERABLE_POST_SQL}
      ORDER BY p.created_at DESC, p.id DESC
       LIMIT 1
   ) lp ON true
@@ -204,10 +194,12 @@ export function mapChannel(
     createdAt: isoOrNull(row.created_at) ?? '',
     // From the lateral join, always — every query that reads these columns joins
     // on it. The denormalised `channels.last_post_at` is deliberately NOT a
-    // fallback: with [RENDERABLE_POST_SQL] the join can find nothing while that
-    // column still points at a post a reader cannot open, and a row whose
-    // timestamp describes an invisible post is the disagreement §4 forbids.
-    // Sorting still uses it (`activity_at`), where it is the right key.
+    // fallback: it is advanced when a post is published and recomputed by the
+    // retention sweep, so it can outlive the post it names once that post
+    // expires. A preview and its timestamp must describe the same row, and two
+    // sources can disagree. Sorting still uses it (`activity_at`), where the
+    // only requirement is that it orders channels by how recently they were
+    // active — and where it is indexed.
     lastPostAt: isoOrNull(row.preview_at),
     lastPostType: row.last_post_type ?? null,
     lastPostPreview: row.last_post_preview ?? null,
@@ -295,7 +287,7 @@ export async function listPublicChannels(
   const sort: ChannelSort = query.sort === 'name' ? 'name' : 'recent';
 
   const params: unknown[] = [limit + 1];
-  const conditions: string[] = ['c.deleted_at IS NULL', `c.status = 'active'`];
+  const conditions: string[] = [`c.status = 'active'`];
 
   if (query.q !== undefined && query.q.trim() !== '') {
     // Escaped so a term containing % or _ searches for those characters instead
@@ -427,7 +419,7 @@ function normaliseSlug(value: string): string {
   return normalised;
 }
 
-/** Load a channel row by id or slug, deleted ones excluded, or throw a 404. */
+/** Load a channel row by id or slug, or throw a 404. */
 export async function loadChannelRow(
   database: Queryable,
   lookup: { by: 'id' | 'slug'; value: string }
@@ -439,7 +431,7 @@ export async function loadChannelRow(
        FROM channels c
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
        ${LAST_POST_JOIN}
-      WHERE ${column} = $1 AND c.deleted_at IS NULL`,
+      WHERE ${column} = $1`,
     [lookup.value]
   );
   if (!row) throw notFound('channel_not_found');
@@ -460,7 +452,7 @@ export async function listChannelsForAdmin(
   scope: { readonly role: string; readonly channelId: string | null }
 ): Promise<ChannelPayload[]> {
   const params: unknown[] = [];
-  const conditions = ['c.deleted_at IS NULL'];
+  const conditions: string[] = [];
 
   if (scope.role !== 'super_admin') {
     params.push(scope.channelId);
@@ -473,7 +465,7 @@ export async function listChannelsForAdmin(
        FROM channels c
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
        ${LAST_POST_JOIN}
-      WHERE ${conditions.join(' AND ')}
+      ${conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''}
       ORDER BY LOWER(c.name) ASC`,
     params
   );
@@ -580,7 +572,7 @@ export async function updateChannel(
             description = CASE WHEN $3::boolean THEN $4 ELSE description END,
             category_slug = CASE WHEN $5::boolean THEN $6 ELSE category_slug END,
             country_code = CASE WHEN $7::boolean THEN $8 ELSE country_code END
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
       RETURNING id, slug, name, description, icon_object_key, category_slug,
                 NULL::text AS category_label, country_code, status, created_at,
                 last_post_at, COALESCE(last_post_at, created_at) AS activity_at`,
@@ -620,7 +612,7 @@ async function applyChannelIcon(
 
   const updated = await database.query(
     `UPDATE channels SET icon_object_key = $2
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
       RETURNING id`,
     [channelId, claim.objectKey]
   );
@@ -669,7 +661,7 @@ export async function clearChannelIconIn(
 
   const updated = await database.query(
     `UPDATE channels SET icon_object_key = NULL
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
       RETURNING id`,
     [channelId]
   );
@@ -723,7 +715,7 @@ export async function setChannelStatus(
 ): Promise<ChannelRow> {
   const rows = await database.query<ChannelRow>(
     `UPDATE channels SET status = $2
-      WHERE id = $1 AND deleted_at IS NULL
+      WHERE id = $1
       RETURNING id, slug, name, description, icon_object_key, category_slug,
                 NULL::text AS category_label, country_code, status, created_at,
                 last_post_at, COALESCE(last_post_at, created_at) AS activity_at`,
@@ -734,21 +726,58 @@ export async function setChannelStatus(
 }
 
 /**
- * Delete a channel (§17).
+ * Delete a channel, and everything that belonged to it (§17).
  *
- * Soft: `deleted_at` is set and every read filters on it. Hard-deleting would
- * take the posts and their media rows with it — the FK cascades — which is not
- * something an administrator should be able to do to a channel's entire history
- * in one tap.
+ * A real delete rather than a flag: the row goes, and the schema is arranged so
+ * the rest goes with it. That is why this is one statement and not a list of
+ * cleanups that a future edit could reorder:
+ *
+ *  * the posts, and their attachments — `posts.channel_id` and
+ *    `post_media.channel_id` CASCADE;
+ *  * the profile image, which is a `post_media` row owned by the channel
+ *    rather than by a post;
+ *  * the login created to run the channel — `admin_users.channel_id` CASCADES,
+ *    so those credentials stop working instead of resolving to a channel that
+ *    is gone. The audit rows that login wrote SURVIVE, unmodified: migration 015
+ *    removes the foreign key rather than cascading into a table that is
+ *    immutable by trigger, because a trail that is rewritten or erased as its
+ *    subjects come and go is not evidence of anything.
+ *
+ * The object keys come back rather than being removed here. Rows and bucket
+ * objects cannot be one transaction, and the safe order is the one that leaves an
+ * unreferenced object — cheap, and collectable by the sweep — instead of a live
+ * row pointing at nothing, which is a broken image on every read. The caller
+ * removes them once this transaction has committed.
+ *
+ * Only a super administrator can reach this (`channels.delete`, and the scope
+ * check that follows every lookup), which is the whole of the protection §17
+ * asks for: a channel's own administrator may manage it and may not destroy its
+ * history.
  */
-export async function deleteChannel(database: Queryable, channelId: string): Promise<void> {
-  const rows = await database.query<{ id: string }>(
-    `UPDATE channels SET deleted_at = now()
-      WHERE id = $1 AND deleted_at IS NULL
-      RETURNING id`,
-    [channelId]
-  );
-  if (rows.length === 0) throw notFound('channel_not_found');
+export async function deleteChannel(database: Queryable, channelId: string): Promise<string[]> {
+  return database.transaction(async (tx) => {
+    // Locked before the keys are read. A publish racing this delete would
+    // otherwise be able to attach an upload between the two statements, and the
+    // object it attached would never be named again.
+    const rows = await tx.query<{ icon_object_key: string | null }>(
+      `SELECT icon_object_key FROM channels WHERE id = $1 FOR UPDATE`,
+      [channelId]
+    );
+    if (rows.length === 0) throw notFound('channel_not_found');
+
+    const attachments = await tx.query<{ object_key: string }>(
+      `SELECT m.object_key
+         FROM post_media m
+         LEFT JOIN posts p ON p.id = m.post_id
+        WHERE m.channel_id = $1 OR p.channel_id = $1`,
+      [channelId]
+    );
+
+    await tx.query(`DELETE FROM channels WHERE id = $1`, [channelId]);
+
+    const icon = rows[0]?.icon_object_key ?? null;
+    return [...new Set([...attachments.map((r) => r.object_key), ...(icon ? [icon] : [])])];
+  });
 }
 
 /**

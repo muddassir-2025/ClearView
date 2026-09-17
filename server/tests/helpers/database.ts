@@ -130,11 +130,11 @@ export function asQueryable(pglite: PGlite): Queryable {
  * schema rather than conveniences:
  *
  *  * **`admin_users` and `admin_audit_logs` survive.** The audit log is
- *    append-only by a database trigger, and its `admin_id` reference is NO
- *    ACTION, so an administrator who has ever acted cannot be deleted — by
- *    `DELETE` or by `TRUNCATE` reaching them through the cascade. That is the
- *    property the table exists for. Suites therefore create their own accounts
- *    with unique addresses and never assume an empty table.
+ *    append-only by a database trigger, and migration 015 drops the foreign key
+ *    from it to `admin_users` entirely, so the log outlives the account it
+ *    describes instead of being erased or rewritten with it. Suites therefore
+ *    create their own accounts with unique addresses and never assume an empty
+ *    table.
  *
  *  * **Channels bound to an administrator are kept**, for the same reason: they
  *    are reachable from those rows. Channels seeded directly by a test have no

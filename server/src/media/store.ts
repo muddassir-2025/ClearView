@@ -25,15 +25,25 @@ import { serviceUnavailable, type ApiError } from '../http/errors.js';
  *    claims another account's object, and there is no upside to allowing it.
  */
 
-/** The kinds of media a post can carry (§8). Mirrors `media_kind` in 004. */
-export type MediaKind = 'image' | 'video' | 'audio';
+/**
+ * The kinds of media a post can carry (§8): an image or a video.
+ *
+ * The `media_kind` enum in 004 also has an `audio` label, and this union is
+ * deliberately narrower than the column it mirrors — a label cannot be removed
+ * from a PostgreSQL type without rebuilding it, but what this server ACCEPTS can
+ * be narrowed to what the product has. §21 lists text, image, video and link
+ * updates; an audio post would be a shape with no composer, no player in the
+ * client and no case in `posts.type`'s constraint, so it is refused at upload
+ * rather than stored and then failed at attach time.
+ */
+export type MediaKind = 'image' | 'video';
 
 /**
  * The prefix every key this service creates begins with.
  *
- * The layout in §9 — `goodpost/channels/{images,videos,audio,avatars}` — is
- * reproduced here with the kind in the path so an operator can attach a
- * lifecycle rule or a budget alarm per kind without reading the database.
+ * The layout — `goodpost/channels/{images,videos,avatars}` — is reproduced here
+ * with the kind in the path so an operator can attach a lifecycle rule or a
+ * budget alarm per kind without reading the database.
  */
 export const MEDIA_KEY_PREFIX = 'goodpost/channels';
 
@@ -52,11 +62,6 @@ export const ALLOWED_CONTENT_TYPES: Readonly<Record<string, string>> = {
   'video/mp4': 'mp4',
   'video/quicktime': 'mov',
   'video/webm': 'webm',
-  'audio/mpeg': 'mp3',
-  'audio/mp4': 'm4a',
-  'audio/aac': 'aac',
-  'audio/ogg': 'ogg',
-  'audio/wav': 'wav',
 };
 
 /**
@@ -81,7 +86,7 @@ export function kindFor(contentType: string): MediaKind | null {
   if (!ALLOWED_CONTENT_TYPES[base]) return null;
   if (base.startsWith('image/')) return 'image';
   if (base.startsWith('video/')) return 'video';
-  return 'audio';
+  return null;
 }
 
 /**

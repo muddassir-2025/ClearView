@@ -17,8 +17,8 @@ import { FakeObjectStore } from './helpers/storage.js';
  * Fixtures are inserted with SQL rather than through the API, because there is
  * no public write path to insert through — the absence of one is itself one of
  * the assertions. The reads under test are the real queries against a real
- * Postgres, so the filters the suite pins (soft-deleted posts, suspended
- * channels) are the filters the query actually applies.
+ * Postgres, so the filters the suite pins (removed posts, suspended channels)
+ * are the filters the query actually applies.
  *
  * These paths are the root of the API: `/api/v1/channels`, not
  * `/api/v1/public/channels`. The reader's first impression is this surface, so
@@ -57,7 +57,6 @@ interface ChannelSeed {
   name?: string;
   description?: string | null;
   status?: string;
-  deleted?: boolean;
   lastPostAt?: string | null;
   category?: string | null;
 }
@@ -65,8 +64,8 @@ interface ChannelSeed {
 async function seedChannel(seed: ChannelSeed = {}): Promise<string> {
   const rows = await pglite.query<{ id: string }>(
     `INSERT INTO channels
-       (slug, name, description, status, category_slug, last_post_at, deleted_at)
-     VALUES ($1, $2, $3, $4::channel_status, $5, $6::timestamptz, $7::timestamptz)
+       (slug, name, description, status, category_slug, last_post_at)
+     VALUES ($1, $2, $3, $4::channel_status, $5, $6::timestamptz)
      RETURNING id`,
     [
       seed.slug ?? 'clearview',
@@ -75,7 +74,6 @@ async function seedChannel(seed: ChannelSeed = {}): Promise<string> {
       seed.status ?? 'active',
       seed.category ?? null,
       seed.lastPostAt ?? null,
-      seed.deleted ? new Date().toISOString() : null,
     ]
   );
   return one(rows.rows).id;
@@ -149,20 +147,17 @@ describe('public channel list', () => {
     expect(channel.shareLink).toContain('clearview://goodpost/channel/');
   });
 
-  it('hides suspended and deleted channels', async () => {
+  it('hides a suspended channel', async () => {
     const live = unique('live');
     const paused = unique('paused');
-    const gone = unique('gone');
     await seedChannel({ slug: live, name: 'Live' });
     await seedChannel({ slug: paused, name: 'Paused', status: 'suspended' });
-    await seedChannel({ slug: gone, name: 'Gone', deleted: true });
 
     const res = await request(app).get('/api/v1/channels');
     const slugs = res.body.items.map((c: { slug: string }) => c.slug);
 
     expect(slugs).toContain(live);
     expect(slugs).not.toContain(paused);
-    expect(slugs).not.toContain(gone);
   });
 
   it('searches names and descriptions, and treats a wildcard as a literal', async () => {
@@ -214,51 +209,39 @@ describe('public channel list', () => {
 });
 
 /**
- * A post with nothing to show (§9).
+ * A post a reader cannot see anything in (§9).
  *
- * Migration 012 dropped the tables behind polls, not the poll POSTS, so a real
- * deployment carries rows with `type = 'poll'` and a null body — this suite's own
- * fixtures can now produce one. They were being served as text posts with no
- * text: an empty bubble in the feed, a channel row whose preview and timestamp
- * pointed at it, and a direct link that opened nothing.
+ * The previous version stored rows with `type = 'poll'` and a null body —
+ * migration 012 dropped the tables behind polls but kept the posts — so every
+ * read carried a predicate that filtered them out, and a query that forgot one
+ * served an empty bubble. Two things changed that: migration 015 deleted those
+ * rows, and the constraint below means a new one cannot be written. The
+ * guarantee therefore belongs to the database now, not to the query, which is
+ * what these tests assert instead of asserting the filter.
  */
 describe('a post a reader cannot see anything in', () => {
-  it('is left out of the feed, the channel row and a direct fetch', async () => {
-    const slug = unique('polls');
-    const channelId = await seedChannel({ slug, name: 'Polls' });
-    const readable = await seedPost(channelId, {
-      body: 'Still readable',
-      createdAt: new Date(Date.now() - 60_000).toISOString(),
-    });
-    const leftover = await seedPost(channelId, {
-      type: 'poll',
-      body: null,
-      createdAt: new Date().toISOString(),
-    });
+  it('cannot be stored: the type is constrained to the four shapes', async () => {
+    const channelId = await seedChannel({ slug: unique('shapes') });
 
-    const feed = await request(app).get(`/api/v1/channels/${slug}/posts`);
-    expect(feed.body.items.map((p: { id: string }) => p.id)).toEqual([readable]);
-
-    // The row describes the newest VISIBLE post, not the newest row: its preview
-    // and its timestamp have to belong to the same post, and a timestamp that
-    // outruns the feed is how a list and its detail start disagreeing (§4).
-    const detail = await request(app).get(`/api/v1/channels/${slug}`);
-    expect(detail.body.channel.lastPostPreview).toBe('Still readable');
-    expect(detail.body.channel.lastPostType).toBe('text');
-    // Exactly the post the feed returns, not merely a non-empty date.
-    expect(detail.body.channel.lastPostAt).toBe(feed.body.items[0].createdAt);
-
-    expect((await request(app).get(`/api/v1/posts/${leftover}`)).status).toBe(404);
+    // The `poll` label still exists in the enum — a PostgreSQL type cannot lose
+    // one — so the CHECK is the thing standing between it and a row.
+    await expect(
+      pglite.query(
+        `INSERT INTO posts (channel_id, type, body) VALUES ($1, 'poll'::post_type, NULL)`,
+        [channelId]
+      )
+    ).rejects.toThrow(/posts_type_is_renderable/);
   });
 
-  it('leaves a channel that has only ever polled looking like one that never posted', async () => {
-    const slug = unique('onlypolls');
-    const channelId = await seedChannel({ slug, name: 'Only polls' });
-    await seedPost(channelId, { type: 'poll', body: null });
+  it('leaves a channel with nothing to show describing nothing', async () => {
+    const slug = unique('quiet');
+    // `channels.last_post_at` is advanced on publish and recomputed by the
+    // retention sweep, so it can outlive the post it names once that post
+    // expires. A row's preview and its timestamp come from the join for exactly
+    // this reason, and this fixture is that state: activity recorded, no post.
+    await seedChannel({ slug, name: 'Quiet', lastPostAt: new Date().toISOString() });
 
     const detail = await request(app).get(`/api/v1/channels/${slug}`);
-    // Null rather than the poll's timestamp: `channels.last_post_at` still holds
-    // that value, and reporting it would date the row by a post nobody can read.
     expect(detail.body.channel.lastPostAt).toBeNull();
     expect(detail.body.channel.lastPostType).toBeNull();
     expect(detail.body.channel.lastPostPreview).toBeNull();

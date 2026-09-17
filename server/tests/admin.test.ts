@@ -533,7 +533,7 @@ describe('media upload (§21, §22)', () => {
     expect(res.body.error).toBe('unknown_media');
   });
 
-  it('refuses a file type that is not an image, video or audio', async () => {
+  it('refuses a file type that is not an image or a video', async () => {
     const superSession = await superAdminSession(app, pglite);
     const res = await request(app)
       .post('/admin/api/media/uploads')
@@ -635,6 +635,195 @@ describe('the audit log (§29)', () => {
     const audit = await request(app).get('/admin/api/audit').set(authed(superSession.accessToken));
     const denied = audit.body.items.find((row: { outcome: string }) => row.outcome === 'denied');
     expect(denied.action).toBe('denied.channels.create');
+  });
+});
+
+/**
+ * Deleting a channel (§17).
+ *
+ * Written around what must go and what must not. A channel's posts, its media
+ * rows, the objects behind them and the login created to run it all belong to
+ * the channel, so leaving one behind is a leftover every later query has to know
+ * about — which is the arrangement this suite exists to prevent. The audit trail
+ * is the exception, and it is the interesting one: it must outlive the account it
+ * describes, or the record of a deletion deletes itself.
+ */
+describe('deleting a channel (§17)', () => {
+  /**
+   * A channel in the state one is really deleted from: a profile image, a
+   * published image post, and an administrator signed in to run it.
+   */
+  async function doomedChannel(superSession: Session): Promise<{
+    channelId: string;
+    slug: string;
+    adminEmail: string;
+    owner: Session;
+  }> {
+    const created = await createChannelWithAdmin(app, superSession, uniqueName('Doomed'));
+    const owner = await signIn(app, created.adminEmail, created.password);
+
+    // An icon: the one attachment that belongs to the CHANNEL rather than to a
+    // post, which is why the delete names it separately.
+    const iconId = await uploadImage(owner);
+    const patched = await request(app)
+      .patch(`/admin/api/channels/${created.channel.id}`)
+      .set(authed(owner.accessToken))
+      .send({ iconMediaId: iconId });
+    expect(patched.status, JSON.stringify(patched.body)).toBe(200);
+
+    const postMediaId = await uploadImage(owner);
+    const published = await request(app)
+      .post(`/admin/api/channels/${created.channel.id}/posts`)
+      .set(authed(owner.accessToken))
+      .send({ body: 'About to go', mediaIds: [postMediaId] });
+    expect(published.status, JSON.stringify(published.body)).toBe(201);
+
+    return {
+      channelId: created.channel.id,
+      slug: created.channel.slug,
+      adminEmail: created.adminEmail,
+      owner,
+    };
+  }
+
+  /** Presign → PUT → confirm, the same handshake the phone performs. */
+  async function uploadImage(session: Session): Promise<string> {
+    const presign = await request(app)
+      .post('/admin/api/media/uploads')
+      .set(authed(session.accessToken))
+      .send({ contentType: 'image/jpeg', byteSize: 4096 });
+    expect(presign.status, JSON.stringify(presign.body)).toBe(201);
+
+    store.put();
+    const mediaId = presign.body.upload.mediaId as string;
+    const confirmed = await request(app)
+      .post(`/admin/api/media/uploads/${mediaId}/confirm`)
+      .set(authed(session.accessToken));
+    expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(200);
+    return mediaId;
+  }
+
+  /** Everything that should stop existing, counted in one round trip. */
+  async function rowsFor(channelId: string): Promise<{ channels: number; posts: number; media: number }> {
+    const res = await pglite.query<{ channels: number; posts: number; media: number }>(
+      `SELECT (SELECT count(*) FROM channels WHERE id = $1)::int AS channels,
+              (SELECT count(*) FROM posts WHERE channel_id = $1)::int AS posts,
+              (SELECT count(*) FROM post_media m
+                 JOIN posts p ON p.id = m.post_id
+                WHERE p.channel_id = $1)::int AS media`,
+      [channelId]
+    );
+    return res.rows[0] as { channels: number; posts: number; media: number };
+  }
+
+  it('takes the posts, the media, the bucket objects and the channel login with it', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const doomed = await doomedChannel(superSession);
+    const objectKeys = store.issued.map((i) => i.key);
+
+    // The state before, so the zeros below mean something: an assertion that a
+    // count is zero proves nothing unless it was not zero to begin with.
+    expect(await rowsFor(doomed.channelId)).toEqual({ channels: 1, posts: 1, media: 1 });
+
+    const res = await request(app)
+      .delete(`/admin/api/channels/${doomed.channelId}`)
+      .set(authed(superSession.accessToken));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.deleted).toBe(true);
+
+    expect(await rowsFor(doomed.channelId)).toEqual({ channels: 0, posts: 0, media: 0 });
+
+    // The objects, named by the keys the delete handed back. A row can be gone
+    // while the file it pointed at stays in the bucket forever, and that is the
+    // half of a delete that nothing else would notice.
+    for (const key of objectKeys) expect(store.removed).toContain(key);
+
+    // A reader gets the same 404 as a channel that never existed.
+    expect((await request(app).get(`/api/v1/channels/${doomed.slug}`)).status).toBe(404);
+
+    // The credentials created to run the channel stop working with it — the
+    // account is gone, so the token it was issued cannot resolve to anyone.
+    const account = await pglite.query(`SELECT id FROM admin_users WHERE email = $1`, [
+      doomed.adminEmail,
+    ]);
+    expect(account.rows).toHaveLength(0);
+
+    const stale = await request(app)
+      .get('/admin/api/channels')
+      .set(authed(doomed.owner.accessToken));
+    expect(stale.status).toBe(401);
+  });
+
+  it('keeps the audit trail, including the history of the account it removed', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const doomed = await doomedChannel(superSession);
+
+    await request(app)
+      .delete(`/admin/api/channels/${doomed.channelId}`)
+      .set(authed(superSession.accessToken));
+
+    const audit = await request(app).get('/admin/api/audit').set(authed(superSession.accessToken));
+    const deletion = audit.body.items.find(
+      (row: { action: string; targetId: string }) =>
+        row.action === 'channel.delete' && row.targetId === doomed.channelId
+    );
+    expect(deletion).toBeTruthy();
+    expect(deletion.adminEmail).toContain('@example.test');
+
+    // The removed login's own history survives it BYTE FOR BYTE: the actor id it
+    // recorded is still there and simply no longer resolves to a row (015 drops
+    // the foreign key rather than rewriting an immutable log). The email is
+    // snapshotted alongside, so "who did this" is answerable from the log alone.
+    const theirs = await pglite.query<{ admin_id: string | null; admin_email: string }>(
+      `SELECT admin_id, admin_email FROM admin_audit_logs WHERE admin_email = $1`,
+      [doomed.adminEmail]
+    );
+    expect(theirs.rows.length).toBeGreaterThan(0);
+    expect(theirs.rows.every((row) => row.admin_id !== null)).toBe(true);
+
+    const resolutions = await pglite.query(
+      `SELECT id FROM admin_users WHERE id = ANY($1::uuid[])`,
+      [[...new Set(theirs.rows.map((row) => row.admin_id))]]
+    );
+    expect(resolutions.rows).toHaveLength(0);
+
+    // And none of it can be rewritten afterwards.
+    await expect(pglite.exec(`DELETE FROM admin_audit_logs`)).rejects.toThrow();
+  });
+
+  it('is refused to the channel administrator who runs it', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const created = await createChannelWithAdmin(app, superSession, uniqueName('Kept'));
+    const owner = await signIn(app, created.adminEmail, created.password);
+
+    const res = await request(app)
+      .delete(`/admin/api/channels/${created.channel.id}`)
+      .set(authed(owner.accessToken));
+
+    // Refused as a permission, before any lookup: "manage your channel" and
+    // "destroy your channel's history" are different verbs, and only one of
+    // them is in §18.
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('admin_forbidden');
+
+    const rows = await pglite.query(`SELECT id FROM channels WHERE id = $1`, [created.channel.id]);
+    expect(rows.rows).toHaveLength(1);
+  });
+
+  it('is a 404 the second time, so a double tap is not a second delete', async () => {
+    const superSession = await superAdminSession(app, pglite);
+    const channel = await createBareChannel(app, superSession, uniqueName('Once'));
+
+    const first = await request(app)
+      .delete(`/admin/api/channels/${channel.id}`)
+      .set(authed(superSession.accessToken));
+    expect(first.status).toBe(200);
+
+    const second = await request(app)
+      .delete(`/admin/api/channels/${channel.id}`)
+      .set(authed(superSession.accessToken));
+    expect(second.status).toBe(404);
+    expect(second.body.error).toBe('channel_not_found');
   });
 });
 
