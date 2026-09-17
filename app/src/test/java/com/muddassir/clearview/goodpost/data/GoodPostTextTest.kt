@@ -123,10 +123,4 @@ class GoodPostTextTest {
         assertFalse(GoodPostFormat.Bold.wraps(mixed))
     }
 
-    @Test
-    fun `presence is a plain substring test, used when nothing is selected`() {
-        assertTrue(GoodPostFormat.Bold.presentIn("a *b* c"))
-        assertFalse(GoodPostFormat.Bold.presentIn("a b c"))
-        assertTrue(GoodPostFormat.Monospace.presentIn("```x```"))
-    }
 }

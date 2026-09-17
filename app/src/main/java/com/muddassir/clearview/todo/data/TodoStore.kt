@@ -2,6 +2,7 @@ package com.muddassir.clearview.todo.data
 
 import android.content.Context
 import com.muddassir.clearview.todo.model.TodoItem
+import com.muddassir.clearview.todo.widget.TodoWidgetProvider
 import java.time.LocalDate
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,8 +22,16 @@ import org.json.JSONObject
  */
 class TodoStore(context: Context) {
 
+    /**
+     * The application context, kept for the one thing that needs a Context of its
+     * own: telling the home-screen widget to redraw. The application context
+     * rather than the caller's, so a store built from an activity cannot keep one
+     * alive.
+     */
+    private val appContext = context.applicationContext
+
     private val prefs =
-        context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     /** Every todo with its completion history; empty on first launch / corrupt data. */
     fun getItems(): List<TodoItem> =
@@ -32,6 +41,12 @@ class TodoStore(context: Context) {
     fun saveItems(items: List<TodoItem>) {
         prefs.edit().putString(KEY_ITEMS, TodoCodec.encode(items)).apply()
         TodoStore.itemsFlow.value = items
+        // The home-screen widget is a second view of this same list, and it has
+        // no subscription of its own: a widget cannot observe anything while the
+        // app is not running. Telling it here means it is redrawn by the write
+        // that changed the data — including writes from a notification action or
+        // the snooze activity, which is where a stale card would be most visible.
+        TodoWidgetProvider.refreshAllWidgets(appContext)
     }
 
     /** Marks a todo attempted on [day] (for ATTEMPTED behavior). */

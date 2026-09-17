@@ -140,6 +140,13 @@ export function asQueryable(pglite: PGlite): Queryable {
  *    administrator and are removed, which is what makes a fixture's own rows
  *    disappear between cases.
  *
+ * `readers` IS reset, and it is here rather than in the suites that use it
+ * because a reader is content: every reader-scoped fixture inserts its own uid,
+ * and a surviving row would carry a follow, a mute or a read position into the
+ * next test that happened to reuse the uid. `channel_follows` needs no
+ * statement of its own — it cascades from both parents, and the two DELETEs
+ * below already cover it.
+ *
  * `channel_categories` is absent for the original reason: it holds
  * migration-seeded reference data, and deleting it would leave every channel
  * creation in the suite failing on a missing category.
@@ -150,6 +157,7 @@ export async function resetData(pglite: PGlite): Promise<void> {
     `DELETE FROM channels
       WHERE id NOT IN (SELECT channel_id FROM admin_users WHERE channel_id IS NOT NULL)`
   );
+  await pglite.exec(`DELETE FROM readers`);
 }
 
 /** First row, or a clear failure — avoids `rows[0]!` noise under strict mode. */

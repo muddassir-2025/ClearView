@@ -80,6 +80,19 @@ data class GoodPostUiState(
     /** True while what is on screen came from the cache (§27). */
     val channelsStale: Boolean = false,
     val channelsError: String? = null,
+    /**
+     * The channels this reader follows, by id (§4).
+     *
+     * Held as ids as well as as rows because the two screens ask different
+     * questions of it: the home list renders the rows, and Explore asks "is this
+     * one of mine?" for a channel that came from the public list and carries no
+     * state of its own. A set answers that in constant time per row, which is
+     * what keeps a list of two hundred search results from being a scan of the
+     * reader's follows for each one.
+     */
+    val followedIds: Set<String> = emptySet(),
+    /** A follow or unfollow this view model is waiting on, for the row's state. */
+    val followBusyId: String? = null,
 
     /**
      * The rows currently selected, by long press (§5).
@@ -376,32 +389,125 @@ class GoodPostViewModel : ViewModel() {
         )
     }
 
+    /**
+     * Refresh the home list, which is what this reader FOLLOWS (§4).
+     *
+     * The followed channels are fetched first, because §4 makes them the tab's
+     * list. The public list is the fallback, and it is a deliberately different
+     * thing: a reader who follows nothing — the state every reader starts in, and
+     * the state a build with no identity is permanently in — would otherwise
+     * open Good Post onto an empty screen with nothing to do but find Explore.
+     * Falling back keeps the tab useful and still puts follows first the moment
+     * there are any.
+     */
     fun refreshChannels() {
         val repo = repository ?: return
         uiState = uiState.copy(channelsLoading = true, channelsError = null)
 
         viewModelScope.launch {
-            when (val result = repo.channels()) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    channels = result.value.items,
-                    channelsLoading = false,
-                    channelsStale = false,
-                    channelsError = null
-                )
+            when (val follows = repo.following()) {
+                is ApiResult.Ok -> {
+                    if (follows.value.items.isNotEmpty()) {
+                        uiState = uiState.copy(
+                            channels = follows.value.items,
+                            followedIds = follows.value.items.map { it.id }.toSet(),
+                            channelsLoading = false,
+                            channelsStale = false,
+                            channelsError = null
+                        )
+                        return@launch
+                    }
+                    // Followed nothing: an empty list is a real answer, and it
+                    // means the reader should be shown channels to follow.
+                    uiState = uiState.copy(followedIds = emptySet())
+                }
+
+                // No identity, or a refused call: nothing is known about what
+                // this reader follows, so nothing is assumed. The public list
+                // below still loads and the tab still works (§23).
+                is ApiResult.Failed, ApiResult.Unreachable ->
+                    uiState = uiState.copy(followedIds = emptySet())
+            }
+
+            loadPublicChannels(repo)
+        }
+    }
+
+    /**
+     * Follow or unfollow a channel (§4).
+     *
+     * Optimistic, because the control is a toggle and waiting on a round trip
+     * before it moves reads as a broken button. The state is put back if the
+     * server disagrees, and the home list is reloaded on success so the channel
+     * appears — or disappears — with the ordering and unread count the server
+     * decided rather than the ones this could have guessed.
+     */
+    fun toggleFollow(channelId: String) {
+        val repo = repository ?: return
+        if (uiState.followBusyId != null) return
+
+        val wasFollowing = channelId in uiState.followedIds
+        uiState = uiState.copy(
+            followBusyId = channelId,
+            followedIds = if (wasFollowing) uiState.followedIds - channelId
+            else uiState.followedIds + channelId
+        )
+
+        viewModelScope.launch {
+            val result = if (wasFollowing) repo.unfollow(channelId) else repo.follow(channelId)
+
+            when (result) {
+                is ApiResult.Ok -> {
+                    // The server's answer is the truth, including the case where
+                    // the unfollow was of a channel that was not followed.
+                    val nowFollowing = result.value.following
+                    uiState = uiState.copy(
+                        followBusyId = null,
+                        followedIds = if (nowFollowing) uiState.followedIds + channelId
+                        else uiState.followedIds - channelId
+                    )
+                    refreshChannels()
+                }
 
                 is ApiResult.Failed -> uiState = uiState.copy(
-                    channelsLoading = false,
-                    // A refusal does not throw away saved channels (§27).
-                    channelsStale = uiState.channels.isNotEmpty(),
-                    channelsError = result.code
+                    followBusyId = null,
+                    followedIds = if (wasFollowing) uiState.followedIds + channelId
+                    else uiState.followedIds - channelId,
+                    messageCode = result.code
                 )
 
                 ApiResult.Unreachable -> uiState = uiState.copy(
-                    channelsLoading = false,
-                    channelsStale = uiState.channels.isNotEmpty(),
-                    channelsError = if (uiState.channels.isEmpty()) "unreachable" else null
+                    followBusyId = null,
+                    followedIds = if (wasFollowing) uiState.followedIds + channelId
+                    else uiState.followedIds - channelId,
+                    messageCode = "unreachable"
                 )
             }
+        }
+    }
+
+    /** The public channel list: discovery, and the fallback home list. */
+    private suspend fun loadPublicChannels(repo: GoodPostRepository) {
+        when (val result = repo.channels()) {
+            is ApiResult.Ok -> uiState = uiState.copy(
+                channels = result.value.items,
+                channelsLoading = false,
+                channelsStale = false,
+                channelsError = null
+            )
+
+            is ApiResult.Failed -> uiState = uiState.copy(
+                channelsLoading = false,
+                // A refusal does not throw away saved channels (§27).
+                channelsStale = uiState.channels.isNotEmpty(),
+                channelsError = result.code
+            )
+
+            ApiResult.Unreachable -> uiState = uiState.copy(
+                channelsLoading = false,
+                channelsStale = uiState.channels.isNotEmpty(),
+                channelsError = if (uiState.channels.isEmpty()) "unreachable" else null
+            )
         }
     }
 
@@ -435,6 +541,37 @@ class GoodPostViewModel : ViewModel() {
         open(GoodPostScreen.Channel(channelId))
         loadChannel(channelId)
         loadPosts(channelId)
+        markReadIfFollowed(channelId)
+    }
+
+    /**
+     * Clear this channel's unread badge, because the reader has just opened it
+     * (§5).
+     *
+     * Called when a channel is opened rather than when its posts finish loading,
+     * because the badge means "there is something here you have not looked at"
+     * and opening the channel is the act that answers it — a load that fails
+     * still leaves the reader having seen the screen, and leaving the badge up
+     * for a failure would make it unclearable exactly when the app is broken.
+     *
+     * Only for a channel the reader follows: there is no badge on anybody else's,
+     * and the request would be a round trip to say nothing. Done fire-and-forget
+     * from the caller's point of view — the badge is cleared locally as soon as
+     * the server confirms, and a failure leaves it up rather than lying about it.
+     */
+    private fun markReadIfFollowed(channelId: String) {
+        val repo = repository ?: return
+        if (channelId !in uiState.followedIds) return
+
+        viewModelScope.launch {
+            if (repo.markChannelRead(channelId) is ApiResult.Ok) {
+                uiState = uiState.copy(
+                    channels = uiState.channels.map {
+                        if (it.id == channelId) it.copy(unreadCount = 0) else it
+                    }
+                )
+            }
+        }
     }
 
     private fun loadChannel(channelId: String) {

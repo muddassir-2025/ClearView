@@ -55,7 +55,39 @@ data class GoodPostChannel(
      * whereas a suspended status means the row is being shown to somebody who
      * runs it and needs to know it is not public.
      */
-    val status: String? = null
+    val status: String? = null,
+
+    // ── The reader's own state (§4, §5, §6) ──────────────────────────────
+    //
+    // Present only on a payload from the reader's own follows; the public
+    // channel list carries none of it, because a channel is the same channel to
+    // everybody and these three fields are not. Defaults rather than nullables
+    // so a row from the public list renders with no badge and no toggle without
+    // every call site having to say which list it came from.
+
+    /** Unread posts for this reader (§5). 0 anywhere else. */
+    val unreadCount: Int = 0,
+    /** True when this row came from the reader's follows (§4). */
+    val following: Boolean = false,
+    /** True when the reader has muted this channel (§6). */
+    val notificationsMuted: Boolean = false,
+    /** ISO instant of the follow (§5's ordering); null when not followed. */
+    val followedAt: String? = null
+)
+
+/**
+ * The reader's relationship to one channel (§4–§6).
+ *
+ * Returned by follow, unfollow, mute and mark-read, which is what lets the
+ * screen update the one row it acted on from the answer rather than refetching
+ * the list it is already showing.
+ */
+data class GoodPostFollow(
+    val channelId: String,
+    val following: Boolean,
+    val notificationsMuted: Boolean,
+    /** Posts published since the reader last read it (§5). */
+    val unreadCount: Int
 )
 
 /** The channel a post came from, as a single-post payload names it. */
@@ -184,7 +216,27 @@ internal object GoodPostCodec {
             lastPostType = json.nullableString("lastPostType"),
             lastPostPreview = json.nullableString("lastPostPreview"),
             shareLink = json.optString("shareLink"),
-            status = json.nullableString("status")
+            status = json.nullableString("status"),
+            // Absent on every payload except the reader's own follows, where
+            // `optInt`'s default and `optBoolean`'s both mean "nothing to show".
+            unreadCount = json.optInt("unreadCount", 0).coerceAtLeast(0),
+            following = json.optBoolean("following", false),
+            notificationsMuted = json.optBoolean("notificationsMuted", false),
+            followedAt = json.nullableString("followedAt")
+        )
+    }
+
+    /** Parse a `{ follow: {...} }` body. */
+    fun follow(body: JSONObject): GoodPostFollow? {
+        val row = body.optJSONObject("follow") ?: return null
+        val channelId = row.optString("channelId")
+        if (channelId.isBlank()) return null
+
+        return GoodPostFollow(
+            channelId = channelId,
+            following = row.optBoolean("following", false),
+            notificationsMuted = row.optBoolean("notificationsMuted", false),
+            unreadCount = row.optInt("unreadCount", 0).coerceAtLeast(0)
         )
     }
 

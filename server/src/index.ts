@@ -19,8 +19,21 @@ for (const line of describeActiveLimits(rateLimitConfigFromEnv())) {
 // unreachable must delay provisioning, not the health check Render polls.
 void ensureSuperAdmin(db)
   .then((result) => {
+    // Before the outcome, because it is advice about a value rather than a
+    // report of what happened, and it applies in every outcome.
+    if (result.warning) console.warn(`[admin] ${result.warning}`);
+
     if (result.created) console.log(`[admin] super administrator provisioned (${result.adminId})`);
-    else if (result.reason === 'no_super_admin_configured') {
+    else if (result.reason === 'password_reconciled') {
+      // Said out loud on purpose. This is the one thing the boot changes that an
+      // operator did not ask for in so many words — they asked by editing
+      // SUPER_ADMIN_PASSWORD — and when a password "suddenly" starts or stops
+      // working, the deploy log is where anyone will look first. No value is
+      // printed, only that a configured one replaced a stored one.
+      console.log(
+        '[admin] SUPER_ADMIN_PASSWORD did not match the stored hash, so the stored password was replaced with it.'
+      );
+    } else if (result.reason === 'no_super_admin_configured') {
       console.warn(
         '[admin] no SUPER_ADMIN_EMAIL configured: readers can browse, but nobody can publish.'
       );

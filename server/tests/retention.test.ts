@@ -8,21 +8,28 @@ import { applyAllMigrations, asQueryable, freshDatabase, one, resetData } from '
 import { FakeObjectStore } from './helpers/storage.js';
 
 /**
- * What the scheduled sweep does and does not remove (§34).
+ * What the scheduled sweep removes, and why (§14, §34).
  *
- * Two rules live here, and they pull in opposite directions, which is why they
- * are tested together:
+ * Three rules live here, and the first two are decided by different things:
  *
- *  * **A post never expires on its own.** A channel's history is what a channel
- *    is; an update stays readable until an administrator deletes it. This was a
- *    real behaviour once — a 30-day window that quietly flagged and then physically
- *    deleted older posts, media included — and it is exactly the kind of rule that
- *    comes back by accident, since nothing about a working sweep looks wrong until
- *    the day a channel's first month is behind it.
+ *  * **Time closes a post.** The server keeps roughly \u00a714's month of history:
+ *    a post older than `POST_RETENTION_DAYS` is deleted with its media, so that
+ *    someone who does not follow a channel can still discover it and read back
+ *    far enough to judge it, while what the deployment stores stays bounded no
+ *    matter how long a channel runs. This is the only rule here that shortens a
+ *    channel's history without anybody asking it to, which is why the window is
+ *    pinned in `vitest.config.ts` and why the tests around it assert BOTH sides
+ *    of the line — a sweep that deleted everything, or nothing, would satisfy
+ *    half of them.
  *
  *  * **A deleted post is removed for real.** Deleting is a soft delete so the app
  *    stops showing it immediately; the sweep is what makes it final, and what
- *    releases the objects it was holding.
+ *    releases the objects it was holding. Decided by `deleted_at` alone and
+ *    asserted with posts INSIDE the window, so it cannot pass on the age rule.
+ *
+ *  * **An object in use is never removed.** Both passes hand their keys to one
+ *    reference count, which is the property that lets two rules delete rows
+ *    without either of them breaking a post that is still live.
  */
 
 let pglite: PGlite;
@@ -101,26 +108,84 @@ async function seedMedia(postId: string): Promise<string> {
 }
 
 describe('the retention sweep', () => {
-  it('leaves a post of any age alone, and it stays readable', async () => {
-    const slug = unique('archive');
+  it('keeps a post inside the window, and it stays readable', async () => {
+    const slug = unique('recent');
     const channelId = await seedChannel(slug);
-    const postId = await seedPost(channelId, { ageDays: 400, body: 'A year old and still true' });
-    await pglite.query(`UPDATE channels SET last_post_at = now() - interval '400 days' WHERE id = $1`, [
+    const postId = await seedPost(channelId, { ageDays: 5, body: 'Within the month' });
+
+    const sweep = await runRetentionSweep(db, store);
+    expect(sweep.purged).toBe(0);
+    expect(sweep.agedOut).toBe(0);
+    expect(store.removed).toEqual([]);
+
+    // Read through the public API, because that is the promise a reader sees.
+    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    expect(posts.status).toBe(200);
+    expect(posts.body.items.map((p: { id: string }) => p.id)).toContain(postId);
+  });
+
+  it('draws the line on the window and not near it', async () => {
+    // Both sides in one fixture: a day either side of 30 is the whole rule, and
+    // asserting only the deletion would also pass if the pass removed
+    // everything older than nothing.
+    const slug = unique('line');
+    const channelId = await seedChannel(slug);
+    const insideId = await seedPost(channelId, { ageDays: 29, body: 'Day 29' });
+    const outsideId = await seedPost(channelId, { ageDays: 31, body: 'Day 31' });
+
+    const sweep = await runRetentionSweep(db, store);
+
+    expect(sweep.purged).toBe(1);
+    expect(sweep.agedOut).toBe(1);
+
+    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    const ids = posts.body.items.map((p: { id: string }) => p.id);
+    expect(ids).toContain(insideId);
+    expect(ids).not.toContain(outsideId);
+  });
+
+  it('takes an aged-out post\u2019s media and corrects the channel it left behind', async () => {
+    const slug = unique('aged');
+    const channelId = await seedChannel(slug);
+    const oldId = await seedPost(channelId, { ageDays: 40, body: 'Last month\u2019s news' });
+    const key = await seedMedia(oldId);
+    const freshId = await seedPost(channelId, { ageDays: 2, body: 'This week\u2019s news' });
+    // The channel is currently described by the post that is about to expire, so
+    // the sweep has to move `last_post_at` onto the fresh one — otherwise the
+    // channel list advertises an update nobody can open.
+    await pglite.query(`UPDATE channels SET last_post_at = now() - interval '40 days' WHERE id = $1`, [
       channelId,
     ]);
 
     const sweep = await runRetentionSweep(db, store);
-    expect(sweep.purged).toBe(0);
-    expect(store.removed).toEqual([]);
 
-    // Read through the public API, because that is the promise: a reader sees the
-    // whole history, not the last 30 days of it.
-    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
-    expect(posts.status).toBe(200);
-    expect(posts.body.items.map((p: { id: string }) => p.id)).toContain(postId);
+    expect(sweep.purged).toBe(1);
+    expect(sweep.objectsRemoved).toBe(1);
+    expect(store.removed).toEqual([key]);
+    expect(store.has(key)).toBe(false);
 
     const detail = await request(app).get(`/api/v1/channels/${slug}`);
-    expect(detail.body.channel.lastPostPreview).toBe('A year old and still true');
+    expect(detail.body.channel.lastPostPreview).toBe('This week\u2019s news');
+    expect(detail.body.channel.lastPostAt).toBeTruthy();
+
+    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    expect(posts.body.items.map((p: { id: string }) => p.id)).toEqual([freshId]);
+  });
+
+  it('leaves a channel that nothing has expired for alone', async () => {
+    // The expensive way to be wrong here is a sweep that empties a channel of
+    // recent posts while reporting a small number, so the survivor is asserted
+    // directly rather than inferred from the count.
+    const slug = unique('untouched');
+    const channelId = await seedChannel(slug);
+    const postId = await seedPost(channelId, { ageDays: 1, body: 'Still the latest' });
+
+    expect((await runRetentionSweep(db, store)).purged).toBe(0);
+
+    const detail = await request(app).get(`/api/v1/channels/${slug}`);
+    expect(detail.body.channel.lastPostPreview).toBe('Still the latest');
+    const posts = await request(app).get(`/api/v1/channels/${slug}/posts`);
+    expect(posts.body.items.map((p: { id: string }) => p.id)).toEqual([postId]);
   });
 
   it('removes a deleted post, its media, and the activity it left on the channel', async () => {
@@ -165,19 +230,23 @@ describe('the retention sweep', () => {
     expect(store.removed).toHaveLength(1);
   });
 
-  it('decides on the deleted flag, never on age', async () => {
-    // The two rules meeting in one fixture: age alone decides nothing, and the
-    // deleted flag decides everything.
+  it('decides on the deleted flag, never on age alone', async () => {
+    // Both posts are INSIDE the window on purpose, so the only rule that can
+    // remove either of them is the deletion flag. Dating these posts a year back
+    // would let the age pass answer for this one and the flag would go
+    // unasserted.
     const slug = unique('both');
     const channelId = await seedChannel(slug);
-    await seedPost(channelId, { ageDays: 365, body: 'Old but published' });
-    const removed = await seedPost(channelId, { ageDays: 365, deleted: true, body: 'Old and removed' });
+    const published = await seedPost(channelId, { ageDays: 3, body: 'Published' });
+    const removed = await seedPost(channelId, { ageDays: 3, deleted: true, body: 'Deleted' });
 
     const sweep = await runRetentionSweep(db, store);
 
     expect(sweep.purged).toBe(1);
+    expect(sweep.agedOut).toBe(0);
     const rows = await pglite.query<{ id: string }>(`SELECT id FROM posts`);
     expect(rows.rows.map((r) => r.id)).not.toContain(removed);
+    expect(rows.rows.map((r) => r.id)).toContain(published);
     expect(rows.rows).toHaveLength(1);
   });
 });

@@ -155,8 +155,9 @@ private fun SetupLimitView(onStarted: () -> Unit) {
         }
         error = null
         // Android 13+: ask once for the notification permission so the
-        // countdown is visible in the shade. The limit still runs when denied
-        // (the widget keeps showing it); only the shade display is lost.
+        // countdown is visible in the shade. The limit still runs when denied —
+        // it expires on the alarm and locks the phone either way — but the
+        // remaining time is then only visible inside the app.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !NotificationManagerCompat.from(context).areNotificationsEnabled()
         ) {

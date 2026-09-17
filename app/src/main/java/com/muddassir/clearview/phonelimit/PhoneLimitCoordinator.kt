@@ -54,23 +54,25 @@ object PhoneLimitCoordinator {
     /** Notification channel for the ongoing countdown + the expiry notice. */
     const val CHANNEL_ID = "phone_limit"
 
-    /** Broadcast actions delivered to [PhoneLimitReceiver]. */
+    /**
+     * The one broadcast action delivered to [PhoneLimitReceiver].
+     *
+     * There was a second, `ACTION_START`, which was how the removed home-screen
+     * widget sent a typed duration. With the widget gone the sheet starts the
+     * countdown directly, so the action had no sender left — and an action
+     * nothing sends is a branch nothing tests.
+     */
     const val ACTION_EXPIRE = "com.muddassir.clearview.phonelimit.EXPIRE"
-    const val ACTION_START = "com.muddassir.clearview.phonelimit.START"
 
     /** Service extra carrying the requested countdown length in millis. */
     const val EXTRA_DURATION_MILLIS = "duration_millis"
 
     /**
      * Launcher-activity extra that opens the app straight into the Phone
-     * Limit sheet (the "timer window") — used as the widget's fallback when
-     * the typed duration can't be read from the widget, and by the expiry
-     * notification. Mirrors the Todo flow's EXTRA_OPEN_TODO.
+     * Limit sheet (the "timer window"), sent by the expiry notification.
+     * Mirrors the Todo flow's EXTRA_OPEN_TODO.
      */
     const val EXTRA_OPEN_PHONE_LIMIT = "open_phone_limit"
-
-    /** Key under which a widget's EditText text arrives with a click intent. */
-    const val EXTRA_TEXT_INPUT = Intent.EXTRA_TEXT
 
     /** Notification id used for both the ongoing countdown and the expiry notice. */
     const val NOTIF_ID = 0x701
@@ -126,7 +128,6 @@ object PhoneLimitCoordinator {
         persist(context, durationMillis)
         ensureChannel(context)
         scheduleExpiryAlarm(context)
-        PhoneLimitWidgetProvider.refreshAllWidgets(context)
         Log.i(TAG, "Phone limit started for ${durationMillis / 1000}s")
     }
 
@@ -141,7 +142,6 @@ object PhoneLimitCoordinator {
         cancelExpiryAlarm(context)
         val locked = lockNowIfAdmin(context)
         postExpiredNotification(context, locked)
-        PhoneLimitWidgetProvider.refreshAllWidgets(context)
         Log.i(TAG, "Phone limit expired (locked=$locked)")
     }
 
@@ -368,59 +368,7 @@ object PhoneLimitCoordinator {
         }
     }
 
-    // ── Duration parsing / formatting ──────────────────────────────
-
-    /**
-     * Parses a user-entered duration string into millis. Accepts the unit
-     * forms — `1h`, `20m`, `30s`, `1h:20m:10s`, `1h 20m 10s`, `45m 30s`,
-     * `90s`, `2h` — and plain colon-separated numbers (`1:20:10` = h:m:s,
-     * `45:30` = m:s, `30` = minutes). Returns null when nothing parseable or
-     * the total is zero.
-     */
-    fun parseDuration(input: String): Long? {
-        val text = input.trim().lowercase(Locale.ROOT)
-        if (text.isEmpty()) return null
-
-        val colonParts = text.split(':').map { it.trim() }.filter { it.isNotEmpty() }
-        val hasUnits = text.any { it == 'h' || it == 'm' || it == 's' }
-        var millis = 0L
-
-        if (hasUnits || colonParts.size > 1) {
-            // Unit form: tokenize digits followed by h/m/s (surrounding
-            // whitespace, colons or nothing).
-            val regex = Regex("(\\d+)\\s*([hms])")
-            var found = false
-            regex.findAll(text).forEach { m ->
-                found = true
-                val n = m.groupValues[1].toLong()
-                when (m.groupValues[2]) {
-                    "h" -> millis += n * 3_600_000L
-                    "m" -> millis += n * 60_000L
-                    "s" -> millis += n * 1_000L
-                }
-            }
-            if (!found) {
-                // Pure colon form (no unit letters anywhere).
-                when (colonParts.size) {
-                    3 -> {
-                        millis = colonParts[0].toLongOrNull()?.let { it * 3_600_000L } ?: 0L
-                        millis += colonParts[1].toLongOrNull()?.let { it * 60_000L } ?: 0L
-                        millis += colonParts[2].toLongOrNull()?.let { it * 1_000L } ?: 0L
-                    }
-                    2 -> {
-                        millis = colonParts[0].toLongOrNull()?.let { it * 60_000L } ?: 0L
-                        millis += colonParts[1].toLongOrNull()?.let { it * 1_000L } ?: 0L
-                    }
-                    1 -> millis = colonParts[0].toLongOrNull()?.let { it * 60_000L } ?: 0L
-                    else -> return null
-                }
-            }
-        } else {
-            // A plain number means minutes.
-            millis = text.toLongOrNull()?.let { it * 60_000L } ?: return null
-        }
-        return if (millis > 0L) millis else null
-    }
+    // ── Duration formatting ────────────────────────────────────────
 
     /** Formats remaining millis as H:MM:SS (e.g. `1:20:10`, `45:30`). */
     fun format(remainingMillis: Long): String {

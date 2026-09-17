@@ -5,7 +5,10 @@ import { env, isProduction } from './env.js';
 import { db, pingDatabase, type Queryable } from './db.js';
 import { ApiError } from './http/errors.js';
 import { buildPublicRouter } from './public/routes.js';
+import { buildShareRouter } from './public/share.js';
+import { buildReadersRouter } from './readers/routes.js';
 import { buildAdminRouter } from './admin/routes.js';
+import { createFirebaseVerifier, type IdentityVerifier } from './identity/verifier.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
 import {
   FixedWindowRateLimiter,
@@ -101,12 +104,24 @@ export interface AppDeps {
    * would mean they were never tested.
    */
   readonly store?: ObjectStore;
+  /**
+   * Who is calling (§3). Overridable so the suite can verify against a key pair
+   * it generated, and so the whole reader surface can be exercised end to end
+   * without a Firebase project — including the routes that must refuse when
+   * verification is unavailable.
+   */
+  readonly verifier?: IdentityVerifier;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
   const database = deps.database ?? db;
   const rateLimits = deps.rateLimits ?? rateLimitConfigFromEnv();
   const store = deps.store ?? createObjectStore();
+  // Configured from a PUBLIC value — the Firebase project id, which is the
+  // token's audience. There is no Firebase credential in this deployment: a
+  // deployment that has not set the project id refuses reader-scoped routes
+  // with `auth_unavailable` rather than trusting anything a client says.
+  const verifier = deps.verifier ?? createFirebaseVerifier(env.FIREBASE_PROJECT_ID);
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -171,6 +186,39 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // Anonymous, read-only, and the only surface a phone touches on cold start —
   // which is why it is mounted first (§26).
   app.use('/api/v1', buildPublicRouter(database, store));
+
+  // ── Reader state (§3–§6) ──
+  // The same prefix, because it is the same client and the same product, but
+  // every route under it requires a verified Firebase token while the reads
+  // above require nothing. Mounted after the public router so a static public
+  // path can never be shadowed by a reader path of the same shape.
+  app.use('/api/v1/readers', buildReadersRouter(database, store, verifier, limiter, rateLimits));
+
+  // Mounted even when verification is unavailable, and the routes answer for
+  // themselves: an unconfigured deployment returns a described 503 from each
+  // one, where unmounting would return a 404 that reads like this API version
+  // simply does not have those routes. Said out loud once at build time,
+  // because the difference between "degraded" and "not deployed" is otherwise
+  // only visible from inside the app.
+  if (!verifier.configured) {
+    console.warn(
+      '[api] FIREBASE_PROJECT_ID is not set: reader sign-in cannot be verified, so follows, ' +
+        'unread badges and mutes are unavailable. Public reading is unaffected.'
+    );
+  }
+
+  // ── The shared-channel page (§6) ───────────────────────────────────────
+  //
+  // Deliberately NOT under `/api/v1`. This is the one thing here that a browser
+  // — a recipient of a shared link, with no app installed and no idea what
+  // ClearView is — is meant to open, so it gets a short path a human might type
+  // and it answers with HTML rather than JSON.
+  //
+  // Rate limited by the same global rule as the API: the page runs two queries,
+  // and an unfurled link is fetched by every messaging app it is pasted into.
+  // `/health` stays exempt, for the reason it does everywhere else.
+  app.use('/c', rateLimit(limiter, rateLimits.global));
+  app.use('/c', buildShareRouter(database, store));
 
   // ── Platform administration (§16–§21, §25, §27) ───────────────────────
   //

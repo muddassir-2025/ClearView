@@ -3,9 +3,30 @@
     <!-- Quran Reminder Widget (always-dark card; identical in values-night) -->
     <color name="widget_bg">#D91A1A1A</color>
     <color name="widget_stroke">#2E2E2E</color>
-    <color name="widget_title">#8FBC8F</color>
     <color name="widget_verse_text">#FFFFFF</color>
     <color name="widget_ref">#9E9E9E</color>
     <color name="widget_button_bg">#1FFFFFFF</color>
     <color name="widget_icon">#B3FFFFFF</color>
+
+    <!-- ── The widgets' dashboard palette ──────────────────────────────────
+
+         These are the Progress card's own values (`ProgressCardLayout.kt`),
+         repeated here because a home-screen widget is inflated by the launcher
+         and cannot read a Compose palette.         They are what make the Quran, To-Do
+         and Progress surfaces look like one product rather than three.
+
+         Only the two widgets that remain use them. The phone-limit widget had
+         its own greens under `widget_title`; both the widget and that colour are
+         gone, so nothing is left sharing a name with this palette. -->
+
+    <!-- The accent: the Progress card's neutral teal. "Done". -->
+    <color name="widget_accent">#2DD4BF</color>
+    <!-- A ring or bar's empty remainder, and a pending checkbox's outline.
+         The Progress card's level-0 heat square — present but unlit. -->
+    <color name="widget_track">#1A2128</color>
+    <!-- Secondary text on a widget card. The card's own dim gray. -->
+    <color name="widget_dim">#9AA3AF</color>
+    <!-- `widget_ink` (ink drawn on the accent) was here for the tick inside a
+         finished checkbox on the To-Do checklist. The card is a 1x1 ring now and
+         has no checkbox, so the colour went with it. -->
 </resources>

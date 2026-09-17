@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- To-Do widget — a SQUARE card, centred in whatever cell it is given.
+
+     WHY THE CARD IS A FIXED SIZE RATHER THAN match_parent
+
+     A launcher lays widgets out on a grid of cells, and those cells are almost
+     never square: on this device a column is about 82dp wide while a row is
+     121dp tall. A card that filled its cell was therefore a tall rectangle —
+     which is exactly what it looked like, and why the ring inside it read as
+     floating in a box rather than as a dial.
+
+     RemoteViews has no aspect-ratio support, so `match_parent` cannot be made
+     square. The provider therefore sets the side explicitly, from the cell it is
+     actually placed in (`todoSquareSideDp`, Android 12+), and the 72dp below is
+     the fallback those older versions get — chosen to fill a single cell's WIDTH
+     on the common five-column grids, since the width is the narrower dimension.
+     Either way the leftover vertical space in the cell is left
+     transparent, so what the reader sees is a square chip on the home screen
+     rather than a stretched card.
+
+     Inside it, the ring is drawn by the provider (an arc is `Canvas.drawArc`, and
+     RemoteViews has no canvas) and the fraction is real TEXT on top of it, which
+     keeps the number crisp and lets it follow the user's font scale.
+
+     A FrameLayout rather than a ConstraintLayout because RemoteViews supports a
+     fixed set of layouts, and ConstraintLayout is not among them. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_todo_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <FrameLayout
+        android:id="@+id/widget_todo_card"
+        android:layout_width="72dp"
+        android:layout_height="72dp"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_todo_bg"
+        android:padding="4dp">
+
+        <ImageView
+            android:id="@+id/widget_todo_ring"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter" />
+
+        <TextView
+            android:id="@+id/widget_todo_fraction"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:includeFontPadding="false"
+            android:maxLines="1"
+            android:textColor="@color/widget_verse_text"
+            android:textSize="12sp" />
+    </FrameLayout>
+</FrameLayout>

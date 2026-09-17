@@ -2,6 +2,7 @@ package com.muddassir.clearview.goodpost.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -28,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -47,6 +50,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -629,17 +633,35 @@ internal fun WaSearchField(
         )
         Spacer(Modifier.width(12.dp))
 
-        TextField(
+        // `BasicTextField`, not `TextField` (§2). Material's `TextField` enforces
+        // a 56dp minimum height of its own, and this pill is 44dp — so the value
+        // and the placeholder were laid out taller than the box that clipped
+        // them, which is why the search hint came out cut off. A basic field has
+        // no minimum of its own and the pill's height is the only one in play.
+        BasicTextField(
             value = value,
             onValueChange = onValueChange,
             enabled = enabled,
             singleLine = true,
-            placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
-            textStyle = TextStyle(fontSize = 16.sp),
-            colors = WaFieldColors(),
+            textStyle = TextStyle(color = Wa.Text, fontSize = 16.sp),
+            cursorBrush = SolidColor(Wa.Accent),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(onSearch = { onSearch() }),
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
+            decorationBox = { inner ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (value.isEmpty()) {
+                        Text(
+                            text = placeholder,
+                            color = Wa.TextDim,
+                            fontSize = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    inner()
+                }
+            }
         )
 
         Box(
@@ -728,6 +750,64 @@ internal fun WaTextAction(
 }
 
 /**
+ * Follow / Following, on a channel row (§4).
+ *
+ * Two states of one control rather than a button that only appears when not
+ * followed: a reader scanning a list needs to see what they are already in, and
+ * a control that vanishes leaves them checking their own home screen to find
+ * out. Unfollow is therefore the same tap on the same target — the state is
+ * legible before it is changed, which is what keeps an accidental unfollow from
+ * being a thing that happens while scrolling.
+ *
+ * Outlined when not following and flat when following, so the heavier treatment
+ * is on the action being offered rather than on the state already held. While a
+ * request is in flight the label is withheld rather than flickering between the
+ * two, which is the one thing a toggle must not do.
+ */
+@Composable
+internal fun WaFollowAction(
+    following: Boolean,
+    busy: Boolean,
+    onClick: () -> Unit
+) {
+    val label = when {
+        busy -> null
+        following -> stringResource(R.string.goodpost_following)
+        else -> stringResource(R.string.goodpost_follow)
+    }
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(if (following) Wa.Pressed else Color.Transparent)
+            .border(
+                width = 1.dp,
+                color = if (following) Wa.Divider else Wa.Accent,
+                shape = RoundedCornerShape(18.dp)
+            )
+            .clickable(enabled = !busy, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        if (label == null) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(14.dp),
+                strokeWidth = 1.5.dp,
+                color = Wa.Accent
+            )
+        } else {
+            Text(
+                text = label,
+                color = if (following) Wa.TextDim else Wa.Accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
  * A labelled field, for the administrator forms.
  *
  * `TextField` rather than `OutlinedTextField`: on a dark surface an outline fights
@@ -745,12 +825,18 @@ internal fun WaField(
     minHeight: Dp = 0.dp,
     keyboardType: KeyboardType = KeyboardType.Text,
     /**
-     * Draw the value as dots.
+     * Treat the value as a password (§20).
      *
      * Set it for every password field. `KeyboardType.Password` only asks the IME
      * to disable suggestions and learning — it does not hide anything, so without
      * this a typed password is rendered in full, and is readable to anything that
      * captures the screen or reads the accessibility tree.
+     *
+     * The masking is Android's own [PasswordVisualTransformation], the same one
+     * the platform's password fields use, and revealing it takes a deliberate tap
+     * on the eye. That cursor is the whole of §20: a password is hidden by
+     * default, and showing it is a decision its owner makes on purpose, rather
+     * than a state the field drifts into.
      */
     masked: Boolean = false,
     imeAction: ImeAction = ImeAction.Next,
@@ -767,6 +853,12 @@ internal fun WaField(
                 .border(1.dp, Wa.Divider, RoundedCornerShape(10.dp))
                 .padding(horizontal = 12.dp)
         ) {
+            // Resets whenever the field leaves composition — i.e. whenever the
+            // screen is reopened. A revealed password must not survive the form
+            // it was typed into, or walking away from an unlocked phone would
+            // hand the next person the text.
+            var revealed by remember { mutableStateOf(false) }
+
             TextField(
                 value = value,
                 onValueChange = onValueChange,
@@ -775,10 +867,28 @@ internal fun WaField(
                 placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
                 textStyle = TextStyle(fontSize = 16.sp),
                 colors = WaFieldColors(),
-                visualTransformation = if (masked) {
+                visualTransformation = if (masked && !revealed) {
                     PasswordVisualTransformation()
                 } else {
                     VisualTransformation.None
+                },
+                trailingIcon = if (!masked) {
+                    null
+                } else {
+                    {
+                        Icon(
+                            imageVector = if (revealed) Icons.Filled.VisibilityOff
+                            else Icons.Filled.Visibility,
+                            contentDescription = stringResource(
+                                if (revealed) R.string.goodpost_hide_password
+                                else R.string.goodpost_show_password
+                            ),
+                            tint = Wa.TextDim,
+                            modifier = Modifier
+                                .size(20.dp)
+                                .clickable(enabled = enabled) { revealed = !revealed }
+                        )
+                    }
                 },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = keyboardType,

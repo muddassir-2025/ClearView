@@ -33,7 +33,13 @@ internal class GoodPostRepository(
      * a screen.
      */
     private val context: Context,
-    private val api: GoodPostApi = GoodPostApi()
+    private val api: GoodPostApi = GoodPostApi(),
+    /**
+     * Who this device's reader is (§3). Overridable so the follow path can be
+     * tested without a Firebase project, and so a build with none injects
+     * [NoIdentity] and degrades instead of crashing.
+     */
+    private val identity: GoodPostIdentity = FirebaseGoodPostIdentity()
 ) {
 
     private val cache = GoodPostCache(context)
@@ -72,6 +78,67 @@ internal class GoodPostRepository(
 
     /** One channel, by id or slug (§8, §11). */
     suspend fun channel(idOrSlug: String): ApiResult<GoodPostChannel> = api.channel(idOrSlug)
+
+    // ── A reader's own state (§3–§6) ────────────────────────────────────
+    //
+    // Every one of these resolves the identity first, and answers
+    // `auth_unavailable` when there is none. That is the same code the backend
+    // returns for a deployment that cannot verify anybody, so the screen words
+    // "this build has no identity" and "the server cannot check one" the same
+    // way — because to the reader they are the same situation: follows are not
+    // available right now, and everything public still is.
+
+    /**
+     * The channels this reader follows (§4, §5).
+     *
+     * Registered in the channel cache exactly as the public list is: a follower
+     * who opens Good Post offline should see the channels they care about, not
+     * an empty tab.
+     */
+    suspend fun following(
+        cursor: String? = null,
+        nowMs: Long = System.currentTimeMillis()
+    ): ApiResult<GoodPostPage<GoodPostChannel>> {
+        val token = identity.token() ?: return unverified()
+        return api.following(token, cursor).also { result ->
+            if (result is ApiResult.Ok && cursor == null && result.value.items.isNotEmpty()) {
+                cache.saveChannels(result.value.items, nowMs)
+            }
+        }
+    }
+
+    /** Follow a channel (§4). */
+    suspend fun follow(idOrSlug: String): ApiResult<GoodPostFollow> {
+        val token = identity.token() ?: return unverified()
+        return api.follow(token, idOrSlug)
+    }
+
+    /** Stop following a channel (§4). */
+    suspend fun unfollow(idOrSlug: String): ApiResult<GoodPostFollow> {
+        val token = identity.token() ?: return unverified()
+        return api.unfollow(token, idOrSlug)
+    }
+
+    /** Mute or unmute a followed channel (§6). */
+    suspend fun setChannelMuted(idOrSlug: String, muted: Boolean): ApiResult<GoodPostFollow> {
+        val token = identity.token() ?: return unverified()
+        return api.setChannelMuted(token, idOrSlug, muted)
+    }
+
+    /** Clear a channel's unread badge (§5). */
+    suspend fun markChannelRead(idOrSlug: String): ApiResult<GoodPostFollow> {
+        val token = identity.token() ?: return unverified()
+        return api.markChannelRead(token, idOrSlug)
+    }
+
+    /**
+     * A reader-scoped call with nobody to make it as (§3).
+     *
+     * 503 and `auth_unavailable`, matching the backend's own answer for the same
+     * condition, rather than 401: the reader is not signed out and has nothing
+     * to sign in with — the deployment simply cannot verify anybody.
+     */
+    private fun <T> unverified(): ApiResult<T> = ApiResult.Failed(503, "auth_unavailable")
 
     /** A channel's posts, newest first (§9). */
     suspend fun channelPosts(
@@ -159,8 +226,9 @@ internal class GoodPostRepository(
      * refused call as a fact about the account — which is exactly how an expired
      * token came to be shown as "No channels. Create one to start publishing."
      *
-     * A renewal that is refused clears the session and returns the original
-     * failure, so the caller asks for a password instead of pretending.
+     * A renewal the SERVER refused clears the session, so the caller asks for a
+     * password instead of pretending. A renewal that never reached a server does
+     * not: see the note on the failure branches below.
      */
     private suspend fun <T> authorized(call: suspend (String) -> ApiResult<T>): ApiResult<T> {
         val session = tokens.load() ?: return ApiResult.Failed(401, "unauthorized")
@@ -185,10 +253,36 @@ internal class GoodPostRepository(
                     tokens.save(renewed.value)
                     call(renewed.value.token)
                 }
-                else -> {
-                    tokens.clear()
-                    first
+
+                // The server answered and refused THE CREDENTIAL: revoked,
+                // expired, or the account is disabled. The session is genuinely
+                // over, so it is forgotten and the caller asks for a password.
+                //
+                // Only 401 and 403 qualify. A 5xx is the server having a problem
+                // with itself, and discarding the only copy of a session over it
+                // would be the same mistake as a dropped connection — so it is
+                // passed through and the session is kept.
+                is ApiResult.Failed -> {
+                    if (renewalEndsSession(renewed.status)) {
+                        tokens.clear()
+                        first
+                    } else {
+                        ApiResult.Failed(renewed.status, renewed.code)
+                    }
                 }
+
+                // Nothing answered. This is NOT the server ending the session,
+                // and treating it as one was a real bug: a dropped connection, a
+                // request that timed out, or a host that was cold-starting all
+                // arrived here, cleared the stored session — the only copy — and
+                // then reported the 401 as "Your session ended. Sign in again."
+                // An administrator filling in a channel form over a flaky
+                // connection was signed out for the crime of being on a train.
+                //
+                // The session is kept and the failure is reported as what it is.
+                // The next call renews again, so a connection that comes back
+                // recovers by itself with nobody retyping a password.
+                ApiResult.Unreachable -> ApiResult.Unreachable
             }
         }
     }
@@ -305,3 +399,26 @@ internal class GoodPostRepository(
         return authorized { token -> api.adminConfirmUpload(token, upload.mediaId) }
     }
 }
+
+/**
+ * Whether a renewal the server REFUSED means the session is over (§19).
+ *
+ * The whole rule, in one place, because getting it wrong is not a cosmetic bug.
+ * A renewal can fail in several ways and they call for opposite responses:
+ *
+ *  * **401 / 403** — the server looked at the refresh token and rejected it.
+ *    Revoked, expired, or the account was disabled. The session is genuinely
+ *    over and the only honest next step is to forget it and ask for a password.
+ *
+ *  * **A 5xx** — the server broke while answering. That says nothing about the
+ *    credential, and discarding the session over it would be guessing.
+ *
+ *  * **Nothing at all** (offline, DNS, TLS, timeout, a host cold-starting) —
+ *    handled by the caller, which keeps the session. A dropped connection is not
+ *    the server ending a session.
+ *
+ * Only the first case may end a session. This is `internal` rather than private
+ * so it is unit-tested directly instead of only through a running backend — the
+ * mistake it exists to prevent was invisible from the app.
+ */
+internal fun renewalEndsSession(status: Int): Boolean = status == 401 || status == 403

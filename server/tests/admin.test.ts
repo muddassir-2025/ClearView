@@ -3,6 +3,7 @@ import request from 'supertest';
 import type { Express } from 'express';
 import type { PGlite } from '@electric-sql/pglite';
 import { buildApp } from '../src/app.js';
+import { ensureSuperAdmin } from '../src/admin/bootstrap.js';
 import { applyAllMigrations, asQueryable, freshDatabase, insertAdmin, resetData } from './helpers/database.js';
 import { FakeObjectStore } from './helpers/storage.js';
 import {
@@ -905,6 +906,120 @@ describe('removing several posts at once (§17)', () => {
       .set(authed(superSession.accessToken))
       .send({ postIds: ['not-a-uuid'] });
     expect(wrong.status).toBe(400);
+  });
+});
+
+/**
+ * The super administrator's password and the environment (§17, §18).
+ *
+ * The bug this suite exists for: `SUPER_ADMIN_PASSWORD` was changed on the
+ * deployment and the app kept answering "Invalid credentials". The bootstrap
+ * only ever CREATED the account — every later boot returned `already_provisioned`
+ * and left the old hash in place — and a stale `SUPER_ADMIN_PASSWORD_HASH`
+ * outranked the plaintext that had been edited. Neither was visible from the
+ * app, which is what made it a bug worth a test rather than a support answer.
+ *
+ * These cases drive the real bootstrap and then sign in through the real route,
+ * because "the password now works" is a claim about HTTP.
+ */
+describe('the super administrator’s password follows the environment (§18)', () => {
+  const EMAIL = 'super-admin@example.test';
+  const ORIGINAL = 'original-password-1234';
+  const CHANGED = 'changed-password-5678';
+
+  beforeEach(async () => {
+    // The bootstrap refuses to mint a SECOND administrator, so this block has to
+    // start from an empty `admin_users` rather than from whatever the test
+    // before it left behind. Ordering between tests must not decide the answer.
+    //
+    // `admin_audit_logs` is deliberately left alone: a trigger refuses deletes
+    // from it, which is the property §29 asks for, so the audit is asserted on
+    // by counting what a step ADDED rather than by clearing it.
+    await pglite.exec('DELETE FROM admin_users');
+  });
+
+  /** How many reconcile entries the log holds right now. */
+  async function reconciledCount(): Promise<number> {
+    const rows = await pglite.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM admin_audit_logs WHERE action = 'admin.password.reconciled'`
+    );
+    return rows.rows[0]?.n ?? 0;
+  }
+
+  it('replaces a stale hash with the configured password, so a changed password works', async () => {
+    const database = asQueryable(pglite);
+
+    expect((await ensureSuperAdmin(database, ORIGINAL)).created).toBe(true);
+
+    // A redeploy carrying the SAME password must not touch a working account.
+    expect((await ensureSuperAdmin(database, ORIGINAL)).reason).toBe('already_provisioned');
+
+    const before = await reconciledCount();
+
+    // The operator edits SUPER_ADMIN_PASSWORD and the service restarts.
+    expect((await ensureSuperAdmin(database, CHANGED)).reason).toBe('password_reconciled');
+
+    // The change is recorded, because nothing else would say it happened.
+    expect(await reconciledCount()).toBe(before + 1);
+
+    const renewed = await request(app)
+      .post('/admin/api/auth/login')
+      .send({ email: EMAIL, password: CHANGED });
+    expect(renewed.status, JSON.stringify(renewed.body)).toBe(200);
+
+    // And the value it replaced is gone, not merely shadowed.
+    const stale = await request(app)
+      .post('/admin/api/auth/login')
+      .send({ email: EMAIL, password: ORIGINAL });
+    expect(stale.status).toBe(401);
+  });
+
+  it('never reconciles a password it cannot compare, so a CLI rotation survives a boot', async () => {
+    const database = asQueryable(pglite);
+    expect((await ensureSuperAdmin(database, ORIGINAL)).created).toBe(true);
+    const before = await reconciledCount();
+
+    // `''` stands in for "no plaintext configured". It has to be explicit: this
+    // suite does not pin `SUPER_ADMIN_PASSWORD`, so whatever the machine's
+    // server/.env holds would otherwise decide the answer — and a test whose
+    // result depends on one developer's .env tests nothing.
+    //
+    // With no plaintext there is nothing to compare against the account, so the
+    // stored hash must be left exactly as it is.
+    expect((await ensureSuperAdmin(database, '')).reason).toBe('already_provisioned');
+    expect(await reconciledCount()).toBe(before);
+
+    const stillWorks = await request(app)
+      .post('/admin/api/auth/login')
+      .send({ email: EMAIL, password: ORIGINAL });
+    expect(stillWorks.status).toBe(200);
+  });
+
+  it('applies a configured password that is below the form floor, and says so rather than hiding it', async () => {
+    const database = asQueryable(pglite);
+    // Nine characters: under ADMIN_MIN_PASSWORD_LENGTH. This is not hypothetical
+    // — it is the length of the SUPER_ADMIN_PASSWORD that surfaced this whole
+    // bug, and the first version of this fix refused it, which would have left
+    // the account on the stale hash and reproduced the original symptom exactly.
+    const short = 'ninechars';
+
+    expect((await ensureSuperAdmin(database, ORIGINAL)).created).toBe(true);
+
+    const applied = await ensureSuperAdmin(database, short);
+    expect(applied.reason).toBe('password_reconciled');
+
+    // Advised about, never refused, and never echoed.
+    expect(applied.warning).not.toBeNull();
+    expect(applied.warning).toContain('SUPER_ADMIN_PASSWORD');
+    expect(applied.warning).not.toContain(short);
+
+    // And it actually signs in, which is the whole point: the floor protects a
+    // password chosen in a form, and this one was chosen by whoever can set the
+    // deployment's environment.
+    const res = await request(app)
+      .post('/admin/api/auth/login')
+      .send({ email: EMAIL, password: short });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 });
 

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- To-Do — a fixed 1x1 widget: the smallest square the launcher grid offers.
+
+     One cell is a deliberate constraint, not a default. The card is a progress
+     ring with the fraction inside it and nothing else, because in a single cell
+     there is room for exactly one thing to be legible — and the proportion is
+     the thing worth a glance. Tapping it opens the To-Do screen, where the
+     actual list is.
+
+     The card draws itself as a SQUARE sized to the cell it lands in, rather
+     than filling it: cells are taller than they are wide, so `match_parent`
+     produced a stretched rectangle. See the layout and `todoSquareSideDp`.
+
+     (A checklist cannot be shown here. Two 10sp rows do not fit alongside a ring
+     in one cell, which is why the rows live in the app rather than being squeezed
+     into a size that would render them unreadable.)
+
+     Like the other widgets it is NOT resizable — `resizeMode` is absent, which
+     means "none".
+
+     `targetCellWidth`/`targetCellHeight` are what Android 12+ reads; the
+     `minWidth`/`minHeight` pair is the fallback older launchers use, at the
+     classic 70dp x n - 30dp for one cell. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:minWidth="40dp"
+    android:minHeight="40dp"
+    android:targetCellWidth="1"
+    android:targetCellHeight="1"
+    android:updatePeriodMillis="0"
+    android:initialLayout="@layout/widget_todo"
+    android:widgetCategory="home_screen"
+    android:description="@string/widget_todo_description"
+    android:previewLayout="@layout/widget_todo"
+    tools:targetApi="31" />

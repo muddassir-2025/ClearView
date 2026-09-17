@@ -54,13 +54,37 @@ const schema = z.object({
   // ── The first administrator (§17) ──
   //
   // §17 requires exactly one initial SUPER_ADMIN, configured on the SERVER and
-  // never in the Android app. `SUPER_ADMIN_PASSWORD_HASH` is a bcrypt hash and
-  // is the supported value; `SUPER_ADMIN_PASSWORD` is accepted so a deployment
-  // can be provisioned with a plaintext secret it already holds, and is hashed
-  // at boot rather than stored.
+  // never in the Android app. Both values are accepted:
+  //
+  //  * `SUPER_ADMIN_PASSWORD_HASH` — a bcrypt hash. Nothing to hash at boot.
+  //  * `SUPER_ADMIN_PASSWORD` — a plaintext value, hashed at boot.
+  //
+  // **A plaintext value is authoritative.** When it is set and no longer opens
+  // the account, the stored hash is replaced with it at boot (see
+  // `admin/bootstrap.ts`). That is deliberate: changing this variable and having
+  // the old password keep working is indistinguishable, from the app, from a
+  // broken sign-in. Set ONLY the hash if you would rather rotate the password
+  // through `create-admin --reset` and keep the environment out of it.
   //
   // There is no route that creates the first administrator. An unauthenticated
   // "create the first admin" endpoint is not a bootstrap, it is a backdoor.
+  // ── Reader identity (§3, §15, §16) ──
+  //
+  // The Firebase project a reader's ID token must have been minted for. It is
+  // PUBLIC — it is the token's `aud` claim, and it is shipped inside the Android
+  // app's own `google-services.json` — so there is no Firebase secret in this
+  // deployment and none is needed: ID tokens are verified against Google's
+  // published signing certificates (`identity/verifier.ts`), which requires the
+  // project id and nothing else.
+  //
+  // Optional, and its absence is a supported state rather than a broken one. A
+  // deployment without it serves the whole public read API and refuses the
+  // reader-scoped routes with `auth_unavailable`, which is exactly the product
+  // before §3 — and that is a better failure than the alternative this variable
+  // could have been given, which is a shared secret that, if it leaked, would
+  // let anyone mint a uid.
+  FIREBASE_PROJECT_ID: z.string().optional(),
+
   SUPER_ADMIN_EMAIL: z.string().optional(),
   SUPER_ADMIN_PASSWORD_HASH: z.string().optional(),
   SUPER_ADMIN_PASSWORD: z.string().optional(),
@@ -98,9 +122,26 @@ const schema = z.object({
   // mattered — who removed what, and when — is in the audit log, which this
   // never touches.
   //
-  // Nothing expires posts on a schedule: a channel's history stays until someone
-  // deletes it.
   PURGE_GRACE_DAYS: z.coerce.number().int().nonnegative().default(0),
+
+  /**
+   * How long a post's copy stays on the server (§14).
+   *
+   * Thirty days is the product's answer to "how far back can somebody who is not
+   * following a channel read before deciding?" — long enough to judge a channel,
+   * short enough to cap what the deployment stores for a channel that has been
+   * running for years.
+   *
+   * **Zero means keep everything**, and that is the opt-out. It is read as "no
+   * window" rather than as "expire immediately" on purpose: the difference
+   * between declining a retention policy and deleting an entire deployment's
+   * history should not be one digit typed carelessly.
+   *
+   * The honest cost of a non-zero value: an update older than the window is gone
+   * for everyone, so a channel is a feed and not an archive. Media a reader has
+   * already downloaded is unaffected — that lives on their device.
+   */
+  POST_RETENTION_DAYS: z.coerce.number().int().nonnegative().default(30),
   EDIT_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
   MAX_TEXT_LENGTH: z.coerce.number().int().positive().default(4000),
   MAX_CHANNEL_NAME_LENGTH: z.coerce.number().int().positive().default(80),
@@ -187,6 +228,16 @@ if (isProduction) {
     );
   }
   assertReal('SUPER_ADMIN_PASSWORD', env.SUPER_ADMIN_PASSWORD ?? '');
+
+  // NOT length-checked, deliberately.
+  //
+  // `ADMIN_MIN_PASSWORD_LENGTH` is the floor for a password a person invents in
+  // the app's "create a channel" form, where nothing else constrains it. A
+  // configured super-administrator password is a different thing: the operator
+  // already holds the secret, it never crosses the app, and refusing to boot over
+  // its length would take the entire service — readers included — down over a
+  // value that works. The bootstrap applies it as given and says so when it is
+  // short (see `admin/bootstrap.ts`).
 }
 
 /** Parse and normalise a URL from the environment. Throws on garbage. */

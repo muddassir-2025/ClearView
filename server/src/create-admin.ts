@@ -94,6 +94,7 @@ async function main(): Promise<void> {
     // the account would be created with no usable password.
     const password = generatePassword();
     const result = await ensureSuperAdmin(db, password);
+    if (result.warning) console.warn(`[create-admin] ${result.warning}`);
 
     if (result.created) {
       console.log('');
@@ -111,11 +112,20 @@ async function main(): Promise<void> {
   }
 
   const result = await ensureSuperAdmin(db);
+  if (result.warning) console.warn(`[create-admin] ${result.warning}`);
 
   if (!result.created) {
     // The reason is the useful part: "no_super_admin_configured" is a
-    // configuration mistake, "already_provisioned" is not a problem at all.
+    // configuration mistake, "already_provisioned" is not a problem at all, and
+    // "password_reconciled" is the boot having applied a changed
+    // SUPER_ADMIN_PASSWORD instead of leaving the account on a stale hash.
     console.log(`[create-admin] nothing to do: ${result.reason}`);
+    if (result.reason === 'password_reconciled') {
+      console.log(
+        `[create-admin] the stored password for ${env.SUPER_ADMIN_EMAIL ?? '(unset)'} was replaced ` +
+          'with SUPER_ADMIN_PASSWORD, which no longer matched the stored hash.'
+      );
+    }
     if (result.reason === 'no_super_admin_configured') {
       console.error(
         '[create-admin] Set SUPER_ADMIN_EMAIL and SUPER_ADMIN_PASSWORD_HASH (or SUPER_ADMIN_PASSWORD) in the environment.'

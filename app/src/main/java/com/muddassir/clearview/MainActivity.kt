@@ -511,7 +511,28 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             }
         }
     ) { padding ->
-        Box(modifier = Modifier.fillMaxSize().padding(padding)) {
+        // §21: Good Post owns its bottom inset while the keyboard is up.
+        //
+        // The Scaffold's inner padding reserves the navigation bar's height, and
+        // this tab's composer then applies `imePadding()` of its own — so with
+        // the keyboard open the composer was pushed up by the navigation bar's
+        // height AND the IME's, leaving a strip of empty surface between the
+        // input field and the keyboard. `consumeWindowInsets` records that this
+        // space is already accounted for, so the composer lands at
+        // `max(navigation bar, IME)` — resting on the keyboard — instead of their
+        // sum.
+        //
+        // Deliberately not applied to the other tabs. They are not
+        // scroll-to-the-composer surfaces, and at least one of them (the Block
+        // tab's lock screen) stacks its own `imePadding()` on the Scaffold's
+        // padding on purpose.
+        val contentModifier = if (selectedTab == MainTab.GOODPOST) {
+            Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)
+        } else {
+            Modifier.fillMaxSize().padding(padding)
+        }
+
+        Box(modifier = contentModifier) {
             when (selectedTab) {
                 MainTab.BLOCK -> {
                     // The Block tab is the ONLY password-protected surface. It

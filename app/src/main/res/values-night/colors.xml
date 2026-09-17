@@ -3,7 +3,6 @@
     <!-- Quran Reminder Widget (dark — same as day so the card is always dark) -->
     <color name="widget_bg">#D91A1A1A</color>
     <color name="widget_stroke">#2E2E2E</color>
-    <color name="widget_title">#8FBC8F</color>
     <color name="widget_verse_text">#FFFFFF</color>
     <color name="widget_ref">#9E9E9E</color>
     <color name="widget_button_bg">#1FFFFFFF</color>

@@ -7,47 +7,44 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.widget.RemoteViews
-import android.widget.Toast
 import com.muddassir.clearview.R
 import com.muddassir.clearview.quran.data.QuranRepository
 import com.muddassir.clearview.quran.ui.QuranVerseActivity
-import com.muddassir.clearview.quran.util.copyVerseToClipboard
-import com.muddassir.clearview.quran.util.formatVerseForSharing
 import com.muddassir.clearview.quran.worker.QuranWorkScheduler
 
 /**
- * Home-screen widget that shows the current English Quran verse.
- *     * Rendering is instant: it only reads the persisted current verse (no file
-     * parsing, no network). The verse itself is refreshed on the user-chosen
-     * schedule (default 6 hours) by [QuranWorkScheduler]; this provider just
-     * reflects the stored value.
-     *
-     * The widget is a FIXED 2x3 cell (see `xml/quran_reminder_widget_info.xml`),
-     * which is why the layout stacks its actions at the bottom rather than
-     * putting them beside the title — a 110dp-wide column has no room for both.
-     *
-     * Tapping the widget body opens [QuranVerseActivity] (full verse details).
-     * The footer carries two actions:
- *  - Copy: copies the current verse (reference + text) to the clipboard.
- *  - Refresh: enqueues an immediate offline verse pick (the same MODE_REFRESH
- *    path the scheduled refresh uses).
- * Both are delivered back to this provider via explicit broadcasts.
+ * Home-screen widget showing the current English Quran verse.
+ *
+ * **The verse is the whole card.** There is no title, no citation line and no
+ * Copy/Refresh chips: each was a band across a short widget, and the bands were
+ * what the verse paid for. What is left is the text, centred, on a card the
+ * reader can resize.
+ *
+ * ## What the widget no longer does, and why that is not a loss
+ *
+ * Copy and Refresh were two chips on a 110dp card. Both still exist where they
+ * belong: the verse screen has Copy and Share ([QuranShare]),
+ * and tapping this card opens that screen — one tap further for an action that
+ * was costing the verse a line of height on every glance. The refresh schedule
+ * is unaffected: [QuranWorkScheduler] still runs it, and the widget redraws
+ * through [refreshAllWidgets] when a new verse is stored.
+ *
+ * ## Truncation is the layout's job now
+ *
+ * The verse is set verbatim. The TextView shrinks it to fit (`autoSizeTextType`)
+ * and ellipsizes it if even the smallest size has no room, which is what makes
+ * the card safe to resize: a reader who makes it small gets a shortened verse
+ * rather than a clipped one, and a reader who makes it bigger gets more of it.
+ * The previous version cut the string in Kotlin to a fixed character budget,
+ * which could only ever be right for one card size — and this widget is no longer
+ * one card size.
+ *
+ * Rendering is instant and offline: it reads the persisted current verse, with no
+ * parsing, no network and no coroutine, which is what makes it safe to redraw on
+ * every launcher tick. The verse itself is refreshed on the user's schedule
+ * (default 6 hours) by the worker; this provider only reflects what is stored.
  */
 class QuranReminderWidgetProvider : AppWidgetProvider() {
-
-    override fun onReceive(context: Context, intent: Intent) {
-        when (intent.action) {
-            ACTION_COPY_VERSE -> handleCopy(context)
-            ACTION_REFRESH_VERSE -> {
-                val widgetId = intent.getIntExtra(
-                    AppWidgetManager.EXTRA_APPWIDGET_ID,
-                    AppWidgetManager.INVALID_APPWIDGET_ID
-                )
-                handleRefresh(context, widgetId)
-            }
-            else -> super.onReceive(context, intent)
-        }
-    }
 
     override fun onUpdate(
         context: Context,
@@ -67,9 +64,6 @@ class QuranReminderWidgetProvider : AppWidgetProvider() {
     }
 
     companion object {
-        /** Explicit broadcast actions handled by this provider (button taps). */
-        private const val ACTION_COPY_VERSE = "com.muddassir.clearview.quran.widget.COPY_VERSE"
-        private const val ACTION_REFRESH_VERSE = "com.muddassir.clearview.quran.widget.REFRESH_VERSE"
 
         /**
          * Re-renders every active widget instance. Called after a verse refresh
@@ -93,127 +87,27 @@ class QuranReminderWidgetProvider : AppWidgetProvider() {
             val views = RemoteViews(context.packageName, R.layout.widget_quran_reminder)
             val verse = QuranRepository(context).getCurrentVerse()
 
-            if (verse != null) {
-                views.setTextViewText(R.id.widget_verse_text, verse.text)
-                // Reference + surah name, plus the compact ayah/total ("255/286")
-                // when the surah counts are known — mirrors the in-app reader.
-                val progress = if (verse.totalAyahs > 0) {
-                    " · " + context.getString(
-                        R.string.quran_ayah_progress_short,
-                        verse.ayahNumber,
-                        verse.totalAyahs
-                    )
-                } else {
-                    ""
-                }
-                views.setTextViewText(
-                    R.id.widget_verse_ref,
-                    context.getString(R.string.quran_verse_reference, verse.surahNumber, verse.ayahNumber) +
-                        " · " + verse.surahName + progress
-                )
-            } else {
-                // First run before the download finishes: gentle placeholder.
-                views.setTextViewText(R.id.widget_verse_text, context.getString(R.string.widget_quran_loading))
-                views.setTextViewText(R.id.widget_verse_ref, context.getString(R.string.widget_quran_tap_to_load))
-            }
+            // A verse that has not been downloaded yet shows the placeholder
+            // rather than an empty card, because an empty card reads as a failure
+            // and this one is only ever a few seconds of first-run.
+            views.setTextViewText(
+                R.id.widget_verse_text,
+                verse?.text ?: context.getString(R.string.widget_quran_loading)
+            )
 
-            // Icon buttons (Copy / Refresh). The src is set here rather than in
-            // the layout so the refresh flash (handleRefresh) can swap images
-            // explicitly — RemoteViews treats the layout's android:src as the
-            // default, and re-renders would otherwise reset the icon.
-            views.setImageViewResource(R.id.widget_copy_button, R.drawable.ic_widget_copy)
-            views.setImageViewResource(R.id.widget_refresh_button, R.drawable.ic_widget_refresh)
-
-            wireActions(context, views, widgetId)
-            manager.updateAppWidget(widgetId, views)
-        }
-
-        /**
-         * Wires every click action onto [views] for [widgetId]: the body opens
-         * the verse details screen, and the Copy/Refresh chips deliver explicit
-         * broadcasts back to this provider. Shared by the normal render AND the
-         * refresh loading-flash so the buttons stay live even mid-flash.
-         */
-        private fun wireActions(
-            context: Context,
-            views: RemoteViews,
-            widgetId: Int
-        ) {
-            // Tap → verse details screen.
-            val intent = Intent(context, QuranVerseActivity::class.java)
+            // The card's single action: the verse screen, which is where Copy,
+            // Share and the citation live now.
             views.setOnClickPendingIntent(
                 R.id.widget_root,
                 PendingIntent.getActivity(
                     context,
                     0,
-                    intent,
+                    Intent(context, QuranVerseActivity::class.java),
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
                 )
             )
 
-            // Copy button → this provider's broadcast receiver. No widget id
-            // needed: copy reads the global current verse. Request codes are
-            // unique per widget (extras don't participate in PendingIntent
-            // identity).
-            views.setOnClickPendingIntent(
-                R.id.widget_copy_button,
-                PendingIntent.getBroadcast(
-                    context,
-                    widgetId * 2,
-                    Intent(context, QuranReminderWidgetProvider::class.java)
-                        .setAction(ACTION_COPY_VERSE),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-            )
-
-            // Refresh button → this provider's broadcast receiver.
-            views.setOnClickPendingIntent(
-                R.id.widget_refresh_button,
-                PendingIntent.getBroadcast(
-                    context,
-                    widgetId * 2 + 1,
-                    Intent(context, QuranReminderWidgetProvider::class.java)
-                        .setAction(ACTION_REFRESH_VERSE)
-                        .putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId),
-                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-                )
-            )
-        }
-
-        private fun handleCopy(context: Context) {
-            val verse = QuranRepository(context).getCurrentVerse()
-            if (verse == null) {
-                // No verse yet (first run before the download finished): don't
-                // copy a placeholder or claim success — just tell the user.
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.widget_quran_loading),
-                    Toast.LENGTH_SHORT
-                ).show()
-                return
-            }
-            copyVerseToClipboard(context, verse)
-            Toast.makeText(
-                context,
-                context.getString(R.string.widget_quran_copied),
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-
-        private fun handleRefresh(context: Context, widgetId: Int) {
-            if (widgetId != AppWidgetManager.INVALID_APPWIDGET_ID) {
-                // Immediate feedback: swap in the loading placeholder right away;
-                // the (fast, offline) refresh worker re-renders the new verse.
-                // wireActions keeps Copy/Refresh/body clickable during the flash.
-                val views = RemoteViews(context.packageName, R.layout.widget_quran_reminder)
-                views.setTextViewText(R.id.widget_verse_text, context.getString(R.string.widget_quran_refreshing))
-                views.setTextViewText(R.id.widget_verse_ref, "")
-                views.setImageViewResource(R.id.widget_copy_button, R.drawable.ic_widget_copy)
-                views.setImageViewResource(R.id.widget_refresh_button, R.drawable.ic_widget_refresh)
-                wireActions(context, views, widgetId)
-                AppWidgetManager.getInstance(context).updateAppWidget(widgetId, views)
-            }
-            QuranWorkScheduler.refreshNow(context)
+            manager.updateAppWidget(widgetId, views)
         }
     }
 }

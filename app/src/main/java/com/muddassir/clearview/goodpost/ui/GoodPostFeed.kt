@@ -48,6 +48,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,12 +57,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalTextToolbar
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -596,7 +597,6 @@ internal fun ChannelInputBar(
     // what is highlighted without keeping a second copy of the body in step.
     val body = state.composerBody
     var selection by remember { mutableStateOf(TextRange(body.length)) }
-    var bodyFocused by remember { mutableStateOf(false) }
 
     // Clamped on every read: the body can shrink under the caret (a format
     // toggle, a publish that clears it), and a TextRange past the end of the
@@ -608,6 +608,34 @@ internal fun ChannelInputBar(
         maxOf(selectionStart, selectionEnd)
     )
     val fieldValue = TextFieldValue(body, TextRange(selectionStart, selectionEnd))
+
+    /**
+     * Whether anything is actually highlighted (§7).
+     *
+     * A caret is a zero-width selection, so a collapsed range is the "nothing
+     * selected" case — which is what gates the formatting controls now that they
+     * are not permanent.
+     */
+    val hasSelection = selectionStart != selectionEnd
+
+    /**
+     * What Android's selection menu would have offered (§7).
+     *
+     * Compose hands these to a [TextToolbar] when it wants to SHOW that menu.
+     * Our toolbar captures them instead of displaying anything, and this bar
+     * invokes them, so Cut / Copy / Paste / Select all still work while the
+     * platform's own bubble is gone. Null until the platform first offers them —
+     * which is also the state a field with no clipboard content is in, and the
+     * reason the clipboard row hides itself rather than drawing dead buttons.
+     */
+    var clipboardActions by remember { mutableStateOf<GoodPostClipboardActions?>(null) }
+
+    // Remembered so the field is not given a new toolbar on every recomposition:
+    // Compose compares the local's identity, and a fresh instance each frame would
+    // install itself again mid-selection.
+    val selectionToolbar = remember {
+        GoodPostSelectionToolbar { offered -> clipboardActions = offered }
+    }
 
     // Opening an edit puts the caret at the end of what was published, which is
     // where someone adding a correction wants it.
@@ -717,28 +745,47 @@ internal fun ChannelInputBar(
             }
         }
 
-        // §17: inline formatting over the selection, in the WhatsApp dialect.
-        // Four buttons and nothing else — no headings, no lists, no fonts. Shown
-        // while the field has focus or while an edit is open, so it is present
-        // exactly when someone is writing and out of the way otherwise.
-        if (bodyFocused || editing || body.isNotEmpty()) {
-            GoodPostFormatToolbar(
-                isActive = { format ->
-                    // With text highlighted the button reflects the selection; with
-                    // nothing highlighted there is no "selected format" to show, so
-                    // it reflects the caret's line instead.
-                    if (selectedText.isEmpty()) {
-                        format.presentIn(body)
-                    } else {
-                        format.wraps(selectedText)
-                    }
-                },
-                onToggle = ::applyFormat,
+        // §7: the controls appear WITH a selection, and only then.
+        //
+        // They used to be on screen whenever the field had focus, which made a
+        // row of buttons a permanent part of the composer whether or not anybody
+        // was formatting anything — a control strip you look past on every
+        // message. Now the gesture is the one people already know from WhatsApp:
+        // highlight a word, the controls for it appear, collapse the selection
+        // and they are gone. The composer is otherwise just an input field.
+        //
+        // Android's own menu — Cut / Copy / Paste / Select all / Read aloud — is
+        // SUPPRESSED here rather than left alone (see [GoodPostSelectionToolbar]).
+        // It was a light bubble over the line being edited, in an app that is
+        // otherwise dark, and it appeared for every selection including the ones
+        // this bar exists for. Its operations are not lost: the callbacks it
+        // would have invoked are captured and offered by the second half of this
+        // bar, in this app's own colours and in the layout rather than on top of
+        // the text.
+        //
+        // The bar is in the layout rather than floating over the feed, so it can
+        // never cover the line being edited. The post list gives up its height
+        // for as long as a selection exists, which is the only moment it shows.
+        if (hasSelection) {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Wa.Canvas)
-                    .padding(start = 16.dp, end = 16.dp, top = 2.dp)
-            )
+                    .padding(start = 16.dp, end = 16.dp, top = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                GoodPostFormatToolbar(
+                    // A selection is the only thing a button can act on, so its
+                    // active state is a fact about the highlighted text: the
+                    // button reads as a toggle that is already on, not as an
+                    // action still waiting to happen.
+                    isActive = { format -> format.wraps(selectedText) },
+                    onToggle = ::applyFormat
+                )
+
+                GoodPostClipboardBar(clipboardActions, modifier = Modifier.weight(1f))
+            }
         }
 
         // Input pill row + Send button
@@ -756,33 +803,35 @@ internal fun ChannelInputBar(
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                BasicTextField(
-                    value = fieldValue,
-                    onValueChange = { updated ->
-                        selection = updated.selection
-                        viewModel.onComposerBodyChange(updated.text)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .onFocusChanged { bodyFocused = it.isFocused },
-                    textStyle = TextStyle(
-                        color = Wa.Text,
-                        fontSize = 16.sp
-                    ),
-                    cursorBrush = SolidColor(Wa.StampRecent),
-                    maxLines = 5,
-                    decorationBox = { innerTextField ->
-                        if (body.isEmpty()) {
-                            Text(
-                                text = if (editing) stringResource(R.string.goodpost_edit_post)
-                                else stringResource(R.string.goodpost_write_update),
-                                color = Wa.TextDim,
-                                fontSize = 16.sp
-                            )
+                // The field itself is where Compose installs the selection menu,
+                // so the replacement has to be provided around it (§7).
+                CompositionLocalProvider(LocalTextToolbar provides selectionToolbar) {
+                    BasicTextField(
+                        value = fieldValue,
+                        onValueChange = { updated ->
+                            selection = updated.selection
+                            viewModel.onComposerBodyChange(updated.text)
+                        },
+                        modifier = Modifier.weight(1f),
+                        textStyle = TextStyle(
+                            color = Wa.Text,
+                            fontSize = 16.sp
+                        ),
+                        cursorBrush = SolidColor(Wa.StampRecent),
+                        maxLines = 5,
+                        decorationBox = { innerTextField ->
+                            if (body.isEmpty()) {
+                                Text(
+                                    text = if (editing) stringResource(R.string.goodpost_edit_post)
+                                    else stringResource(R.string.goodpost_write_update),
+                                    color = Wa.TextDim,
+                                    fontSize = 16.sp
+                                )
+                            }
+                            innerTextField()
                         }
-                        innerTextField()
-                    }
-                )
+                    )
+                }
 
                 if (!editing && state.composerMediaAvailable) {
                     Spacer(Modifier.width(8.dp))

@@ -48,15 +48,6 @@ enum class GoodPostFormat(
         val inner = selected.substring(width, selected.length - width)
         return inner.isNotBlank() && !inner.contains(marker)
     }
-
-    /**
-     * True when any of this format's markers appear in [body] at all.
-     *
-     * Used for the toolbar's active state when there is no selection: the button
-     * lights up for text that already contains the marker rather than for the
-     * caret's position, which would be arbitrary.
-     */
-    fun presentIn(body: String): Boolean = body.contains(marker)
 }
 
 /**

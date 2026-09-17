@@ -73,9 +73,23 @@
             </intent-filter>
 
             <!-- Channel share links (§6): clearview://goodpost/channel/<slug>.
-                 A custom scheme rather than an https App Link because resolving
-                 the link needs a session — there is no public page to prove
-                 ownership of, so an https link could not be verified anyway.
+
+                 This is the scheme the "Open in ClearView" button on the shared
+                 web page uses, and the one the server falls back to when it has
+                 no public base URL configured. A share link is normally an
+                 https:// URL to that page, because a messaging app renders
+                 nothing for an unknown scheme — so the https link is what gets
+                 previewed and this is what carries the reader into the app.
+
+                 A custom scheme rather than a verified https App Link: an
+                 unverified https filter would put ClearView in the chooser
+                 alongside every browser for every URL on the host, and
+                 verification needs an `assetlinks.json` carrying this build's
+                 signing certificate fingerprint — a value that differs between
+                 debug and release, and changes whenever the key does. The web
+                 page already routes a reader here, so the filter is not needed
+                 for a link to work.
+
                  BROWSABLE is required for the link to open from a chat or mail
                  app; without it only an explicit Intent could reach this. -->
             <intent-filter>
@@ -131,6 +145,18 @@
                 android:resource="@xml/quran_reminder_widget_info" />
         </receiver>
 
+        <!-- To-Do home-screen widget (2x2; today's progress at a glance). -->
+        <receiver
+            android:name=".todo.widget.TodoWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/todo_widget_info" />
+        </receiver>
+
         <!-- Phone Limit countdown service: a foreground service that keeps the
              timer running (and the remaining time visible) in the background;
              expires by locking the phone via DevicePolicyManager.lockNow when
@@ -140,8 +166,8 @@
             android:exported="false"
             android:foregroundServiceType="specialUse" />
 
-        <!-- Phone Limit receiver: expiry alarm backstop, widget START button,
-             and boot recovery (re-arm the alarm + resume the countdown). -->
+        <!-- Phone Limit receiver: expiry alarm backstop and boot recovery
+             (re-arm the alarm + resume the countdown). -->
         <receiver
             android:name=".phonelimit.PhoneLimitReceiver"
             android:exported="false">
@@ -150,17 +176,11 @@
             </intent-filter>
         </receiver>
 
-        <!-- Phone Limit home-screen widget (small square; start / countdown). -->
-        <receiver
-            android:name=".phonelimit.PhoneLimitWidgetProvider"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-            </intent-filter>
-            <meta-data
-                android:name="android.appwidget.provider"
-                android:resource="@xml/phone_limit_widget_info" />
-        </receiver>
+        <!-- The Phone Limit home-screen widget used to be declared here. It is
+             gone: starting a limit is something the in-app sheet does, and a
+             second control for it on the home screen was a duplicate entry point
+             rather than a feature. PhoneLimitReceiver above is unaffected — it
+             is the expiry backstop and the boot-recovery path. -->
 
         <!-- Accessibility Service -->
         <service

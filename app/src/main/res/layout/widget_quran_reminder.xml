@@ -1,100 +1,73 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Quran Reminder, laid out for its 2x3 cell size.
+<!-- Quran Reminder — a small label, then the verse.
 
-     A 2x3 widget is about 110dp wide and 180dp tall, so the old 4x2 arrangement
-     does not transfer: a title beside two 24dp buttons leaves roughly 40dp for
-     the title, which truncates "Quran Reminder" to nothing useful. The columns
-     that were left and right become a stack instead —
+     THE LABEL IS BACK, THE CHIPS AND THE CITATION ARE NOT
 
-         title
-         verse text    (absorbs the spare height, so the card never jumps)
-         citation
-         copy / refresh
+     The type is labelled because a bare sentence on a home screen is ambiguous:
+     the reader has to spend a beat working out what they are looking at. A
+     two-word label at 10sp costs about one line's height and settles it.
 
-     Everything is anchored top-to-bottom inside a `weight=1` body, so a short
-     verse and a long verse produce the same card height. -->
+     What did NOT come back is the title row's old contents — the Copy and
+     Refresh chips, and the "Quran 7:51 · Al-Araaf  51/206" line pinned to the
+     bottom. Those were three bands on a short card and the verse paid for all of
+     them. The citation and position are still shown, one tap away on the verse
+     screen this card opens — which is also where Copy and Share live.
+
+     WHAT HAPPENS WHEN THE VERSE IS TOO LONG
+
+     `autoSizeTextType="uniform"` shrinks it until it fits, 9sp to 15sp, so a
+     verse that is slightly too long is drawn a size smaller instead of losing
+     its last lines. If it still does not fit at the smallest size,
+     `ellipsize="end"` ends the last line with an ellipsis at `maxLines`. That
+     order matters: the ellipsis is the backstop AFTER shrinking, not the first
+     resort. Tapping the card opens the full verse, which is what the ellipsis
+     promises.
+
+     The verse takes `layout_weight="1"` — everything the label does not — and is
+     centred, so a short verse sits in the middle of the card rather than at the
+     top of it.
+
+     A LinearLayout because RemoteViews supports a fixed set of layouts and this
+     needs a label stacked over text, which is the one thing LinearLayout is for. -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@drawable/widget_quran_reminder_bg"
     android:orientation="vertical"
-    android:padding="8dp">
+    android:paddingStart="12dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp">
 
-    <!-- Title: full width now, so it has the whole 94dp of content column and
-         wraps to a second line rather than ellipsising. -->
     <TextView
+        android:id="@+id/widget_title"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:ellipsize="end"
-        android:fontFamily="sans-serif"
-        android:maxLines="2"
+        android:includeFontPadding="false"
+        android:maxLines="1"
         android:text="@string/widget_quran_reminder_title"
-        android:textColor="@color/widget_title"
-        android:textSize="13sp"
+        android:textAllCaps="true"
+        android:textColor="@color/widget_dim"
+        android:textSize="10sp"
         android:textStyle="bold" />
 
-    <!-- Body verse: weight=1, so it takes whatever height is left after the
-         title, the citation and the button row. 5 lines suits ~180dp at this
-         text size; centre-aligned vertically so a two-word verse sits in the
-         middle of the card rather than clinging to the title. -->
     <TextView
         android:id="@+id/widget_verse_text"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="5dp"
+        android:autoSizeMaxTextSize="15sp"
+        android:autoSizeMinTextSize="9sp"
+        android:autoSizeStepGranularity="1sp"
+        android:autoSizeTextType="uniform"
         android:ellipsize="end"
-        android:fontFamily="sans-serif"
-        android:gravity="center_vertical"
-        android:lineSpacingMultiplier="1.25"
+        android:fontFamily="serif"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:lineSpacingExtra="2dp"
         android:maxLines="5"
         android:textColor="@color/widget_verse_text"
-        android:textSize="13sp" />
-
-    <!-- Citation: gray, italic, right-aligned, hugging the bottom of the verse
-         block. -->
-    <TextView
-        android:id="@+id/widget_verse_ref"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="4dp"
-        android:ellipsize="end"
-        android:fontFamily="sans-serif"
-        android:gravity="end"
-        android:maxLines="2"
-        android:textColor="@color/widget_ref"
-        android:textSize="10sp"
-        android:textStyle="italic" />
-
-    <!-- Actions: their own row at the bottom, right-aligned, which is the only
-         place a 110dp column has room for two 26dp buttons. -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:gravity="end"
-        android:orientation="horizontal">
-
-        <ImageView
-            android:id="@+id/widget_copy_button"
-            android:layout_width="26dp"
-            android:layout_height="26dp"
-            android:background="@drawable/widget_action_button_bg"
-            android:contentDescription="@string/widget_quran_copy"
-            android:padding="4dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_widget_copy" />
-
-        <ImageView
-            android:id="@+id/widget_refresh_button"
-            android:layout_width="26dp"
-            android:layout_height="26dp"
-            android:layout_marginStart="8dp"
-            android:background="@drawable/widget_action_button_bg"
-            android:contentDescription="@string/widget_quran_refresh"
-            android:padding="4dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_widget_refresh" />
-    </LinearLayout>
+        android:textSize="15sp" />
 </LinearLayout>

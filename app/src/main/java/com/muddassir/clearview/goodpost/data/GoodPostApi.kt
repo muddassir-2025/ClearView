@@ -94,6 +94,17 @@ class GoodPostApi(
         /** The administrator surface, on its own prefix and its own token. */
         const val ADMIN_PATH = "/admin/api"
 
+        /**
+         * A READER's own state, under the public prefix but behind a token (§3).
+         *
+         * The same versioned API as the anonymous reads, because it is the same
+         * client and the same product — what separates it is that every path
+         * under it needs a verified Firebase token, while every other `/api/v1`
+         * path needs nothing. Reads stay token-free so Good Post keeps working
+         * with no identity at all (§1); only what is *theirs* needs one.
+         */
+        const val READER_PATH = "$PUBLIC_PATH/readers"
+
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_RESPONSE_BYTES = 512_000
@@ -130,6 +141,93 @@ class GoodPostApi(
     /** The categories Explore can filter by. */
     suspend fun categories(): ApiResult<List<GoodPostCategory>> =
         parsedGet("$PUBLIC_PATH/categories", GoodPostCodec::categories)
+
+    // ── A reader's own state (§3–§6) ────────────────────────────────────
+    //
+    // The token is a parameter rather than something this class fetches: the
+    // transport stays a transport, and the identity is resolved once per call in
+    // `GoodPostRepository`. It also keeps the one thing that must never happen
+    // expressible — there is no path from these methods to a request that is
+    // sent with somebody else's credential, because the only token they can send
+    // is the one they were handed.
+
+    /**
+     * The channels this reader follows, most recently active first (§4, §5).
+     *
+     * The home list, and the only place `unreadCount` and `notificationsMuted`
+     * appear on a channel.
+     */
+    suspend fun following(
+        token: String,
+        cursor: String? = null
+    ): ApiResult<GoodPostPage<GoodPostChannel>> =
+        parsedCall(
+            "GET",
+            "$READER_PATH/me/following" + pageQuery(cursor),
+            null,
+            token,
+            GoodPostCodec::channelPage
+        )
+
+    /** Follow a channel (§4). Idempotent: following twice is one follow. */
+    suspend fun follow(token: String, idOrSlug: String): ApiResult<GoodPostFollow> =
+        parsedCall(
+            "POST",
+            "$READER_PATH/me/following/${encode(idOrSlug)}",
+            null,
+            token,
+            ::followBody
+        )
+
+    /** Stop following a channel (§4). */
+    suspend fun unfollow(token: String, idOrSlug: String): ApiResult<GoodPostFollow> =
+        parsedCall(
+            "DELETE",
+            "$READER_PATH/me/following/${encode(idOrSlug)}",
+            null,
+            token,
+            ::followBody
+        )
+
+    /** Mute or unmute a followed channel's notifications (§6). */
+    suspend fun setChannelMuted(
+        token: String,
+        idOrSlug: String,
+        muted: Boolean
+    ): ApiResult<GoodPostFollow> =
+        parsedCall(
+            "PATCH",
+            "$READER_PATH/me/following/${encode(idOrSlug)}",
+            JSONObject().put("muted", muted),
+            token,
+            ::followBody
+        )
+
+    /**
+     * Clear a channel's unread badge (§5): the reader has opened it.
+     *
+     * No timestamp is sent — the server's clock decides whether a post came
+     * before or after the reader looked, and a device clock that is wrong would
+     * otherwise clear a badge for posts that had not arrived yet.
+     */
+    suspend fun markChannelRead(token: String, idOrSlug: String): ApiResult<GoodPostFollow> =
+        parsedCall(
+            "POST",
+            "$READER_PATH/me/following/${encode(idOrSlug)}/read",
+            null,
+            token,
+            ::followBody
+        )
+
+    /**
+     * A `{ follow: {...} }` body, or a contract break.
+     *
+     * The server always names the channel it acted on, so a body without one is
+     * not "no follow" — it is a response this client cannot read, and saying so
+     * is better than reporting a success whose effect is unknown.
+     */
+    private fun followBody(body: JSONObject): GoodPostFollow =
+        GoodPostCodec.follow(body) ?: throw ContractBreak()
 
     /** One channel, by uuid or by the slug a share link carries (§6). */
     suspend fun channel(idOrSlug: String): ApiResult<GoodPostChannel> =

@@ -161,16 +161,25 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
-    // Analytics only, and only Analytics. Good Post deliberately does NOT bring
-    // in Firebase Auth or Cloud Messaging: its readers have no account to
-    // authenticate and no inbox to push to. Administrators sign in against the
-    // ClearView backend, and channel notifications are a device-local preference
-    // until real push infrastructure exists.
     //
     // This is the one Firebase dependency the app has, which is why
-    // `google-services.json` stays: the plugin is what initialises Analytics from
-    // it at startup. The debug file registers `com.muddassir.clearview.debug` as
-    // well as the production id, so a debug install reports to its own app entry
-    // instead of polluting production analytics.
+    // `google-services.json` stays: the plugin is what initialises both of them
+    // from it at startup. The debug file registers `com.muddassir.clearview.debug`
+    // as well as the production id, so a debug install reports to its own app
+    // entry instead of polluting production analytics.
+    //
+    // Analytics: the behavioural data, and its app-entry split above.
     implementation("com.google.firebase:firebase-analytics")
+    //
+    // Auth, and ONLY for identity (§3, §16). A reader is signed in ANONYMALLY at
+    // first use, which gives the app a uid to key its own state off — follows,
+    // read positions — without ever asking for an email, a password or a phone
+    // number. A channel creator signs in with email + password on the SAME
+    // Firebase, and the two are told apart by the token's provider claim.
+    //
+    // What is deliberately NOT here: Cloud Messaging. There is no push
+    // infrastructure behind Good Post yet, and notifications are described in
+    // §8 as a system to build rather than a library to add — adding the SDK now
+    // would ship a service nothing sends to.
+    implementation("com.google.firebase:firebase-auth")
 }

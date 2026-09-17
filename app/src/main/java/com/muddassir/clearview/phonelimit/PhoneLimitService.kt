@@ -70,7 +70,9 @@ class PhoneLimitService : Service() {
     private fun startTicker() {
         if (ticker?.isActive == true) return
         ticker = scope.launch {
-            var ticks = 0
+            // No tick counter: it existed to redraw the removed home-screen widget
+            // every fifth second, and the countdown notification is posted on every
+            // tick regardless.
             while (isActive) {
                 val remaining = PhoneLimitCoordinator.remainingMillis(this@PhoneLimitService)
                 if (remaining <= 0L) {
@@ -92,9 +94,6 @@ class PhoneLimitService : Service() {
                     )
                 } catch (e: SecurityException) {
                     Log.w(TAG, "Countdown notification suppressed: ${e.message}")
-                }
-                if (++ticks % 5 == 0) {
-                    PhoneLimitWidgetProvider.refreshAllWidgets(this@PhoneLimitService)
                 }
                 delay(1_000L)
             }

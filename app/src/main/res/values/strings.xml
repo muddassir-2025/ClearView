@@ -24,11 +24,25 @@
     <string name="widget_quran_reminder_title">Quran Reminder</string>
     <string name="widget_quran_reminder_description">A daily English Quran verse to encourage reflection</string>
     <string name="widget_quran_loading">Loading a verse…</string>
+
+    <!-- To-Do home-screen widget (§1). Two entries, because at 1x1 the card
+         shows one figure: the ring's fraction, which is composed in code
+         (`progressFraction`). The words for what the number MEANS would not fit,
+         and a truncated label is worse than none — the To-Do screen has the
+         list. Removed when the card shrank from 2x2: "All done", "%1$d left",
+         "done today", the streak line and the "+N more" overflow line all
+         described parts of a checklist this size cannot hold. -->
+    <string name="widget_todo_title">To-Do</string>
+    <string name="widget_todo_description">Today\u2019s progress at a glance</string>
+    <!-- Shown in the ring when nothing is due: a fraction of nothing would be a
+         measurement that is not one. -->
+    <string name="widget_todo_dash">\u2014</string>
     <string name="widget_quran_tap_to_load">Open the app once to download verses</string>
-    <string name="widget_quran_copy">Copy</string>
-    <string name="widget_quran_refresh">Refresh</string>
-    <string name="widget_quran_copied">Verse copied to clipboard</string>
-    <string name="widget_quran_refreshing">Picking a new verse…</string>
+    <!-- `widget_quran_copy`, `widget_quran_refresh`, `widget_quran_copied` and
+         `widget_quran_refreshing` were the widget's two action chips and their
+         toasts. The chips are gone (the verse is the whole card now) and both
+         actions live on the verse screen the card opens, so the strings went with
+         them rather than sitting here describing controls that do not exist. -->
     <string name="quran_verse_header">Quran Reminder</string>
     <string name="quran_verse_unavailable">Verses are being downloaded. Check back in a moment.</string>
     <string name="quran_tab">Quran</string>
@@ -580,18 +594,15 @@ This video cannot be played inside the app.</string>
     <string name="phone_limit_admin_explanation">Device Admin lets the app lock your phone when the phone limit reaches zero. No other device-management permission is used.</string>
     <string name="phone_limit_admin_policy_note">ClearView is already a Device Admin, but the lock-screen policy added by this update hasn\'t been accepted yet — Android keeps the old permissions until you confirm. Open the admin settings below and tap ClearView to accept the change.</string>
     <string name="phone_limit_admin_policy_action">Open admin settings</string>
-    <string name="phone_limit_invalid_input">Enter a duration like 1h:20m:10s to start the phone limit.</string>
     <string name="phone_limit_exact_alarm_note">To end and lock the phone at exactly the right moment even if the app is closed, allow exact alarms. Without this, the limit may end a few minutes late.</string>
     <string name="phone_limit_exact_alarm_allow">Allow exact alarms</string>
     <string name="phone_limit_notification_note">The remaining time shows as an ongoing notification in the status area and shade. Allow notifications to see the countdown.</string>
     <string name="phone_limit_notification_allow">Allow notifications</string>
 
-    <!-- Phone Limit home-screen widget -->
-    <string name="widget_phone_limit_title">Screen time - Phone Limit</string>
-    <string name="widget_phone_screen_time">Screen time: %1$s</string>
-    <string name="widget_phone_screen_time_na">Screen time: —</string>
-    <string name="widget_phone_limit_start">START</string>
-    <string name="widget_phone_limit_description">Shows today\'s screen time and starts a phone limit countdown with the remaining time</string>
+    <!-- The Phone Limit home-screen widget was removed. The countdown itself is
+         unchanged and still runs from the in-app sheet: what went was a second
+         way to START one, which duplicated the sheet's own controls while
+         showing the same state in two places. -->
 
     <!-- Good Post (§1, §4). Its own tab, with NO account of any kind: a reader
          opens it and reads. The only credentials in here are an administrator's,
@@ -647,6 +658,20 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_back">Back</string>
     <string name="goodpost_dismiss">Dismiss</string>
     <string name="goodpost_search_channels">Search channels…</string>
+
+    <!-- Follow (§4). "Following" is the state, and tapping it is also how a
+         reader unfollows — the row shows what it is in before it changes. -->
+    <string name="goodpost_follow">Follow</string>
+    <string name="goodpost_following">Following</string>
+
+    <!-- The clipboard actions on the editor's own selection bar (§7). They
+         replace the ones Android's built-in menu offered, which is no longer
+         shown inside the composer. "Copy" is deliberately NOT repeated here:
+         `goodpost_copy` already exists for the post action bar, and one word
+         gets one entry. -->
+    <string name="goodpost_cut">Cut</string>
+    <string name="goodpost_paste">Paste</string>
+    <string name="goodpost_select_all">Select all</string>
     <string name="goodpost_channel">Channel</string>
     <string name="goodpost_public_channel">Public channel</string>
     <string name="goodpost_no_description">No description yet</string>
@@ -687,6 +712,10 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_email_hint">you@example.com</string>
     <string name="goodpost_password">Password</string>
     <string name="goodpost_password_hint">Your password</string>
+    <!-- §20: the eye on a password field. Named for what the tap does, so a
+         screen reader announces the action rather than the state. -->
+    <string name="goodpost_show_password">Show password</string>
+    <string name="goodpost_hide_password">Hide password</string>
     <string name="goodpost_continue">Continue</string>
     <string name="goodpost_no_access">Don’t have channel access?</string>
     <string name="goodpost_contact">Contact: %1$s</string>

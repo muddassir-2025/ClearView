@@ -159,13 +159,66 @@ export interface ChannelRow {
 }
 
 /**
- * A deep link the Android client can resolve (§6).
+ * The link a reader hands to somebody else (§6).
  *
- * The app scheme rather than an `https://` URL: this backend serves JSON and has
- * no public HTML page to send a browser to, and handing the client a URL that
- * 404s would be worse than handing it the link it can actually open.
+ * An `https://` URL that actually resolves, rather than the `clearview://` deep
+ * link this used to return. The old value was defensible when there was no page
+ * behind it — a URL that 404s is worse than one that opens the app — but it made
+ * sharing useless in the way that matters most: WhatsApp, Telegram and every
+ * other messaging app show nothing for an unknown scheme, so a shared channel
+ * arrived as dead text with no name and no preview. §6 asks for a link like
+ * WhatsApp's, and that means a real page.
+ *
+ * `GET /c/:slug` is that page (`public/share.ts`): it renders the channel, its
+ * latest posts and an "Open in ClearView" button, and carries the Open Graph
+ * tags the messaging apps read to build a preview card.
+ *
+ * The deep link is still what the app itself resolves — the page contains it,
+ * and a reader already holding ClearView gets the app either way.
+ *
+ * A DEPLOYMENT-WIDE URL is baked in at boot, which is why it is not per request:
+ * the link is data (it is stored in nothing, but it is cached by messaging apps
+ * and quoted by readers), and a value that changed with the request that produced
+ * it would be a link that works for one person and not the next.
+ *
+ * `localhost` is the one case that keeps the old behaviour: a development build
+ * has no address anybody else can reach, so it hands out the deep link rather
+ * than an `http://localhost:8080/...` that would be broken for every recipient.
  */
 function channelShareLink(slug: string): string {
+  return isShareableBase(env.PUBLIC_BASE_URL)
+    ? new URL(`/c/${slug}`, env.PUBLIC_BASE_URL).toString()
+    : `clearview://goodpost/channel/${slug}`;
+}
+
+/**
+ * Whether a base URL is worth putting in a share link.
+ *
+ * Loopback and the unspecified address are reachable only from the machine the
+ * server runs on, so a link built on one is a link that works for nobody the
+ * share was sent to.
+ */
+export function isShareableBase(base: string): boolean {
+  try {
+    const { hostname, protocol } = new URL(base);
+    if (protocol !== 'http:' && protocol !== 'https:') return false;
+    // An IPv6 literal keeps its brackets in `hostname` — `new URL('http://[::1]/')`
+    // reports `[::1]`, not `::1` — which is why both spellings are listed. The
+    // bracketed form is the one that actually arrives.
+    return !['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The app deep link for a channel (§6).
+ *
+ * Exported because the shared web page needs it: a visitor who already has
+ * ClearView should be sent into the app rather than left reading a summary of a
+ * channel they could be reading properly.
+ */
+export function channelDeepLink(slug: string): string {
   return `clearview://goodpost/channel/${slug}`;
 }
 
@@ -372,10 +425,23 @@ export async function getPublicChannel(
   store: ObjectStore,
   idOrSlug: string
 ): Promise<ChannelPayload> {
-  const id = resolveChannelId(idOrSlug);
-  const row = await loadChannelRow(database, { by: id ? 'id' : 'slug', value: id ?? normaliseSlug(idOrSlug) });
+  const row = await loadChannelRow(database, resolveChannelLookup(idOrSlug));
   if (row.status !== 'active') throw notFound('channel_not_found');
   return mapChannel(row, false, await signObjectUrl(store, row.icon_object_key));
+}
+
+/**
+ * "A uuid, or a slug" as something the database can be asked about (§6).
+ *
+ * Exported because it is no longer only this file's question: a reader
+ * following a channel names it the same way a reader opening one does (§4), and
+ * a second copy of this rule is where "the follow endpoint accepts a slug the
+ * read endpoint rejects" would come from. A slug is validated here, so an
+ * identifier that could never name a channel is a 404 before it reaches SQL.
+ */
+export function resolveChannelLookup(idOrSlug: string): { by: 'id' | 'slug'; value: string } {
+  const id = resolveChannelId(idOrSlug);
+  return { by: id ? 'id' : 'slug', value: id ?? normaliseSlug(idOrSlug) };
 }
 
 /**

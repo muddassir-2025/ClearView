@@ -134,8 +134,14 @@ services:
       # would not work. SUPER_ADMIN_PASSWORD is accepted as an alternative and
       # hashed once, so a deployment holding only a plaintext secret still works.
       #
-      # Once this account exists it is never overwritten from here: a redeploy
-      # must not undo a password rotation made in the app.
+      # CHANGING EITHER OF THESE TAKES EFFECT ON THE NEXT BOOT. The account is
+      # reconciled rather than only created, so editing the password here and
+      # redeploying is the rotation path — a stale stored hash is replaced by
+      # what this file configures. (An older version of this comment claimed the
+      # opposite, and the result was a password that could not be changed from
+      # here at all.) A password shorter than ADMIN_MIN_PASSWORD_LENGTH is still
+      # applied, with a warning in the boot log, because refusing to start would
+      # take the whole service down over a form-validation rule.
       - key: SUPER_ADMIN_EMAIL
         sync: false
       - key: SUPER_ADMIN_PASSWORD_HASH
@@ -148,15 +154,37 @@ services:
       - key: ADMIN_CONTACT_EMAIL
         sync: false
 
-      # ── Non-secret tuning, safe in git ────────────────────────────────
-      # How long a DELETED post's rows survive before the physical delete. Zero:
-      # a channel's history is kept until somebody deletes it, and a post that HAS
-      # been deleted stops being readable immediately, so a grace period would only
-      # keep content an administrator already removed.
+      # ── Reader identity (§3, §15, §16) ──
       #
-      # (There used to be a GOODPOST_HISTORY_DAYS here, expiring a channel's posts
-      # on a schedule. Nothing read it: a broadcast channel's history is its
-      # product, and the sweep that used it was removed.)
+      # The Firebase project a reader's ID token must have been minted for —
+      # Firebase console → Project settings → General → Project ID.
+      #
+      # PUBLIC, and the only Firebase value this service needs: ID tokens are
+      # verified against Google's published signing certificates, so there is no
+      # service-account file to mount, no private key to store and no Firebase
+      # secret in this deployment at all. It is the same id that ships inside the
+      # Android app's google-services.json.
+      #
+      # Leave it empty and the service still starts: public reading works
+      # exactly as before, and the reader routes answer `auth_unavailable`
+      # instead of silently trusting whatever uid a client claims.
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+
+      # ── Non-secret tuning, safe in git ────────────────────────────────
+      # How long a post's copy stays on the server (§14): long enough for someone
+      # who is not following a channel to read back and judge it, short enough to
+      # cap what a long-running deployment stores. Set it to 0 to keep history
+      # indefinitely — 0 means "no window", never "expire everything now".
+      #
+      # The cost of a non-zero value, stated plainly: an update older than this is
+      # gone for everyone, so a channel is a feed rather than an archive. Media
+      # already downloaded to a phone is unaffected.
+      - key: POST_RETENTION_DAYS
+        value: 30
+      # How long a DELETED post's rows survive before the physical delete. Zero: a
+      # post that HAS been deleted stops being readable immediately, so a grace
+      # period would only keep content an administrator already removed.
       - key: PURGE_GRACE_DAYS
         value: 0
       # The administrator sign-in budget: a ten-minute access token and a

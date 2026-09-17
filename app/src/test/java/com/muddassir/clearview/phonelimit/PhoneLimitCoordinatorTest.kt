@@ -1,64 +1,21 @@
 package com.muddassir.clearview.phonelimit
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Tests for the pure Phone Limit logic — the user-input duration parser
- * ([PhoneLimitCoordinator.parseDuration]) and the countdown formatter
+ * Tests for the pure Phone Limit logic — the countdown formatter
  * ([PhoneLimitCoordinator.format]). The stateful parts (store, service,
  * alarm, lock) are Android-bound and covered by manual/device testing.
+ *
+ * A duration PARSER used to be tested here too: it read free text like
+ * `1h:20m:10s`, and its only caller was the removed home-screen widget. The
+ * in-app sheet asks for hours, minutes and seconds as three number fields and
+ * does its own arithmetic, so the parser had no sender left and went with it —
+ * along with these tests, which would otherwise have pinned the behaviour of a
+ * function nothing calls.
  */
 class PhoneLimitCoordinatorTest {
-
-    // ── parseDuration ──────────────────────────────────────────────
-
-    @Test
-    fun `single unit forms`() {
-        assertEquals(3_600_000L, PhoneLimitCoordinator.parseDuration("1h"))
-        assertEquals(1_200_000L, PhoneLimitCoordinator.parseDuration("20m"))
-        assertEquals(30_000L, PhoneLimitCoordinator.parseDuration("30s"))
-        assertEquals(7_200_000L, PhoneLimitCoordinator.parseDuration("2h"))
-        assertEquals(90_000L, PhoneLimitCoordinator.parseDuration("90s"))
-    }
-
-    @Test
-    fun `combined unit forms`() {
-        assertEquals(4_810_000L, PhoneLimitCoordinator.parseDuration("1h:20m:10s"))
-        assertEquals(4_810_000L, PhoneLimitCoordinator.parseDuration("1h 20m 10s"))
-        assertEquals(4_800_000L, PhoneLimitCoordinator.parseDuration("1h:20m"))
-        assertEquals(2_730_000L, PhoneLimitCoordinator.parseDuration("45m 30s"))
-        // Trailing junk that isn't a duration token is ignored.
-        assertEquals(4_810_000L, PhoneLimitCoordinator.parseDuration("1h:20m:10s please"))
-    }
-
-    @Test
-    fun `plain colon forms`() {
-        assertEquals(4_810_000L, PhoneLimitCoordinator.parseDuration("1:20:10"))
-        assertEquals(2_730_000L, PhoneLimitCoordinator.parseDuration("45:30"))
-    }
-
-    @Test
-    fun `bare number means minutes`() {
-        assertEquals(1_800_000L, PhoneLimitCoordinator.parseDuration("30"))
-    }
-
-    @Test
-    fun `case and whitespace are tolerated`() {
-        assertEquals(4_810_000L, PhoneLimitCoordinator.parseDuration("  1H:20M:10S  "))
-    }
-
-    @Test
-    fun `invalid or zero input is rejected`() {
-        assertNull(PhoneLimitCoordinator.parseDuration(""))
-        assertNull(PhoneLimitCoordinator.parseDuration("abc"))
-        assertNull(PhoneLimitCoordinator.parseDuration("0"))
-        assertNull(PhoneLimitCoordinator.parseDuration("0h 0m 0s"))
-        assertNull(PhoneLimitCoordinator.parseDuration("::"))
-    }
-
-    // ── format ─────────────────────────────────────────────────────
 
     @Test
     fun `format counts down as H MM SS`() {
@@ -69,5 +26,15 @@ class PhoneLimitCoordinatorTest {
         assertEquals("00:00", PhoneLimitCoordinator.format(-5L))
         // Sub-second remainder is truncated, never rounded up.
         assertEquals("00:01", PhoneLimitCoordinator.format(1_999L))
+    }
+
+    @Test
+    fun `format rounds down to the second that has actually elapsed`() {
+        // The countdown is shown to a user deciding whether to wait, so it must
+        // never claim more time is left than there is. A rounded-up "00:02" here
+        // would be the app telling them there is time they do not have.
+        assertEquals("00:01", PhoneLimitCoordinator.format(1_000L))
+        assertEquals("00:01", PhoneLimitCoordinator.format(1_999L))
+        assertEquals("00:02", PhoneLimitCoordinator.format(2_000L))
     }
 }

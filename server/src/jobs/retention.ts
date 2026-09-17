@@ -3,12 +3,12 @@ import { db, type Queryable } from '../db.js';
 import { env } from '../env.js';
 import { createObjectStore, type ObjectStore } from '../media/store.js';
 import { sweepAbandonedUploads } from '../media/service.js';
-import { purgeExpiredPosts } from '../retention/purge.js';
+import { purgeAgedPosts, purgeExpiredPosts } from '../retention/purge.js';
 
 /**
  * The scheduled cleanup (§34).
  *
- * Two passes share this schedule, and they are deliberately different:
+ * Three passes share this schedule, and they are deliberately different:
  *
  *  1. **Abandoned uploads** — a composer session that asked for an upload URL
  *     and never published leaves an object in the bucket, with no row's lifecycle
@@ -19,9 +19,11 @@ import { purgeExpiredPosts } from '../retention/purge.js';
  *     passed (§34's reference count, so an object another row still names is never
  *     removed).
  *
- * What it deliberately does NOT do is expire posts on a schedule. A channel's
- * history stays until an administrator deletes it: nothing in this product says an
- * update stops being true after a month.
+ *  3. **Aged-out posts** — the retention window (§14). A post older than
+ *     `POST_RETENTION_DAYS` is removed along with its media, whether or not anyone
+ *     deleted it. This is the one pass that shortens a channel's history without
+ *     anybody asking it to, which is why it is off at `POST_RETENTION_DAYS=0` and
+ *     why it reports its own count.
  *
  * Two rules the sweep honours by construction:
  *
@@ -43,9 +45,22 @@ export function startRetentionJob(
 
   console.log(
     `[retention] scheduled "${env.RETENTION_CRON}" ` +
-      `(purge grace ${env.PURGE_GRACE_DAYS}d, ` +
+      `(post history ${env.POST_RETENTION_DAYS}d, ` +
+      `purge grace ${env.PURGE_GRACE_DAYS}d, ` +
       `abandoned uploads after ${env.UPLOAD_CLAIM_WINDOW_MINUTES}m, batch ${env.PURGE_BATCH_SIZE})`
   );
+
+  // Said out loud at boot, because it is the one scheduled behaviour that
+  // removes content nobody asked to remove. An operator reading the deploy log
+  // should not have to infer it from the number above.
+  if (env.POST_RETENTION_DAYS > 0) {
+    console.log(
+      `[retention] posts older than ${env.POST_RETENTION_DAYS} days are deleted from the server (§14). ` +
+        'Set POST_RETENTION_DAYS=0 to keep a channel\u2019s history indefinitely.'
+    );
+  } else {
+    console.log('[retention] POST_RETENTION_DAYS=0 — channel history is kept indefinitely.');
+  }
 
   // Cron tasks hold the event loop open; unref so a SIGTERM shutdown is not
   // blocked by a pending tick.
@@ -68,6 +83,8 @@ export interface SweepResult {
   /** Posts physically deleted this tick. */
   purged: number;
   objectsRemoved: number;
+  /** Of [purged], how many left because the retention window closed (§14). */
+  agedOut: number;
 }
 
 export async function runRetentionSweep(
@@ -79,6 +96,7 @@ export async function runRetentionSweep(
     failed: 0,
     purged: 0,
     objectsRemoved: 0,
+    agedOut: 0,
   };
 
   // Each pass is guarded separately: a bucket that is briefly unreachable must
@@ -111,6 +129,20 @@ export async function runRetentionSweep(
     }
   } catch (err) {
     console.error('[retention] purge pass failed:', (err as Error).message);
+  }
+
+  try {
+    const aged = await purgeAgedPosts(database, store);
+    result.agedOut = aged.purged;
+    result.purged += aged.purged;
+    result.objectsRemoved += aged.objectsRemoved;
+    if (aged.purged > 0) {
+      console.log(
+        `[retention] ${env.POST_RETENTION_DAYS}-day window: removed ${aged.purged} post(s), ${aged.objectsRemoved} object(s), ${aged.objectsFailed} failed`
+      );
+    }
+  } catch (err) {
+    console.error('[retention] retention pass failed:', (err as Error).message);
   }
 
   return result;

@@ -24,11 +24,22 @@ export default defineConfig({
       JWT_SECRET: 'test-access-secret-padded-to-32-chars-min',
       GOODPOST_HASH_PEPPER: 'test-pepper-padded-to-32-characters-min',
       RETENTION_JOB_ENABLED: 'false',
-      // Left UNSET on purpose. `SUPER_ADMIN_EMAIL` is what a deployment uses to
-      // provision its first administrator, and the suite never boots the server
-      // — it builds the app directly and inserts its own fixture accounts. A
-      // value here would let a fixture accidentally depend on the environment
-      // instead of saying what it needs.
+      // SET, unlike the rest of the deployment configuration. The
+      // super-administrator bootstrap names its account with this variable, and
+      // its job now includes reconciling a changed `SUPER_ADMIN_PASSWORD`
+      // against that account — so a suite that never sets it would never run
+      // the bootstrap at all, which is exactly the path that silently ignored a
+      // changed password. Fixtures still insert their own accounts and read
+      // nothing from the environment: this is the one configuration value a
+      // test asserts ON rather than around.
+      SUPER_ADMIN_EMAIL: 'super-admin@example.test',
+      // Pinned rather than inherited. The retention sweep now deletes posts
+      // older than this window (§14), so a developer with a different value in
+      // server/.env would see tests/retention.test.ts disagree with the
+      // fixtures' dates — a failure that describes their local configuration
+      // rather than the code. The window is the one setting the suite asserts
+      // ON, so it is stated here and the tests read the same number.
+      POST_RETENTION_DAYS: '30',
       RATE_LIMIT_MAX: '100000',
       AUTH_RATE_LIMIT_MAX: '100000',
       // Every rule needs raising here, not just the ones that existed when this

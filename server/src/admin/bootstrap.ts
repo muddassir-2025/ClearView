@@ -1,7 +1,14 @@
 import { env } from '../env.js';
 import type { Queryable } from '../db.js';
 import { badRequest } from '../http/errors.js';
-import { hashPassword, insertAdmin, loadAdmin, setAdminPassword, writeAudit } from './service.js';
+import {
+  hashPassword,
+  insertAdmin,
+  loadAdmin,
+  passwordMatches,
+  setAdminPassword,
+  writeAudit,
+} from './service.js';
 
 /**
  * The first administrator (§17).
@@ -14,11 +21,23 @@ import { hashPassword, insertAdmin, loadAdmin, setAdminPassword, writeAudit } fr
  *
  * Two properties matter.
  *
- *  * **It is idempotent, and it never overwrites a working password.** Run at
- *    every boot, so a fresh deployment needs no manual step and a redeploy
- *    cannot lock the operator out. If the account already exists it is left
- *    exactly as it is — a boot that reset the password from an environment
- *    variable would silently undo a rotation made through the app.
+ *  * **The environment is authoritative for a PLAINTEXT password.** Run at every
+ *    boot, so a fresh deployment needs no manual step and a redeploy cannot lock
+ *    the operator out. When `SUPER_ADMIN_PASSWORD` is set and it no longer opens
+ *    the account, the stored hash is replaced with it — because the alternative
+ *    is what this used to do: silently ignore the new value and answer every
+ *    sign-in with "invalid credentials", with nothing on screen or in the logs to
+ *    say why. That is a bug you cannot debug from the app, only from the server,
+ *    and it is the reason this reconcile exists.
+ *
+ *    `SUPER_ADMIN_PASSWORD_HASH` alone is NOT reconciled: a hash cannot be
+ *    compared against the account without the plaintext it came from, so an
+ *    operator who sets only the hash keeps the deliberate behaviour — rotate with
+ *    `create-admin --reset`, and the environment never overwrites it.
+ *
+ *  * **On first creation a plaintext password outranks the hash.** Whoever sets
+ *    both has edited the human-readable one; letting a pre-existing hash win is
+ *    how `create-admin --generate` came to print a password it never stored.
  *
  *  * **It cannot create a second one.** The email is the identity: the same
  *    address is reconciled, a different one is refused while any administrator
@@ -33,6 +52,34 @@ export interface BootstrapResult {
   readonly created: boolean;
   readonly adminId: string | null;
   readonly reason: string;
+  /**
+   * Something worth saying that is not an outcome: today, that the configured
+   * password is shorter than the floor the app enforces for a password chosen
+   * in a form.
+   *
+   * Returned rather than logged so it stays the caller's to word, like
+   * [reason] — and so the suite can assert it. Never contains a value: the
+   * message names the variable and the length, never the password.
+   */
+  readonly warning: string | null;
+}
+
+/**
+ * The warning for a configured password below [env.ADMIN_MIN_PASSWORD_LENGTH],
+ * or null when there is nothing to say.
+ *
+ * A warning and not a refusal: the operator holds this secret, and a boot that
+ * refused would take the reader surface down over a value that still works. But
+ * it IS said, because a nine-character password guarding the account that can
+ * create channels is worth knowing about.
+ */
+function floorWarning(password: string): string | null {
+  if (password.length === 0 || password.length >= env.ADMIN_MIN_PASSWORD_LENGTH) return null;
+  return (
+    `SUPER_ADMIN_PASSWORD is ${password.length} characters, below the ` +
+    `${env.ADMIN_MIN_PASSWORD_LENGTH}-character floor the app enforces for a password chosen in a form. ` +
+    'It is applied as given — consider lengthening it.'
+  );
 }
 
 /**
@@ -59,21 +106,57 @@ export async function ensureSuperAdmin(
   const password = (passwordOverride ?? env.SUPER_ADMIN_PASSWORD ?? '').trim();
 
   if (email === '') {
-    return { created: false, adminId: null, reason: 'no_super_admin_configured' };
+    return { created: false, adminId: null, reason: 'no_super_admin_configured', warning: null };
   }
 
   const emailNormalized = email.toLowerCase();
 
-  const existing = await database.queryOne<{ id: string }>(
-    `SELECT id FROM admin_users WHERE email_normalized = $1`,
+  const existing = await database.queryOne<{ id: string; password_hash: string }>(
+    `SELECT id, password_hash FROM admin_users WHERE email_normalized = $1`,
     [emailNormalized]
   );
 
   if (existing) {
-    // Reconciled, not reconfigured: the account is left alone. A boot that
-    // re-wrote the password from the environment would undo a rotation the
-    // operator made on purpose.
-    return { created: false, adminId: existing.id, reason: 'already_provisioned' };
+    // A plaintext password in the environment is the operator saying "this is
+    // the password". If it does not open the account, the stored hash is stale
+    // — so it is replaced, and the reason says so, because the boot log is the
+    // only place this is visible.
+    const configured = password; // `passwordOverride` wins over SUPER_ADMIN_PASSWORD.
+    if (configured !== '' && !PLACEHOLDER.test(configured)) {
+      const stillWorks = await passwordMatches(configured, existing.password_hash);
+      if (!stillWorks) {
+        // `enforceFloor: false`: this password came from the deployment, not from
+        // a form. Refusing it would leave the account on the stale hash — the
+        // exact bug — and would do so silently. It is applied and, when short,
+        // warned about instead.
+        await setAdminPassword(database, existing.id, configured, { enforceFloor: false });
+        await writeAudit(database, {
+          adminId: existing.id,
+          adminEmail: emailNormalized,
+          actorRole: 'super_admin',
+          action: 'admin.password.reconciled',
+          targetType: 'admin',
+          targetId: existing.id,
+          metadata: { via: 'environment', reason: 'configured_password_replaced_stored_hash' },
+        });
+        return {
+          created: false,
+          adminId: existing.id,
+          reason: 'password_reconciled',
+          warning: floorWarning(configured),
+        };
+      }
+    }
+
+    // Otherwise reconciled, not reconfigured: the account is left alone. The
+    // warning still applies — a short configured password is worth knowing about
+    // whether or not this boot had to write it.
+    return {
+      created: false,
+      adminId: existing.id,
+      reason: 'already_provisioned',
+      warning: floorWarning(password),
+    };
   }
 
   const others = await database.queryOne<{ id: string }>(`SELECT id FROM admin_users LIMIT 1`);
@@ -85,13 +168,14 @@ export async function ensureSuperAdmin(
       created: false,
       adminId: null,
       reason: 'administrators_already_exist',
+      warning: null,
     };
   }
 
-  if (passwordHash !== '' && PLACEHOLDER.test(passwordHash)) {
-    throw badRequest('weak_password', 'SUPER_ADMIN_PASSWORD_HASH is still a placeholder value.');
+  if (password !== '' && PLACEHOLDER.test(password)) {
+    throw badRequest('weak_password', 'SUPER_ADMIN_PASSWORD is still a placeholder value.');
   }
-  if (passwordHash === '' && (password === '' || PLACEHOLDER.test(password))) {
+  if (password === '' && (passwordHash === '' || PLACEHOLDER.test(passwordHash))) {
     throw badRequest(
       'weak_password',
       'Set SUPER_ADMIN_PASSWORD_HASH, or SUPER_ADMIN_PASSWORD with a real value. A placeholder is refused so it cannot become a working login.'
@@ -104,10 +188,10 @@ export async function ensureSuperAdmin(
     role: 'super_admin',
     channelId: null,
     createdByAdminId: null,
-    // A hash from the environment is used as-is (re-hashing it would hash the
-    // hash and the configured password would not work); a plaintext value is
-    // hashed here, once.
-    passwordHash: passwordHash !== '' ? passwordHash : await hashPassword(password),
+    // A plaintext value wins when both are set (see the header), and a hash
+    // from the environment is used as-is rather than re-hashed — hashing a hash
+    // would store something the configured password can never match.
+    passwordHash: password !== '' ? await hashPassword(password) : passwordHash,
   });
 
   await writeAudit(database, {
@@ -120,7 +204,7 @@ export async function ensureSuperAdmin(
     metadata: { role: 'super_admin', email: admin.email, via: 'environment' },
   });
 
-  return { created: true, adminId: admin.id, reason: 'created' };
+  return { created: true, adminId: admin.id, reason: 'created', warning: floorWarning(password) };
 }
 
 /**

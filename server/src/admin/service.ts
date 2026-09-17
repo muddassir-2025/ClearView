@@ -121,7 +121,12 @@ export function assertPasswordAcceptable(password: string): void {
  */
 const DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEeO7ZBpVQvV9zPWJMoZbWqBBBBBBBBBBBBB';
 
-async function passwordMatches(password: string, hash: string | undefined): Promise<boolean> {
+/**
+ * Constant-cost password check. Exported so the bootstrap can answer the one
+ * question it needs — "does the configured password still open this account?" —
+ * without a second bcrypt call site quietly drifting from this one.
+ */
+export async function passwordMatches(password: string, hash: string | undefined): Promise<boolean> {
   try {
     return await bcrypt.compare(password, hash ?? DUMMY_HASH);
   } catch {
@@ -621,9 +626,23 @@ export async function insertAdmin(
 export async function setAdminPassword(
   database: Queryable,
   adminId: string,
-  password: string
+  password: string,
+  /**
+   * Skip [assertPasswordAcceptable].
+   *
+   * For the ONE caller that is not a person choosing a password: the bootstrap
+   * applying `SUPER_ADMIN_PASSWORD` from the deployment's environment. The
+   * operator already holds that secret; refusing to store it because it is
+   * shorter than the floor does not protect anything, it just leaves the account
+   * on the previous hash — which is exactly the bug this reconcile exists to
+   * fix, and it hides itself as "Invalid credentials".
+   *
+   * The create path never applied the floor to a configured password either, so
+   * this restores the two paths to agreement rather than opening a hole.
+   */
+  options?: { readonly enforceFloor?: boolean }
 ): Promise<void> {
-  assertPasswordAcceptable(password);
+  if (options?.enforceFloor !== false) assertPasswordAcceptable(password);
   const hash = await hashPassword(password);
   const rows = await database.query(
     `UPDATE admin_users

@@ -56,14 +56,52 @@ class GoodPostPublicTest {
 
         // The whole product rule in one assertion, read off the MODEL rather
         // than off one payload: nothing a public channel carries may be a count
-        // or an account (§1, §5). Adding `followerCount` to the data class — the
-        // regression this product exists to prevent — fails here.
+        // of OTHER people's interest in it, and nothing may be an account (§1,
+        // §5). Adding `followerCount` to the data class — the regression this
+        // product exists to prevent — fails here.
         val fields = com.muddassir.clearview.goodpost.data.GoodPostChannel::class.java
             .declaredFields
             .map { it.name }
             .filterNot { it.startsWith("$") }
             .toSet()
         assertEquals(GoodPostChannelFields, fields)
+
+        // §4–§6's reader-owned fields default rather than being required, so a
+        // row from the PUBLIC list — which carries none of them — still parses
+        // and renders with no badge and no toggle.
+        assertEquals(0, channel.unreadCount)
+        assertFalse(channel.following)
+        assertFalse(channel.notificationsMuted)
+        assertNull(channel.followedAt)
+    }
+
+    @Test
+    fun `a followed channel carries the reader's own state, not the channel's popularity`() {
+        // The distinction §4 forces, stated where it can be checked: `unreadCount`
+        // is how many posts THIS reader has not opened, and it would be a
+        // different number for every reader. A follower count would be the same
+        // number for all of them, and is the thing §1 excludes.
+        val followed = GoodPostCodec.channel(
+            channelJson {
+                put("following", true)
+                put("notificationsMuted", true)
+                put("unreadCount", 3)
+                put("followedAt", "2026-09-10T08:00:00.000Z")
+            }
+        )
+
+        assertTrue(followed!!.following)
+        assertTrue(followed.notificationsMuted)
+        assertEquals(3, followed.unreadCount)
+        assertEquals("2026-09-10T08:00:00.000Z", followed.followedAt)
+    }
+
+    @Test
+    fun `a negative unread count is read as none rather than as a badge`() {
+        // Defensive: the count comes from a server query, and a row that somehow
+        // arrived negative must not render as a badge saying -1.
+        val channel = GoodPostCodec.channel(channelJson { put("unreadCount", -4) })
+        assertEquals(0, channel!!.unreadCount)
     }
 
     @Test
@@ -378,5 +416,12 @@ private val GoodPostChannelFields = setOf(
     // `status` is not a counter and not an account: it is `active`/`suspended`,
     // present only on a payload an administrator received, and it exists so a
     // channel they run can say it is not currently public.
-    "status"
+    "status",
+    // §4–§6's four, and every one of them is the READER's own state rather than
+    // a fact about the channel — which is what keeps them on the right side of
+    // §1. `unreadCount` and `followedAt` differ per reader; `following` and
+    // `notificationsMuted` are that reader's settings. None of them is a
+    // measure of how many people care about the channel, and that is the
+    // distinction this set exists to hold: `followerCount` still fails here.
+    "unreadCount", "following", "notificationsMuted", "followedAt"
 )

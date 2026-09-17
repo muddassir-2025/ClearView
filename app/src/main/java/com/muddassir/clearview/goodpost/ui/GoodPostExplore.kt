@@ -85,9 +85,21 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
                         onClick = { viewModel.openChannel(channel.id) },
                         avatar = {
                             WaAvatar(name = channel.name, size = 49.dp, url = channel.iconUrl)
+                        },
+                        // Follow, on the row (§4): the one per-reader thing
+                        // Explore shows, and the reason it is here rather than
+                        // only inside the channel is that deciding what to
+                        // follow means comparing channels, which is what a list
+                        // is for. Tapping the row still opens it — the control
+                        // is a separate hit target, so browsing and subscribing
+                        // are not the same gesture.
+                        trailing = {
+                            WaFollowAction(
+                                following = channel.id in state.followedIds,
+                                busy = state.followBusyId == channel.id,
+                                onClick = { viewModel.toggleFollow(channel.id) }
+                            )
                         }
-                        // No trailing control: the row is a way in, and nothing
-                        // here is per-device any more (§7, §5).
                     )
                 }
 
