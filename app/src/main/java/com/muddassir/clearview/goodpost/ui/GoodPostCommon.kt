@@ -88,6 +88,18 @@ internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.PostMediaRejected -> R.string.goodpost_error_post_media
     GoodPostError.MediaUnavailable -> R.string.goodpost_error_media_unavailable
     GoodPostError.FileUnreadable -> R.string.goodpost_error_file_unreadable
+    GoodPostError.InvalidReaction -> R.string.goodpost_error_invalid_reaction
+    GoodPostError.AnalyticsForbidden -> R.string.goodpost_error_analytics_forbidden
+    GoodPostError.PollClosed -> R.string.goodpost_error_poll_closed
+    GoodPostError.PollSingleChoice -> R.string.goodpost_error_poll_single_choice
+    GoodPostError.PollRejected -> R.string.goodpost_error_poll_rejected
+    GoodPostError.MessagesDisabled -> R.string.goodpost_error_messages_disabled
+    GoodPostError.OwnChannel -> R.string.goodpost_error_own_channel
+    GoodPostError.ConversationBlocked -> R.string.goodpost_error_conversation_blocked
+    GoodPostError.ConversationClosed -> R.string.goodpost_error_conversation_closed
+    GoodPostError.MessageInvalid -> R.string.goodpost_error_message_invalid
+    GoodPostError.ReportInvalid -> R.string.goodpost_error_report_invalid
+    GoodPostError.DeviceLimit -> R.string.goodpost_error_device_limit
     GoodPostError.Unknown -> R.string.goodpost_error_unknown
 }
 

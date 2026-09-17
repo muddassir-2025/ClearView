@@ -157,6 +157,52 @@ enum class GoodPostError {
     /** The picked file could not be read, so its size is unknown. */
     FileUnreadable,
 
+    // ── Engagement (M4) ─────────────────────────────────────────────────
+
+    /** §13: a reaction name the server does not offer. */
+    InvalidReaction,
+
+    /** §15: only a channel's own admins may see its analytics. */
+    AnalyticsForbidden,
+
+    /** §14: the poll has closed, so a vote can no longer be recorded. */
+    PollClosed,
+
+    /** §14: this poll accepts one answer and more than one was selected. */
+    PollSingleChoice,
+
+    /**
+     * A poll request the server refused on its merits: no option selected, an
+     * option that belongs to another poll, or a poll that is gone. One wording
+     * because the user has one action — select an available option, or move on.
+     */
+    PollRejected,
+
+    // ── Moderation and messaging (M5) ───────────────────────────────────
+
+    /** §16: the channel does not accept messages from followers. */
+    MessagesDisabled,
+
+    /** A channel cannot message itself, so an owner cannot open its inbox. */
+    OwnChannel,
+
+    /** §16: the channel has blocked this conversation. */
+    ConversationBlocked,
+
+    /** §16: the thread is closed and cannot take another message. */
+    ConversationClosed,
+
+    /** An empty or oversized message. */
+    MessageInvalid,
+
+    /** §18: the report itself was unusable — unknown reason or target. */
+    ReportInvalid,
+
+    // ── Notifications (M7) ──────────────────────────────────────────────
+
+    /** §17: this account already has as many registered devices as it may. */
+    DeviceLimit,
+
     Unknown
 }
 
@@ -219,6 +265,30 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "media_unavailable", "media_forbidden", "upload_failed", "download_failed" ->
         GoodPostError.MediaUnavailable
     "file_unreadable" -> GoodPostError.FileUnreadable
+
+    // ── Engagement (M4) ─────────────────────────────────────────────────
+    "invalid_reaction" -> GoodPostError.InvalidReaction
+    "analytics_forbidden" -> GoodPostError.AnalyticsForbidden
+    "poll_closed" -> GoodPostError.PollClosed
+    "single_choice_only" -> GoodPostError.PollSingleChoice
+    "poll_not_found", "no_votes", "unknown_option", "invalid_poll",
+    "too_few_options", "too_many_options", "invalid_option", "duplicate_option",
+    "invalid_poll_window", "invalid_poll_id" -> GoodPostError.PollRejected
+
+    // ── Moderation and messaging (M5) ───────────────────────────────────
+    "messages_disabled" -> GoodPostError.MessagesDisabled
+    "own_channel" -> GoodPostError.OwnChannel
+    "conversation_blocked" -> GoodPostError.ConversationBlocked
+    "conversation_closed" -> GoodPostError.ConversationClosed
+    "invalid_message" -> GoodPostError.MessageInvalid
+    "invalid_target", "invalid_target_type", "invalid_reason", "report_not_found",
+    "cannot_block_self", "conversation_not_found", "invalid_conversation_id",
+    "user_not_found", "invalid_user_id" -> GoodPostError.ReportInvalid
+
+    // ── Notifications (M7) ──────────────────────────────────────────────
+    "too_many_devices" -> GoodPostError.DeviceLimit
+    "invalid_token", "notification_not_found", "device_not_found" ->
+        GoodPostError.InvalidInput
 
     "unreachable", "timeout" -> GoodPostError.Unreachable
     "not_configured" -> GoodPostError.NotConfigured

@@ -162,4 +162,8 @@ dependencies {
     // ban and channel state all live on the ClearView backend, which verifies
     // the resulting ID token with the Admin SDK before trusting a number.
     implementation("com.google.firebase:firebase-auth")
+    // Firebase Cloud Messaging for Good Post channel notifications (§17). The
+    // server writes the notification row BEFORE it pushes, so this only ever
+    // rings the phone — the inbox is correct whether or not a push arrives.
+    implementation("com.google.firebase:firebase-messaging")
 }

@@ -397,6 +397,13 @@ describe('private follower messages (§16)', () => {
     const channel = await createChannel(a, { name: 'No DMs' });
     await follow(b, channel.id);
 
+    // Off is no longer the starting state (§16 now defaults to on), so the
+    // owner has to refuse explicitly — which is the case this covers.
+    await request(app)
+      .patch(`/api/v1/channels/${channel.id}`)
+      .set(authed(a.accessToken))
+      .send({ allowFollowerMessages: false });
+
     const res = await request(app)
       .post(`/api/v1/channels/${channel.id}/conversations`)
       .set(authed(b.accessToken));

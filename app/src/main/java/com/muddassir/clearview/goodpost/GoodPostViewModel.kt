@@ -21,20 +21,42 @@ import kotlinx.coroutines.launch
  * impossible combination ("showing the code field with no verification id")
  * cannot be represented, and so the gate has one obvious place to be right.
  */
-enum class GoodPostPhase { Checking, Entry, Code, Register, SignedIn, NotConfigured }
+enum class GoodPostPhase {
+    Checking,
+    Entry,
+    Code,
+
+    /**
+     * The email code was accepted but the address has no account yet: ask for
+     * the one thing the server cannot know, the name to publish under.
+     */
+    EmailRegister,
+
+    /** Kept for the paused mobile flow — see the note on [GoodPostAuthMethod]. */
+    Register,
+    SignedIn,
+    NotConfigured
+}
 
 /**
  * How the user proves who they are (§2).
  *
- * Two ways in, one account. The mobile number is still the identity §19
- * anchors bans on; the email address is a second door into an account that
- * already exists, never a way to create one.
+ * Mobile is PAUSED, not removed: every path behind it — Firebase phone auth,
+ * the SMS challenge, the phone-hash ban identity of §19 — still exists and
+ * still typechecks, and the entry screen simply does not offer it. Flipping
+ * [GoodPostViewModel.ENTRY_METHOD] back to [Mobile] restores the toggle, and
+ * because the register path is unchanged that is genuinely all it takes.
+ *
+ * What replaced it is the email flow, which is now also able to REGISTER — see
+ * [GoodPostPhase.EmailRegister]. That is the temporary trade: an address is a
+ * weaker abuse identity than a number, so a ban on an email-only account is
+ * enforced by the account status rather than by `banned_identities`.
  */
 enum class GoodPostAuthMethod { Mobile, Email }
 
 data class GoodPostUiState(
     val phase: GoodPostPhase = GoodPostPhase.Checking,
-    val authMethod: GoodPostAuthMethod = GoodPostAuthMethod.Mobile,
+    val authMethod: GoodPostAuthMethod = GoodPostViewModel.ENTRY_METHOD,
     val phone: String = "",
     val code: String = "",
     val displayName: String = "",
@@ -69,9 +91,29 @@ data class GoodPostUiState(
  */
 class GoodPostViewModel : ViewModel() {
 
+    companion object {
+        /**
+         * The one method the entry screen currently offers.
+         *
+         * Set to [GoodPostAuthMethod.Mobile] to put the number back in front of
+         * the user. The screen reads this constant to decide which fields and
+         * which toggle to show, so there is no second switch to keep in step.
+         */
+        val ENTRY_METHOD = GoodPostAuthMethod.Email
+    }
+
     private var repository: GoodPostAuthRepository? = null
     private var verificationId: String? = null
     private var pendingIdToken: String? = null
+
+    /**
+     * The address whose code has been accepted but has no account behind it.
+     *
+     * Held here rather than in [GoodPostUiState] because it is a security
+     * input, not something the screen renders: the registration call sends
+     * THIS address, never whatever is currently in the text field.
+     */
+    private var pendingEmail: String? = null
 
     var uiState by mutableStateOf(GoodPostUiState())
         private set
@@ -154,6 +196,8 @@ class GoodPostViewModel : ViewModel() {
      * reject them anyway.
      */
     fun onAuthMethodChange(method: GoodPostAuthMethod) {
+        // While the phone path is paused this is unreachable from the UI; the
+        // guard keeps a future toggle from doing anything but the obvious.
         if (method == uiState.authMethod) return
         verificationId = null
         uiState = uiState.copy(
@@ -176,9 +220,11 @@ class GoodPostViewModel : ViewModel() {
     fun backToEntry() {
         verificationId = null
         pendingIdToken = null
+        pendingEmail = null
         uiState = uiState.copy(
             phase = GoodPostPhase.Entry,
             code = "",
+            displayName = "",
             messageCode = null,
             busy = false
         )
@@ -234,7 +280,7 @@ class GoodPostViewModel : ViewModel() {
      * may be assumed: the endpoint answers the same way either way, so the UI
      * cannot and must not treat this success as "that email is registered".
      */
-    fun startEmailVerification() {
+    fun startEmailVerification(signingUp: Boolean = false) {
         val repo = repository ?: return
         val email = normalizeEmailInput(uiState.signInEmail)
         if (email == null) {
@@ -245,7 +291,7 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             uiState = uiState.copy(busy = true, messageCode = null, signInEmail = email)
 
-            when (val result = repo.startEmailVerification(email)) {
+            when (val result = repo.startEmailVerification(email, signingUp)) {
                 // No verification id to keep: the server holds the challenge.
                 is EmailStartResult.Sent -> uiState = uiState.copy(
                     phase = GoodPostPhase.Code,
@@ -292,6 +338,34 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Step 3 for email, reached only from [GoodPostPhase.EmailRegister].
+     *
+     * The address and the code both come from state the server already agreed
+     * with, so there is nothing new to validate except the name.
+     */
+    fun submitEmailRegistration() {
+        val repo = repository ?: return
+        val email = pendingEmail
+        val code = uiState.code
+
+        if (email == null || code.isBlank()) {
+            // The process was recreated, or the user went back. Start over
+            // rather than calling the API with half a flow.
+            backToEntry()
+            return
+        }
+        if (uiState.displayName.isBlank()) {
+            uiState = uiState.copy(messageCode = "invalid_display_name")
+            return
+        }
+
+        viewModelScope.launch {
+            uiState = uiState.copy(busy = true, messageCode = null)
+            applyAuth(repo.registerWithEmail(email, code, uiState.displayName))
+        }
+    }
+
     /** Step 3, only reached when the number has no account yet. */
     fun submitRegistration() {
         val repo = repository ?: return
@@ -325,11 +399,8 @@ class GoodPostViewModel : ViewModel() {
             repo.signOut()
             verificationId = null
             pendingIdToken = null
-            uiState = GoodPostUiState(
-                phase = GoodPostPhase.Entry,
-                phone = "",
-                account = null
-            )
+            pendingEmail = null
+            uiState = GoodPostUiState(phase = GoodPostPhase.Entry, account = null)
         }
     }
 
@@ -358,6 +429,21 @@ class GoodPostViewModel : ViewModel() {
                     busy = false,
                     messageCode = null,
                     code = ""
+                )
+            }
+
+            is AuthResult.NeedsEmailRegistration -> {
+                // The code was RIGHT — only the account was missing. The digits
+                // are therefore kept: [submitEmailRegistration] has to hand the
+                // server the same code to prove the inbox a second time, and
+                // asking the user to retype it would be asking them to repeat
+                // something the app already got right.
+                pendingEmail = result.email
+                uiState.copy(
+                    phase = GoodPostPhase.EmailRegister,
+                    busy = false,
+                    messageCode = null,
+                    displayName = ""
                 )
             }
 

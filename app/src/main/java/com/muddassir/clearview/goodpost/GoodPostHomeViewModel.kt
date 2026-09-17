@@ -1,24 +1,54 @@
 package com.muddassir.clearview.goodpost
 
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.data.AccentChoice
+import com.muddassir.clearview.goodpost.data.BackdropChoice
 import com.muddassir.clearview.goodpost.data.ChannelSort
+import com.muddassir.clearview.goodpost.data.EditState
+import com.muddassir.clearview.goodpost.data.EditableBitmap
 import com.muddassir.clearview.goodpost.data.ChannelsResult
+import com.muddassir.clearview.goodpost.data.EngagementResult
+import com.muddassir.clearview.goodpost.data.GoodPostAnalytics
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.GoodPostChannelCodec
 import com.muddassir.clearview.goodpost.data.GoodPostChannelsRepository
+import com.muddassir.clearview.goodpost.data.GoodPostConversation
+import com.muddassir.clearview.goodpost.data.GoodPostEngagement
+import com.muddassir.clearview.goodpost.data.GoodPostEngagementCodec
+import com.muddassir.clearview.goodpost.data.GoodPostEngagementRepository
+import com.muddassir.clearview.goodpost.data.GoodPostInboxRepository
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
+import com.muddassir.clearview.goodpost.data.GoodPostMessage
+import com.muddassir.clearview.goodpost.data.MediaUploadRequest
+import com.muddassir.clearview.goodpost.data.GoodPostNotice
+import com.muddassir.clearview.goodpost.data.GoodPostNotification
+import com.muddassir.clearview.goodpost.data.GoodPostPoll
 import com.muddassir.clearview.goodpost.data.GoodPostPost
 import com.muddassir.clearview.goodpost.data.GoodPostPostCodec
 import com.muddassir.clearview.goodpost.data.GoodPostPostsRepository
+import com.muddassir.clearview.goodpost.data.GoodPostReportTarget
+import com.muddassir.clearview.goodpost.data.GlassChoice
+import com.muddassir.clearview.goodpost.data.GoodPostReportTargetRef
+import com.muddassir.clearview.goodpost.data.GoodPostTheme
+import com.muddassir.clearview.goodpost.data.GoodPostThemeStore
+import com.muddassir.clearview.goodpost.data.GoodPostPushTokens
+import com.muddassir.clearview.goodpost.data.InboxResult
+import com.muddassir.clearview.goodpost.data.PollDraft
 import com.muddassir.clearview.goodpost.data.PostsResult
+import com.muddassir.clearview.goodpost.data.isoFromMillis
 import com.muddassir.clearview.goodpost.data.uploadRequestFor
+import com.muddassir.clearview.goodpost.data.uploadRequestForFile
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The parts of Good Post home (§4, §5).
@@ -27,7 +57,33 @@ import kotlinx.coroutines.launch
  * modes are the aggregated feed and the channel list, and Discover is the way
  * in for someone who has not followed anything yet.
  */
-enum class GoodPostSection { Posts, Channels, Discover }
+enum class GoodPostSection(@get:StringRes val labelRes: Int) {
+    Channels(R.string.goodpost_section_channels),
+
+    /**
+     * The channels this account follows plus their posts, as one stream.
+     *
+     * Named "Updates" rather than "Posts" because that is what it is: the
+     * second segment of a channels screen in a messaging app shows what arrived
+     * since the user last looked, not a read-only archive of everything.
+     */
+    Posts(R.string.goodpost_section_posts),
+
+    /** Search, reached from the bar's magnifier. */
+    Discover(R.string.goodpost_find_channels),
+
+    /** Mail, reached from the bar's bell. */
+    Inbox(R.string.goodpost_section_inbox)
+}
+
+/**
+ * The three things that arrive for the account (§16, §17, §26).
+ *
+ * One section with three tabs rather than three sections, because they are the
+ * same kind of thing — mail, not content — and a fourth segment would make the
+ * section bar unreadable on a phone.
+ */
+enum class GoodPostInboxTab { Notifications, Notices, Messages }
 
 /**
  * State for the signed-in Good Post tab.
@@ -39,6 +95,55 @@ enum class GoodPostSection { Posts, Channels, Discover }
 data class GoodPostHomeUiState(
     val section: GoodPostSection = GoodPostSection.Channels,
     val following: List<GoodPostChannel> = emptyList(),
+
+    /**
+     * Channels this account owns (§6).
+     *
+     * One is the current limit, so this doubles as the answer to "may I create
+     * a channel?". Kept apart from [following] because owning a channel and
+     * following one are different relationships, and a list that mixed them
+     * could not tell the two actions apart.
+     */
+    val ownChannels: List<GoodPostChannel> = emptyList(),
+
+    /**
+     * Media the reader has tapped open this session (§10).
+     *
+     * An image arrives soft — a preview, so nothing full-size was pulled — and
+     * a tap both sharpens it and starts the download. This records the sharp
+     * part, which is deliberately SESSION-ONLY: a reveal is not a decision to
+     * keep a file, so it is not persisted, and a restart returns every image to
+     * its preview state unless it was actually saved.
+     */
+    val revealedMediaIds: Set<String> = emptySet(),
+
+    // ── The editor (§ media editing) ────────────────────────────────────
+    /**
+     * The picture currently open in the editor.
+     *
+     * A decoded bitmap rather than a URI: the editor re-renders it on every
+     * slider move, and re-decoding a 12-megapixel file per frame is what makes
+     * an editor feel broken. Null means the editor is closed.
+     */
+    val editingImage: EditableBitmap? = null,
+    val editingImageLoading: Boolean = false,
+    val editingImageSaving: Boolean = false,
+
+    // ── Appearance ──────────────────────────────────────────────────────
+    /** Whether the appearance sheet is open. */
+    val appearanceOpen: Boolean = false,
+
+    /**
+     * The theme in force, mirrored into state.
+     *
+     * [GoodPostThemeStore.current] is already the source of truth the UI colours
+     * itself from, so this copy is not what paints anything. It is here so a
+     * CHOICE has something to be compared against — a swatch has to know it is
+     * the selected one — and so a change recomposes the sheet as well as the
+     * screens behind it.
+     */
+    val theme: GoodPostTheme = GoodPostTheme.Default,
+
     val discover: List<GoodPostChannel> = emptyList(),
     val categories: List<GoodPostCategory> = emptyList(),
     val query: String = "",
@@ -90,6 +195,18 @@ data class GoodPostHomeUiState(
     val composerAttachments: List<GoodPostMedia> = emptyList(),
     val uploadingAttachment: Boolean = false,
     val publishing: Boolean = false,
+    /**
+     * §14: the composer is writing a poll instead of a file post.
+     *
+     * A mode rather than extra fields, because a poll and a file cannot share a
+     * post — the server refuses `poll_with_media` — and a UI that let both be
+     * filled in would be building a request it knows will fail.
+     */
+    val composerPollMode: Boolean = false,
+    val composerPollQuestion: String = "",
+    /** Always at least two: a poll with one option is not a question. */
+    val composerPollOptions: List<String> = listOf("", ""),
+    val composerPollMultiple: Boolean = false,
 
     // ── Post actions ────────────────────────────────────────────────────
     /** The post whose edit form is open, or null. */
@@ -105,8 +222,74 @@ data class GoodPostHomeUiState(
      * would make every recomposition compare paths.
      */
     val savedMediaIds: Set<String> = emptySet(),
-    val savingMediaId: String? = null
-)
+    val savingMediaId: String? = null,
+
+    // ── Engagement (§13, §14, §15) ──────────────────────────────────────
+    /**
+     * Posts this session has already pinged a view for.
+     *
+     * Kept so one scroll does not fire a request per recomposition. The server
+     * dedupes as well — this only avoids the traffic, and the server's window
+     * is still what decides whether a look is ever counted twice.
+     */
+    val viewedPostIds: Set<String> = emptySet(),
+    /** The post whose reaction is in flight, so its buttons can be disabled. */
+    val busyReactionPostId: String? = null,
+    /** The poll whose vote is in flight. */
+    val votingPollId: String? = null,
+    val analytics: GoodPostAnalytics? = null,
+    /** Which channel [analytics] belongs to, so the title cannot be wrong. */
+    val analyticsChannelId: String? = null,
+    val analyticsLoading: Boolean = false,
+
+    // ── Inbox (§16, §17, §26) ───────────────────────────────────────────
+    val inboxTab: GoodPostInboxTab = GoodPostInboxTab.Notifications,
+    val notifications: List<GoodPostNotification> = emptyList(),
+    val notices: List<GoodPostNotice> = emptyList(),
+    val conversations: List<GoodPostConversation> = emptyList(),
+    val inboxLoading: Boolean = false,
+    val inboxStale: Boolean = false,
+
+    // ── One private thread (§16) ────────────────────────────────────────
+    val conversation: GoodPostConversation? = null,
+    val messages: List<GoodPostMessage> = emptyList(),
+    val messageDraft: String = "",
+    val messagesLoading: Boolean = false,
+    val sendingMessage: Boolean = false,
+    /**
+     * A message the server did not accept, kept so it can be retried.
+     *
+     * §36: the app must not claim a message was sent until the server says so,
+     * and losing what someone typed because a send failed is worse than showing
+     * it as unsent.
+     */
+    val unsentMessage: String? = null,
+    /** The channel inbox, for a channel the viewer administers. */
+    val channelInbox: List<GoodPostConversation>? = null,
+    val channelInboxId: String? = null,
+
+    // ── Reports (§18) ───────────────────────────────────────────────────
+    val reportTarget: GoodPostReportTargetRef? = null,
+    val reporting: Boolean = false,
+    /** Shown once after the server accepted a report, then dismissed. */
+    val reportSent: Boolean = false
+) {
+    /** The badge on the Inbox tab: how much of the account's mail is unread. */
+    val unreadCount: Int
+        get() = notifications.count { it.isUnread } +
+            notices.count { it.isUnread } +
+            conversations.sumOf { it.unreadCount }
+
+    /**
+     * Whether to offer a "create channel" action.
+     *
+     * One channel per account is the current rule (§6), so this is simply
+     * "owns none". It stays true while [ownChannels] is still unknown, so a slow
+     * or failed lookup never hides a feature — the server refuses a second
+     * channel regardless, and that refusal is what actually enforces the limit.
+     */
+    val canCreateChannel: Boolean get() = ownChannels.isEmpty()
+}
 
 /**
  * Channels and discovery (§5, §6, §7, §12).
@@ -122,8 +305,22 @@ data class GoodPostHomeUiState(
  */
 class GoodPostHomeViewModel : ViewModel() {
 
+    private companion object {
+        /**
+         * The most options a poll may offer.
+         *
+         * A copy of the server's `POLL_MAX_OPTIONS`, and the only product limit
+         * this client states for itself: stopping here keeps a user from
+         * carefully writing an option the API will refuse. The server still
+         * enforces it — this is a courtesy, never the authority.
+         */
+        const val MAX_POLL_OPTIONS = 10
+    }
+
     private var repository: GoodPostChannelsRepository? = null
     private var postsRepository: GoodPostPostsRepository? = null
+    private var engagementRepository: GoodPostEngagementRepository? = null
+    private var inboxRepository: GoodPostInboxRepository? = null
 
     /**
      * Application context, held for the one job the UI cannot do for it: turning
@@ -137,16 +334,31 @@ class GoodPostHomeViewModel : ViewModel() {
 
     private val repo: GoodPostChannelsRepository? get() = repository
     private val posts: GoodPostPostsRepository? get() = postsRepository
+    private val engagement: GoodPostEngagementRepository? get() = engagementRepository
+    private val inbox: GoodPostInboxRepository? get() = inboxRepository
 
     /** Idempotent: the tab can be left and re-entered without refetching. */
     fun initialize(context: Context) {
         if (repository != null) return
+        // Device preferences first: the very first frame should already be the
+        // look this phone chose, rather than flashing the default accent.
+        GoodPostThemeStore.load(context)
+        uiState = uiState.copy(theme = GoodPostThemeStore.current)
+
         appContext = context.applicationContext
         repository = GoodPostChannelsRepository(context.applicationContext)
         postsRepository = GoodPostPostsRepository(context.applicationContext)
+        engagementRepository = GoodPostEngagementRepository(context.applicationContext)
+        inboxRepository = GoodPostInboxRepository(context.applicationContext)
         loadCategories()
         loadFollowing()
+        loadOwnChannels()
         loadFeed()
+        loadInbox()
+        // A push token can exist before the account signs in — Firebase mints
+        // one on first launch — so it is registered here rather than only from
+        // the messaging callback, which may never fire again on this install.
+        registerPushToken()
         // A share link can arrive before the tab has composed — a cold start
         // delivers it with the launch intent — so anything still waiting for
         // the repository is drained here rather than dropped.
@@ -170,6 +382,580 @@ class GoodPostHomeViewModel : ViewModel() {
         if (section == GoodPostSection.Posts && uiState.feed.isEmpty()) {
             loadFeed()
         }
+        // The inbox is loaded when it is opened rather than at startup: it is
+        // mail, and a returning user may have none. `loadInbox` is idempotent
+        // per tab, so re-entering does not refetch what is already on screen.
+        if (section == GoodPostSection.Inbox) loadInbox()
+    }
+
+    // ── Inbox (§16, §17, §26) ────────────────────────────────────────────
+
+    fun selectInboxTab(tab: GoodPostInboxTab) {
+        if (uiState.inboxTab == tab) return
+        uiState = uiState.copy(inboxTab = tab, messageCode = null)
+        loadInbox()
+    }
+
+    /**
+     * Load the open inbox tab.
+     *
+     * One entry point for all three so the section can call it on open, on
+     * refresh and on a tab change without knowing which fetch that implies —
+     * and so the loading flag is set in exactly one place.
+     */
+    fun loadInbox() {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(inboxLoading = true, messageCode = null)
+
+            when (uiState.inboxTab) {
+                GoodPostInboxTab.Notifications -> adoptNotifications(source.notifications())
+                GoodPostInboxTab.Notices -> adoptNotices(source.notices())
+                GoodPostInboxTab.Messages -> adoptConversations(source.ownConversations())
+            }
+        }
+    }
+
+    private fun adoptNotifications(result: InboxResult<List<GoodPostNotification>>) {
+        uiState = when (result) {
+            is InboxResult.Ok -> uiState.copy(
+                notifications = result.value,
+                inboxLoading = false,
+                inboxStale = false
+            )
+
+            is InboxResult.Stale -> uiState.copy(
+                notifications = result.value,
+                inboxLoading = false,
+                inboxStale = true
+            )
+
+            is InboxResult.Failed -> uiState.copy(inboxLoading = false, messageCode = result.code)
+            InboxResult.SignedOut -> uiState.copy(inboxLoading = false, signedOut = true)
+        }
+    }
+
+    private fun adoptNotices(result: InboxResult<List<GoodPostNotice>>) {
+        uiState = when (result) {
+            is InboxResult.Ok -> uiState.copy(
+                notices = result.value,
+                inboxLoading = false,
+                inboxStale = false
+            )
+
+            is InboxResult.Stale -> uiState.copy(
+                notices = result.value,
+                inboxLoading = false,
+                inboxStale = true
+            )
+
+            is InboxResult.Failed -> uiState.copy(inboxLoading = false, messageCode = result.code)
+            InboxResult.SignedOut -> uiState.copy(inboxLoading = false, signedOut = true)
+        }
+    }
+
+    private fun adoptConversations(result: InboxResult<List<GoodPostConversation>>) {
+        uiState = when (result) {
+            is InboxResult.Ok -> uiState.copy(
+                conversations = result.value,
+                inboxLoading = false,
+                inboxStale = false
+            )
+
+            is InboxResult.Stale -> uiState.copy(
+                conversations = result.value,
+                inboxLoading = false,
+                inboxStale = true
+            )
+
+            is InboxResult.Failed -> uiState.copy(inboxLoading = false, messageCode = result.code)
+            InboxResult.SignedOut -> uiState.copy(inboxLoading = false, signedOut = true)
+        }
+    }
+
+    /**
+     * Mark one notification read, or the whole inbox when [id] is null.
+     *
+     * The list is updated from the SERVER's answer rather than optimistically:
+     * a badge cleared locally for a receipt the server never received would come
+     * back on the next fetch, which looks like the app forgetting (§36).
+     */
+    fun markNotificationsRead(id: String? = null) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            val ids = if (id == null) emptyList() else listOf(id)
+            when (val result = source.markNotificationsRead(ids)) {
+                is InboxResult.Ok -> {
+                    // Stamped with a real time rather than a placeholder, so an
+                    // "unread" test never depends on a sentinel value nobody
+                    // documents.
+                    val stamp = isoFromMillis(System.currentTimeMillis())
+                    uiState = uiState.copy(
+                        notifications = uiState.notifications.map { item ->
+                            val targeted = ids.isEmpty() || ids.contains(item.id)
+                            if (targeted) item.copy(readAt = item.readAt ?: stamp) else item
+                        }
+                    )
+                }
+
+                is InboxResult.Failed -> uiState = uiState.copy(messageCode = result.code)
+                is InboxResult.Stale -> Unit
+                InboxResult.SignedOut -> uiState = uiState.copy(signedOut = true)
+            }
+        }
+    }
+
+    fun markNoticesRead(id: String) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            when (val result = source.markNoticesRead(listOf(id))) {
+                is InboxResult.Ok -> {
+                    val stamp = isoFromMillis(System.currentTimeMillis())
+                    uiState = uiState.copy(
+                        notices = uiState.notices.map { item ->
+                            if (item.id == id) item.copy(readAt = item.readAt ?: stamp) else item
+                        }
+                    )
+                }
+
+                is InboxResult.Failed -> uiState = uiState.copy(messageCode = result.code)
+                is InboxResult.Stale -> Unit
+                InboxResult.SignedOut -> uiState = uiState.copy(signedOut = true)
+            }
+        }
+    }
+
+    // ── One private thread (§16) ────────────────────────────────────────
+
+    /** Open the caller's thread with a channel, creating it on first use. */
+    fun openChannelConversation(channelId: String) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(messagesLoading = true, messageCode = null)
+
+            when (val result = source.openConversation(channelId)) {
+                is InboxResult.Ok -> openThread(result.value.id)
+                is InboxResult.Failed -> uiState = uiState.copy(
+                    messagesLoading = false,
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState = uiState.copy(messagesLoading = false)
+                InboxResult.SignedOut -> uiState = uiState.copy(
+                    messagesLoading = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    fun openThread(conversationId: String) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                messagesLoading = true,
+                messageCode = null,
+                unsentMessage = null
+            )
+
+            when (val result = source.messages(conversationId)) {
+                is InboxResult.Ok -> uiState = uiState.copy(
+                    conversation = result.value.conversation
+                        ?: uiState.conversations.firstOrNull { it.id == conversationId },
+                    messages = result.value.items,
+                    messagesLoading = false
+                )
+
+                is InboxResult.Failed -> uiState = uiState.copy(
+                    messagesLoading = false,
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState = uiState.copy(messagesLoading = false)
+                InboxResult.SignedOut -> uiState = uiState.copy(
+                    messagesLoading = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    fun closeThread() {
+        uiState = uiState.copy(
+            conversation = null,
+            messages = emptyList(),
+            messageDraft = "",
+            unsentMessage = null,
+            messageCode = null
+        )
+        // The thread may have been read, so the list's unread counts are stale.
+        if (uiState.inboxTab == GoodPostInboxTab.Messages) loadInbox()
+    }
+
+    fun onMessageDraftChange(value: String) {
+        uiState = uiState.copy(messageDraft = value, unsentMessage = null, messageCode = null)
+    }
+
+    fun sendMessage() {
+        val source = inbox ?: return
+        val conversation = uiState.conversation ?: return
+        val text = uiState.messageDraft.trim()
+        if (text.isEmpty() || uiState.sendingMessage) return
+
+        viewModelScope.launch {
+            uiState = uiState.copy(sendingMessage = true, messageCode = null)
+
+            when (val result = source.sendMessage(conversation.id, text)) {
+                is InboxResult.Ok -> uiState = uiState.copy(
+                    messages = uiState.messages + result.value,
+                    messageDraft = "",
+                    sendingMessage = false,
+                    unsentMessage = null
+                )
+
+                is InboxResult.Failed -> uiState = uiState.copy(
+                    sendingMessage = false,
+                    // The draft is KEPT and reported as unsent, so a failed
+                    // send never loses what the user wrote (§36).
+                    unsentMessage = text,
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState = uiState.copy(sendingMessage = false)
+                InboxResult.SignedOut -> uiState = uiState.copy(
+                    sendingMessage = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    /** §16: the channel side blocking or unblocking one thread. */
+    fun toggleConversationBlock() {
+        val source = inbox ?: return
+        val conversation = uiState.conversation ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(sendingMessage = true, messageCode = null)
+
+            val result = source.setConversationBlocked(conversation.id, !conversation.blocked)
+            uiState = when (result) {
+                is InboxResult.Ok -> uiState.copy(
+                    conversation = result.value,
+                    sendingMessage = false
+                )
+
+                is InboxResult.Failed -> uiState.copy(
+                    sendingMessage = false,
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState.copy(sendingMessage = false)
+                InboxResult.SignedOut -> uiState.copy(
+                    sendingMessage = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    // ── A channel's own inbox (§16) ─────────────────────────────────────
+
+    fun openChannelInbox(channelId: String) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(inboxLoading = true, messageCode = null)
+
+            when (val result = source.channelConversations(channelId)) {
+                is InboxResult.Ok -> uiState = uiState.copy(
+                    channelInbox = result.value,
+                    channelInboxId = channelId,
+                    inboxLoading = false
+                )
+
+                is InboxResult.Failed -> uiState = uiState.copy(
+                    inboxLoading = false,
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState = uiState.copy(inboxLoading = false)
+                InboxResult.SignedOut -> uiState = uiState.copy(
+                    inboxLoading = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    fun closeChannelInbox() {
+        uiState = uiState.copy(channelInbox = null, channelInboxId = null)
+    }
+
+    /**
+     * Put a channel's own analytics on screen.
+     *
+     * The window is left to the server's `ANALYTICS_WINDOW_DAYS`: it is a
+     * deployment setting, and duplicating the number here would leave the two
+     * disagreeing the day it is tuned.
+     */
+    fun openAnalytics(channelId: String) {
+        val source = engagement ?: return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                analyticsLoading = true,
+                analyticsChannelId = channelId,
+                messageCode = null
+            )
+
+            when (val result = source.analytics(channelId)) {
+                is EngagementResult.Ok -> uiState = uiState.copy(
+                    analytics = result.value,
+                    analyticsLoading = false
+                )
+
+                is EngagementResult.Failed -> uiState = uiState.copy(
+                    analyticsLoading = false,
+                    analyticsChannelId = null,
+                    messageCode = result.code
+                )
+
+                EngagementResult.SignedOut -> uiState = uiState.copy(
+                    analyticsLoading = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    fun closeAnalytics() {
+        uiState = uiState.copy(analytics = null, analyticsChannelId = null)
+    }
+
+    // ── Reactions, polls and views (§13, §14, §15) ──────────────────────
+
+    /**
+     * React, change a reaction, or clear it by tapping the same one again.
+     *
+     * The counts come back from the server rather than being nudged locally, so
+     * two people reacting at the same moment cannot leave the number wrong.
+     */
+    fun react(post: GoodPostPost, reaction: String) {
+        val source = engagement ?: return
+        if (uiState.busyReactionPostId != null) return
+
+        val next = if (post.engagement.viewerReaction == reaction) null else reaction
+
+        viewModelScope.launch {
+            uiState = uiState.copy(busyReactionPostId = post.id, messageCode = null)
+
+            when (val result = source.react(post.id, next)) {
+                is EngagementResult.Ok -> uiState = uiState.copy(
+                    feed = GoodPostPostCodec.replaceEngagement(
+                        uiState.feed,
+                        post.id,
+                        GoodPostEngagementCodec.withReaction(post.engagement, result.value)
+                    ),
+                    channelPosts = GoodPostPostCodec.replaceEngagement(
+                        uiState.channelPosts,
+                        post.id,
+                        GoodPostEngagementCodec.withReaction(post.engagement, result.value)
+                    ),
+                    busyReactionPostId = null
+                )
+
+                is EngagementResult.Failed -> uiState = uiState.copy(
+                    busyReactionPostId = null,
+                    messageCode = result.code
+                )
+
+                EngagementResult.SignedOut -> uiState = uiState.copy(
+                    busyReactionPostId = null,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    /** §14 vote, or change a vote. The fresh aggregate replaces the poll. */
+    fun vote(post: GoodPostPost, optionIds: List<String>) {
+        val source = engagement ?: return
+        val poll = post.engagement.poll ?: return
+        if (uiState.votingPollId != null || optionIds.isEmpty()) return
+        if (poll.isClosed) {
+            uiState = uiState.copy(messageCode = "poll_closed")
+            return
+        }
+
+        viewModelScope.launch {
+            uiState = uiState.copy(votingPollId = poll.id, messageCode = null)
+
+            when (val result = source.vote(poll.id, optionIds)) {
+                is EngagementResult.Ok -> uiState = uiState.copy(
+                    feed = GoodPostPostCodec.replaceEngagement(
+                        uiState.feed,
+                        post.id,
+                        GoodPostEngagementCodec.withPoll(post.engagement, result.value)
+                    ),
+                    channelPosts = GoodPostPostCodec.replaceEngagement(
+                        uiState.channelPosts,
+                        post.id,
+                        GoodPostEngagementCodec.withPoll(post.engagement, result.value)
+                    ),
+                    votingPollId = null
+                )
+
+                is EngagementResult.Failed -> uiState = uiState.copy(
+                    votingPollId = null,
+                    messageCode = result.code
+                )
+
+                EngagementResult.SignedOut -> uiState = uiState.copy(
+                    votingPollId = null,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    /**
+     * §15 tell the server a post was seen.
+     *
+     * Fire-and-forget by design: a view that could not be counted must not put
+     * an error in front of someone who was only reading. The server's own
+     * dedupe window decides whether the look moves the number, and the answer
+     * is folded back in only when it does.
+     */
+    fun pingView(postId: String) {
+        val source = engagement ?: return
+        if (uiState.viewedPostIds.contains(postId)) return
+
+        // Recorded BEFORE the request, so a recomposition cannot queue a second
+        // ping for the same post while the first is still in flight.
+        uiState = uiState.copy(viewedPostIds = uiState.viewedPostIds + postId)
+
+        viewModelScope.launch {
+            when (val result = source.recordView(postId)) {
+                is EngagementResult.Ok -> {
+                    if (!result.value.counted) return@launch
+                    val current = uiState.feed.firstOrNull { it.id == postId }
+                        ?: uiState.channelPosts.firstOrNull { it.id == postId }
+                        ?: return@launch
+                    uiState = uiState.copy(
+                        feed = GoodPostPostCodec.replaceEngagement(
+                            uiState.feed,
+                            postId,
+                            GoodPostEngagementCodec.withView(current.engagement, result.value)
+                        ),
+                        channelPosts = GoodPostPostCodec.replaceEngagement(
+                            uiState.channelPosts,
+                            postId,
+                            GoodPostEngagementCodec.withView(current.engagement, result.value)
+                        )
+                    )
+                }
+
+                // Deliberately silent: a failed view ping is not the user's
+                // problem, and the post stays readable either way.
+                is EngagementResult.Failed -> Unit
+                EngagementResult.SignedOut -> Unit
+            }
+        }
+    }
+
+    // ── Reports (§18) ───────────────────────────────────────────────────
+
+    fun startReport(type: String, id: String, label: String) {
+        if (!GoodPostReportTarget.isKnown(type)) {
+            uiState = uiState.copy(messageCode = "invalid_target_type")
+            return
+        }
+        uiState = uiState.copy(
+            reportTarget = GoodPostReportTargetRef(type, id, label),
+            reportSent = false,
+            messageCode = null
+        )
+    }
+
+    fun cancelReport() {
+        uiState = uiState.copy(reportTarget = null, reporting = false)
+    }
+
+    fun dismissReportSent() {
+        uiState = uiState.copy(reportSent = false)
+    }
+
+    /**
+     * File the report (§18).
+     *
+     * The reason is the server's own wire value, chosen from a fixed list, so a
+     * client cannot invent one the API refuses. Success is only reported once
+     * the server has accepted it (§36).
+     */
+    fun submitReport(reason: String, details: String?) {
+        val source = inbox ?: return
+        val target = uiState.reportTarget ?: return
+        if (uiState.reporting) return
+
+        viewModelScope.launch {
+            uiState = uiState.copy(reporting = true, messageCode = null)
+
+            when (val result = source.report(target.type, target.id, reason, details)) {
+                is InboxResult.Ok -> uiState = uiState.copy(
+                    reporting = false,
+                    reportTarget = null,
+                    reportSent = true
+                )
+
+                is InboxResult.Failed -> uiState = uiState.copy(
+                    reporting = false,
+                    // The dialog stays open with its reason selected: losing that
+                    // over a network blip would mean doing it again from scratch.
+                    messageCode = result.code
+                )
+
+                is InboxResult.Stale -> uiState = uiState.copy(reporting = false)
+                InboxResult.SignedOut -> uiState = uiState.copy(
+                    reporting = false,
+                    signedOut = true
+                )
+            }
+        }
+    }
+
+    /** §12 block another account, which also ends any thread with them. */
+    fun blockUser(userId: String) {
+        val source = inbox ?: return
+        viewModelScope.launch {
+            when (val result = source.setUserBlocked(userId, true)) {
+                is InboxResult.Ok -> {
+                    uiState = uiState.copy(
+                        conversation = null,
+                        messages = emptyList()
+                    )
+                    loadInbox()
+                }
+
+                is InboxResult.Failed -> uiState = uiState.copy(messageCode = result.code)
+                is InboxResult.Stale -> Unit
+                InboxResult.SignedOut -> uiState = uiState.copy(signedOut = true)
+            }
+        }
+    }
+
+    // ── Push registration (§17) ─────────────────────────────────────────
+
+    /**
+     * Give the server this device's push token, if one exists yet.
+     *
+     * Best-effort: a device that cannot register simply does not ring, and the
+     * inbox still fills. Failing the sign-in over it would make an optional
+     * delivery address look essential.
+     */
+    fun registerPushToken() {
+        val source = inbox ?: return
+        val context = appContext ?: return
+        val token = GoodPostPushTokens(context).current() ?: return
+
+        viewModelScope.launch { source.registerDevice(token) }
     }
 
     // ── Channels list (§4) ──────────────────────────────────────────────
@@ -185,6 +971,32 @@ class GoodPostHomeViewModel : ViewModel() {
 
             GoodPostSection.Channels -> loadFollowing()
             GoodPostSection.Discover -> search()
+            GoodPostSection.Inbox -> loadInbox()
+        }
+    }
+
+    /**
+     * Which channels this account already owns.
+     *
+     * Decides whether the home screen offers to create one. The server is the
+     * authority (§32) and refuses a second channel anyway; this only keeps the
+     * UI from offering an action it knows will be rejected.
+     */
+    private fun loadOwnChannels() {
+        val source = repo ?: return
+        viewModelScope.launch {
+            when (val result = source.managed()) {
+                is ChannelsResult.Ok -> uiState = uiState.copy(ownChannels = result.value)
+
+                // A refusal here must not block the screen: the create action
+                // stays available and the server decides. Silence is right for
+                // everything except an outright signed-out answer.
+                is ChannelsResult.Failed -> Unit
+
+                is ChannelsResult.Stale -> Unit
+
+                ChannelsResult.SignedOut -> uiState = uiState.copy(signedOut = true)
+            }
         }
     }
 
@@ -410,6 +1222,56 @@ class GoodPostHomeViewModel : ViewModel() {
         uiState = uiState.copy(channel = null, messageCode = null)
     }
 
+    /**
+     * Follow or unfollow from a LIST, without opening the channel first.
+     *
+     * A channel search shows a Follow button, which is the whole point of the
+     * screen: someone browsing should be able to subscribe without a detour
+     * through the channel page. Nothing is claimed until the server answers —
+     * a rejected follow leaves the row exactly as it was, and [messageCode]
+     * carries the reason.
+     */
+    fun setFollowingFromList(channel: GoodPostChannel, following: Boolean) {
+        if (uiState.busyChannelId != null) return
+
+        mutate(channel) { source ->
+            when (val result = source.setFollowing(channel.id, following)) {
+                is ChannelsResult.Ok -> {
+                    val updated = channel.copy(
+                        isFollowing = result.value.following,
+                        followerCount = result.value.followerCount,
+                        notificationsEnabled = if (result.value.following) {
+                            channel.notificationsEnabled
+                        } else {
+                            false
+                        }
+                    )
+
+                    uiState = uiState.copy(
+                        // The search result keeps its place either way — it is a
+                        // result of a query, not a membership list, so removing
+                        // the row on unfollow would make the list jump under
+                        // the finger that just tapped it.
+                        discover = GoodPostChannelCodec.mergePage(uiState.discover, listOf(updated)),
+                        following = if (result.value.following) {
+                            GoodPostChannelCodec.mergePage(uiState.following, listOf(updated))
+                        } else {
+                            GoodPostChannelCodec.remove(uiState.following, updated.id)
+                        },
+                        channel = uiState.channel?.let { open ->
+                            if (open.id == updated.id) updated else open
+                        },
+                        messageCode = null
+                    )
+                }
+
+                is ChannelsResult.Failed -> uiState = uiState.copy(messageCode = result.code)
+                is ChannelsResult.Stale -> Unit
+                ChannelsResult.SignedOut -> uiState = uiState.copy(signedOut = true)
+            }
+        }
+    }
+
     fun toggleFollow() {
         val channel = uiState.channel ?: return
         mutate(channel) { source ->
@@ -534,8 +1396,11 @@ class GoodPostHomeViewModel : ViewModel() {
                         messageCode = null
                     )
                     // A new channel starts in the Discover pool and in the
-                    // owner's own list, so reflect it without a full refetch.
+                    // owner's own list, so reflect it without a full refetch —
+                    // and the account now owns one, which is what hides the
+                    // create action from here on.
                     loadFollowing()
+                    loadOwnChannels()
                 }
 
                 is ChannelsResult.Failed -> uiState = uiState.copy(
@@ -567,7 +1432,13 @@ class GoodPostHomeViewModel : ViewModel() {
         uiState = uiState.copy(editing = false, messageCode = null)
     }
 
-    fun saveEdit(name: String, description: String?, clearDescription: Boolean, categorySlug: String?) {
+    fun saveEdit(
+        name: String,
+        description: String?,
+        clearDescription: Boolean,
+        categorySlug: String?,
+        allowFollowerMessages: Boolean? = null
+    ) {
         val channel = uiState.channel ?: return
         val source = repo ?: return
 
@@ -579,7 +1450,8 @@ class GoodPostHomeViewModel : ViewModel() {
                 name = name.takeIf { it.isNotBlank() },
                 description = description,
                 clearDescription = clearDescription,
-                categorySlug = categorySlug
+                categorySlug = categorySlug,
+                allowFollowerMessages = allowFollowerMessages
             )
 
             when (result) {
@@ -628,6 +1500,23 @@ class GoodPostHomeViewModel : ViewModel() {
     fun clearCaches() {
         repository?.clearCache()
         postsRepository?.clearCache()
+        inboxRepository?.clearCache()
+    }
+
+    /**
+     * Stop pushing to this device, then forget the session.
+     *
+     * The order matters: unregistering needs a live token, so it must happen
+     * before the token store is cleared by sign-out. A failure here is ignored —
+     * a device that keeps its address is far better than a sign-out that cannot
+     * complete, and the next account to sign in on this handset moves the token
+     * anyway (§17).
+     */
+    fun unregisterPushToken() {
+        val source = inbox ?: return
+        val context = appContext ?: return
+        val token = GoodPostPushTokens(context).current() ?: return
+        viewModelScope.launch { source.unregisterDevice(token) }
     }
 
     // ── The aggregated feed (§4) ────────────────────────────────────────
@@ -754,6 +1643,10 @@ class GoodPostHomeViewModel : ViewModel() {
             composerLink = "",
             composerLinkTitle = "",
             composerAttachments = emptyList(),
+            composerPollMode = false,
+            composerPollQuestion = "",
+            composerPollOptions = listOf("", ""),
+            composerPollMultiple = false,
             messageCode = null
         )
     }
@@ -766,8 +1659,61 @@ class GoodPostHomeViewModel : ViewModel() {
             composerBody = "",
             composerLink = "",
             composerLinkTitle = "",
+            composerPollMode = false,
+            composerPollQuestion = "",
+            composerPollOptions = listOf("", ""),
+            composerPollMultiple = false,
             messageCode = null
         )
+    }
+
+    /** Switch the composer between a file post and a poll (§14). */
+    fun setComposerPollMode(enabled: Boolean) {
+        uiState = uiState.copy(
+            composerPollMode = enabled,
+            // Turning the poll on drops any attachment, because the server
+            // refuses a poll that also carries a file. Leaving it attached
+            // would build a request that cannot succeed.
+            composerAttachments = if (enabled) emptyList() else uiState.composerAttachments,
+            messageCode = null
+        )
+    }
+
+    fun onPollQuestionChange(value: String) {
+        uiState = uiState.copy(composerPollQuestion = value, messageCode = null)
+    }
+
+    fun onPollOptionChange(index: Int, value: String) {
+        val options = uiState.composerPollOptions.toMutableList()
+        if (index !in options.indices) return
+        options[index] = value
+        uiState = uiState.copy(composerPollOptions = options, messageCode = null)
+    }
+
+    /** Add an option, up to the server's own ceiling. */
+    fun addPollOption() {
+        // The ceiling is the server's `POLL_MAX_OPTIONS`. Stopping here keeps
+        // the user from filling in an option the API would reject, and the
+        // number has to live somewhere — this is the only place a client-side
+        // copy of a product limit is worth having.
+        if (uiState.composerPollOptions.size >= MAX_POLL_OPTIONS) return
+        uiState = uiState.copy(
+            composerPollOptions = uiState.composerPollOptions + "",
+            messageCode = null
+        )
+    }
+
+    fun removePollOption(index: Int) {
+        // Two is the floor: a single-option poll is not a question, and the
+        // server refuses it (`too_few_options`).
+        if (uiState.composerPollOptions.size <= 2 || index !in uiState.composerPollOptions.indices) return
+        val options = uiState.composerPollOptions.toMutableList()
+        options.removeAt(index)
+        uiState = uiState.copy(composerPollOptions = options, messageCode = null)
+    }
+
+    fun setPollMultiple(enabled: Boolean) {
+        uiState = uiState.copy(composerPollMultiple = enabled, messageCode = null)
     }
 
     fun onComposerBodyChange(value: String) {
@@ -795,7 +1741,6 @@ class GoodPostHomeViewModel : ViewModel() {
      * taps Post would make the button look stuck.
      */
     fun attachMedia(uri: android.net.Uri) {
-        val source = posts ?: return
         val context = appContext ?: return
         if (uiState.uploadingAttachment) return
 
@@ -804,6 +1749,80 @@ class GoodPostHomeViewModel : ViewModel() {
             uiState = uiState.copy(messageCode = "file_unreadable")
             return
         }
+
+        upload(request)
+    }
+
+    // ── The editor ──────────────────────────────────────────────────────
+
+    /**
+     * Open the editor on a picture the user just picked.
+     *
+     * The decode happens off the main thread and the result is held as a
+     * BITMAP rather than a URI, because the editor renders that bitmap on every
+     * slider move: re-decoding the file each time would make the sliders stutter
+     * on exactly the photos people bother to edit.
+     */
+    fun beginEditImage(uri: android.net.Uri) {
+        val context = appContext ?: return
+        if (uiState.editingImage != null) return
+
+        viewModelScope.launch {
+            uiState = uiState.copy(editingImageLoading = true, messageCode = null)
+
+            val editable = withContext(Dispatchers.IO) { EditableBitmap.decode(context, uri) }
+
+            uiState = if (editable == null) {
+                uiState.copy(editingImageLoading = false, messageCode = "file_unreadable")
+            } else {
+                uiState.copy(editingImage = editable, editingImageLoading = false)
+            }
+        }
+    }
+
+    /** Close the editor without uploading, and release the decoded bitmap. */
+    fun cancelEditImage() {
+        uiState.editingImage?.bitmap?.recycle()
+        uiState = uiState.copy(editingImage = null, editingImageLoading = false)
+    }
+
+    /**
+     * Render the edit and upload the result.
+     *
+     * The rendered file is what goes to S3 — the edit is not a recipe the server
+     * is asked to replay (§ media). The original never leaves the device, and the
+     * cache copy is the app's to reclaim.
+     */
+    fun finishEditImage(state: EditState) {
+        val context = appContext ?: return
+        val source = uiState.editingImage ?: return
+        if (uiState.editingImageSaving) return
+
+        viewModelScope.launch {
+            uiState = uiState.copy(editingImageSaving = true, messageCode = null)
+
+            val file = withContext(Dispatchers.IO) { source.render(context, state) }
+
+            if (file == null) {
+                uiState = uiState.copy(
+                    editingImageSaving = false,
+                    messageCode = "file_unreadable"
+                )
+                return@launch
+            }
+
+            // The editor closes before the upload runs, so the user is back in
+            // the composer with the attachment's own progress line rather than
+            // watching two spinners at once.
+            source.bitmap.recycle()
+            uiState = uiState.copy(editingImage = null, editingImageSaving = false)
+            upload(uploadRequestForFile(file))
+        }
+    }
+
+    private fun upload(request: MediaUploadRequest) {
+        val source = posts ?: return
+        if (uiState.uploadingAttachment) return
 
         viewModelScope.launch {
             uiState = uiState.copy(uploadingAttachment = true, messageCode = null)
@@ -857,7 +1876,12 @@ class GoodPostHomeViewModel : ViewModel() {
                 body = uiState.composerBody.ifBlank { null },
                 linkUrl = uiState.composerLink.ifBlank { null },
                 linkTitle = uiState.composerLinkTitle.ifBlank { null },
-                mediaIds = uiState.composerAttachments.map { it.id }
+                mediaIds = uiState.composerAttachments.map { it.id },
+                poll = if (!uiState.composerPollMode) null else PollDraft(
+                    question = uiState.composerPollQuestion.trim(),
+                    options = uiState.composerPollOptions.map { it.trim() }.filter { it.isNotEmpty() },
+                    allowMultiple = uiState.composerPollMultiple
+                )
             )
 
             when (result) {
@@ -870,6 +1894,10 @@ class GoodPostHomeViewModel : ViewModel() {
                         composerLink = "",
                         composerLinkTitle = "",
                         composerAttachments = emptyList(),
+                        composerPollMode = false,
+                        composerPollQuestion = "",
+                        composerPollOptions = listOf("", ""),
+                        composerPollMultiple = false,
                         messageCode = null
                     )
                     // Reload rather than prepend: the new post's position and
@@ -1025,6 +2053,49 @@ class GoodPostHomeViewModel : ViewModel() {
      * than in this state, so a restart would otherwise make every saved asset
      * look unsaved and offer to download it again.
      */
+    // ── Appearance ──────────────────────────────────────────────────────
+
+    fun openAppearance() {
+        uiState = uiState.copy(appearanceOpen = true, theme = GoodPostThemeStore.current)
+    }
+
+    fun closeAppearance() {
+        uiState = uiState.copy(appearanceOpen = false)
+    }
+
+    /**
+     * Apply a theme change.
+     *
+     * Written straight to the store and mirrored into state in the same call, so
+     * the swatch, the screen behind the sheet and the saved preference cannot
+     * disagree — a preference that only takes effect next launch looks like a
+     * button that did nothing.
+     */
+    private fun applyTheme(theme: GoodPostTheme) {
+        val context = appContext ?: return
+        GoodPostThemeStore.save(context, theme)
+        uiState = uiState.copy(theme = theme)
+    }
+
+    fun selectAccent(accent: AccentChoice) = applyTheme(uiState.theme.copy(accent = accent))
+
+    fun selectBackdrop(backdrop: BackdropChoice) =
+        applyTheme(uiState.theme.copy(backdrop = backdrop))
+
+    fun selectGlass(glass: GlassChoice) = applyTheme(uiState.theme.copy(glass = glass))
+
+    /**
+     * Mark a piece of media as looked at, so it stops being blurred.
+     *
+     * Idempotent, and never reaches the server: what the reader looked at is not
+     * something the server needs, and §15's view tracking is about posts, not
+     * about which picture someone opened.
+     */
+    fun revealMedia(mediaId: String) {
+        if (mediaId.isEmpty() || uiState.revealedMediaIds.contains(mediaId)) return
+        uiState = uiState.copy(revealedMediaIds = uiState.revealedMediaIds + mediaId)
+    }
+
     fun refreshSavedMedia() {
         val source = posts ?: return
         val visible = (uiState.feed + uiState.channelPosts).flatMap { it.media }

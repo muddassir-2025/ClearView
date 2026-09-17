@@ -12,10 +12,22 @@ import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
 import com.google.firebase.auth.PhoneAuthCredential
 import com.google.firebase.auth.PhoneAuthOptions
 import com.google.firebase.auth.PhoneAuthProvider
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+
+/**
+ * Serialises refresh-token rotation across the whole process.
+ *
+ * A file-level value rather than a field, because there is more than one
+ * [GoodPostAuthRepository]: the channels, posts, engagement and inbox data
+ * layers each build their own, and they all rotate the SAME stored refresh
+ * token. A per-instance lock would leave exactly the race it exists to stop.
+ */
+private val sessionRefreshMutex = Mutex()
 
 /** Outcome of starting phone verification. */
 sealed interface StartResult {
@@ -54,6 +66,16 @@ sealed interface AuthResult {
 
     /** The number is verified but has no account yet — collect a name/email. */
     data class NeedsRegistration(val idToken: String) : AuthResult
+
+    /**
+     * The address is proven but has no account yet — collect a name.
+     *
+     * Separate from [NeedsRegistration] on purpose: the phone step needs a
+     * token to finish with, the email step needs the code the user already
+     * typed, and collapsing the two would mean carrying whichever one happens
+     * to be null and hoping the UI works out which flow it is in.
+     */
+    data class NeedsEmailRegistration(val email: String) : AuthResult
 
     /**
      * [code] is a server error code (`phone_banned`, `otp_rate_limited`, …),
@@ -270,10 +292,19 @@ class GoodPostAuthRepository(
      * to submit against; with email the server owns the whole exchange, so the
      * client's only job is to carry the address and then the digits.
      */
-    suspend fun startEmailVerification(email: String): EmailStartResult {
+    suspend fun startEmailVerification(
+        email: String,
+        signingUp: Boolean = false
+    ): EmailStartResult {
         if (!api.isConfigured) return EmailStartResult.Failed("not_configured")
 
-        return when (val result = api.requestEmailOtp(email)) {
+        // The sign-up screen says `register` up front; the sign-in screen says
+        // nothing. Both get the same code either way, but declaring the intent
+        // keeps the challenge ledger honest and lets a resend after
+        // `email_not_registered` still be a single decision for the user.
+        val purpose = if (signingUp) PURPOSE_REGISTER else null
+
+        return when (val result = api.requestEmailOtp(email, purpose)) {
             is ApiResult.Ok -> EmailStartResult.Sent
             is ApiResult.Failed -> {
                 Log.w(TAG, "Email OTP request refused: ${result.code}")
@@ -286,11 +317,10 @@ class GoodPostAuthRepository(
     /**
      * Exchange an emailed code for a session.
      *
-     * Always signs in or fails — it can never answer [AuthResult.NeedsRegistration],
-     * and that is a property of the design rather than an omission: §19 makes
-     * the mobile number the abuse identity, so an email address may open an
-     * existing account and may never create one. The server has no endpoint
-     * that would register from an address, so neither does this client.
+     * Signs in, or answers [AuthResult.NeedsEmailRegistration] when the address
+     * is proven but has no account. Nothing is created here: the code has only
+     * been spent on a *lookup*, and the account itself is [registerWithEmail]'s
+     * job, which the server gates on the same challenge.
      */
     suspend fun submitEmailCode(email: String, code: String): AuthResult =
         when (val result = api.emailSignIn(email, code.trim(), DEVICE_LABEL)) {
@@ -300,6 +330,36 @@ class GoodPostAuthRepository(
                 // wording, and the code is the only thing that says which of
                 // half a dozen causes it actually was.
                 Log.w(TAG, "Backend refused email sign-in: ${result.code} (http=${result.status})")
+
+                // `email_not_registered` is the one refusal that is not an
+                // error: the code was right, the inbox is proven, and the only
+                // thing missing is an account. The ViewModel turns this into
+                // the name step instead of a red message.
+                if (result.code == "email_not_registered") {
+                    AuthResult.NeedsEmailRegistration(email)
+                } else {
+                    AuthResult.Failed(result.code)
+                }
+            }
+            ApiResult.Unreachable -> AuthResult.Failed("unreachable")
+        }
+
+    /**
+     * Step 3 by email: the same proven code, plus the name to publish under.
+     *
+     * The server re-checks that the address is still free and consumes the
+     * challenge inside one transaction, so this cannot be turned into a way to
+     * take over an existing account.
+     */
+    suspend fun registerWithEmail(
+        email: String,
+        code: String,
+        displayName: String
+    ): AuthResult =
+        when (val result = api.emailRegister(email, code.trim(), displayName.trim(), DEVICE_LABEL)) {
+            is ApiResult.Ok -> persist(result.value)
+            is ApiResult.Failed -> {
+                Log.w(TAG, "Backend refused email registration: ${result.code} (http=${result.status})")
                 AuthResult.Failed(result.code)
             }
             ApiResult.Unreachable -> AuthResult.Failed("unreachable")
@@ -321,17 +381,37 @@ class GoodPostAuthRepository(
         val stored = store.load() ?: return null
         if (!GoodPostSessionCodec.isExpired(stored, System.currentTimeMillis())) return stored
 
-        return when (val refreshed = api.refresh(stored.refreshToken, DEVICE_LABEL)) {
-            is ApiResult.Ok -> {
-                store.save(refreshed.value)
-                refreshed.value
+        // One refresh at a time, and the token is re-read INSIDE the lock.
+        //
+        // The server rotates the refresh token on every use and treats a
+        // second presentation of a rotated token as a stolen credential —
+        // revoking the session. Opening Good Post asks for a session from five
+        // places at once (categories, follows, feed, inbox, push), so without
+        // this the app would reliably sign itself out the moment an access
+        // token expired: four of the five would replay the pre-rotation token.
+        //
+        // Re-reading under the lock is what makes the waiters cheap: whoever
+        // loses the race finds the token the winner just stored and returns it
+        // instead of rotating again.
+        return sessionRefreshMutex.withLock {
+            val current = store.load()
+            if (current == null) return@withLock null
+            if (!GoodPostSessionCodec.isExpired(current, System.currentTimeMillis())) {
+                return@withLock current
             }
-            is ApiResult.Failed -> {
-                Log.i(TAG, "Session refresh refused (${refreshed.code}); signing out")
-                store.clear()
-                null
+
+            when (val refreshed = api.refresh(current.refreshToken, DEVICE_LABEL)) {
+                is ApiResult.Ok -> {
+                    store.save(refreshed.value)
+                    refreshed.value
+                }
+                is ApiResult.Failed -> {
+                    Log.i(TAG, "Session refresh refused (${refreshed.code}); signing out")
+                    store.clear()
+                    null
+                }
+                ApiResult.Unreachable -> current
             }
-            ApiResult.Unreachable -> stored
         }
     }
 

@@ -33,6 +33,25 @@ data class GoodPostChannel(
     /** `owner` / `editor` / `responder`, or null when the viewer holds none. */
     val viewerRole: String?,
     val hasUnread: Boolean,
+
+    /**
+     * When the channel last published, as an ISO timestamp.
+     *
+     * A channel row reads like a chat row — "3:45 PM" beside the preview — and
+     * this is where that time comes from. Null means it has never posted, which
+     * is a state worth saying rather than rendering as 1970.
+     */
+    val lastPostAt: String? = null,
+
+    /**
+     * The opening of the newest post's text, if any (§4).
+     *
+     * The second line of a row. Null for a channel whose newest post is only
+     * media or a poll, which is why the row falls back to the description
+     * rather than showing an empty line.
+     */
+    val lastPostPreview: String? = null,
+
     /** Present only on the detail payload; null in list payloads. */
     val status: String? = null
 ) {
@@ -103,6 +122,8 @@ internal object GoodPostChannelCodec {
             isBlocked = json.optBoolean("isBlocked", false),
             viewerRole = json.nullableString("viewerRole"),
             hasUnread = json.optBoolean("hasUnread", false),
+            lastPostAt = json.nullableString("lastPostAt"),
+            lastPostPreview = json.nullableString("lastPostPreview"),
             status = json.nullableString("status")
         )
     }
@@ -220,6 +241,8 @@ internal object GoodPostChannelCodec {
         put("isBlocked", channel.isBlocked)
         put("viewerRole", channel.viewerRole ?: JSONObject.NULL)
         put("hasUnread", channel.hasUnread)
+        put("lastPostAt", channel.lastPostAt ?: JSONObject.NULL)
+        put("lastPostPreview", channel.lastPostPreview ?: JSONObject.NULL)
         put("status", channel.status ?: JSONObject.NULL)
     }
 

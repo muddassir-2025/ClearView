@@ -391,6 +391,13 @@ describe('private message fan-out (§16, §17)', () => {
     const channel = await createChannel(a, { name: 'Closed Door' });
     await follow(b, channel.id);
 
+    // The channel starts out accepting messages (§16 defaults to on), so the
+    // owner closes the door first — that refusal is what this covers.
+    await request(app)
+      .patch(`/api/v1/channels/${channel.id}`)
+      .set(authed(a.accessToken))
+      .send({ allowFollowerMessages: false });
+
     const refused = await request(app)
       .post(`/api/v1/channels/${channel.id}/conversations`)
       .set(authed(b.accessToken));

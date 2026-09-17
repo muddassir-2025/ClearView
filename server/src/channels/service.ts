@@ -53,6 +53,21 @@ export interface ChannelSummary {
   readonly allowFollowerMessages: boolean;
   readonly createdAt: string;
   readonly lastPostAt: string | null;
+  /**
+   * What the channel last published, so a list row can say it.
+   *
+   * `lastPostType` is the post's own type (`text`, `link`, …) or `poll` when
+   * the post carries one — poll-ness is a property of the post's content
+   * rather than of its `type` column, so the distinction is derived here
+   * instead of being guessed by the client.
+   *
+   * `lastPostPreview` is the opening of the body, trimmed to one line's worth
+   * server-side because the only consumer is a single-line row. Null when the
+   * last post has no text at all, which is a photo or a video and is described
+   * by its type.
+   */
+  readonly lastPostType: string | null;
+  readonly lastPostPreview: string | null;
   /** App deep link (§6). See the note on [channelShareLink]. */
   readonly shareLink: string;
 }
@@ -82,6 +97,35 @@ const CHANNEL_COLUMNS = `
 `;
 
 /**
+ * The last visible post, for a row's preview.
+ *
+ * A lateral join rather than a correlated subquery per column: three scalar
+ * subqueries would each re-plan the same ORDER BY, and the point of a preview
+ * is that it costs one index scan over `posts`, not three.
+ *
+ * `deleted_at IS NULL` matches every other read of posts, so a preview can
+ * never advertise something the reader cannot open.
+ */
+const LAST_POST_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT p.type AS preview_type,
+           LEFT(BTRIM(COALESCE(p.body, '')), 120) AS preview_body,
+           EXISTS (SELECT 1 FROM polls po WHERE po.post_id = p.id) AS preview_is_poll
+      FROM posts p
+     WHERE p.channel_id = c.id AND p.deleted_at IS NULL
+     ORDER BY p.created_at DESC, p.id DESC
+     LIMIT 1
+  ) lp ON true
+`;
+
+/** Columns [LAST_POST_JOIN] adds. Null when the channel has no visible post. */
+const LAST_POST_COLUMNS = `
+  lp.preview_type AS last_post_type,
+  NULLIF(lp.preview_body, '') AS last_post_preview,
+  COALESCE(lp.preview_is_poll, false) AS last_post_is_poll
+`;
+
+/**
  * A channel row with the extra columns every payload needs.
  *
  * Exported because the posts module reuses [loadViewable] and [roleOf] rather
@@ -106,6 +150,14 @@ export interface ChannelRow {
   last_post_at: unknown;
   created_at: unknown;
   activity_at: unknown;
+  /**
+   * From [LAST_POST_JOIN], and therefore OPTIONAL: the channel-creation and
+   * single-channel-authorization reads deliberately do not pay for it. Undefined
+   * maps to null, which is the same answer a channel with no posts gives.
+   */
+  last_post_type?: string | null;
+  last_post_preview?: string | null;
+  last_post_is_poll?: boolean;
 }
 
 export type ChannelStatus = 'active' | 'suspended' | 'banned';
@@ -140,6 +192,10 @@ function mapChannel(row: ChannelRow): ChannelSummary {
     allowFollowerMessages: row.allow_follower_messages,
     createdAt: isoOrNull(row.created_at) ?? '',
     lastPostAt: isoOrNull(row.last_post_at),
+    // A poll is described as a poll whatever its `type` column says, because
+    // that is the word a reader recognises on the row.
+    lastPostType: row.last_post_is_poll ? 'poll' : (row.last_post_type ?? null),
+    lastPostPreview: row.last_post_preview ?? null,
     shareLink: channelShareLink(row.slug),
   };
 }
@@ -316,6 +372,7 @@ async function loadChannelDetail(
 ): Promise<ChannelDetail> {
   const row = await database.queryOne<ChannelRow & ViewerStateRow>(
     `SELECT ${CHANNEL_COLUMNS},
+            ${LAST_POST_COLUMNS},
             (f.user_id IS NOT NULL) AS is_following,
             COALESCE(f.notifications_enabled, false) AS notifications_enabled,
             (b.user_id IS NOT NULL) AS is_blocked,
@@ -324,6 +381,7 @@ async function loadChannelDetail(
              AND c.last_post_at > COALESCE(f.last_read_at, f.followed_at)) AS has_unread
        FROM channels c
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
+       ${LAST_POST_JOIN}
        LEFT JOIN channel_followers f ON f.channel_id = c.id AND f.user_id = $2
        LEFT JOIN channel_blocks b ON b.channel_id = c.id AND b.user_id = $2
        LEFT JOIN channel_admins a ON a.channel_id = c.id AND a.user_id = $2
@@ -692,6 +750,7 @@ export async function listFollowing(
 
   const rows = await database.query<ChannelRow & ViewerStateRow>(
     `SELECT ${CHANNEL_COLUMNS},
+            ${LAST_POST_COLUMNS},
             true AS is_following,
             f.notifications_enabled,
             false AS is_blocked,
@@ -705,6 +764,7 @@ export async function listFollowing(
        FROM channel_followers f
        JOIN channels c ON c.id = f.channel_id
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
+       ${LAST_POST_JOIN}
        LEFT JOIN channel_admins a ON a.channel_id = c.id AND a.user_id = $1
       WHERE f.user_id = $1
         AND c.deleted_at IS NULL
@@ -830,9 +890,11 @@ export async function discoverChannels(
   const { orderBy, keyset } = sortOrder(sort, params, cursor);
 
   const rows = await database.query<ChannelRow>(
-    `SELECT ${CHANNEL_COLUMNS}
+    `SELECT ${CHANNEL_COLUMNS},
+            ${LAST_POST_COLUMNS}
        FROM channels c
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
+       ${LAST_POST_JOIN}
       WHERE ${conditions.join('\n        AND ')}
         ${keyset}
       ORDER BY ${orderBy}

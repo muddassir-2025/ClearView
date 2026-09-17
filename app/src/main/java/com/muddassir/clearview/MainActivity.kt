@@ -47,6 +47,7 @@ import com.muddassir.clearview.phonelimit.PhoneLimitCoordinator
 import com.muddassir.clearview.quran.worker.QuranWorkScheduler
 import com.muddassir.clearview.todo.data.TodoNotifier
 import com.muddassir.clearview.todo.data.TodoScheduler
+import com.muddassir.clearview.goodpost.data.GoodPostMessagingService
 import com.muddassir.clearview.goodpost.ui.GoodPostTab
 import com.muddassir.clearview.ui.BlockTab
 import com.muddassir.clearview.ui.ContentHubTabContent
@@ -94,6 +95,10 @@ open class MainActivity : ComponentActivity() {
             intent.removeExtra(TodoNotifier.EXTRA_OPEN_TODO)
             todoRequestState.value = true
         }
+        if (intent.getBooleanExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST, false)) {
+            intent.removeExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST)
+            goodPostRequestState.value = true
+        }
         // Phone Limit deep link (widget START fallback / expiry notification).
         if (intent.getBooleanExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT, false)) {
             intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
@@ -104,6 +109,21 @@ open class MainActivity : ComponentActivity() {
     /** Clears the warm-start request after MainScreen has handled it. */
     fun consumeTodoScreenRequest() {
         todoRequestState.value = false
+    }
+
+    /**
+     * A tapped Good Post notification (§17).
+     *
+     * Only a request to OPEN the tab — the notification itself carries no
+     * content, because the durable row is already in the user's inbox and
+     * reading it from there is what marks it read.
+     */
+    private val goodPostRequestState = mutableStateOf(false)
+    val goodPostScreenRequested: Boolean get() = goodPostRequestState.value
+
+    /** Clears the warm-start request after MainScreen has handled it. */
+    fun consumeGoodPostScreenRequest() {
+        goodPostRequestState.value = false
     }
 
     // ── Phone Limit deep link (widget fallback / expiry notification) ──
@@ -295,6 +315,27 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) {
         viewModel.initialize(context)
         viewModel.checkAccessibilityStatus(context)
+    }
+
+    // A tapped Good Post notification (§17) opens the Good Post tab, from a
+    // cold start or a warm one. It opens the tab and nothing more: the inbox is
+    // where the notification is read, and that is what marks it read.
+    LaunchedEffect(Unit) {
+        if (activity?.intent?.getBooleanExtra(
+                GoodPostMessagingService.EXTRA_OPEN_GOODPOST,
+                false
+            ) == true
+        ) {
+            activity.intent.removeExtra(GoodPostMessagingService.EXTRA_OPEN_GOODPOST)
+            selectedTab = MainTab.GOODPOST
+        }
+    }
+    val goodPostRequested = activity?.goodPostScreenRequested == true
+    LaunchedEffect(goodPostRequested) {
+        if (goodPostRequested) {
+            activity?.consumeGoodPostScreenRequest()
+            selectedTab = MainTab.GOODPOST
+        }
     }
 
     // A shared channel link (§6) opens Good Post with that channel already

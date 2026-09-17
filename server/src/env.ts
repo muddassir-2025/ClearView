@@ -62,8 +62,21 @@ const schema = z.object({
   UPLOAD_CLAIM_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
 
   // ── Product rules ──
-  GOODPOST_HISTORY_DAYS: z.coerce.number().int().positive().default(90),
-  PURGE_GRACE_DAYS: z.coerce.number().int().nonnegative().default(30),
+  // 30 days, and the product rule behind it is the storage model rather than
+  // cost: Good Post keeps the SHORT version of history on the server and the
+  // long version on the device (§10, §11). Anything a user downloaded lives in
+  // their own storage forever and is never touched by this window, so a post
+  // expiring here removes the server's copy and nothing else.
+  GOODPOST_HISTORY_DAYS: z.coerce.number().int().positive().default(30),
+  // How long an expired post's rows survive before the physical delete.
+  //
+  // Zero, because the rule is "nothing sits on the server past the history
+  // window": a post becomes unreadable at exactly `GOODPOST_HISTORY_DAYS` and
+  // the next sweep (every 30 minutes) removes the rows and their objects. A
+  // grace period here would only mean keeping data the product says it does not
+  // keep, and the record that mattered — the moderation history — is written at
+  // the moment of the action, not carried in the post's own row.
+  PURGE_GRACE_DAYS: z.coerce.number().int().nonnegative().default(0),
   EDIT_WINDOW_DAYS: z.coerce.number().int().positive().default(30),
   BAN_PHONE_ENFORCED: bool.default(true),
   MAX_TEXT_LENGTH: z.coerce.number().int().positive().default(4000),
@@ -72,7 +85,11 @@ const schema = z.object({
   DEFAULT_PAGE_SIZE: z.coerce.number().int().positive().default(30),
   MAX_PAGE_SIZE: z.coerce.number().int().positive().default(100),
   DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
-  MAX_CHANNELS_PER_USER: z.coerce.number().int().positive().default(5),
+  // One channel per account. Product decision, not a technical limit: a
+  // broadcaster has a single identity in Discover, so the feed cannot be
+  // flooded by one person registering fifty channels. Raise it only with that
+  // in mind — the create path already refuses past this number.
+  MAX_CHANNELS_PER_USER: z.coerce.number().int().positive().default(1),
 
   // ── Engagement (§13, §14, §15) ──
   // How long a second look at the same post counts as the SAME view. §15 asks

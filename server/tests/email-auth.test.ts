@@ -389,6 +389,161 @@ describe('email sign-in is not a registration path', () => {
   });
 });
 
+// ── Creating an account from an address ────────────────────────────────
+
+const registerWithCode = (code: string, displayName = 'Ayesha', email = EMAIL) =>
+  request(app).post('/api/v1/auth/email/register').send({ email, code, displayName });
+
+describe('registering with an email code', () => {
+  it('creates the account, issues a session and leaves no phone hash', async () => {
+    await requestCode();
+    const res = await registerWithCode(mailer.code());
+
+    expect(res.status).toBe(201);
+    expect(res.body.user.displayName).toBe('Ayesha');
+    expect(res.body.user.email).toBe(EMAIL);
+    expect(res.body.accessToken).toBeTruthy();
+    expect(res.body.refreshToken).toBeTruthy();
+
+    // The access token is a real one: checked by the same middleware every
+    // protected route uses, so this proves more than "JSON was returned".
+    const me = await request(app)
+      .get('/api/v1/auth/me')
+      .set({ Authorization: `Bearer ${res.body.accessToken}` });
+    expect(me.status).toBe(200);
+    expect(me.body.user.id).toBe(res.body.user.id);
+
+    const rows = await pglite.query<{ phone_hash: string | null }>(
+      `SELECT phone_hash FROM users WHERE email_normalized = $1`,
+      [EMAIL]
+    );
+    expect(rows.rows[0]?.phone_hash, 'an email-only account has no number').toBeNull();
+  });
+
+  it('redeems the code the sign-in screen already sent', async () => {
+    // The flow the app walks: ask for a code, try to sign in, hear
+    // `email_not_registered`, then register with that same code. A second code
+    // would be a second mail for a fact the user could not have known.
+    await requestCode();
+    const code = mailer.code();
+
+    const refused = await submitCode(code);
+    expect(refused.status).toBe(404);
+    expect(refused.body.error).toBe('email_not_registered');
+
+    const res = await registerWithCode(code);
+    expect(res.status).toBe(201);
+    expect(mailer.sent, 'no second mail may be needed').toHaveLength(1);
+  });
+
+  it('consumes the challenge, so the same code cannot register twice', async () => {
+    await requestCode();
+    const code = mailer.code();
+    expect((await registerWithCode(code)).status).toBe(201);
+
+    const again = await registerWithCode(code);
+    expect(again.status).toBe(400);
+    expect(again.body.error).toBe('otp_required');
+
+    const users = await pglite.query<{ n: number }>(`SELECT count(*)::int AS n FROM users`);
+    expect(users.rows[0]?.n).toBe(1);
+  });
+
+  it('refuses a wrong code without creating anything', async () => {
+    await requestCode();
+    const wrong = mailer.code() === '000000' ? '111111' : '000000';
+
+    const res = await registerWithCode(wrong);
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe('invalid_code');
+
+    const users = await pglite.query<{ n: number }>(`SELECT count(*)::int AS n FROM users`);
+    expect(users.rows[0]?.n).toBe(0);
+
+    // The miss is counted, AND the correct code still works afterwards — a
+    // rejected attempt must cost the guesser, not the user.
+    const attempts = await pglite.query<{ attempts: number }>(
+      `SELECT attempts FROM email_verifications`
+    );
+    expect(attempts.rows[0]?.attempts).toBe(1);
+    expect((await registerWithCode(mailer.code())).status).toBe(201);
+  });
+
+  it('requires a code at all', async () => {
+    const res = await registerWithCode('123456');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('otp_required');
+  });
+
+  it('refuses an address that already has an account', async () => {
+    await requestCode();
+    const code = mailer.code();
+    expect((await registerWithCode(code)).status).toBe(201);
+
+    // A fresh challenge on the same address cannot be turned into a second
+    // account: the partial unique index on `email_normalized` decides, not the
+    // pre-check, so a race lands on the same 409.
+    await requestCode();
+    const second = await registerWithCode(mailer.code(), 'Someone Else');
+    expect(second.status).toBe(409);
+    expect(second.body.error).toBe('email_already_registered');
+
+    const users = await pglite.query<{ n: number }>(`SELECT count(*)::int AS n FROM users`);
+    expect(users.rows[0]?.n).toBe(1);
+  });
+
+  it('refuses a nameless account', async () => {
+    await requestCode();
+    const code = mailer.code();
+
+    const blank = await registerWithCode(code, '   ');
+    expect(blank.status).toBe(400);
+    expect(blank.body.error).toBe('invalid_display_name');
+
+    // The code is NOT burned by a validation failure.
+    expect((await registerWithCode(code, 'Ayesha')).status).toBe(201);
+  });
+
+  it('ignores client-supplied identity fields', async () => {
+    await requestCode();
+    const res = await request(app).post('/api/v1/auth/email/register').send({
+      email: EMAIL,
+      code: mailer.code(),
+      displayName: 'Ayesha',
+      status: 'active',
+      role: 'SUPER_ADMIN',
+      phoneHash: 'deadbeef',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.user.status).toBe('active');
+
+    // No phone hash and no admin row: the extra fields were never read.
+    const rows = await pglite.query<{ phone_hash: string | null }>(
+      `SELECT phone_hash FROM users WHERE id = $1`,
+      [res.body.user.id]
+    );
+    expect(rows.rows[0]?.phone_hash).toBeNull();
+
+    const admins = await pglite.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM admin_users`
+    );
+    expect(admins.rows[0]?.n).toBe(0);
+  });
+
+  it('cannot create an admin through the public registration flow', async () => {
+    // §48, stated as a test: the register endpoint has no notion of a role.
+    await requestCode();
+    const res = await registerWithCode(mailer.code());
+    expect(res.status).toBe(201);
+
+    const sessions = await pglite.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM admin_sessions`
+    );
+    expect(sessions.rows[0]?.n).toBe(0);
+  });
+});
+
 /**
  * Naming a provider refusal without quoting it.
  *

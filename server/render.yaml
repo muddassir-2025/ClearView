@@ -162,10 +162,14 @@ services:
         sync: false
 
       # ── Non-secret tuning, safe in git ────────────────────────────────
+      # 30 days of server-side history. The device keeps whatever the user
+      # downloaded, for as long as they keep it (§10, §11).
       - key: GOODPOST_HISTORY_DAYS
-        value: 90
-      - key: PURGE_GRACE_DAYS
         value: 30
+      # Nothing survives its window: the sweep removes expired rows and their
+      # S3 objects on the next run.
+      - key: PURGE_GRACE_DAYS
+        value: 0
       # §19. env.ts refuses `false` in production; keeping it here makes the
       # enforcement visible in the dashboard rather than implied by a default.
       - key: BAN_PHONE_ENFORCED

@@ -4,6 +4,7 @@ import { one, type Queryable } from '../db.js';
 import {
   ApiError,
   badRequest,
+  conflict,
   forbidden,
   notFound,
   serviceUnavailable,
@@ -82,24 +83,6 @@ function codeMatches(emailNormalized: string, submitted: string, storedHash: str
   return timingSafeEqual(expected, actual);
 }
 
-/** The live, unexpired sign-in challenge for this address, if any. */
-async function pendingChallenge(
-  database: Queryable,
-  emailNormalized: string
-): Promise<EmailChallengeRow | null> {
-  return database.queryOne<EmailChallengeRow>(
-    `SELECT id, code_hash, attempts, max_attempts
-       FROM email_verifications
-      WHERE email_normalized = $1
-        AND purpose = 'signin'
-        AND consumed_at IS NULL
-        AND expires_at > now()
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [emailNormalized]
-  );
-}
-
 /**
  * Count a failed guess.
  *
@@ -151,7 +134,7 @@ async function activeAccountByEmail(
  */
 export async function requestEmailOtp(
   database: Queryable,
-  input: { email: string; purpose?: 'signin' | 'recover' },
+  input: { email: string; purpose?: 'signin' | 'recover' | 'register' },
   mailer: Mailer = createMailer()
 ): Promise<EmailOtpResult> {
   const email = normalizeEmail(input.email);
@@ -213,6 +196,59 @@ export interface EmailSignInInput {
 }
 
 /**
+ * The live challenge for this address, for either purpose.
+ *
+ * A registration is allowed to redeem a code that was requested by the sign-in
+ * screen, and deliberately so: the flow the user actually walks is one screen
+ * that asks for an address, sends one code, and only THEN discovers there is no
+ * account behind it. Asking for a second code at that point would punish the
+ * user for a fact that was never theirs to know. Both purposes prove the same
+ * thing — control of the inbox — and neither can outlive its TTL, so the
+ * allowance being shared costs nothing.
+ */
+async function pendingChallengeForAuth(
+  database: Queryable,
+  emailNormalized: string
+): Promise<EmailChallengeRow | null> {
+  return database.queryOne<EmailChallengeRow>(
+    `SELECT id, code_hash, attempts, max_attempts
+       FROM email_verifications
+      WHERE email_normalized = $1
+        AND purpose IN ('signin', 'register')
+        AND consumed_at IS NULL
+        AND expires_at > now()
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [emailNormalized]
+  );
+}
+
+/**
+ * Check a pending code, counting the miss. Shared by sign-in and registration so
+ * both flows lock out on exactly the same attempts.
+ */
+async function verifyPendingCode(
+  database: Queryable,
+  email: string,
+  submitted: string,
+  purpose: 'signin' | 'register'
+): Promise<EmailChallengeRow> {
+  const challenge = await pendingChallengeForAuth(database, email);
+  if (!challenge) {
+    // Expired, already spent, or never requested — one answer for all three.
+    throw badRequest('otp_required', 'Request a verification code before continuing.');
+  }
+  if (challenge.attempts >= challenge.max_attempts) {
+    throw tooManyRequests('otp_locked', 'Too many failed attempts. Request a new code later.');
+  }
+  if (!codeMatches(email, submitted, challenge.code_hash)) {
+    await countAttempt(database, challenge.id, `${purpose}_wrong_code`);
+    throw unauthorized('invalid_code', 'That code is not correct.');
+  }
+  return challenge;
+}
+
+/**
  * Step 2: exchange a code for a session.
  *
  * Ordering, all of it deliberate:
@@ -241,20 +277,7 @@ export async function emailSignIn(
   // Codes are typed on a phone keypad; anything that is not a digit is noise.
   const submitted = input.code.replace(/\D/g, '');
 
-  const challenge = await pendingChallenge(database, email);
-  if (!challenge) {
-    // Expired, already spent, or never requested — one answer for all three, so
-    // probing an address reveals nothing about its recent history.
-    throw badRequest('otp_required', 'Request a verification code before continuing.');
-  }
-  if (challenge.attempts >= challenge.max_attempts) {
-    throw tooManyRequests('otp_locked', 'Too many failed attempts. Request a new code later.');
-  }
-
-  if (!codeMatches(email, submitted, challenge.code_hash)) {
-    await countAttempt(database, challenge.id, 'wrong_code');
-    throw unauthorized('invalid_code', 'That code is not correct.');
-  }
+  const challenge = await verifyPendingCode(database, email, submitted, 'signin');
 
   const account = await activeAccountByEmail(database, email);
   if (!account) {
@@ -286,4 +309,90 @@ export async function emailSignIn(
       ipHash: input.ipHash,
     });
   });
+}
+
+export interface EmailRegisterInput {
+  readonly email: string;
+  readonly code: string;
+  readonly displayName: string;
+  readonly deviceLabel?: string | null;
+  readonly ipHash?: string | null;
+}
+
+/**
+ * Step 2 for an address that has no account yet: prove the inbox, then create
+ * one.
+ *
+ * The account is created with `phone_hash` NULL. That is the honest shape of an
+ * email-only account rather than a loophole: it means `banned_identities`
+ * cannot match it, so a ban on such an account is enforced by the account
+ * status every protected request already reads — which is exactly what §19's
+ * "do not rely solely on the Android app" asks for while the phone flow is
+ * paused. When the number comes back, `auth/service.register` stays the only
+ * path that can attach one, and its unique index is untouched.
+ *
+ * The name is validated here rather than at the route so both callers share one
+ * rule, and the challenge is consumed only after the row exists — a rejected
+ * name must not burn the user's code.
+ */
+export async function emailRegister(
+  database: Queryable,
+  input: EmailRegisterInput
+): Promise<AuthSession> {
+  const email = normalizeEmail(input.email);
+  if (!isValidEmail(email)) {
+    throw badRequest('invalid_email', 'Enter a valid email address.');
+  }
+
+  const displayName = input.displayName.trim();
+  if (displayName.length < 1 || displayName.length > 60) {
+    throw badRequest('invalid_display_name', 'Display name must be 1–60 characters.');
+  }
+
+  const submitted = input.code.replace(/\D/g, '');
+  const challenge = await verifyPendingCode(database, email, submitted, 'register');
+
+  try {
+    return await database.transaction(async (tx) => {
+      const existingEmail = await tx.query<{ id: string }>(
+        `SELECT id FROM users WHERE email_normalized = $1 AND deleted_at IS NULL`,
+        [email]
+      );
+      if (existingEmail.length > 0) {
+        // Raced with another registration, or the sign-in lookup was stale.
+        throw conflict('email_already_registered', 'That email address is already in use.');
+      }
+
+      const inserted = await tx.query<{ id: string }>(
+        `INSERT INTO users (display_name, email, email_normalized)
+         VALUES ($1, $2, $3)
+         RETURNING id`,
+        [displayName, email, email]
+      );
+      const userId = one(inserted).id;
+
+      const consumed = await tx.query<{ id: string }>(
+        `UPDATE email_verifications
+            SET verified_at = now(), consumed_at = now()
+          WHERE id = $1 AND consumed_at IS NULL
+          RETURNING id`,
+        [challenge.id]
+      );
+      if (consumed.length === 0) {
+        throw badRequest('otp_required', 'Request a verification code before continuing.');
+      }
+
+      // Shared with sign-in on purpose: one place decides how a session is
+      // minted, so status and `deleted_at` are re-checked identically here.
+      return startSessionForAccount(tx, userId, {
+        deviceLabel: input.deviceLabel,
+        ipHash: input.ipHash,
+      });
+    });
+  } catch (err) {
+    if ((err as { code?: unknown } | null)?.code === '23505') {
+      throw conflict('email_already_registered', 'That email address is already in use.');
+    }
+    throw err;
+  }
 }

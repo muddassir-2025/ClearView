@@ -1169,6 +1169,56 @@ describe('the abandoned-upload sweep', () => {
   });
 });
 
+// ── The retention window (§11) ──────────────────────────────────────────
+
+describe('the retention window', () => {
+  it('makes a post past the window unreadable, and removes what is behind it', async () => {
+    // One sweep does both halves, and that is the product rule rather than an
+    // accident of the grace period: the server keeps nothing past the window,
+    // so an expired post is unreadable immediately and the row and its S3
+    // object go on the same run (§11, §34).
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Window' });
+    const fresh = await published(owner, channel.id, { body: 'fresh' });
+    const mediaId = await uploadAndConfirm(owner, 'image/jpeg');
+    const key = store.lastIssuedKey();
+    const old = await published(owner, channel.id, { body: 'old', mediaIds: [mediaId] });
+
+    await agePost(old.id, (env.GOODPOST_HISTORY_DAYS + 1) * 24 * 60);
+    const swept = await runRetentionSweep(database, store);
+
+    expect(swept.expired, 'the sweep should expire it').toBeGreaterThan(0);
+    expect(swept.purged, 'and purge it on the same run').toBeGreaterThan(0);
+    expect(swept.objectsRemoved).toBeGreaterThan(0);
+
+    const res = await request(app)
+      .get(`/api/v1/channels/${channel.id}/posts`)
+      .set(authed(owner.accessToken));
+    expect((res.body.items as { id: string }[]).map((p) => p.id)).toEqual([fresh.id]);
+
+    const rows = await pglite.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM posts WHERE id = $1`,
+      [old.id]
+    );
+    expect(rows.rows[0]?.n, 'the row must not be left behind').toBe(0);
+    expect(store.has(key), 'the object must not be left behind').toBe(false);
+  });
+
+  it('leaves a post inside the window alone', async () => {
+    const owner = await registered(PHONE_A);
+    const channel = await createChannel(owner, { name: 'Inside' });
+    const post = await published(owner, channel.id, { body: 'here' });
+
+    await agePost(post.id, (env.GOODPOST_HISTORY_DAYS - 1) * 24 * 60);
+    await runRetentionSweep(database, store);
+
+    const res = await request(app)
+      .get(`/api/v1/channels/${channel.id}/posts`)
+      .set(authed(owner.accessToken));
+    expect((res.body.items as { id: string }[]).map((p) => p.id)).toEqual([post.id]);
+  });
+});
+
 // ── A deployment with no bucket ─────────────────────────────────────────
 
 describe('a deployment with no bucket configured', () => {

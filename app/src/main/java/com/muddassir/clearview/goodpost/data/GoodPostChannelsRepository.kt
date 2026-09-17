@@ -89,6 +89,33 @@ class GoodPostChannelsRepository(
     }
 
     /**
+     * §6/§7: the channels this account OWNS, not the ones it follows.
+     *
+     * One channel per account is the current product rule, so the home screen
+     * asks this before it offers a "create channel" action: an account that
+     * already owns one is told so, rather than being walked through a composer
+     * that the server would answer with `channel_limit_reached`.
+     *
+     * Deliberately not cached. It is a small response, it is what decides
+     * whether a primary action is shown at all, and a stale "you own nothing"
+     * is exactly the state that produces a pointless rejection.
+     */
+    suspend fun managed(): ChannelsResult<List<GoodPostChannel>> {
+        val session = auth.validSession() ?: return ChannelsResult.SignedOut
+
+        return when (val result = api.managedChannels(session.accessToken)) {
+            is ApiResult.Ok ->
+                ChannelsResult.Ok(GoodPostChannelCodec.page(result.value).items)
+
+            is ApiResult.Failed ->
+                if (result.status == 401) ChannelsResult.SignedOut
+                else ChannelsResult.Failed(result.code)
+
+            ApiResult.Unreachable -> ChannelsResult.Failed("unreachable")
+        }
+    }
+
+    /**
      * §5: discovery, with search, category and sort filters.
      *
      * @param cursor null for the first page. Only the FIRST page is cached:
@@ -237,7 +264,16 @@ class GoodPostChannelsRepository(
         name: String? = null,
         description: String? = null,
         clearDescription: Boolean = false,
-        categorySlug: String? = null
+        categorySlug: String? = null,
+        /**
+         * §16's "allow follower messages" switch.
+         *
+         * A nullable Boolean rather than a defaulted one, because the server
+         * distinguishes "leave it as it was" from "turn it off" — collapsing
+         * the two would silently disable messages every time an owner fixed a
+         * typo in their channel name.
+         */
+        allowFollowerMessages: Boolean? = null
     ): ChannelsResult<GoodPostChannel> {
         val session = auth.validSession() ?: return ChannelsResult.SignedOut
 
@@ -248,6 +284,7 @@ class GoodPostChannelsRepository(
             if (clearDescription) put("description", org.json.JSONObject.NULL)
             else description?.let { put("description", it.trim()) }
             categorySlug?.let { put("categorySlug", it) }
+            allowFollowerMessages?.let { put("allowFollowerMessages", it) }
         }
 
         return when (val result = api.updateChannel(session.accessToken, channelId, body)) {

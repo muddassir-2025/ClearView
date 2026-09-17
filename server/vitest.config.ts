@@ -48,6 +48,14 @@ export default defineConfig({
       // The limiter is still asserted on purpose, with small windows, in
       // tests/rate-limit.test.ts — so raising it here hides nothing.
       WRITE_RATE_LIMIT_MAX: '100000',
+      // Same reasoning as the write rule, and the same class of bug avoided:
+      // M5's report rule has a much tighter shipped default (10/min/IP) because
+      // a moderation queue is a shared resource, and the moderation suite files
+      // more reports than that from one address. Left at the default it fails
+      // as 429 part way through, which reads like a broken feature rather than
+      // a working limiter. The rule is asserted on purpose, with a small
+      // window, in tests/rate-limit.test.ts.
+      REPORT_RATE_LIMIT_MAX: '100000',
     },
   },
 });

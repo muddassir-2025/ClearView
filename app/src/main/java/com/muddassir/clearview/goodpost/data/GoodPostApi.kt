@@ -4,6 +4,7 @@ import android.util.Log
 import com.muddassir.clearview.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -83,6 +84,13 @@ class GoodPostApi(
         const val DISCOVER_PATH = "/api/v1/discover"
         const val POSTS_PATH = "/api/v1/posts"
         const val MEDIA_PATH = "/api/v1/media"
+        const val POLLS_PATH = "/api/v1/polls"
+        const val REPORTS_PATH = "/api/v1/reports"
+        const val BLOCKS_PATH = "/api/v1/blocks"
+        const val CONVERSATIONS_PATH = "/api/v1/conversations"
+        const val NOTIFICATIONS_PATH = "/api/v1/notifications"
+        const val NOTICES_PATH = "/api/v1/notices"
+        const val DEVICES_PATH = "/api/v1/devices"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 15_000
         const val MAX_RESPONSE_BYTES = 512_000
@@ -117,8 +125,14 @@ class GoodPostApi(
      * purpose, so a success here must not be read as "this email is
      * registered". Nothing is known until the code comes back.
      */
-    suspend fun requestEmailOtp(email: String): ApiResult<Unit> {
-        val body = JSONObject().apply { put("email", email) }
+    suspend fun requestEmailOtp(email: String, purpose: String? = null): ApiResult<Unit> {
+        val body = JSONObject().apply {
+            put("email", email)
+            // "register" when the caller already knows this is a new account.
+            // The server accepts either purpose at either step, so this only
+            // ever saves a round trip — it never decides what may happen.
+            if (purpose != null) put("purpose", purpose)
+        }
         return when (val result = call("POST", AUTH_PATH + "/email/otp", body)) {
             is ApiResult.Ok -> ApiResult.Ok(Unit)
             is ApiResult.Failed -> result
@@ -137,6 +151,27 @@ class GoodPostApi(
             put("code", code)
         }
         return authCall("/email/signin", body, deviceLabel)
+    }
+
+    /**
+     * Step 2 for an address with no account: the same code, plus a name.
+     *
+     * Reached only after `/email/signin` answered `email_not_registered` — the
+     * server re-checks that fact, so a client cannot register an address that
+     * already has an account.
+     */
+    suspend fun emailRegister(
+        email: String,
+        code: String,
+        displayName: String,
+        deviceLabel: String?
+    ): ApiResult<GoodPostSession> {
+        val body = JSONObject().apply {
+            put("email", email)
+            put("code", code)
+            put("displayName", displayName)
+        }
+        return authCall("/email/register", body, deviceLabel)
     }
 
     suspend fun signIn(idToken: String, deviceLabel: String?): ApiResult<GoodPostSession> {
@@ -362,6 +397,177 @@ class GoodPostApi(
      */
     suspend fun mediaUrl(accessToken: String, mediaId: String): ApiResult<JSONObject> =
         get(MEDIA_PATH + "/" + encode(mediaId) + "/url", accessToken)
+
+    // ── Engagement (§13, §14, §15) ──────────────────────────────────────
+
+    /**
+     * §13 react, change a reaction, or clear it with `reaction = null`.
+     *
+     * `null` is SENT as an explicit JSON null rather than omitted, because the
+     * server reads an absent key as a client bug and an explicit null as
+     * "clear mine" — a distinction that would silently delete reactions if this
+     * collapsed the two.
+     */
+    suspend fun setReaction(
+        accessToken: String,
+        postId: String,
+        reaction: String?
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply { put("reaction", reaction ?: JSONObject.NULL) }
+        return call(
+            "POST",
+            POSTS_PATH + "/" + encode(postId) + "/reactions",
+            body,
+            accessToken
+        )
+    }
+
+    /**
+     * §15 record a view.
+     *
+     * A POST, matching the server: a GET would be prefetched, cached and
+     * retried by every intermediary, turning one look into several.
+     */
+    suspend fun recordView(accessToken: String, postId: String): ApiResult<JSONObject> =
+        call("POST", POSTS_PATH + "/" + encode(postId) + "/views", null, accessToken)
+
+    /** §14 vote, or change a vote. Aggregate results come back, never voters. */
+    suspend fun votePoll(
+        accessToken: String,
+        pollId: String,
+        optionIds: List<String>
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply { put("optionIds", JSONArray(optionIds)) }
+        return call("POST", POLLS_PATH + "/" + encode(pollId) + "/votes", body, accessToken)
+    }
+
+    /** §15 a channel's own numbers. Owner/editor only — the server decides. */
+    suspend fun analytics(
+        accessToken: String,
+        channelId: String,
+        days: Int? = null
+    ): ApiResult<JSONObject> {
+        val suffix = days?.let { "?days=" + encode(it.toString()) }.orEmpty()
+        return get(CHANNELS_PATH + "/" + encode(channelId) + "/analytics" + suffix, accessToken)
+    }
+
+    // ── Reports and blocks (§12, §18) ───────────────────────────────────
+
+    suspend fun createReport(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
+        call("POST", REPORTS_PATH, body, accessToken)
+
+    /** The caller's own reports, so a reporter can see what happened (§18). */
+    suspend fun ownReports(accessToken: String): ApiResult<JSONObject> =
+        get(REPORTS_PATH + "/mine", accessToken)
+
+    /** §12 block another account, or unblock. */
+    suspend fun setUserBlocked(
+        accessToken: String,
+        userId: String,
+        blocked: Boolean
+    ): ApiResult<JSONObject> {
+        val method = if (blocked) "POST" else "DELETE"
+        return call(method, BLOCKS_PATH + "/" + encode(userId), null, accessToken)
+    }
+
+    // ── Private messages (§16) ──────────────────────────────────────────
+
+    /** Open (or find) the caller's conversation with a channel. */
+    suspend fun openConversation(accessToken: String, channelId: String): ApiResult<JSONObject> =
+        call(
+            "POST",
+            CHANNELS_PATH + "/" + encode(channelId) + "/conversations",
+            null,
+            accessToken
+        )
+
+    /** The channel's inbox: the admin side of §16. */
+    suspend fun channelConversations(
+        accessToken: String,
+        channelId: String
+    ): ApiResult<JSONObject> =
+        get(CHANNELS_PATH + "/" + encode(channelId) + "/conversations", accessToken)
+
+    /** Conversations the caller opened as a follower. */
+    suspend fun ownConversations(accessToken: String): ApiResult<JSONObject> =
+        get(CONVERSATIONS_PATH, accessToken)
+
+    suspend fun conversationMessages(
+        accessToken: String,
+        conversationId: String,
+        cursor: String? = null
+    ): ApiResult<JSONObject> =
+        get(
+            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/messages" + pageQuery(cursor),
+            accessToken
+        )
+
+    suspend fun sendConversationMessage(
+        accessToken: String,
+        conversationId: String,
+        body: JSONObject
+    ): ApiResult<JSONObject> =
+        call(
+            "POST",
+            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/messages",
+            body,
+            accessToken
+        )
+
+    suspend fun setConversationBlocked(
+        accessToken: String,
+        conversationId: String,
+        blocked: Boolean
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply { put("blocked", blocked) }
+        return call(
+            "POST",
+            CONVERSATIONS_PATH + "/" + encode(conversationId) + "/block",
+            body,
+            accessToken
+        )
+    }
+
+    // ── Notifications and notices (§17, §26) ────────────────────────────
+
+    suspend fun notifications(accessToken: String): ApiResult<JSONObject> =
+        get(NOTIFICATIONS_PATH, accessToken)
+
+    /** Mark the whole inbox read, or just [ids] when they are given. */
+    suspend fun markNotificationsRead(
+        accessToken: String,
+        ids: List<String>
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply {
+            if (ids.isNotEmpty()) put("ids", JSONArray(ids))
+        }
+        return call("POST", NOTIFICATIONS_PATH + "/read", body, accessToken)
+    }
+
+    suspend fun notices(accessToken: String): ApiResult<JSONObject> =
+        get(NOTICES_PATH, accessToken)
+
+    suspend fun markNoticesRead(
+        accessToken: String,
+        ids: List<String>
+    ): ApiResult<JSONObject> {
+        val body = JSONObject().apply { put("ids", JSONArray(ids)) }
+        return call("POST", NOTICES_PATH + "/read", body, accessToken)
+    }
+
+    /** Tell the server where to push for this account (§17). */
+    suspend fun registerDevice(accessToken: String, body: JSONObject): ApiResult<JSONObject> =
+        call("POST", DEVICES_PATH, body, accessToken)
+
+    /**
+     * Stop pushing to this device, on sign-out.
+     *
+     * The token rides in the path because sign-out has already discarded the
+     * rest of the session state by the time this runs — a request body built
+     * from state that no longer exists is a request that never gets sent.
+     */
+    suspend fun unregisterDevice(accessToken: String, token: String): ApiResult<JSONObject> =
+        call("DELETE", DEVICES_PATH + "/" + encode(token), null, accessToken)
 
     // ── Internals ───────────────────────────────────────────────────────
 

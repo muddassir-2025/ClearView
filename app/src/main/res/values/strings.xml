@@ -636,11 +636,11 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_method_mobile">Mobile number</string>
     <string name="goodpost_method_email">Email</string>
     <string name="goodpost_email_title">Enter your email</string>
-    <string name="goodpost_email_note">We\'ll email a code to confirm it. Use the address you registered with.</string>
+    <string name="goodpost_email_note">We\'ll email you a code. New here? The same code creates your account.</string>
     <string name="goodpost_signin_email_label">Email address</string>
     <string name="goodpost_signin_email_placeholder">you@example.com</string>
     <string name="goodpost_send_code_email">Email me a code</string>
-    <string name="goodpost_email_only_note">Email sign-in opens the account you already have. Creating one needs a mobile number.</string>
+    <string name="goodpost_email_only_note">New here? Enter your email and we\'ll create your account with the same code.</string>
     <string name="goodpost_phone_note">We\'ll text a code to confirm it. Include the country code.</string>
     <string name="goodpost_phone_label">Mobile number</string>
     <string name="goodpost_phone_placeholder">+923001234567</string>
@@ -651,8 +651,34 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_verify">Verify</string>
     <string name="goodpost_resend_code">Send a new code</string>
     <string name="goodpost_change_number">Use a different number</string>
+    <string name="goodpost_change_target">Use a different email</string>
+    <string name="goodpost_find_channels">Find channels</string>
+    <string name="goodpost_edit_image">Edit photo</string>
+    <string name="goodpost_edit_filters">Filters</string>
+    <string name="goodpost_edit_crop">Crop</string>
+    <string name="goodpost_edit_adjust">Adjust</string>
+    <string name="goodpost_edit_rotate">Rotate</string>
+    <string name="goodpost_edit_flip">Flip</string>
+    <string name="goodpost_edit_brightness">Brightness</string>
+    <string name="goodpost_edit_contrast">Contrast</string>
+    <string name="goodpost_edit_saturation">Saturation</string>
+    <string name="goodpost_edit_reset">Reset adjustments</string>
+    <string name="goodpost_done">Done</string>
+    <string name="goodpost_appearance">Appearance</string>
+    <string name="goodpost_appearance_note">Make it yours. Saved on this device only.</string>
+    <string name="goodpost_appearance_accent">Accent</string>
+    <string name="goodpost_appearance_backdrop">Backdrop</string>
+    <string name="goodpost_appearance_glass">Glass</string>
+    <string name="goodpost_media_tap_to_view">Tap to view</string>
+    <string name="goodpost_media_fetching">Downloading…</string>
+    <string name="goodpost_my_channel">My channel</string>
+    <string name="goodpost_channel_posted_media">📷 Photo</string>
+    <string name="goodpost_email_register_title">Create your account</string>
+    <string name="goodpost_email_register_note">%1$s is confirmed, but no Good Post account uses it yet. Pick a name to finish.</string>
+    <string name="goodpost_email_confirmed">Verified: %1$s</string>
     <string name="goodpost_register_title">Create your account</string>
     <string name="goodpost_register_note">Your number is confirmed. Add a name and email — neither is ever shown to other Good Post users.</string>
+    <string name="goodpost_name_placeholder">e.g. Muddassir</string>
     <string name="goodpost_name_label">Name</string>
     <string name="goodpost_email_label">Email</string>
     <string name="goodpost_create_account">Create account</string>
@@ -686,6 +712,7 @@ This video cannot be played inside the app.</string>
 
     <!-- M2: channels and discovery -->
     <string name="goodpost_section_posts">Posts</string>
+    <string name="goodpost_channels_you_follow">Channels you follow</string>
     <string name="goodpost_section_channels">Channels</string>
     <string name="goodpost_section_discover">Discover</string>
     <string name="goodpost_refresh">Refresh</string>
@@ -779,4 +806,87 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_time_minutes">%1$dm</string>
     <string name="goodpost_time_hours">%1$dh</string>
     <string name="goodpost_time_days">%1$dd</string>
+
+    <!-- Engagement: reactions, polls and views -->
+    <string name="goodpost_reactions_choose">React</string>
+    <string name="goodpost_views">%1$s views</string>
+    <string name="goodpost_poll_votes">%1$s votes</string>
+    <string name="goodpost_poll_closed">This poll has closed</string>
+    <string name="goodpost_poll_multi">Choose one or more</string>
+    <string name="goodpost_poll_vote">Vote</string>
+    <string name="goodpost_poll_change">Change vote</string>
+    <string name="goodpost_poll_you_voted">You voted</string>
+    <string name="goodpost_analytics">Analytics</string>
+    <string name="goodpost_analytics_title">Channel analytics</string>
+    <string name="goodpost_analytics_window">Last %1$d days</string>
+    <string name="goodpost_analytics_followers">Followers</string>
+    <string name="goodpost_analytics_posts">Posts</string>
+    <string name="goodpost_analytics_viewers">Unique viewers</string>
+    <string name="goodpost_analytics_views">Views</string>
+    <string name="goodpost_analytics_reactions">Reactions</string>
+    <string name="goodpost_analytics_poll_votes">Poll votes</string>
+    <string name="goodpost_analytics_top_posts">Top posts</string>
+    <string name="goodpost_analytics_none">No activity in this window yet</string>
+
+    <!-- Reports and blocks (§12, §18) -->
+    <string name="goodpost_report">Report</string>
+    <string name="goodpost_report_title">Report</string>
+    <string name="goodpost_report_reason">Why are you reporting this?</string>
+    <string name="goodpost_report_details">Anything else? (optional)</string>
+    <string name="goodpost_report_send">Send report</string>
+    <string name="goodpost_report_sent_note">Our moderators will review it. You will not be told who acted on it.</string>
+    <string name="goodpost_report_sent">Report sent. Thank you.</string>
+    <string name="goodpost_report_post">Report this post</string>
+    <string name="goodpost_report_channel">Report this channel</string>
+
+    <!-- Notifications, notices and messages (§16, §17, §26) -->
+    <string name="goodpost_section_inbox">Inbox</string>
+    <string name="goodpost_inbox_notifications">Notifications</string>
+    <string name="goodpost_inbox_notices">Notices</string>
+    <string name="goodpost_inbox_messages">Messages</string>
+    <string name="goodpost_inbox_mark_all_read">Mark all read</string>
+    <string name="goodpost_inbox_empty_notifications">Nothing new</string>
+    <string name="goodpost_inbox_empty_notices">No official notices</string>
+    <string name="goodpost_inbox_empty_messages">No conversations yet</string>
+    <string name="goodpost_inbox_unread">%1$d unread</string>
+    <string name="goodpost_message_channel">Message channel</string>
+    <string name="goodpost_message_thread">Conversation</string>
+    <string name="goodpost_message_hint">Write a message</string>
+    <string name="goodpost_message_send">Send</string>
+    <string name="goodpost_message_sent_pending">Sending…</string>
+    <string name="goodpost_message_failed">Not sent — check your connection</string>
+    <string name="goodpost_message_block">Block this conversation</string>
+    <string name="goodpost_message_unblock">Unblock</string>
+    <string name="goodpost_channel_inbox">Follower messages</string>
+    <string name="goodpost_conversation_closed">This conversation is closed</string>
+    <string name="goodpost_dm_unknown_sender">Good Post user</string>
+    <string name="goodpost_message_private">Only you and the channel can read this</string>
+
+    <!-- New error wordings -->
+    <string name="goodpost_error_invalid_reaction">That reaction is not available.</string>
+    <string name="goodpost_error_analytics_forbidden">Only a channel admin can see its analytics.</string>
+    <string name="goodpost_error_poll_closed">This poll has closed.</string>
+    <string name="goodpost_error_poll_single_choice">This poll takes one answer.</string>
+    <string name="goodpost_error_poll_rejected">That vote could not be recorded. Pick an option and try again.</string>
+    <string name="goodpost_error_messages_disabled">This channel does not accept messages.</string>
+    <string name="goodpost_error_own_channel">A channel cannot message itself.</string>
+    <string name="goodpost_error_conversation_blocked">This conversation is blocked.</string>
+    <string name="goodpost_error_conversation_closed">This conversation is closed.</string>
+    <string name="goodpost_error_message_invalid">A message needs between 1 and 4000 characters.</string>
+    <string name="goodpost_error_report_invalid">That report could not be filed. Choose a reason and try again.</string>
+    <string name="goodpost_error_device_limit">This account has reached its device limit.</string>
+
+    <!-- Composing a poll (§14) -->
+    <string name="goodpost_composer_poll">Ask a poll instead of posting a file</string>
+    <string name="goodpost_poll_question">Poll question</string>
+    <string name="goodpost_poll_option">Option %1$d</string>
+    <string name="goodpost_poll_add_option">Add option</string>
+    <string name="goodpost_poll_remove_option">Remove option</string>
+    <string name="goodpost_poll_multiple">Allow more than one answer</string>
+    <string name="goodpost_allow_messages">Let followers send private messages</string>
+
+    <!-- Push delivery (§17). One channel, so a user who mutes Good Post does not
+         silence the rest of the app with it. -->
+    <string name="goodpost_notification_channel">Good Post</string>
+    <string name="goodpost_notification_channel_desc">Posts from channels you follow, replies, and official notices.</string>
 </resources>

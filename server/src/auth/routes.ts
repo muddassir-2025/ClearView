@@ -4,7 +4,7 @@ import { hashIp } from '../env.js';
 import type { Queryable } from '../db.js';
 import { parseBody } from '../http/validate.js';
 import { createMailer, type Mailer } from '../email/sender.js';
-import { emailSignIn, requestEmailOtp } from './email.js';
+import { emailRegister, emailSignIn, requestEmailOtp } from './email.js';
 import { createPhoneVerifier, type PhoneIdentityVerifier } from './firebase.js';
 import { authOf, requireAuth } from './middleware.js';
 import {
@@ -50,6 +50,12 @@ const SignInSchema = z.object({
 
 const EmailOtpSchema = z.object({
   email: z.string().min(3).max(254),
+  /**
+   * `register` is what the sign-up screen asks for when it knows it is sending
+   * someone new; the sign-in screen leaves it out. Both are redeemable by
+   * either step, so the default is the harmless one.
+   */
+  purpose: z.enum(['signin', 'register']).optional(),
 });
 
 /**
@@ -60,6 +66,16 @@ const EmailOtpSchema = z.object({
 const EmailSignInSchema = z.object({
   email: z.string().min(3).max(254),
   code: z.string().min(4).max(12),
+});
+
+/**
+ * Registration shares the code the sign-in screen sent, and adds the one thing
+ * the server cannot know: the name the account will be displayed under.
+ */
+const EmailRegisterSchema = z.object({
+  email: z.string().min(3).max(254),
+  code: z.string().min(4).max(12),
+  displayName: z.string().min(1).max(60),
 });
 
 const RefreshSchema = z.object({
@@ -149,7 +165,11 @@ export function buildAuthRouter(
    */
   router.post('/email/otp', async (req, res) => {
     const body = parseBody(EmailOtpSchema, req.body);
-    const result = await requestEmailOtp(database, { email: body.email }, mailer);
+    const result = await requestEmailOtp(
+      database,
+      { email: body.email, purpose: body.purpose },
+      mailer
+    );
     res.status(200).json(result);
   });
 
@@ -161,6 +181,20 @@ export function buildAuthRouter(
       ...clientContext(req),
     });
     res.status(200).json(session);
+  });
+
+  /**
+   * Step 2 for an address with no account behind it. Requires the same code as
+   * sign-in — the client only reaches this endpoint after `/email/signin`
+   * answered `email_not_registered` to the inbox's owner.
+   */
+  router.post('/email/register', async (req, res) => {
+    const body = parseBody(EmailRegisterSchema, req.body);
+    const session = await emailRegister(database, {
+      ...body,
+      ...clientContext(req),
+    });
+    res.status(201).json(session);
   });
 
   router.post('/refresh', async (req, res) => {

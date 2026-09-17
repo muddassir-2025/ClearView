@@ -74,10 +74,21 @@ data class GoodPostPost(
     val isEdited: Boolean,
     val viewerCanManage: Boolean,
     /** Present only on feed rows, which span channels. */
-    val channel: GoodPostChannelRef? = null
+    val channel: GoodPostChannelRef? = null,
+    /**
+     * Reactions, views and the poll, already aggregated (§13, §14, §15).
+     *
+     * Never null, and defaulted to the zero state for the same reason
+     * `engagement` is always present server-side: a post nobody has touched
+     * still has to render, and a nullable count is how "--" reaches a screen.
+     */
+    val engagement: GoodPostEngagement = GoodPostEngagement.none
 ) {
     val isText: Boolean get() = type == "text"
     val isLink: Boolean get() = type == "link"
+
+    /** A poll post's content is its poll (§14). */
+    val poll: GoodPostPoll? get() = engagement.poll
 
     /**
      * When this was published, in epoch milliseconds, or null when the server
@@ -134,7 +145,8 @@ internal object GoodPostPostCodec {
             editedAt = json.nullableString("editedAt"),
             isEdited = json.optBoolean("isEdited", false),
             viewerCanManage = json.optBoolean("viewerCanManage", false),
-            channel = json.optJSONObject("channel")?.let(::channelRef)
+            channel = json.optJSONObject("channel")?.let(::channelRef),
+            engagement = GoodPostEngagementCodec.engagement(json.optJSONObject("engagement"))
         )
     }
 
@@ -240,6 +252,21 @@ internal object GoodPostPostCodec {
     fun replace(list: List<GoodPostPost>, updated: GoodPostPost): List<GoodPostPost> =
         list.map { if (it.id == updated.id) updated else it }
 
+    /**
+     * Replace one post's engagement, keeping the rest of the row.
+     *
+     * Used after a reaction, a vote or a view ping, none of which change what
+     * the post SAYS — rebuilding the whole post from a response would risk
+     * dropping a field the response does not carry.
+     */
+    fun replaceEngagement(
+        list: List<GoodPostPost>,
+        postId: String,
+        engagement: GoodPostEngagement
+    ): List<GoodPostPost> = list.map {
+        if (it.id == postId) it.copy(engagement = engagement) else it
+    }
+
     /** Drop a post, for a removal that has been confirmed by the server. */
     fun remove(list: List<GoodPostPost>, id: String): List<GoodPostPost> =
         list.filterNot { it.id == id }
@@ -275,6 +302,10 @@ internal object GoodPostPostCodec {
         put("editedAt", post.editedAt ?: JSONObject.NULL)
         put("isEdited", post.isEdited)
         put("viewerCanManage", post.viewerCanManage)
+        // Counts are cached WITH the post. A saved feed whose every row showed
+        // zero reactions would be presenting a different post rather than a
+        // saved one (§36).
+        put("engagement", GoodPostEngagementCodec.encode(post.engagement))
         post.channel?.let { ref ->
             put("channel", JSONObject().apply {
                 put("id", ref.id)
@@ -339,6 +370,17 @@ internal fun parseIsoMillis(iso: String?): Long? {
         null
     }
 }
+
+/**
+ * Epoch milliseconds to the ISO-8601 text the server uses.
+ *
+ * `Instant` rather than `SimpleDateFormat` so the value written into the cache
+ * is the same shape [parseIsoMillis] reads back — a formatter that used the
+ * device's locale and time zone would produce a string the app could not read
+ * on the next run, on a device set to a different region.
+ */
+internal fun isoFromMillis(epochMs: Long): String =
+    Instant.ofEpochMilli(epochMs).toString()
 
 /** The file extension for a content type, falling back by media kind. */
 internal fun extensionFor(contentType: String, kind: String): String {

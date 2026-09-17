@@ -230,6 +230,18 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Good Post channel notifications (§17). FCM delivers them here; the
+             service posts a notification and stores a rotated push token, and
+             does no network work of its own — the durable inbox row is written
+             by the server before the push is ever sent. -->
+        <service
+            android:name=".goodpost.data.GoodPostMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <!-- Media notification dismissals: fired via setDeleteIntent when the
              user swipes an update notification out of the tray, so it is
              remembered as dismissed and can never be re-posted / stacked. -->

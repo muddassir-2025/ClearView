@@ -35,6 +35,19 @@ sealed interface PostsResult<out T> {
  * device. [open] is a factory so the stream's lifetime belongs to whoever
  * created it.
  */
+/**
+ * A poll being written (§14).
+ *
+ * The question and options are the caller's words; everything else about a
+ * poll — its id, its close time, its counts — is the server's. `allowMultiple`
+ * is the only choice, and the server reads it as exactly that.
+ */
+data class PollDraft(
+    val question: String,
+    val options: List<String>,
+    val allowMultiple: Boolean
+)
+
 data class MediaUploadRequest(
     val contentType: String,
     val byteSize: Long,
@@ -147,7 +160,9 @@ class GoodPostPostsRepository(
         body: String? = null,
         linkUrl: String? = null,
         linkTitle: String? = null,
-        mediaIds: List<String> = emptyList()
+        mediaIds: List<String> = emptyList(),
+        /** §14. A poll published WITH its post, or null for a normal post. */
+        poll: PollDraft? = null
     ): PostsResult<GoodPostPost> {
         val session = auth.validSession() ?: return PostsResult.SignedOut
 
@@ -157,6 +172,16 @@ class GoodPostPostsRepository(
             linkTitle?.trim()?.takeIf { it.isNotEmpty() }?.let { put("linkTitle", it) }
             if (mediaIds.isNotEmpty()) {
                 put("mediaIds", org.json.JSONArray(mediaIds))
+            }
+            // A poll is sent INSTEAD of media, never alongside: the server
+            // refuses `poll_with_media`, and building a request that can only
+            // fail is not a request worth sending.
+            poll?.let { draft ->
+                put("poll", JSONObject().apply {
+                    put("question", draft.question)
+                    put("options", org.json.JSONArray(draft.options))
+                    put("allowMultiple", draft.allowMultiple)
+                })
             }
         }
 
