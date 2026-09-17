@@ -182,19 +182,64 @@ class GoodPostApi(
                 put("password", password)
             },
             bearer = null,
-            parse = { body ->
-                AdminSession(
-                    token = body.optString("accessToken").ifBlank {
-                        // A body without a token is a contract break, not a
-                        // signed-in administrator.
-                        throw ContractBreak()
-                    },
-                    role = body.optJSONObject("admin")?.optString("role").orEmpty(),
-                    email = body.optJSONObject("admin")?.optString("email").orEmpty(),
-                    channelId = body.optJSONObject("admin")?.nullableString("channelId")
-                )
-            }
+            parse = ::adminSessionFrom
         )
+
+    /**
+     * Exchange the session's long-lived half for a new pair (§16).
+     *
+     * Sent with no bearer token on purpose: the whole point of this call is that
+     * the access token it would carry has expired. The reply is the same shape as
+     * a sign-in, including a NEW refresh token — the server rotates it, so the one
+     * used here stops working immediately after.
+     */
+    suspend fun adminRefresh(refreshToken: String): ApiResult<AdminSession> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/auth/refresh",
+            body = JSONObject().apply { put("refreshToken", refreshToken) },
+            bearer = null,
+            parse = ::adminSessionFrom
+        )
+
+    /**
+     * Revoke the session on the server.
+     *
+     * Best effort by design: the caller has already forgotten the session locally
+     * and must not be held on the screen by a network failure. What it prevents is
+     * a refresh token outliving the device it was issued to.
+     */
+    suspend fun adminSignOut(refreshToken: String): ApiResult<Unit> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/auth/logout",
+            body = JSONObject().apply { put("refreshToken", refreshToken) },
+            bearer = null,
+            parse = { }
+        )
+
+    /**
+     * The session payload, shared by sign-in and renewal.
+     *
+     * Both routes answer with this shape, and a body missing either token is a
+     * contract break rather than a signed-in administrator: an access token with
+     * nothing to renew it with would work for ten minutes and then fail with no way
+     * back, which is precisely the state this client was in.
+     */
+    private fun adminSessionFrom(body: JSONObject): AdminSession {
+        val token = body.optString("accessToken")
+        val refresh = body.optString("refreshToken")
+        if (token.isBlank() || refresh.isBlank()) throw ContractBreak()
+
+        val admin = body.optJSONObject("admin")
+        return AdminSession(
+            token = token,
+            refreshToken = refresh,
+            role = admin?.optString("role").orEmpty(),
+            email = admin?.optString("email").orEmpty(),
+            channelId = admin?.nullableString("channelId")
+        )
+    }
 
     /** The channels this administrator may publish to (§17, §18). */
     suspend fun adminChannels(token: String): ApiResult<List<GoodPostChannel>> =
@@ -567,6 +612,21 @@ data class GoodPostUpload(
 /** A signed-in administrator, as the app holds it (§16). */
 data class AdminSession(
     val token: String,
+    /**
+     * The long-lived half of the session.
+     *
+     * Kept because the access token is deliberately short — ten minutes, since it
+     * can publish and delete on a channel's behalf — while the session behind it
+     * lasts a week. Throwing this away is what made an expired token look like an
+     * empty account: with nothing to renew with, every refused call became a
+     * failure the dashboard rendered as "you have no channels".
+     *
+     * The server ROTATES it on every renewal: the new value is the only one that
+     * works for more than one further attempt, because the previous one is kept
+     * solely to survive a response that was lost in flight. So the newest pair is
+     * written back after every refresh, and two renewals must never run at once.
+     */
+    val refreshToken: String,
     /** `super_admin` or `channel_admin`. The server decides; the app words it. */
     val role: String,
     val email: String,

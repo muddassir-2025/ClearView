@@ -959,6 +959,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_not_found">That channel is not available.</string>
     <string name="goodpost_error_invalid_credentials">Invalid credentials.</string>
     <string name="goodpost_error_admin_unavailable">This server does not offer the administrator sign-in this app expects. It is probably running an older version of the backend.</string>
+    <string name="goodpost_error_session_expired">Your session ended. Sign in again.</string>
     <string name="goodpost_error_forbidden">This account cannot change that channel.</string>
     <string name="goodpost_error_admin_locked">Too many failed attempts, or this account is disabled. Try again later.</string>
 

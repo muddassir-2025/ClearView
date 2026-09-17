@@ -79,6 +79,17 @@ enum class GoodPostError {
      */
     AdminUnavailable,
 
+    /**
+     * The administrator session is over and could not be renewed.
+     *
+     * Distinct from [InvalidCredentials] on purpose. They are the same 401 to the
+     * server, but they call for different responses: "that password is wrong"
+     * sends someone to check their typing, while this one means the session ran out
+     * and the same password will work immediately. Word-for-word, the difference is
+     * between a user doubting their credentials and a user signing in again.
+     */
+    SessionExpired,
+
     /** A code this client does not recognise. */
     Unknown
 }
@@ -105,6 +116,7 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
 
     // Administrator sign-in and writes.
     "invalid_credentials", "unauthorized" -> GoodPostError.InvalidCredentials
+    "session_expired" -> GoodPostError.SessionExpired
     "forbidden", "channel_forbidden", "post_forbidden" -> GoodPostError.Forbidden
     "admin_unavailable" -> GoodPostError.AdminUnavailable
 

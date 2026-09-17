@@ -952,6 +952,7 @@ internal fun goodPostErrorMessage(error: GoodPostError): Int = when (error) {
     GoodPostError.AttachmentUploading -> R.string.goodpost_error_attachment_uploading
     GoodPostError.AttachmentFailed -> R.string.goodpost_error_attachment_failed
     GoodPostError.AdminUnavailable -> R.string.goodpost_error_admin_unavailable
+    GoodPostError.SessionExpired -> R.string.goodpost_error_session_expired
     GoodPostError.Unknown -> R.string.goodpost_error_unknown
 }
 

@@ -527,7 +527,15 @@ class GoodPostViewModel : ViewModel() {
     fun openAdmin() {
         // Straight to the channel list when a session is already stored, so an
         // administrator does not retype a password every time they open the tab.
-        open(if (uiState.admin != null) GoodPostScreen.AdminHome else GoodPostScreen.AdminLogin)
+        val signedIn = uiState.admin != null
+        open(if (signedIn) GoodPostScreen.AdminHome else GoodPostScreen.AdminLogin)
+
+        // ...and LOAD that list. Without this the screen rendered its empty state,
+        // "No channels. Create one to start publishing.", which is not a loading
+        // state but a statement about the account — and a false one, since the
+        // only paths that fetched anything were a fresh sign-in and a save. An
+        // administrator reopening the app was told their channels were gone.
+        if (signedIn) loadAdminChannels()
     }
 
     fun onAdminEmailChange(value: String) {
@@ -585,7 +593,15 @@ class GoodPostViewModel : ViewModel() {
     }
 
     fun adminSignOut() {
-        repository?.adminSignOut()
+        val repo = repository
+        // Read before the session is forgotten: revocation needs it, and the store
+        // is about to be cleared.
+        val refreshToken = uiState.admin?.refreshToken
+        repo?.forgetAdminSession()
+        if (refreshToken != null) {
+            // Best effort. The screen changes now; the server hears about it after.
+            viewModelScope.launch { repo?.revokeAdminSession(refreshToken) }
+        }
         GoodPostImages.clear()
         uiState = uiState.copy(
             admin = null,
@@ -599,15 +615,26 @@ class GoodPostViewModel : ViewModel() {
 
     fun loadAdminChannels() {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
 
         uiState = uiState.copy(adminChannelsLoading = true)
         viewModelScope.launch {
-            val result = repo.adminChannels(token)
+            val result = repo.adminChannels()
             uiState = if (result is ApiResult.Ok) {
                 uiState.copy(adminChannels = result.value, adminChannelsLoading = false)
             } else {
-                uiState.copy(adminChannelsLoading = false)
+                // Never a silent empty list. A failed load used to leave
+                // `adminChannels` empty, which the dashboard renders as "No
+                // channels. Create one to start publishing." — telling an
+                // administrator their channels are gone when the request simply
+                // failed.
+                uiState.copy(
+                    adminChannelsLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
             }
         }
     }
@@ -674,7 +701,10 @@ class GoodPostViewModel : ViewModel() {
      */
     fun onChannelIconPicked(attachment: GoodPostAttachment) {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
 
         if (attachment.kind != "image") {
             uiState = uiState.copy(messageCode = "unsupported_media_type")
@@ -690,7 +720,7 @@ class GoodPostViewModel : ViewModel() {
         )
 
         viewModelScope.launch {
-            when (val result = repo.adminUploadMedia(token, attachment)) {
+            when (val result = repo.adminUploadMedia(attachment)) {
                 is ApiResult.Ok -> uiState = uiState.copy(
                     channelFormIcon = uiState.channelFormIcon?.copy(
                         state = GoodPostUploadState.Ready(result.value.id)
@@ -764,7 +794,10 @@ class GoodPostViewModel : ViewModel() {
 
     fun submitChannelForm() {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
         val name = uiState.channelFormName.trim()
         if (name.isBlank()) {
             uiState = uiState.copy(messageCode = "invalid_request")
@@ -811,9 +844,9 @@ class GoodPostViewModel : ViewModel() {
 
         viewModelScope.launch {
             val result = if (editingId == null) {
-                repo.adminCreateChannel(token, body)
+                repo.adminCreateChannel(body)
             } else {
-                repo.adminUpdateChannel(token, editingId, body)
+                repo.adminUpdateChannel(editingId, body)
             }
 
             uiState = when (result) {
@@ -823,7 +856,10 @@ class GoodPostViewModel : ViewModel() {
                     channelFormIcon = null,
                     channelFormIconRemoved = false
                 )
-                is ApiResult.Failed -> uiState.copy(adminBusy = false, messageCode = result.code)
+                is ApiResult.Failed -> uiState.copy(
+                    adminBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
                 ApiResult.Unreachable -> uiState.copy(adminBusy = false, messageCode = "unreachable")
             }
             if (result is ApiResult.Ok) {
@@ -888,7 +924,10 @@ class GoodPostViewModel : ViewModel() {
      */
     fun attachMedia(attachment: GoodPostAttachment) {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
 
         // One kind per post, matching the server's own rule: an image and a video
         // in one post would need a renderer per asset and a type that describes
@@ -905,7 +944,7 @@ class GoodPostViewModel : ViewModel() {
         )
 
         viewModelScope.launch {
-            when (val result = repo.adminUploadMedia(token, attachment)) {
+            when (val result = repo.adminUploadMedia(attachment)) {
                 is ApiResult.Ok -> updateAttachment(
                     attachment.uri,
                     GoodPostUploadState.Ready(result.value.id)
@@ -966,7 +1005,10 @@ class GoodPostViewModel : ViewModel() {
 
     fun publish() {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
         val channelId = when (val screen = uiState.screen) {
             is GoodPostScreen.AdminChannel -> screen.channelId
             is GoodPostScreen.Channel -> screen.channelId
@@ -1010,9 +1052,9 @@ class GoodPostViewModel : ViewModel() {
 
         viewModelScope.launch {
             val result = if (editingId == null) {
-                repo.adminCreatePost(token, channelId, payload)
+                repo.adminCreatePost(channelId, payload)
             } else {
-                repo.adminUpdatePost(token, editingId, payload)
+                repo.adminUpdatePost(editingId, payload)
             }
 
             uiState = when (result) {
@@ -1024,7 +1066,10 @@ class GoodPostViewModel : ViewModel() {
                 // The code the SERVER gave, so `media_not_ready`,
                 // `media_already_used` and `unknown_media` each get their own
                 // sentence instead of a generic failure.
-                is ApiResult.Failed -> uiState.copy(composerBusy = false, messageCode = result.code)
+                is ApiResult.Failed -> uiState.copy(
+                    composerBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
                 ApiResult.Unreachable -> uiState.copy(composerBusy = false, messageCode = "unreachable")
             }
             // The feed is reloaded either way on success, so a published post
@@ -1035,17 +1080,20 @@ class GoodPostViewModel : ViewModel() {
 
     fun deletePost(post: GoodPostPost) {
         val repo = repository ?: return
-        val token = uiState.admin?.token ?: return
+        // Signed in is the only precondition a caller can check. The token itself
+        // belongs to the repository, which renews it when it has lapsed — a stale
+        // copy held here is what made every call fail ten minutes in.
+        if (uiState.admin == null) return
 
         viewModelScope.launch {
-            val result = repo.adminDeletePost(token, post.id)
+            val result = repo.adminDeletePost(post.id)
             if (result is ApiResult.Ok) {
                 // Removed locally first, so the row leaves the list at the speed
                 // of the tap rather than of the round trip.
                 uiState = uiState.copy(posts = uiState.posts.filterNot { it.id == post.id })
                 loadPosts(post.channelId)
             } else if (result is ApiResult.Failed) {
-                uiState = uiState.copy(messageCode = result.code)
+                uiState = uiState.copy(messageCode = adminFailureCode(result))
             }
         }
     }
@@ -1053,6 +1101,23 @@ class GoodPostViewModel : ViewModel() {
     /** Dismiss the last message, so it cannot be read twice. */
     fun clearMessage() {
         uiState = uiState.copy(messageCode = null)
+    }
+
+    /**
+     * The message for a failed administrator call, ending the session when the
+     * failure means there is no session left.
+     *
+     * A 401 can only reach here after the repository's own renewal was refused —
+     * it renews once, silently, before any call reports a failure — so it is not a
+     * transient error worth retrying. The session is over, and leaving the
+     * administrator on a screen whose every action would fail is worse than asking
+     * for the password again.
+     */
+    private fun adminFailureCode(result: ApiResult<*>): String {
+        if (result !is ApiResult.Failed) return "unreachable"
+        if (result.status != 401) return result.code
+        adminSignOut()
+        return "session_expired"
     }
 
     /** Called when the tab is left, so a shared-page error does not persist. */

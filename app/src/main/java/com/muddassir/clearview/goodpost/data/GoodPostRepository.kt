@@ -2,6 +2,8 @@ package com.muddassir.clearview.goodpost.data
 
 import android.content.Context
 import android.net.Uri
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 
 /**
@@ -119,44 +121,106 @@ internal class GoodPostRepository(
         }
 
     /**
-     * Forget the administrator session.
+     * Forget the administrator session on this device.
      *
-     * The cached content is dropped with it. A cached list is a view of public
-     * content, so leaving it would leak nothing — but the cache is also the
-     * administrator's working set, and a fresh sign-in should not start from
-     * someone else's screen.
+     * The cached content goes with it. A cached list is a view of public content,
+     * so leaving it would leak nothing — but the cache is also the administrator's
+     * working set, and a fresh sign-in should not start from someone else's screen.
      */
-    fun adminSignOut() {
+    fun forgetAdminSession() {
         tokens.clear()
         cache.clear()
     }
 
-    suspend fun adminChannels(token: String): ApiResult<List<GoodPostChannel>> =
-        api.adminChannels(token)
+    /**
+     * Revoke the session on the server, so a refresh token does not outlive the
+     * device it was issued to. Best effort: the caller has already forgotten it
+     * locally, and a network failure must not hold anyone on a screen.
+     */
+    suspend fun revokeAdminSession(refreshToken: String) {
+        api.adminSignOut(refreshToken)
+    }
 
-    suspend fun adminCreateChannel(token: String, body: JSONObject): ApiResult<GoodPostChannel> =
-        api.adminCreateChannel(token, body)
+    /**
+     * Serialises renewal.
+     *
+     * The server rotates the refresh token and tolerates the previous one ONCE, for
+     * a client whose response was lost; a second replay of it is treated as a
+     * stolen token and revokes the entire session. Two admin calls that lapse
+     * together — the dashboard's channels and a channel's posts, say — would refresh
+     * with the same token at the same time, which is exactly that shape. One at a
+     * time, and the loser retries with what the winner obtained.
+     */
+    private val renewal = Mutex()
+
+    /**
+     * Run an authorized call, renewing the session once if it has lapsed.
+     *
+     * The access token is short on purpose — ten minutes, because it can publish
+     * and delete on a channel's behalf — while the session behind it lasts a week,
+     * so a request refused with 401 is the ordinary state of a tab left open
+     * rather than an error. Renewing in one place means no call site has to know:
+     * doing it at each of them is how one gets missed, and a missed one reports a
+     * refused call as a fact about the account — which is exactly how an expired
+     * token came to be shown as "No channels. Create one to start publishing."
+     *
+     * A renewal that is refused clears the session and returns the original
+     * failure, so the caller asks for a password instead of pretending.
+     */
+    private suspend fun <T> authorized(call: suspend (String) -> ApiResult<T>): ApiResult<T> {
+        val session = tokens.load() ?: return ApiResult.Failed(401, "unauthorized")
+
+        val first = call(session.token)
+        if (first !is ApiResult.Failed || first.status != 401) return first
+
+        return renewal.withLock {
+            // Re-read: another call may have renewed while this one waited, and
+            // refreshing again with the token this call started with is the replay
+            // the server revokes a session for.
+            val current = tokens.load()
+            if (current != null && current.token != session.token) {
+                return@withLock call(current.token)
+            }
+
+            when (val renewed = api.adminRefresh(session.refreshToken)) {
+                is ApiResult.Ok -> {
+                    // Saved before the retry, not after: the pair is rotated, so a
+                    // crash between here and the call would leave the stored one
+                    // already spent.
+                    tokens.save(renewed.value)
+                    call(renewed.value.token)
+                }
+                else -> {
+                    tokens.clear()
+                    first
+                }
+            }
+        }
+    }
+
+    suspend fun adminChannels(): ApiResult<List<GoodPostChannel>> =
+        authorized { token -> api.adminChannels(token) }
+
+    suspend fun adminCreateChannel(body: JSONObject): ApiResult<GoodPostChannel> =
+        authorized { token -> api.adminCreateChannel(token, body) }
 
     suspend fun adminUpdateChannel(
-        token: String,
         channelId: String,
         body: JSONObject
-    ): ApiResult<GoodPostChannel> = api.adminUpdateChannel(token, channelId, body)
+    ): ApiResult<GoodPostChannel> = authorized { token -> api.adminUpdateChannel(token, channelId, body) }
 
     suspend fun adminCreatePost(
-        token: String,
         channelId: String,
         body: JSONObject
-    ): ApiResult<GoodPostPost> = api.adminCreatePost(token, channelId, body)
+    ): ApiResult<GoodPostPost> = authorized { token -> api.adminCreatePost(token, channelId, body) }
 
     suspend fun adminUpdatePost(
-        token: String,
         postId: String,
         body: JSONObject
-    ): ApiResult<GoodPostPost> = api.adminUpdatePost(token, postId, body)
+    ): ApiResult<GoodPostPost> = authorized { token -> api.adminUpdatePost(token, postId, body) }
 
-    suspend fun adminDeletePost(token: String, postId: String): ApiResult<Unit> =
-        api.adminDeletePost(token, postId)
+    suspend fun adminDeletePost(postId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeletePost(token, postId) }
 
     // ── Media (§21, §22) ────────────────────────────────────────────────
 
@@ -175,18 +239,22 @@ internal class GoodPostRepository(
      * large video costs a buffer rather than its own size in heap.
      */
     suspend fun adminUploadMedia(
-        token: String,
         attachment: GoodPostAttachment
     ): ApiResult<GoodPostMedia> {
+        // The two authenticated steps of the handshake renew independently; the
+        // PUT between them is to the bucket with a pre-signed URL and needs no
+        // session at all, so a retry after renewal cannot double-upload.
         val upload = when (
-            val presign = api.adminRequestUpload(
-                token = token,
-                contentType = attachment.contentType,
-                byteSize = attachment.byteSize,
-                width = attachment.width,
-                height = attachment.height,
-                durationMs = attachment.durationMs
-            )
+            val presign = authorized { token ->
+                api.adminRequestUpload(
+                    token = token,
+                    contentType = attachment.contentType,
+                    byteSize = attachment.byteSize,
+                    width = attachment.width,
+                    height = attachment.height,
+                    durationMs = attachment.durationMs
+                )
+            }
         ) {
             is ApiResult.Ok -> presign.value
             // The server's own code, passed straight through: `media_unavailable`
@@ -219,6 +287,6 @@ internal class GoodPostRepository(
         // The confirmation is what makes it attachable, so it is not optional
         // and its failure is the caller's answer: an upload the server has not
         // verified is an attachment that would fail at publish time instead.
-        return api.adminConfirmUpload(token, upload.mediaId)
+        return authorized { token -> api.adminConfirmUpload(token, upload.mediaId) }
     }
 }

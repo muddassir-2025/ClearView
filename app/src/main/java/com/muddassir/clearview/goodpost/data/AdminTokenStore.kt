@@ -123,6 +123,7 @@ internal class AdminTokenStore(context: Context) {
 
     private fun encode(session: AdminSession): String = JSONObject().apply {
         put("token", session.token)
+        put("refreshToken", session.refreshToken)
         put("role", session.role)
         put("email", session.email)
         put("channelId", session.channelId ?: JSONObject.NULL)
@@ -133,9 +134,16 @@ internal class AdminTokenStore(context: Context) {
         return try {
             val json = JSONObject(raw)
             val token = json.optString("token")
-            if (token.isBlank()) return null
+            // Both halves or neither: a session stored before this app kept the
+            // refresh token cannot be renewed, and presenting it as usable would
+            // reproduce exactly the failure that made this necessary — every call
+            // refused ten minutes in, worded as an empty account. Once, on the
+            // update, the administrator signs in again.
+            val refresh = json.optString("refreshToken")
+            if (token.isBlank() || refresh.isBlank()) return null
             AdminSession(
                 token = token,
+                refreshToken = refresh,
                 role = json.optString("role"),
                 email = json.optString("email"),
                 channelId = if (json.isNull("channelId")) null else json.optString("channelId")
