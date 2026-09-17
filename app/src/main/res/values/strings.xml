@@ -990,4 +990,13 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_attachment_audio">Audio</string>
     <string name="goodpost_media_unsupported">That file cannot be attached. Images, video and audio only.</string>
     <string name="goodpost_media_edit_note">A post\u2019s files cannot be changed after publishing.</string>
+    <!-- The channel's profile image (§11), set from the same upload handshake as a post's media (§22). -->
+    <string name="goodpost_channel_image">Channel image</string>
+    <string name="goodpost_channel_image_add">Add image</string>
+    <string name="goodpost_channel_image_change">Change image</string>
+    <string name="goodpost_channel_image_remove">Remove</string>
+    <string name="goodpost_channel_image_keep">Keep</string>
+    <string name="goodpost_channel_image_current">Current image</string>
+    <string name="goodpost_channel_image_none">No image yet</string>
+    <string name="goodpost_channel_image_removing">Will be removed when you save</string>
 </resources>

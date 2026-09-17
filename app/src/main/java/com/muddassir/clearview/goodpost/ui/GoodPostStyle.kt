@@ -566,13 +566,22 @@ internal fun WaPrimaryButton(
     }
 }
 
-/** A borderless green text action. */
+/** A borderless text action: green, or in the warning colour when destructive. */
 @Composable
 internal fun WaTextAction(
     text: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    /**
+     * Rendered in the colour that says this removes something.
+     *
+     * Used by the channel form's Remove, which discards the image currently
+     * stored — the one control in that form whose effect cannot be taken back
+     * by editing a field again afterwards. Disabled still wins, so a busy form
+     * reads as unavailable rather than as dangerous.
+     */
+    destructive: Boolean = false
 ) {
     Text(
         text = text,
@@ -580,7 +589,11 @@ internal fun WaTextAction(
             .clip(RoundedCornerShape(8.dp))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
-        color = if (enabled) Wa.Accent else Wa.TextDim,
+        color = when {
+            !enabled -> Wa.TextDim
+            destructive -> Wa.Danger
+            else -> Wa.Accent
+        },
         fontSize = 15.sp,
         fontWeight = FontWeight.Medium
     )
