@@ -53,10 +53,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -347,6 +350,17 @@ internal fun WaChannelRow(
     preview: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * True when [preview] is a post BODY rather than prose about the channel.
+     *
+     * A preview of a post is the post's text, markers and all, so it is parsed
+     * the same way the feed parses it — otherwise a channel whose newest update
+     * opens with `*bold*` shows its asterisks in the list and loses them once
+     * opened, which reads as the list and the post disagreeing. A description is
+     * not a post: it has no formatting, and parsing it would turn a channel
+     * called `*star*` into one called star.
+     */
+    previewIsPostBody: Boolean = false,
     timestamp: String? = null,
     /** True for today's posts, which tint the stamp green (§4). */
     timestampRecent: Boolean = false,
@@ -435,7 +449,11 @@ internal fun WaChannelRow(
                             Spacer(Modifier.width(5.dp))
                         }
                         Text(
-                            text = preview,
+                            text = if (previewIsPostBody) {
+                                parseGoodPostText(preview)
+                            } else {
+                                AnnotatedString(preview)
+                            },
                             color = Wa.TextDim,
                             fontSize = 14.sp,
                             maxLines = 1,
@@ -514,8 +532,8 @@ internal fun WaSelectionBar(
  *
  * Deleting a channel removes its posts, its media and the login that ran it, and
  * there is nothing on the other end to restore from. Every other control in the
- * app is reversible — a post's removal is soft, unfollowing is local — so this is
- * the only place a confirmation is warranted, and it says exactly what will go.
+ * app is recoverable — a post's removal is soft and reversible — so this is the
+ * only place a confirmation is warranted, and it says exactly what will go.
  */
 @Composable
 internal fun WaConfirmDialog(
@@ -549,18 +567,6 @@ internal fun WaConfirmDialog(
             }
         }
     }
-}
-
-/** A section heading above a list, e.g. "Channels" (§3). */
-@Composable
-internal fun WaSectionTitle(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text,
-        modifier = modifier.padding(start = 16.dp, top = 18.dp, bottom = 8.dp),
-        color = Wa.Text,
-        fontSize = 20.sp,
-        fontWeight = FontWeight.Bold
-    )
 }
 
 /** The small green pill used by "Explore" and the channel page's action (§3). */
@@ -738,6 +744,15 @@ internal fun WaField(
     singleLine: Boolean = true,
     minHeight: Dp = 0.dp,
     keyboardType: KeyboardType = KeyboardType.Text,
+    /**
+     * Draw the value as dots.
+     *
+     * Set it for every password field. `KeyboardType.Password` only asks the IME
+     * to disable suggestions and learning — it does not hide anything, so without
+     * this a typed password is rendered in full, and is readable to anything that
+     * captures the screen or reads the accessibility tree.
+     */
+    masked: Boolean = false,
     imeAction: ImeAction = ImeAction.Next,
     onDone: () -> Unit = {}
 ) {
@@ -760,6 +775,11 @@ internal fun WaField(
                 placeholder = { Text(text = placeholder, color = Wa.TextDim, fontSize = 16.sp) },
                 textStyle = TextStyle(fontSize = 16.sp),
                 colors = WaFieldColors(),
+                visualTransformation = if (masked) {
+                    PasswordVisualTransformation()
+                } else {
+                    VisualTransformation.None
+                },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = keyboardType,
                     imeAction = imeAction
@@ -810,31 +830,6 @@ internal fun WaOverflowMenu(
                 )
             }
         }
-    }
-}
-
-/**
- * The green FAB: a rounded square, the shape used for "start something new".
- *
- * Positioned by its parent rather than by itself, so a screen that also has a
- * bottom bar can lift it above the bar instead of on top of it.
- */
-@Composable
-internal fun WaFab(
-    icon: ImageVector,
-    description: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Box(
-        modifier = modifier
-            .size(56.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(Wa.StampRecent)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(icon, contentDescription = description, tint = Wa.OnAccent, modifier = Modifier.size(26.dp))
     }
 }
 
@@ -1187,12 +1182,4 @@ internal fun waDescribeBytes(kind: String, bytes: Long): String = when {
     bytes >= 1_048_576 -> "$kind · ${String.format(Locale.US, "%.1f MB", bytes / 1_048_576.0)}"
     bytes >= 1024 -> "$kind · ${String.format(Locale.US, "%.0f KB", bytes / 1024.0)}"
     else -> kind
-}
-
-/** The kind word shown beside an asset's size. */
-internal fun waKindOf(kind: String): String = when (kind) {
-    "image" -> "Photo"
-    "video" -> "Video"
-    "audio" -> "Audio"
-    else -> "File"
 }

@@ -30,9 +30,9 @@ import type { MediaKind, ObjectStore } from '../media/store.js';
  *
  * Two rules, and each exists because the alternative leaks something:
  *
- *  * **No counters leave this module.** Not reactions, not views. There is no
- *    engagement column left to read — migration 012 dropped those tables — and
- *    the shapes below have nowhere to put a number.
+ *  * **No counters leave this module.** Not reactions, not views. The schema
+ *    has no engagement column to read, and the shapes below have nowhere to put
+ *    a number.
  *
  *  * **No identity leaves this module.** Who published a post is not part of a
  *    channel's public surface.
@@ -107,8 +107,9 @@ export interface PostRow {
 /**
  * A row as a reader sees it.
  *
- * The cast is honest because the database enforces its own range: migration 015
- * constrains `posts.type` to the four shapes in [PublicPostType], and the write
+ * The cast is honest because the database enforces its own range:
+ * `posts_type_is_renderable` constrains `posts.type` to the four shapes in
+ * [PublicPostType], and the write
  * path derives that type from the attachments rather than trusting a client. The
  * previous version's `poll -> text` translation is gone with the rows it existed
  * for — there is no longer a type that needs drawing as something it is not.

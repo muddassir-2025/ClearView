@@ -4,19 +4,23 @@ import { env } from '../env.js';
 /**
  * Per-IP rate limiting.
  *
- * The environment variables for this (RATE_LIMIT_MAX, AUTH_RATE_LIMIT_MAX, …)
- * were declared in M0 and documented as if they protected something. They did
- * not: nothing consumed them, so a deployment would have reported limits in its
- * config while enforcing none. This module is what makes them real, and
- * `describeActiveLimits()` reports at boot exactly which are in force and which
- * are still reserved, so the log cannot imply protection that is absent.
+ * The knobs are RATE_LIMIT_MAX, AUTH_RATE_LIMIT_MAX and WRITE_RATE_LIMIT_MAX,
+ * and `describeActiveLimits()` reports at boot exactly which are in force and
+ * which are still reserved — so an operator's log can never imply protection
+ * that is absent. A limit that is configured and not enforced is worse than no
+ * limit at all, because it is believed.
  *
- * Three limits are applied today:
+ * Three limits are applied:
  *
- *  - `global` — every /api/v1 request, from RATE_LIMIT_MAX.
- *  - `auth`   — /api/v1/auth specifically, from AUTH_RATE_LIMIT_MAX.
- *  - `write`  — every state-changing route in the channel, post and media
- *    surfaces, from WRITE_RATE_LIMIT_MAX.
+ *  - `global` — every request to either surface, reader or administrator, from
+ *    RATE_LIMIT_MAX. Mounted in `app.ts` so the health endpoints are exempt:
+ *    Render polls them, and a rate-limited health check reads as a dead service
+ *    and triggers a restart loop.
+ *  - `auth`   — the administrator sign-in routes specifically, from
+ *    AUTH_RATE_LIMIT_MAX. Tighter because it is the one place a password can be
+ *    guessed.
+ *  - `write`  — every state-changing administrator route: publishing, editing,
+ *    deleting, uploading. From WRITE_RATE_LIMIT_MAX.
  *
  * /health is deliberately NOT limited. Render polls it to decide whether the
  * service is alive, so rate limiting it would turn a burst of legitimate

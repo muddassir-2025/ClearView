@@ -5,10 +5,11 @@
  * `{ error: <type> }` with the given status.
  *
  * The code is a stable machine-readable string rather than a sentence because
- * the Android client branches on it: `phone_banned` has to send the user to
- * support, `account_not_found` has to offer registration, and
- * `otp_required` has to restart the verification step. Prose would make the
- * client parse English.
+ * the Android client branches on it: `channel_not_found` has to word one
+ * message, `media_unavailable` another, and `invalid_credentials` a third.
+ * Prose would make the client parse English — and the vocabulary is small on
+ * purpose, because a broadcast product with one credential has few ways to go
+ * wrong.
  *
  * `message` is a developer aid only — the error handler includes it in the
  * response when not in production, and for 5xx it is replaced by

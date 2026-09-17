@@ -20,7 +20,7 @@ const RULE: RateLimitRule = { name: 'test', windowMs: 60_000, max: 3 };
 /**
  * Rate limiting.
  *
- * These limits were configured in M0 and enforced by nothing, so every
+ * A configured limit that is enforced by nothing is worse than no limit, so every
  * assertion here is about a claim that used to be false. The window is
  * exercised through an injected clock rather than by sleeping, so the suite
  * stays fast and deterministic.

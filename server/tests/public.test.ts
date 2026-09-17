@@ -91,9 +91,8 @@ async function seedPost(
   } = {}
 ): Promise<string> {
   const rows = await pglite.query<{ id: string }>(
-    // `author_id` is NULL on purpose: migration 012 made authorship optional,
-    // because there is no honest mapping from a pre-redesign author to an
-    // administrator and inventing one would be a lie the audit trail repeats.
+    // `author_id` is NULL on purpose: authorship is optional (`posts.author_id`
+    // is nullable), and a post whose author is unknown is still a post.
     `INSERT INTO posts
        (channel_id, author_id, type, body, link_url, link_title, created_at, deleted_at)
      VALUES ($1, NULL, $2::post_type, $3, $4, $5, $6::timestamptz, $7::timestamptz)
@@ -211,13 +210,12 @@ describe('public channel list', () => {
 /**
  * A post a reader cannot see anything in (§9).
  *
- * The previous version stored rows with `type = 'poll'` and a null body —
- * migration 012 dropped the tables behind polls but kept the posts — so every
- * read carried a predicate that filtered them out, and a query that forgot one
- * served an empty bubble. Two things changed that: migration 015 deleted those
- * rows, and the constraint below means a new one cannot be written. The
- * guarantee therefore belongs to the database now, not to the query, which is
- * what these tests assert instead of asserting the filter.
+ * An earlier design stored rows with `type = 'poll'` and a null body, which
+ * nothing could render, so every read carried a predicate that filtered them
+ * out — and a query that forgot one served an empty bubble. The constraint
+ * below is what makes such a row unwritable, so the guarantee belongs to the
+ * database rather than to each query, which is what these tests assert instead
+ * of asserting the filter.
  */
 describe('a post a reader cannot see anything in', () => {
   it('cannot be stored: the type is constrained to the four shapes', async () => {

@@ -1,5 +1,5 @@
 import { env } from '../env.js';
-import { cursorKeyOf, isoOrNull, one, type Queryable } from '../db.js';
+import { cursorKeyOf, one, type Queryable } from '../db.js';
 import { badRequest, conflict, notFound } from '../http/errors.js';
 import {
   cursorOf,
@@ -11,12 +11,7 @@ import {
   type PageQuery,
 } from '../channels/cursor.js';
 import type { ObjectStore } from '../media/store.js';
-import {
-  attachMediaToPost,
-  lockMediaForClaim,
-  mediaForPosts,
-  type MediaSummary,
-} from '../media/service.js';
+import { attachMediaToPost, lockMediaForClaim, mediaForPosts } from '../media/service.js';
 import {
   mapPublicPost,
   POST_COLUMNS,
@@ -335,15 +330,3 @@ export async function deletePost(database: Queryable, postId: string): Promise<v
   if (rows.length === 0) throw notFound('post_not_found');
 }
 
-/** The media on a post, for a caller that already has the row. */
-export async function mediaOf(
-  database: Queryable,
-  store: ObjectStore,
-  postId: string
-): Promise<readonly MediaSummary[]> {
-  const byPost = await mediaForPosts(database, store, [postId]);
-  return byPost.get(postId) ?? [];
-}
-
-/** Re-exported so a route can word a failure without importing the read layer. */
-export { isoOrNull };

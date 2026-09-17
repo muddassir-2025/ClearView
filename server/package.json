@@ -14,6 +14,7 @@
     "test": "vitest run",
     "migrate": "tsx src/migrate.ts",
     "migrate:prod": "node dist/migrate.js",
+    "db:reset": "tsx src/db-reset.ts",
     "env:check": "node scripts/normalize-env.mjs --check",
     "env:fix": "node scripts/normalize-env.mjs",
     "create-admin": "tsx src/create-admin.ts"

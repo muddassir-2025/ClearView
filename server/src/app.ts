@@ -18,8 +18,9 @@ import {
  * The Express app, built but not listening.
  *
  * Kept separate from `index.ts` so tests can drive it with supertest without
- * binding a port, and so route modules added in later milestones mount in one
- * obvious place.
+ * binding a port, and so both route surfaces mount in one obvious place: the
+ * anonymous reader API under `/api/v1` and the administrator API under
+ * `/admin/api`.
  */
 
 /**
@@ -84,9 +85,10 @@ function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFun
 
 /**
  * Overridable collaborators. Production passes nothing and gets the real pool
- * and the real Firebase verifier; the suite passes a PGlite database and a
- * fake verifier so the auth flow can be driven end-to-end without a network
- * call or a service account.
+ * and the real S3 client; the suite passes a PGlite database (a genuine
+ * Postgres compiled to WASM) and a fake object store, so both the schema and
+ * the upload handshake can be driven end to end without a network call or an
+ * AWS account.
  */
 export interface AppDeps {
   readonly database?: Queryable;
@@ -122,7 +124,8 @@ export function buildApp(deps: AppDeps = {}): express.Express {
 
   // The Android client sends no Origin header, so an empty allow-list is the
   // correct default: browsers are refused and the native app is unaffected.
-  // The admin dashboard's origin is added via CORS_ORIGINS in M6.
+  // There is no browser client — no admin dashboard, no public web page — so
+  // CORS_ORIGINS has nothing to allow unless one is added later.
   app.use(
     cors({
       origin: env.CORS_ORIGINS.length > 0 ? env.CORS_ORIGINS : false,

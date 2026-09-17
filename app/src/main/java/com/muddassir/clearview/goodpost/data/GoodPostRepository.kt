@@ -12,7 +12,7 @@ import org.json.JSONObject
  * Two rules shape it:
  *
  *  * **Reads never need a session.** Every browsing call goes straight to the
- *    anonymous `/api/v1/public` surface, so a reader who has just installed the
+ *    anonymous `/api/v1` surface, so a reader who has just installed the
  *    app sees channels on the first frame rather than a sign-in screen. There is
  *    no token to acquire, refresh or expire.
  *

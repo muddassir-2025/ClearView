@@ -33,42 +33,10 @@
     <string name="quran_verse_unavailable">Verses are being downloaded. Check back in a moment.</string>
     <string name="quran_tab">Quran</string>
     <string name="media_tab">Media</string>
-    <!-- Bottom navigation: the old "Live" tab was replaced by a clean, curated
-         Clear Feed. Makkah/Madinah live streams now live inside the Media tab
-         behind the "Haramayn Live" shortcut. -->
-    <string name="clear_feed_tab">Clear Feed</string>
-    <string name="clear_feed_subtitle">A calm, curated feed — no ads, no noise.</string>
-    <string name="clear_feed_filter_all">All</string>
-    <string name="clear_feed_filter_reflection">Reflection</string>
-    <string name="clear_feed_filter_discipline">Discipline</string>
-    <string name="clear_feed_filter_wellness">Wellness</string>
-    <string name="clear_feed_filter_quran">Quran</string>
-    <string name="clear_feed_empty">You\'re all caught up. No more posts in this feed.</string>
-    <string name="clear_feed_share_via">Share post via</string>
-    <string name="clear_feed_like">Like</string>
-    <string name="clear_feed_save">Save</string>
-    <string name="clear_feed_share">Share</string>
-    <!-- Body of the shared post: the text, then the attribution line. -->
-    <string name="clear_feed_share_text">%1$s\n\n— %2$s on Clear View</string>
-    <!-- "@handle · 2h ago" on a post header. The time part is one of the
-         relative-time plurals below. -->
-    <string name="clear_feed_handle_time">%1$s · %2$s</string>
-    <plurals name="clear_feed_time_minutes">
-        <item quantity="one">%1$d minute ago</item>
-        <item quantity="other">%1$d minutes ago</item>
-    </plurals>
-    <plurals name="clear_feed_time_hours">
-        <item quantity="one">%1$d hour ago</item>
-        <item quantity="other">%1$d hours ago</item>
-    </plurals>
-    <plurals name="clear_feed_time_days">
-        <item quantity="one">%1$d day ago</item>
-        <item quantity="other">%1$d days ago</item>
-    </plurals>
-    <plurals name="clear_feed_time_weeks">
-        <item quantity="one">%1$d week ago</item>
-        <item quantity="other">%1$d weeks ago</item>
-    </plurals>
+    <!-- Bottom navigation is Quran / Media / Good Post / Block. The "Clear Feed"
+         tab and the older "Live" tab before it are both gone; Makkah/Madinah
+         streams live inside the Media tab behind the "Haramayn Live" shortcut. -->
+
     <!-- Custom canvas-drawn blocking overlays: their text is painted onto the
          canvas, so these descriptions are what assistive technology announces. -->
     <string name="long_video_block_overlay_desc">Blocked video. Double-tap to leave and go to YouTube Home.</string>
@@ -625,20 +593,23 @@ This video cannot be played inside the app.</string>
     <string name="widget_phone_limit_start">START</string>
     <string name="widget_phone_limit_description">Shows today\'s screen time and starts a phone limit countdown with the remaining time</string>
 
-    <!-- Good Post (§4). Its own tab behind an account; nothing else in ClearView
-         requires one, and every string here is only ever shown inside it. -->
+    <!-- Good Post (§1, §4). Its own tab, with NO account of any kind: a reader
+         opens it and reads. The only credentials in here are an administrator's,
+         asked for on one screen, and every string below is only ever shown
+         inside the Good Post tab. -->
     <string name="goodpost_tab">Good Post</string>
     <string name="goodpost_not_configured_title">Good Post is not set up in this build</string>
-    <string name="goodpost_not_configured_note">No backend URL is configured, so sign-in cannot work. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
+    <string name="goodpost_not_configured_note">No backend URL is configured, so there is nothing to load channels from. Set goodPostBaseUrl in gradle.properties, or build with -PgoodPostBaseUrl=https://your-server, and rebuild.</string>
     <string name="goodpost_retry">Retry</string>
     <string name="goodpost_sign_out">Sign out</string>
 
-    <string name="goodpost_error_rate_limited">Too many codes requested for this number. Try again in about an hour.</string>
+    <string name="goodpost_error_rate_limited">Too many requests. Wait a moment and try again.</string>
     <string name="goodpost_error_server">The server had a problem. Try again in a moment.</string>
     <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
 
-    <!-- The channel list's own controls. Nothing here counts, follows or
-         subscribes on the server: following is device-local (§1, §2). -->
+    <!-- The channel list's own controls. Nothing here counts anything, and
+         nothing is stored per reader: there is no account for it to attach to
+         (§1, §5). -->
     <string name="goodpost_refresh">Refresh</string>
     <string name="goodpost_more">Load more</string>
     <string name="goodpost_search">Search</string>
@@ -648,11 +619,11 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_save">Save</string>
     <string name="goodpost_cancel">Cancel</string>
     <string name="goodpost_share">Share link</string>
-    <string name="goodpost_stale_note">Showing saved data — the server could not be reached.</string>
+    <string name="goodpost_stale_note">Showing saved data — it may be out of date.</string>
 
-    <string name="goodpost_error_invalid_input">That value is not allowed. Check the name, category or country code.</string>
+    <string name="goodpost_error_invalid_input">That value is not allowed. Check the name and try again.</string>
 
-    <!-- Posts and media (M3) -->
+    <!-- Posts and media (§9, §21, §22). -->
     <string name="goodpost_error_media_unavailable">That media is not available right now.</string>
 
     <string name="goodpost_empty_feed_title">No posts yet</string>
@@ -661,14 +632,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_publish">Post</string>
 
     <!-- Relative times on a post. Empty is used when a date cannot be read. -->
-
-    <!-- Engagement: reactions, polls and views -->
-
-    <!-- Reports and blocks (§12, §18) -->
-
-    <!-- Notifications, notices and messages (§16, §17, §26) -->
-
-    <!-- New error wordings -->
 
     <!-- Composing a poll (§14) -->
 
@@ -742,6 +705,15 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_new_channel">New channel</string>
     <string name="goodpost_video">Video</string>
     <string name="goodpost_edit_post">Edit post</string>
+
+    <!-- Inline formatting on the composer's toolbar (§17). The labels are the
+         accessibility names for the four buttons; a sighted user reads the icon.
+         They are the format's own name and nothing more, because the stored text
+         shows the markers themselves — there is no hidden state to explain. -->
+    <string name="goodpost_format_bold">Bold</string>
+    <string name="goodpost_format_italic">Italic</string>
+    <string name="goodpost_format_monospace">Monospace</string>
+    <string name="goodpost_format_strikethrough">Strikethrough</string>
 
     <!-- Rare failures of the public surface (§24). Kept short: a reader can act
          on "try again", and nothing else here is actionable. -->

@@ -32,17 +32,24 @@ const schema = z.object({
   PG_POOL_MAX: z.coerce.number().int().positive().default(10),
 
   // ── Auth ──
+  //
+  // ONE secret, because exactly one thing in this service signs anything: an
+  // administrator's short-lived access token. The signing key is DERIVED from it
+  // (see `admin/tokens.ts`), so a second or third "JWT secret" would be values
+  // nothing reads. JWT_REFRESH_SECRET, ACCESS_TOKEN_TTL and
+  // REFRESH_TOKEN_TTL_DAYS had all become precisely that: leftovers from a
+  // reader-session model whose sessions are now rows with their own expiry, so
+  // their lifetimes are the database's business and not a variable's.
   JWT_SECRET: z.string().min(1, 'JWT_SECRET is required'),
-  JWT_REFRESH_SECRET: z.string().min(1, 'JWT_REFRESH_SECRET is required'),
-  ACCESS_TOKEN_TTL: z.string().default('15m'),
-  REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(30),
 
-  // The pepper for every irreversible hash this service stores — IP hashes in
-  // the audit log, and refresh-token digests. The name is a leftover from the
-  // phone-identity model that migration 012 removed; renaming it would mean
-  // every deployment re-setting a secret it already has, for no change in
-  // behaviour.
-  PHONE_HASH_PEPPER: z.string().min(1, 'PHONE_HASH_PEPPER is required'),
+  // The pepper for the one irreversible hash the service stores: the client IP
+  // in the audit log.
+  //
+  // It was called PHONE_HASH_PEPPER, for a phone-identity model this product no
+  // longer has. A secret whose name describes a column the schema does not
+  // contain is worse than a new name: it is a value somebody keeps setting for a
+  // reason that stopped existing.
+  GOODPOST_HASH_PEPPER: z.string().min(1, 'GOODPOST_HASH_PEPPER is required'),
 
   // ── The first administrator (§17) ──
   //
@@ -82,8 +89,6 @@ const schema = z.object({
   UPLOAD_CLAIM_WINDOW_MINUTES: z.coerce.number().int().positive().default(60),
 
   // ── Product rules ──
-  /** Notifications are a DEVICE-LOCAL preference until real push exists (§14). */
-  DEFAULT_NOTIFICATIONS_ENABLED: bool.default(false),
   // How long a DELETED post's rows survive before the physical delete.
   //
   // Zero, because deleting a post is meant to be final for its content: the row
@@ -159,11 +164,13 @@ function assertReal(name: string, value: string): void {
 }
 
 if (isProduction) {
-  for (const name of ['JWT_SECRET', 'PHONE_HASH_PEPPER']) {
+  for (const name of ['JWT_SECRET', 'GOODPOST_HASH_PEPPER']) {
     assertReal(name, String((env as Record<string, unknown>)[name] ?? ''));
   }
-  if (env.JWT_SECRET.length < 32 || env.PHONE_HASH_PEPPER.length < 32) {
-    throw new Error('[env] JWT_SECRET and PHONE_HASH_PEPPER must each be at least 32 characters.');
+  if (env.JWT_SECRET.length < 32 || env.GOODPOST_HASH_PEPPER.length < 32) {
+    throw new Error(
+      '[env] JWT_SECRET and GOODPOST_HASH_PEPPER must each be at least 32 characters.'
+    );
   }
 
   // §17: there is exactly ONE initial super administrator and it comes from the
@@ -207,7 +214,7 @@ export const s3Configured = Boolean(env.AWS_S3_BUCKET) &&
  * a copy of the table could enumerate in minutes.
  */
 export function hashIp(ip: string): string {
-  return createHash('sha256').update(`${env.PHONE_HASH_PEPPER}:ip:${ip}`).digest('hex');
+  return createHash('sha256').update(`${env.GOODPOST_HASH_PEPPER}:ip:${ip}`).digest('hex');
 }
 
 /** SHA-256 of a refresh token — what actually gets stored. */

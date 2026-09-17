@@ -4,7 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * The public Good Post shapes: what `/api/v1/public` returns (§3–§13).
+ * The public Good Post shapes: what `/api/v1` returns (§3–§13).
  *
  * Every field here is one the backend actually sends, and every one of them is
  * public. There is deliberately NO follower count, post count, reaction, view

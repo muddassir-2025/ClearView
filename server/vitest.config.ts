@@ -4,8 +4,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],
-    // Applying thirteen migrations to PGlite (a real Postgres compiled to WASM)
-    // takes roughly ten seconds on its own — exactly the default hook timeout.
+    // Applying the migrations to PGlite (a real Postgres compiled to WASM)
+    // takes several seconds on its own — close to the default hook timeout.
     // Every suite creates its own database in `beforeAll`, so under parallel
     // load files would intermittently fail there, and vitest reports a failed
     // hook as the file's tests being SKIPPED. That is a flaky suite that also
@@ -22,8 +22,7 @@ export default defineConfig({
       // without waiting out a connection timeout.
       DATABASE_URL: 'postgresql://postgres:postgres@127.0.0.1:1/clearview_test',
       JWT_SECRET: 'test-access-secret-padded-to-32-chars-min',
-      JWT_REFRESH_SECRET: 'test-refresh-secret-padded-to-32-chars-min',
-      PHONE_HASH_PEPPER: 'test-pepper-padded-to-32-characters-min',
+      GOODPOST_HASH_PEPPER: 'test-pepper-padded-to-32-characters-min',
       RETENTION_JOB_ENABLED: 'false',
       // Left UNSET on purpose. `SUPER_ADMIN_EMAIL` is what a deployment uses to
       // provision its first administrator, and the suite never boots the server

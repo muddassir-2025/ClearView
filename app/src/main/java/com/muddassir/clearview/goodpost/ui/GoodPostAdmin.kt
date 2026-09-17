@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -66,7 +67,10 @@ import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
  */
 @Composable
 internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
-    Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
+    // §19 Bug 1: the sign-in fields are the only thing on this screen, and the
+    // Continue button sits below them. `imePadding()` keeps it above the keyboard
+    // rather than behind it, so the form can be completed in one go.
+    Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas).imePadding()) {
         WaTopBar(
             title = stringResource(R.string.goodpost_create_channel),
             navigation = {
@@ -111,6 +115,7 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
                 placeholder = stringResource(R.string.goodpost_password_hint),
                 enabled = !state.adminBusy,
                 keyboardType = KeyboardType.Password,
+                masked = true,
                 imeAction = ImeAction.Done,
                 onDone = viewModel::adminSignIn
             )
@@ -297,7 +302,9 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
     val showingPicked = picked != null && picked.mediaId != null
 
     WaBackdrop {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // §19 Bug 1: Create/Save is at the bottom of a scrolling form, so without
+        // this the last fields and the button would sit under the keyboard.
+        Column(modifier = Modifier.fillMaxSize().imePadding()) {
             WaTopBar(
                 title = stringResource(
                     if (creating) R.string.goodpost_new_channel
@@ -434,7 +441,12 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                         label = stringResource(R.string.goodpost_admin_password),
                         placeholder = stringResource(R.string.goodpost_password_hint),
                         enabled = !state.adminBusy,
-                        keyboardType = KeyboardType.Password
+                        keyboardType = KeyboardType.Password,
+                        // The password being minted for a new channel's
+                        // administrator: whoever is creating the channel reads it
+                        // off the screen to hand it over, which is exactly why it
+                        // must not be sitting in the clear while they type it.
+                        masked = true
                     )
                 }
 

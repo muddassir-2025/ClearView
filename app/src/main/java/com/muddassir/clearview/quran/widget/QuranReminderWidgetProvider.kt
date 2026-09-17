@@ -17,14 +17,17 @@ import com.muddassir.clearview.quran.worker.QuranWorkScheduler
 
 /**
  * Home-screen widget that shows the current English Quran verse.
- *
- * Rendering is instant: it only reads the persisted current verse (no file
- * parsing, no network). The verse itself is refreshed on the user-chosen
- * schedule (default 6 hours) by [QuranWorkScheduler]; this provider just
- * reflects the stored value.
- *
- * Tapping the widget body opens [QuranVerseActivity] (full verse details).
- * The header carries two actions:
+ *     * Rendering is instant: it only reads the persisted current verse (no file
+     * parsing, no network). The verse itself is refreshed on the user-chosen
+     * schedule (default 6 hours) by [QuranWorkScheduler]; this provider just
+     * reflects the stored value.
+     *
+     * The widget is a FIXED 2x3 cell (see `xml/quran_reminder_widget_info.xml`),
+     * which is why the layout stacks its actions at the bottom rather than
+     * putting them beside the title — a 110dp-wide column has no room for both.
+     *
+     * Tapping the widget body opens [QuranVerseActivity] (full verse details).
+     * The footer carries two actions:
  *  - Copy: copies the current verse (reference + text) to the clipboard.
  *  - Refresh: enqueues an immediate offline verse pick (the same MODE_REFRESH
  *    path the scheduled refresh uses).

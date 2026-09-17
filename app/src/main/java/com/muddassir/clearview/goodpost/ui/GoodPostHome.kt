@@ -47,13 +47,17 @@ import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 
 /**
- * The Good Post home screen: the channels this reader has (§1, §3, §4, §15).
+ * The Good Post home screen: the public channel list (§1, §3, §4, §15).
  *
- * The list is not "every channel that exists" — that is Explore, which is one tap
- * away. This is the short list the reader built by following, and the whole of
- * the tab's job is to answer "what did they say" for those channels. A fresh
- * install therefore starts empty and says where to go, which is the honest
- * version of a list nobody has chosen anything for yet.
+ * A reader's list is the catalogue itself — every channel that is publishing —
+ * because there is nothing to choose first: no account, no follow, no setup.
+ * Opening the tab and finding the channels already there IS the product, and the
+ * row answers the only question it needs to ("who is this, what did they last
+ * say, and when") without a single counter beside it.
+ *
+ * Explore, one tap away, is the same list with a search box and category filters
+ * in front of it; this screen is the short version for someone who just wants to
+ * read what is new.
  *
  * When an administrator is signed in, the same list becomes the channels their
  * account has access to — every channel for a super administrator, the one they
@@ -205,10 +209,11 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
 /**
  * The bar a selection replaces the title with (§5).
  *
- * Which actions appear is the permission model, not a preference: a reader may
- * stop following, and an account that runs a channel may edit or delete it. The
- * server refuses the rest regardless, but offering a control that always fails is
- * its own kind of lie.
+ * Which actions appear is the permission model, not a preference: a reader has no
+ * action to take on a channel at all, so their list cannot even enter selection
+ * mode, while an account that runs a channel may edit or delete it. The server
+ * refuses the rest regardless, but offering a control that always fails is its
+ * own kind of lie.
  */
 @Composable
 private fun ChannelsSelectionBar(
@@ -348,9 +353,17 @@ private fun ChannelRow(
     onLongClick: (() -> Unit)?
 ) {
     val posted = channel.lastPostAt != null
+    val postPreview = channel.lastPostPreview?.takeIf { it.isNotBlank() }
+    // Whether the line below is a post's own text, which is the one case that
+    // carries formatting markers. A suspended channel's notice, a media label and
+    // a description are prose, not posts.
+    val previewIsPostBody = channel.status != "suspended" && posted && postPreview != null
     val preview = when {
         channel.status == "suspended" -> stringResource(R.string.goodpost_suspended)
-        posted && !channel.lastPostPreview.isNullOrBlank() -> channel.lastPostPreview
+        // `?: ""` cannot happen (previewIsPostBody implies a non-blank
+        // preview); it is here because the compiler cannot see that through a
+        // boolean.
+        previewIsPostBody -> postPreview ?: ""
         // A post with no text is still a post — a photo, a video, a link. Saying
         // what it is beats an empty line, and it is what the small icon beside it
         // cannot say on its own.
@@ -364,6 +377,7 @@ private fun ChannelRow(
     WaChannelRow(
         title = channel.name,
         preview = preview,
+        previewIsPostBody = previewIsPostBody,
         timestamp = if (posted) waListStamp(at) else null,
         timestampRecent = waStampIsRecent(at),
         onClick = onClick,

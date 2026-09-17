@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -55,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -68,9 +70,9 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -81,10 +83,12 @@ import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
+import com.muddassir.clearview.goodpost.data.GoodPostFormat
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostPost
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
+import com.muddassir.clearview.goodpost.data.applyGoodPostFormat
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 import com.muddassir.clearview.goodpost.withDateSeparators
@@ -116,7 +120,14 @@ internal fun GoodPostFeed(
     val channel = state.channel
     val entries = remember(state.posts) { withDateSeparators(state.posts) }
 
-    Box(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
+    // §19 Bug 1: the composer is the bottom row of this screen, and the screen is
+    // hosted inside the app's Scaffold, which reserves room for the navigation bar
+    // but knows nothing about the keyboard. `imePadding()` is what makes the IME's
+    // height part of the layout instead of a panel drawn over the input bar —
+    // without it, every keystroke in a channel's editor hid the row being typed
+    // into. It is applied to the whole feed rather than to the bar alone so the
+    // post list shrinks with it and the last post stays reachable by scrolling.
+    Box(modifier = Modifier.fillMaxSize().background(Wa.Canvas).imePadding()) {
         // WhatsApp dark doodle chat wallpaper background (Screenshot 1 & Screenshot 4)
         Image(
             painter = painterResource(id = R.drawable.goodpost_chat_bg),
@@ -130,7 +141,6 @@ internal fun GoodPostFeed(
             if (state.postSelectionActive) {
                 PostSelectionBar(
                     state = state,
-                    channelName = channel?.name.orEmpty(),
                     editable = editable,
                     viewModel = viewModel
                 )
@@ -215,10 +225,8 @@ internal fun GoodPostFeed(
                         when (entry) {
                             is FeedEntry.Separator -> WaDatePill(entry.label)
                             is FeedEntry.Post -> PostItem(
-                                channelName = channel?.name.orEmpty(),
                                 post = entry.post,
                                 selected = state.selectedPostIds.contains(entry.post.id),
-                                selectionActive = state.postSelectionActive,
                                 onClick = {
                                     // In selection mode a tap adds to the
                                     // selection; otherwise a post has no tap
@@ -239,11 +247,10 @@ internal fun GoodPostFeed(
 
                     if (state.posts.isEmpty() && !state.postsLoading && state.postsError == null) {
                         item(key = "empty") {
-                            // This screen is ONE channel's history, so it says so.
-                            // The string it used to show told the reader that posts
-                            // from the channels they follow appear here, and to go
-                            // find some in Discover — following, and Discover, are
-                            // both things this product removed (§1).
+                            // This screen is ONE channel's history, so the empty
+                            // state says that and nothing more — it does not offer
+                            // to "find channels", because the reader is already
+                            // inside one and the list is one tap back (§9).
                             WaEmptyState(
                                 title = stringResource(R.string.goodpost_empty_feed_title),
                                 note = stringResource(R.string.goodpost_empty_channel_posts)
@@ -277,7 +284,7 @@ internal fun GoodPostFeed(
             }
 
             if (editable) {
-                ChannelInputBar(state = state, viewModel = viewModel)
+                ChannelInputBar(state = state, channelId = channelId, viewModel = viewModel)
             }
         }
     }
@@ -295,7 +302,6 @@ internal fun GoodPostFeed(
 @Composable
 private fun PostSelectionBar(
     state: GoodPostUiState,
-    channelName: String,
     editable: Boolean,
     viewModel: GoodPostViewModel
 ) {
@@ -363,10 +369,8 @@ private fun GoodPostPost.copyText(): String = buildString {
  */
 @Composable
 private fun PostItem(
-    channelName: String,
     post: GoodPostPost,
     selected: Boolean,
-    selectionActive: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
@@ -398,12 +402,16 @@ private fun PostItem(
                 }
             }
 
-            if (!post.body.isNullOrBlank()) {
+            val bodyText = post.body
+            if (!bodyText.isNullOrBlank()) {
                 SelectionContainer {
                     Text(
-                        text = post.body,
+                        // §17: the stored markers become spans here, and only
+                        // here. The body itself is plain text the server never
+                        // parsed; nothing is rendered as markup, so a post that
+                        // contains `<b>` simply says `<b>`.
+                        text = parseGoodPostText(bodyText),
                         color = Wa.BubbleText,
-                        fontFamily = FontFamily.Monospace,
                         fontSize = 14.5.sp,
                         lineHeight = 20.sp,
                         modifier = Modifier.padding(
@@ -572,9 +580,46 @@ private const val COMPOSER_MAX_ATTACHMENTS = 4
  * appears to have been published with a picture, and does not.
  */
 @Composable
-internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+internal fun ChannelInputBar(
+    state: GoodPostUiState,
+    channelId: String,
+    viewModel: GoodPostViewModel
+) {
     val context = LocalContext.current
-    val editing = state.editingPostId != null
+    // Scoped to the channel this bar belongs to, rather than to a bare "is
+    // anything being edited" (§19 Bug 3): the latter let one channel's editing
+    // strip appear over another channel's feed.
+    val editing = state.isEditingIn(channelId)
+
+    // The caret and anchor live here, while the text itself lives in the
+    // ViewModel. That split is what lets the formatting toolbar act on exactly
+    // what is highlighted without keeping a second copy of the body in step.
+    val body = state.composerBody
+    var selection by remember { mutableStateOf(TextRange(body.length)) }
+    var bodyFocused by remember { mutableStateOf(false) }
+
+    // Clamped on every read: the body can shrink under the caret (a format
+    // toggle, a publish that clears it), and a TextRange past the end of the
+    // text is an exception rather than a caret at the end.
+    val selectionStart = selection.start.coerceIn(0, body.length)
+    val selectionEnd = selection.end.coerceIn(0, body.length)
+    val selectedText = body.substring(
+        minOf(selectionStart, selectionEnd),
+        maxOf(selectionStart, selectionEnd)
+    )
+    val fieldValue = TextFieldValue(body, TextRange(selectionStart, selectionEnd))
+
+    // Opening an edit puts the caret at the end of what was published, which is
+    // where someone adding a correction wants it.
+    LaunchedEffect(state.editingPostId) {
+        selection = TextRange(body.length)
+    }
+
+    fun applyFormat(format: GoodPostFormat) {
+        val edit = applyGoodPostFormat(body, selectionStart, selectionEnd, format)
+        viewModel.onComposerBodyChange(edit.text)
+        selection = TextRange(edit.selectionStart, edit.selectionEnd)
+    }
 
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(COMPOSER_MAX_ATTACHMENTS)
@@ -672,6 +717,30 @@ internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewMode
             }
         }
 
+        // §17: inline formatting over the selection, in the WhatsApp dialect.
+        // Four buttons and nothing else — no headings, no lists, no fonts. Shown
+        // while the field has focus or while an edit is open, so it is present
+        // exactly when someone is writing and out of the way otherwise.
+        if (bodyFocused || editing || body.isNotEmpty()) {
+            GoodPostFormatToolbar(
+                isActive = { format ->
+                    // With text highlighted the button reflects the selection; with
+                    // nothing highlighted there is no "selected format" to show, so
+                    // it reflects the caret's line instead.
+                    if (selectedText.isEmpty()) {
+                        format.presentIn(body)
+                    } else {
+                        format.wraps(selectedText)
+                    }
+                },
+                onToggle = ::applyFormat,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Wa.Canvas)
+                    .padding(start = 16.dp, end = 16.dp, top = 2.dp)
+            )
+        }
+
         // Input pill row + Send button
         Row(
             modifier = Modifier
@@ -688,9 +757,14 @@ internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewMode
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 BasicTextField(
-                    value = state.composerBody,
-                    onValueChange = viewModel::onComposerBodyChange,
-                    modifier = Modifier.weight(1f),
+                    value = fieldValue,
+                    onValueChange = { updated ->
+                        selection = updated.selection
+                        viewModel.onComposerBodyChange(updated.text)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .onFocusChanged { bodyFocused = it.isFocused },
                     textStyle = TextStyle(
                         color = Wa.Text,
                         fontSize = 16.sp
@@ -698,7 +772,7 @@ internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewMode
                     cursorBrush = SolidColor(Wa.StampRecent),
                     maxLines = 5,
                     decorationBox = { innerTextField ->
-                        if (state.composerBody.isEmpty()) {
+                        if (body.isEmpty()) {
                             Text(
                                 text = if (editing) stringResource(R.string.goodpost_edit_post)
                                 else stringResource(R.string.goodpost_write_update),
@@ -732,7 +806,7 @@ internal fun ChannelInputBar(state: GoodPostUiState, viewModel: GoodPostViewMode
 
             Spacer(Modifier.width(6.dp))
 
-            val canSubmit = (state.composerBody.isNotBlank() || state.composerAttachments.isNotEmpty()) &&
+            val canSubmit = (body.isNotBlank() || state.composerAttachments.isNotEmpty()) &&
                 !state.composerBusy &&
                 (editing || state.composerAttachments.all { it.mediaId != null })
 

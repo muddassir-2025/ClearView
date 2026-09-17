@@ -18,7 +18,6 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Bookmark
-import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -87,7 +86,7 @@ import kotlinx.coroutines.withContext
  * verse state (verse, bookmark, refresh interval) plus the actions the top
  * bar can trigger (share / bookmark / copy / new verse / interval).
  */
-enum class ContentTab { QURAN, MEDIA, FEED }
+enum class ContentTab { QURAN, MEDIA }
 
 class ContentHubState(appContext: Context) {
 
@@ -728,8 +727,6 @@ fun ContentHubTabContent(
                 onMediaOpened = { state.markMediaUpdatesSeen() },
                 onOpenHaramaynLive = { state.showHaramaynLive = true }
             )
-
-            else -> ClearFeedScreen()
         }
     }
 }
@@ -858,19 +855,11 @@ fun ContentHubTopBar(
             }
         )
 
-        state.selectedTab == ContentTab.MEDIA -> TopAppBar(
-            title = { Text(stringResource(R.string.media_tab)) },
-            navigationIcon = {
-                if (onBack != null) {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                }
-            }
-        )
-
+        // The Media tab, and only the Media tab: `ContentTab` has two members,
+        // and Quran is handled above. The third branch that used to sit here was
+        // the Clear Feed tab's, and it is gone with the tab itself.
         else -> TopAppBar(
-            title = { Text(stringResource(R.string.clear_feed_tab)) },
+            title = { Text(stringResource(R.string.media_tab)) },
             navigationIcon = {
                 if (onBack != null) {
                     IconButton(onClick = onBack) {
@@ -940,11 +929,6 @@ fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
         ContentTab.MEDIA,
         { Icon(Icons.Filled.PlayCircle, contentDescription = null) },
         stringResource(R.string.media_tab)
-    ),
-    ContentHubNavItem(
-        ContentTab.FEED,
-        { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
-        stringResource(R.string.clear_feed_tab)
     )
 )
 

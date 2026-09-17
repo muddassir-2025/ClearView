@@ -21,7 +21,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -233,8 +232,4 @@ private fun MessageDialog(code: String, onDismiss: () -> Unit) {
         }
     }
 }
-
-/** A colour used by the read-only surfaces, kept here so they never import grey. */
-internal val WaTransparent: Color = Color.Transparent
-
 

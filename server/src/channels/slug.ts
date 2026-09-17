@@ -12,11 +12,11 @@
  * fails that constraint is an unhandled 500 rather than a validation error.
  */
 
-/** Must match `channels.slug`'s CHECK in migration 003. */
+/** Must match the CHECK on `channels.slug` in `001_init.sql`. */
 export const SLUG_MAX_LENGTH = 40;
 
 /**
- * The shape `channels.slug` allows, as enforced by the CHECK in migration 003.
+ * The shape `channels.slug` allows, enforced by the CHECK on that column.
  *
  * Exported so that LOOKING UP a slug validates with the same rule that
  * GENERATING one guarantees. A second, hand-copied regex would eventually

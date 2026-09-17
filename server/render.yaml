@@ -1,14 +1,14 @@
-# Render Blueprint — ClearView Good Post backend (§41).
+# Render Blueprint — ClearView Good Post backend.
 #
 # Deploy: Render Dashboard → New → Blueprint → pick this repo.
 #
 # `rootDir: server` is essential: the repository root is the Android project,
 # and the backend lives in this subdirectory.
 #
-# Region `frankfurt` is deliberate. Neon is in AWS eu-central-1 and S3 will be
-# too (M3), so putting the service in the same region keeps database round
-# trips — of which every authenticated request makes one — on the same
-# continent as both.
+# Region `frankfurt` is deliberate. Neon and the S3 bucket are both in AWS
+# eu-central-1 (see the S3 block at the bottom), so putting the service in the
+# same region keeps database round trips — of which every request makes at
+# least one — on the same continent as both.
 
 services:
   - type: web
@@ -75,17 +75,24 @@ services:
       # Do NOT set PORT — Render injects it and the app reads it.
 
       # ── Secrets Render generates, so nobody has to invent them ────────
-      # In production src/env.ts refuses to boot on a placeholder value, or on a
-      # JWT_SECRET or PHONE_HASH_PEPPER shorter than 32 characters. It does NOT
-      # compare JWT_SECRET with JWT_REFRESH_SECRET — this comment used to claim
-      # it did, which would send someone hunting for a check that is not there.
-      # generateValue guarantees a real value either way, and means no human ever
-      # writes them down or pastes them anywhere they could leak.
+      #
+      # Exactly two, because exactly two are read. In production src/env.ts
+      # refuses to boot on a placeholder value, or on a JWT_SECRET or
+      # GOODPOST_HASH_PEPPER shorter than 32 characters.
+      #
+      # `generateValue` means no human ever writes them down or pastes them
+      # anywhere they could leak, and it is idempotent: a redeploy keeps the
+      # value it already generated rather than rotating it out from under live
+      # sessions.
+      #
+      # NOT listed, because nothing reads them: JWT_REFRESH_SECRET,
+      # ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL_DAYS and
+      # DEFAULT_NOTIFICATIONS_ENABLED. An administrator's refresh token is a row
+      # with its own expiry, so there is no second secret and no token lifetime to
+      # configure outside the database.
       - key: JWT_SECRET
         generateValue: true
-      - key: JWT_REFRESH_SECRET
-        generateValue: true
-      - key: PHONE_HASH_PEPPER
+      - key: GOODPOST_HASH_PEPPER
         generateValue: true
 
       # ── You must supply these (Render prompts once, then stores them) ──
@@ -106,8 +113,12 @@ services:
 
       # Your Render service URL, e.g. https://clearview-goodpost-api.onrender.com
       # Set this AFTER the first deploy, once Render has assigned the hostname.
-      # It only feeds shareable links (§6), which arrive in M2, so a placeholder
-      # here does not break anything today.
+      #
+      # It is not cosmetic: it is the base of every channel's `shareLink`, which
+      # the API hands to the app and the app hands to whatever the user shares
+      # with. A wrong value produces links that point somewhere that does not
+      # exist, silently. Copy the hostname Render shows on the service page and
+      # paste it here in full, including `https://`.
       - key: PUBLIC_BASE_URL
         sync: false
 
@@ -138,12 +149,14 @@ services:
         sync: false
 
       # ── Non-secret tuning, safe in git ────────────────────────────────
-      # 30 days of server-side history. The device keeps whatever the user
-      # downloaded, for as long as they keep it (§10, §11).
-      - key: GOODPOST_HISTORY_DAYS
-        value: 30
-      # Nothing survives its window: the sweep removes expired rows and their
-      # S3 objects on the next run.
+      # How long a DELETED post's rows survive before the physical delete. Zero:
+      # a channel's history is kept until somebody deletes it, and a post that HAS
+      # been deleted stops being readable immediately, so a grace period would only
+      # keep content an administrator already removed.
+      #
+      # (There used to be a GOODPOST_HISTORY_DAYS here, expiring a channel's posts
+      # on a schedule. Nothing read it: a broadcast channel's history is its
+      # product, and the sweep that used it was removed.)
       - key: PURGE_GRACE_DAYS
         value: 0
       # The administrator sign-in budget: a ten-minute access token and a
@@ -159,6 +172,31 @@ services:
       - key: RETENTION_CRON
         value: '*/30 * * * *'
 
+      # ── Amazon S3, for channel and post images ─────────────────────────
+      #
+      # Image posts are part of the product, so these are listed rather than left
+      # to be discovered: with no bucket configured the service still runs
+      # (src/env.ts defaults AWS_REGION and an empty bucket), but every upload
+      # answers `media_unavailable` and the composer says so. Add all four to
+      # turn images on.
+      #
+      # SERVER-SIDE ONLY. These never reach the Android app: the client asks the
+      # backend for a short-lived presigned URL and PUTs the bytes straight to the
+      # bucket. The architecture is Android → backend → Neon/S3, never Android →
+      # S3 with a permanent key.
+      #
+      # The policy the access key needs — PutObject, DeleteObject, GetObject and a
+      # scoped ListBucket — is written out in docs/AWS_S3_SETUP.md, with
+      # docs/aws-s3-policy.json as the exact document to attach.
+      - key: AWS_REGION
+        value: eu-central-1
+      - key: AWS_S3_BUCKET
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+
       # ── Deliberately ABSENT, and why ──────────────────────────────────
       #
       # CORS_ORIGINS — the Android client sends no Origin header, so it needs
@@ -166,17 +204,16 @@ services:
       #   is empty, which is the correct posture for an app-only client. Never
       #   "*".
       #
-      # PHONE_VERIFY_MODE / FIREBASE_* / EMAIL_* / OTP_* — gone with the
-      #   modules they configured. Good Post has no viewer accounts, so there is
-      #   no phone verification, no email sign-in code and no push token to
-      #   register. The only credential in the product is an administrator's.
+      # AWS_USE_INSTANCE_ROLE — only for infrastructure that injects credentials
+      #   through an instance profile. Render does not, so the two keys above are
+      #   the way in. Setting it here would make the SDK look for a role that
+      #   never arrives and media would fail with a much worse error than
+      #   `media_unavailable`.
       #
-      # AWS_* — the media code is written (M3) but the credentials are not
-      #   supplied yet, so the variables stay absent and the service keeps
-      #   working: src/env.ts defaults AWS_REGION to eu-central-1 with an empty
-      #   bucket, and uploads answer `media_unavailable` until both
-      #   AWS_S3_BUCKET and AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY (or
-      #   AWS_USE_INSTANCE_ROLE) are set. Add all four to enable media.
+      # PHONE_VERIFY_MODE / FIREBASE_* / EMAIL_* / OTP_* — gone with the modules
+      #   they configured. Good Post has no viewer accounts, so there is no phone
+      #   verification, no email sign-in code and no push token to register. The
+      #   only credential in the product is an administrator's.
       #
       # RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX — left to their code defaults on
       #   purpose rather than duplicated here, so there is one source of truth.

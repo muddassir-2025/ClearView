@@ -12,16 +12,18 @@ import type { ChannelStatus } from './service.js';
  *
  * The rule:
  *
- *  * `active` — content is readable by any signed-in user. Every Good Post
- *    endpoint requires a session, so this is the whole public surface.
- *  * `suspended` — stopped broadcasting. It leaves every feed and is refused to
- *    followers, but its own admins keep read access: a moderator's action must
- *    leave the owner able to see what they are being asked to review.
- *  * `banned` — terminal. Nobody reads it, including its admins.
+ *  * `active` — content is readable by ANYONE. Good Post's readers are
+ *    anonymous and there is no session to require, so this single status is the
+ *    whole public surface.
+ *  * `suspended` — stopped broadcasting. It leaves the channel list, Explore and
+ *    the public read entirely, but its own administrator keeps read access: the
+ *    person being asked to fix it has to be able to see it.
+ *  * `banned` — terminal. Nobody reads it, including its administrator.
  *
- * Deliberately NOT the same question as "may this user follow it", which M2
- * answers separately, and not the same as "may this user publish", which needs
- * `active` regardless of role.
+ * Deliberately NOT the same question as "may this administrator publish here",
+ * which additionally requires the account to be in scope for this channel
+ * (`requireChannelScope`), and not the same as "is it active", which publishing
+ * needs regardless of who is asking.
  */
 export function contentVisibleTo(status: ChannelStatus, isChannelAdmin: boolean): boolean {
   if (status === 'banned') return false;

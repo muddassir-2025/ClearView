@@ -132,10 +132,13 @@ export interface StoredObject {
 /**
  * The storage operations posts need, as an interface.
  *
- * Injectable for the same reason the Firebase verifier is: the upload lifecycle
- * (presign → upload → confirm → claim) is the part that can be wrong, and it
- * must be testable without an AWS account. Tests supply a fake; production gets
- * the S3 implementation from [createObjectStore].
+ * Injectable so the upload lifecycle (presign → upload → confirm → claim) is
+ * testable without an AWS account. That lifecycle is the part that can be
+ * wrong, and every rule in it is OURS rather than the bucket's: a key is derived
+ * server-side, a claim is scoped to the administrator who requested the upload,
+ * and a post may only attach an upload the server itself confirmed with a HEAD.
+ * Tests supply a fake; production gets the S3 implementation from
+ * [createObjectStore].
  */
 export interface ObjectStore {
   /** False when no bucket is configured, so callers can degrade honestly. */

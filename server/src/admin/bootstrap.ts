@@ -161,10 +161,5 @@ export async function resetSuperAdminPassword(
   });
 }
 
-/** Whether any administrator exists at all — the app's own readiness signal. */
-export async function hasAnyAdmin(database: Queryable): Promise<boolean> {
-  return (await database.queryOne(`SELECT 1 FROM admin_users LIMIT 1`)) !== null;
-}
-
 /** A loaded account, for the CLI to print (never the hash). */
 export { loadAdmin, hashPassword };

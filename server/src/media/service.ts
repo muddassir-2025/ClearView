@@ -90,8 +90,8 @@ export interface MediaRow {
    * Set when this asset IS a channel's profile image (§21).
    *
    * Mutually exclusive with `post_id` in practice: one row is either attached to
-   * a post or it is a channel's icon, never both, and migration 014's partial
-   * unique index enforces the icon side of that.
+   * a post or it is a channel's icon, never both, and
+   * `post_media_channel_icon_idx` enforces the icon side of that.
    */
   channel_id: string | null;
   kind: MediaKind;
@@ -301,9 +301,9 @@ export async function lockMediaForClaim(
 /**
  * Attach claimed rows to a published post, in the caller's order.
  *
- * The row must be `ready` (migration 004's CHECK enforces it) and the caller must
- * already hold it locked from [lockMediaForClaim]; this only writes the position
- * and the owning post.
+ * The row must be `ready` (`post_media_claimed_is_ready` enforces it) and the
+ * caller must already hold it locked from [lockMediaForClaim]; this only writes
+ * the position and the owning post.
  */
 export async function attachMediaToPost(
   database: Queryable,
@@ -380,9 +380,9 @@ export async function sweepAbandonedUploads(
 ): Promise<{ readonly removed: number; readonly failed: number }> {
   if (!store.configured) return { removed: 0, failed: 0 };
 
-  // `post_id IS NULL AND channel_id IS NULL` is what "claimed by nobody" means
-  // after migration 014: a row is either attached to a post or it is a
-  // channel's profile image, and only a row that is neither is abandoned.
+  // `post_id IS NULL AND channel_id IS NULL` is what "claimed by nobody"
+  // means: a row is either attached to a post or it is a channel's profile
+  // image, and only a row that is neither is abandoned.
   const rows = await database.query<{ id: string; object_key: string }>(
     `SELECT id, object_key
        FROM post_media

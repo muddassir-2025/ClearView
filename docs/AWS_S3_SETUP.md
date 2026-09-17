@@ -87,14 +87,17 @@ had no way to read as "absent".
    checked that the viewer may read the channel (§32) — a public bucket would
    bypass that check entirely.
 3. **Default encryption: on** (SSE-S3 is enough).
-4. **CORS: not needed yet.** The Android client is not a browser and sends no
-   `Origin`. Add a CORS rule only if the M6 admin dashboard uploads directly
-   through a presigned URL, and then scope it to that dashboard's exact origin —
-   never `*`.
-5. **Lifecycle rules: optional backstop.** The application prunes old posts and
-   abandoned uploads itself; a lifecycle rule is a safety net, not the mechanism.
-   Do not set an expiry shorter than `GOODPOST_HISTORY_DAYS`, or the sweep would
-   find rows whose objects have already vanished.
+4. **CORS: not needed, full stop.** The Android client is not a browser and
+   sends no `Origin` header, and there is no browser client at all — no admin
+   dashboard, no public web page. The upload is a presigned PUT from the app to
+   the bucket, and presigned PUTs are not subject to CORS. A rule here would
+   only widen the bucket's exposure; never `*`.
+5. **Lifecycle rules: optional backstop, and never on posts.** The application
+   prunes deleted posts and abandoned uploads itself; a lifecycle rule is a
+   safety net, not the mechanism. Set an expiry on NOTHING under the posts
+   prefix: a channel's history is kept until somebody deletes it, and a rule that
+   expired objects behind the API's back would leave rows pointing at files that
+   no longer exist — a broken image the database still believes in.
 6. **Create an IAM user** for the backend, with **programmatic access only** (no
    console login). Attach `docs/aws-s3-policy.json` inline, with
    `REPLACE-WITH-YOUR-BUCKET-NAME` substituted.
@@ -118,10 +121,16 @@ read it back — against the deployed service, which is a better test than any
 credential on this machine would give, because it is the real thing.
 
 Until all four are set, uploads answer `media_unavailable` and every other
-feature keeps working; a text or link post needs no bucket at all. That behaviour
-is asserted in `server/tests/posts.test.ts`.
+feature keeps working; a text post needs no bucket at all, and the composer
+words the refusal rather than failing silently. That behaviour is asserted in
+`server/tests/publish-media.test.ts` and `server/tests/public.test.ts`.
 
-## A note on the account you showed me
+The four values are **server-side only**. They never reach the Android app: the
+client asks the backend for a presigned URL and PUTs the bytes straight to the
+bucket, so the architecture stays Android → backend → Neon/S3. An access key in
+the APK would be readable from the APK.
+
+## A note on the account
 
 An **IAM console sign-in password is not usable by this backend** — it cannot
 sign API requests, and it is not what S3 needs. The access key from step 7 is.

@@ -72,16 +72,13 @@ android {
             // (com.muddassir.clearview.debug) — a separate app that coexists
             // with the Play Store one, each with its own data.
             //
-            // Note which Firebase Android app this selects: the debug build
-            // registers as ".debug", so the debug SHA-1/SHA-256 belong on THAT
-            // entry in the Firebase console, not on com.muddassir.clearview.
-            // Firebase matches on package name first, then checks the cert.
-            //
-            // Deleting this line instead makes the debug build identify as
-            // com.muddassir.clearview, matching the Play Store id — needed to
-            // exercise the production Firebase Android app. That trades away
-            // the side-by-side install (INSTALL_FAILED_UPDATE_INCOMPATIBLE)
-            // and moves the debug SHA requirement to the production app.
+            // Note which Firebase Android app this selects. The debug variant
+            // reads `app/src/debug/google-services.json`, which registers BOTH
+            // package names; the release variant reads `app/google-services.json`,
+            // which registers only `com.muddassir.clearview`. So the debug
+            // SHA-1/SHA-256 belong on the `.debug` entry in the Firebase console
+            // and the release certificate belongs on the production entry —
+            // Firebase matches on package name FIRST, then checks the cert.
             applicationIdSuffix = ".debug"
         }
         release {
@@ -164,11 +161,16 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     implementation(platform("com.google.firebase:firebase-bom:34.18.0"))
-    // Analytics only. Good Post deliberately does NOT bring in Firebase Auth or
-    // Cloud Messaging any more: its readers have no accounts to authenticate and
-    // no inbox to push to, so both dependencies were an unused surface that only
-    // widened what the app asks for at install time. Administrators sign in
-    // against the ClearView backend, and channel notifications are a device-local
-    // preference until real push infrastructure exists (§14).
+    // Analytics only, and only Analytics. Good Post deliberately does NOT bring
+    // in Firebase Auth or Cloud Messaging: its readers have no account to
+    // authenticate and no inbox to push to. Administrators sign in against the
+    // ClearView backend, and channel notifications are a device-local preference
+    // until real push infrastructure exists.
+    //
+    // This is the one Firebase dependency the app has, which is why
+    // `google-services.json` stays: the plugin is what initialises Analytics from
+    // it at startup. The debug file registers `com.muddassir.clearview.debug` as
+    // well as the production id, so a debug install reports to its own app entry
+    // instead of polluting production analytics.
     implementation("com.google.firebase:firebase-analytics")
 }

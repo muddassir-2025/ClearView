@@ -33,8 +33,8 @@ import { SLUG_MAX_LENGTH, SLUG_PATTERN, slugCandidate } from './slug.js';
  *  * **A channel payload carries no counters and no identity.** There is no
  *    follower count, no post count and no owner, because Good Post has no
  *    followers, no accounts to own anything, and §1 excludes engagement
- *    numbers outright. The columns were dropped in migration 012 so the shapes
- *    cannot regress into carrying them.
+ *    numbers outright. The schema has no such column, so the shapes cannot
+ *    regress into carrying them.
  *
  *  * **The profile image leaves as a URL, never as a key.** `icon_object_key`
  *    is internal: it is read here, signed, and the result is what a client
@@ -47,12 +47,12 @@ import { SLUG_MAX_LENGTH, SLUG_PATTERN, slugCandidate } from './slug.js';
  *    hide a channel that was taken down.
  *
  *  * **There is one delete, and it is real.** A channel is removed rather than
- *    flagged (migration 015). Nothing here reads a `deleted_at` column on
- *    `channels`, because there is no longer such a column — the state that a
- *    soft delete would have represented is the absence of the row.
+ *    flagged. Nothing here reads a `deleted_at` column on `channels`, because
+ *    there is no such column — the state a soft delete would have represented
+ *    is the absence of the row.
  */
 
-/** Mirrors `channel_status` in migration 003. */
+/** Mirrors the `channel_status` enum in `001_init.sql`. */
 export type ChannelStatus = 'active' | 'suspended' | 'banned';
 
 /**
@@ -114,10 +114,10 @@ export const CHANNEL_COLUMNS = `
  * Nothing filters a post into renderability any more.
  *
  * The previous version of this file carried a `RENDERABLE_POST_SQL` predicate
- * that every post read had to remember: it excluded the poll rows migration 012
- * left behind and required a post to have something in it. Both halves are now
- * facts about the data rather than rules a query can forget — migration 015
- * deleted those rows and constrained `posts.type` to the four shapes the
+ * that every post read had to remember: it excluded the poll rows an earlier
+ * design left behind and required a post to have something in it. Both halves
+ * are now facts about the data rather than rules a query can forget —
+ * `posts_type_is_renderable` constrains `posts.type` to the four shapes the
  * composer produces, and publishing refuses an empty update at the point of
  * writing it. A reader therefore has no legacy case to filter, and the queries
  * below say only what they mean.
@@ -738,10 +738,11 @@ export async function setChannelStatus(
  *    rather than by a post;
  *  * the login created to run the channel — `admin_users.channel_id` CASCADES,
  *    so those credentials stop working instead of resolving to a channel that
- *    is gone. The audit rows that login wrote SURVIVE, unmodified: migration 015
- *    removes the foreign key rather than cascading into a table that is
- *    immutable by trigger, because a trail that is rewritten or erased as its
- *    subjects come and go is not evidence of anything.
+ *    is gone. The audit rows that login wrote SURVIVE, unmodified:
+ *    `admin_audit_logs.admin_id` is deliberately not a foreign key — a cascade
+ *    into a table that is immutable by trigger cannot work — because a trail
+ *    that is rewritten or erased as its subjects come and go is not evidence of
+ *    anything.
  *
  * The object keys come back rather than being removed here. Rows and bucket
  * objects cannot be one transaction, and the safe order is the one that leaves an

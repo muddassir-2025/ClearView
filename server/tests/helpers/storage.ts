@@ -4,7 +4,8 @@ import type { ObjectStore, PresignedUpload, StoredObject } from '../../src/media
  * An in-memory stand-in for S3.
  *
  * The upload lifecycle — presign → upload → confirm → claim — is the part of
- * M3 that can be wrong, and every rule that matters in it is OURS, not AWS's:
+ * upload handshake that can be wrong, and every rule that matters in it is OURS,
+ * not the bucket's:
  * that a client cannot choose its own object key, that a publish refuses media
  * which was never confirmed, that one upload cannot be claimed twice. Testing
  * those against a real bucket would need credentials, so they would be tested

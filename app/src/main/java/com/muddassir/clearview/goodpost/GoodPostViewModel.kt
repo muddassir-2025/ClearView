@@ -139,10 +139,20 @@ data class GoodPostUiState(
     // ── The composer (§21) ───────────────────────────────────────────────
     val composerOpen: Boolean = false,
     val composerBody: String = "",
-    val composerLink: String = "",
     val composerBusy: Boolean = false,
     /** Set while editing an existing post rather than creating one. */
     val editingPostId: String? = null,
+    /**
+     * The channel the post being edited belongs to.
+     *
+     * Editing state is per-channel, and this is what makes that true rather than
+     * hopeful. The composer is one field on one screen, but the screen it belongs
+     * to can change underneath it — and a bare [editingPostId] then describes a
+     * post in a channel the reader is no longer looking at. The feed asks
+     * [isEditingIn] before it draws the editing strip, so a stale id cannot leak
+     * across a channel switch even if a reset was missed.
+     */
+    val editingPostChannelId: String? = null,
     /**
      * Files attached to the post being written, in the order they were picked.
      *
@@ -242,6 +252,17 @@ data class GoodPostUiState(
     /** Whether a channel may be edited or deleted by this account. */
     fun canManage(channelId: String): Boolean =
         admin?.let { session -> session.isSuperAdmin || session.channelId == channelId } == true
+
+    /**
+     * Whether the composer is editing a post that belongs to [channelId].
+     *
+     * Both halves are required. A non-null [editingPostId] alone only says that
+     * SOME post is being edited; it does not say whose, and the feed of another
+     * channel reading only that is exactly how an editing strip appeared over a
+     * channel the administrator had never edited anything in.
+     */
+    fun isEditingIn(channelId: String): Boolean =
+        editingPostId != null && editingPostChannelId == channelId
 }
 
 /**
@@ -410,15 +431,7 @@ class GoodPostViewModel : ViewModel() {
             return
         }
 
-        uiState = uiState.copy(
-            channel = uiState.channels.firstOrNull { it.id == channelId },
-            posts = emptyList(),
-            postsCursor = null,
-            postsError = null,
-            postsStale = false,
-            selectedPostIds = emptySet(),
-            messageCode = null
-        )
+        uiState = uiState.forChannel(uiState.channels.firstOrNull { it.id == channelId })
         open(GoodPostScreen.Channel(channelId))
         loadChannel(channelId)
         loadPosts(channelId)
@@ -628,6 +641,54 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
+    /**
+     * The state a channel's screen starts from, whichever list opened it.
+     *
+     * This is where per-channel state is scoped, and it is one function rather
+     * than two `copy` calls for that reason: opening a feed is the moment every
+     * channel-scoped field has to be decided, and when it was written out twice,
+     * one copy was missing the selection and the other was missing the errors.
+     *
+     * What is cleared, and why each one is here:
+     *
+     *  * **The editor.** An edit belongs to one channel's post. Carrying
+     *    `editingPostId` into another channel is the bug this exists to prevent,
+     *    so it goes, along with the body, the attachments and the composer's own
+     *    open flag — an editor left half-populated over a different channel is
+     *    worse than one that was closed.
+     *  * **The selection.** Post ids are only unambiguous within a channel, so a
+     *    selection that survived a switch would name posts the new channel does
+     *    not have, and the action bar would count rows that are not there.
+     *  * **The feed and its paging.** Posts, the cursor, the error and the
+     *    in-flight flag all describe the previous channel's history.
+     *  * **The profile gallery.** `media` and `descriptionExpanded` belong to the
+     *    information page of one channel.
+     *
+     * [loadChannel] and [loadPosts] fill the rest in behind this.
+     */
+    private fun GoodPostUiState.forChannel(channel: GoodPostChannel?): GoodPostUiState = copy(
+        channel = channel,
+        posts = emptyList(),
+        postsCursor = null,
+        postsLoading = false,
+        postsLoadingMore = false,
+        postsError = null,
+        postsStale = false,
+        selectedPostIds = emptySet(),
+        media = emptyList(),
+        mediaLoading = false,
+        descriptionExpanded = false,
+        // §19 Bug 2/3: the composer is closed AND emptied, so neither an editing
+        // strip nor a half-typed body can appear over another channel.
+        composerOpen = false,
+        composerBody = "",
+        composerBusy = false,
+        editingPostId = null,
+        editingPostChannelId = null,
+        composerAttachments = emptyList(),
+        messageCode = null
+    )
+
     /** The channel the open feed is showing, whichever screen opened it. */
     private fun currentChannelId(): String? = when (val screen = uiState.screen) {
         is GoodPostScreen.Channel -> screen.channelId
@@ -828,6 +889,9 @@ class GoodPostViewModel : ViewModel() {
             selectedPostIds = emptySet(),
             backStack = listOf(GoodPostScreen.Home)
         )
+        // The editor belonged to an account that is no longer signed in, and the
+        // channel it was aimed at may not even be in the list the tab now shows.
+        resetComposer()
         refreshChannels()
     }
 
@@ -858,11 +922,9 @@ class GoodPostViewModel : ViewModel() {
     }
 
     fun openAdminChannel(channelId: String) {
-        uiState = uiState.copy(
-            channel = uiState.adminChannels.firstOrNull { it.id == channelId }
-                ?: uiState.channels.firstOrNull { it.id == channelId },
-            posts = emptyList(),
-            postsCursor = null
+        uiState = uiState.forChannel(
+            uiState.adminChannels.firstOrNull { it.id == channelId }
+                ?: uiState.channels.firstOrNull { it.id == channelId }
         )
         open(GoodPostScreen.AdminChannel(channelId))
         loadChannel(channelId)
@@ -1095,15 +1157,21 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             composerOpen = true,
             composerBody = "",
-            composerLink = "",
             composerAttachments = emptyList(),
             editingPostId = null,
+            editingPostChannelId = null,
+            composerBusy = false,
             messageCode = null
         )
     }
 
     /**
-     * Edit an existing post's text or link (§21).
+     * Edit an existing post (§21).
+     *
+     * The body is the stored text with its formatting markers intact, which is
+     * what makes an edit round-trip: the editor shows exactly what was published,
+     * markers and all, because that string IS the post. Nothing is decoded on the
+     * way in and re-encoded on the way out, so nothing can be lost between them.
      *
      * Its media is shown, and cannot be changed: the server has no route that
      * swaps a post's files, and offering one that silently did nothing would be
@@ -1113,19 +1181,18 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             composerOpen = true,
             composerBody = post.body.orEmpty(),
-            composerLink = post.linkUrl.orEmpty(),
             composerAttachments = emptyList(),
             editingPostId = post.id,
+            // Scoped to the post's OWN channel rather than to whichever feed is
+            // open, so the edit cannot be published into the wrong one.
+            editingPostChannelId = post.channelId,
+            composerBusy = false,
             messageCode = null
         )
     }
 
     fun onComposerBodyChange(value: String) {
         uiState = uiState.copy(composerBody = value)
-    }
-
-    fun onComposerLinkChange(value: String) {
-        uiState = uiState.copy(composerLink = value)
     }
 
     /**
@@ -1209,13 +1276,38 @@ class GoodPostViewModel : ViewModel() {
         )
     }
 
+    /**
+     * Leave the composer, whether the post was published, saved or abandoned
+     * (§19 Bug 2).
+     *
+     * ONE exit path, deliberately. The editing-information strip is drawn from
+     * [GoodPostUiState.editingPostId], so a path that closed the composer without
+     * clearing that id left the strip on screen — the editor appeared to still be
+     * editing a post that had already been saved, and the next `Post` tap
+     * re-opened an edit of it instead of publishing a new one.
+     *
+     * Attachments are dropped with it. Their uploaded objects are never claimed
+     * by a post, and the server's own sweep removes an unclaimed upload after the
+     * configured window — the composer does not need a delete call to leave
+     * nothing behind.
+     */
     fun cancelCompose() {
-        // Attachments are dropped with the dialog. Their uploaded objects are
-        // never claimed by a post, and the server's own sweep removes an
-        // unclaimed upload after the configured window — the composer does not
-        // need a delete call to leave nothing behind.
+        resetComposer()
+    }
+
+    /**
+     * Empty the composer back to "writing a new post in no channel".
+     *
+     * Every field the editor owns, so no caller has to remember the list: a
+     * partial reset is what the three bugs in this area all had in common.
+     */
+    private fun resetComposer() {
         uiState = uiState.copy(
             composerOpen = false,
+            composerBody = "",
+            composerBusy = false,
+            editingPostId = null,
+            editingPostChannelId = null,
             composerAttachments = emptyList(),
             messageCode = null
         )
@@ -1234,9 +1326,18 @@ class GoodPostViewModel : ViewModel() {
         }
 
         val body = uiState.composerBody.trim()
-        val link = uiState.composerLink.trim()
         val editingId = uiState.editingPostId
         val attachments = uiState.composerAttachments
+
+        // An edit is confined to the channel it was started in. `forChannel`
+        // already clears it on a switch, so reaching here with a mismatched pair
+        // would take a race — but refusing is still the right answer, because the
+        // alternative is writing one channel's words into another's history.
+        if (editingId != null && uiState.editingPostChannelId != channelId) {
+            resetComposer()
+            uiState = uiState.copy(messageCode = "not_found")
+            return
+        }
 
         // Refused BEFORE anything is sent. An upload still in flight, or one that
         // failed, has no media id to attach — so publishing now would either
@@ -1250,14 +1351,18 @@ class GoodPostViewModel : ViewModel() {
             return
         }
 
-        if (body.isEmpty() && link.isEmpty() && attachments.isEmpty()) {
+        if (body.isEmpty() && attachments.isEmpty()) {
             uiState = uiState.copy(messageCode = "empty_post")
             return
         }
 
+        // Text, plus whatever files are attached — and nothing else. There is
+        // deliberately no link field (§16): a plain URL typed into a post's text
+        // is already a link as far as a reader is concerned, and a separate
+        // "add link" workflow was a second way to express the same thing, with
+        // its own validation and its own failure modes.
         val payload = JSONObject().apply {
             put("body", body)
-            if (link.isNotEmpty()) put("linkUrl", link)
             if (editingId == null && attachments.isNotEmpty()) {
                 put(
                     "mediaIds",
@@ -1275,24 +1380,28 @@ class GoodPostViewModel : ViewModel() {
                 repo.adminUpdatePost(editingId, payload)
             }
 
-            uiState = when (result) {
-                is ApiResult.Ok -> uiState.copy(
-                    composerBusy = false,
-                    composerOpen = false,
-                    composerAttachments = emptyList()
-                )
-                // The code the SERVER gave, so `media_not_ready`,
-                // `media_already_used` and `unknown_media` each get their own
-                // sentence instead of a generic failure.
-                is ApiResult.Failed -> uiState.copy(
-                    composerBusy = false,
-                    messageCode = adminFailureCode(result)
-                )
-                ApiResult.Unreachable -> uiState.copy(composerBusy = false, messageCode = "unreachable")
+            if (result is ApiResult.Ok) {
+                // A successful publish or save ends the edit, so the editing strip
+                // goes with it (§19 Bug 2). This is the SAME exit path Cancel
+                // takes, which is what stops the two from drifting apart again.
+                resetComposer()
+                // Reloaded on success, so a published post appears immediately and
+                // an edit is visible without a pull (§21).
+                loadPosts(channelId)
+                return@launch
             }
-            // The feed is reloaded either way on success, so a published post
-            // appears immediately and an edit is visible without a pull (§21).
-            if (result is ApiResult.Ok) loadPosts(channelId)
+
+            // The code the SERVER gave, so `media_not_ready`, `media_already_used`
+            // and `unknown_media` each get their own sentence rather than a
+            // generic failure.
+            uiState = uiState.copy(
+                composerBusy = false,
+                messageCode = if (result is ApiResult.Failed) {
+                    adminFailureCode(result)
+                } else {
+                    "unreachable"
+                }
+            )
         }
     }
 

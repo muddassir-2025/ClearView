@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { directPool } from './db.js';
 
 /**
@@ -21,6 +22,10 @@ import { directPool } from './db.js';
  * It runs against the DIRECT Neon host (`DATABASE_URL_DIRECT`), because the
  * transaction pooler can route the statements of one migration across
  * different backends, which breaks both DDL and session advisory locks.
+ *
+ * `runMigrations` is exported because `src/db-reset.ts` drops the schema and
+ * then needs to apply exactly this set of files under exactly this lock — a
+ * second copy of the loop below would be a second thing to keep in step.
  */
 
 const MIGRATIONS_DIR = path.resolve(process.cwd(), 'migrations');
@@ -29,7 +34,7 @@ const MIGRATIONS_DIR = path.resolve(process.cwd(), 'migrations');
 // for the lock to actually exclude other runners.
 const ADVISORY_LOCK_KEY = 9_532_114_207;
 
-async function main(): Promise<void> {
+export async function runMigrations(): Promise<void> {
   const pool = directPool();
   const client = await pool.connect();
 
@@ -95,7 +100,15 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err: unknown) => {
-  console.error((err as Error).message);
-  process.exit(1);
-});
+// Only when this file IS the command. Importing it (db-reset.ts) must not apply
+// migrations as a side effect of the import.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  runMigrations().catch((err: unknown) => {
+    console.error((err as Error).message);
+    process.exit(1);
+  });
+}

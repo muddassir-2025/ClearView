@@ -32,8 +32,8 @@ import { isAdminRole, permissionsFor, type AdminRole } from './permissions.js';
  *    exists.
  *
  *  * **Every sensitive act is audited, including a refusal.** The log is
- *    append-only in the database (migration 008's trigger), which is what makes
- *    it worth writing to.
+ *    append-only in the database (`admin_audit_logs`'s triggers), which is what
+ *    makes it worth writing to.
  */
 
 const BCRYPT_ROUNDS = 12;
@@ -73,10 +73,11 @@ function toAccount(row: AdminRow): AdminAccount {
     id: row.id,
     displayName: row.display_name,
     email: row.email,
-    // A legacy value can only be read here, never written: migration 013
-    // disables any row that is not one of the two roles and constrains the
-    // column. Falling back to the least powerful role means a stray row cannot
-    // be treated as a super administrator by this mapper.
+    // A legacy value can only be read here, never written:
+    // `admin_users_role_check` constrains the column to the two roles, so this
+    // is the type guard rather than the rule. Falling back to the least
+    // powerful role means a stray row cannot be treated as a super
+    // administrator by this mapper.
     role: isAdminRole(row.role) ? row.role : 'channel_admin',
     status: row.status,
     channelId: row.channel_id,
@@ -246,9 +247,10 @@ interface LoginRow extends AdminRow {
 /**
  * Sign an administrator in.
  *
- * The failed-attempt counter and the lockout live in the row, not in memory, so
- * a restart does not hand an attacker a fresh allowance — the same reasoning
- * that put the old OTP attempts in the database.
+ * The failed-attempt counter and the lockout live in the ROW, not in memory, so
+ * a restart, a redeploy or a second instance does not hand an attacker a fresh
+ * allowance. An in-memory counter would reset exactly when an operator is least
+ * likely to notice.
  *
  * A locked account is refused with `admin_locked` rather than the generic
  * message. That is a deliberate exception to the \"one answer\" rule: an

@@ -13,7 +13,7 @@ import type { Queryable } from '../../src/db.js';
  * only ever runs for the first time in production is a migration nobody has
  * ever tested — and by then it is running against the database that matters.
  * PGlite supports DDL, enums, plpgsql triggers, partial unique indexes and
- * `gen_random_uuid()`, which is everything migration 001 uses.
+ * `gen_random_uuid()`, which is everything `001_init.sql` uses.
  *
  * The transaction-per-file behaviour mirrors src/migrate.ts deliberately: if
  * the runner wraps each file and this helper does not, the helper would pass
@@ -130,11 +130,10 @@ export function asQueryable(pglite: PGlite): Queryable {
  * schema rather than conveniences:
  *
  *  * **`admin_users` and `admin_audit_logs` survive.** The audit log is
- *    append-only by a database trigger, and migration 015 drops the foreign key
- *    from it to `admin_users` entirely, so the log outlives the account it
- *    describes instead of being erased or rewritten with it. Suites therefore
- *    create their own accounts with unique addresses and never assume an empty
- *    table.
+ *    append-only by a database trigger and carries no foreign key to
+ *    `admin_users`, so it outlives the account it describes instead of being
+ *    erased or rewritten with it. Suites therefore create their own accounts
+ *    with unique addresses and never assume an empty table.
  *
  *  * **Channels bound to an administrator are kept**, for the same reason: they
  *    are reachable from those rows. Channels seeded directly by a test have no

@@ -191,7 +191,7 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab { QURAN, MEDIA, FEED, GOODPOST, BLOCK }
+private enum class MainTab { QURAN, MEDIA, GOODPOST, BLOCK }
 
 /**
  * The channel slug carried by a `clearview://goodpost/channel/<slug>` link, or
@@ -542,7 +542,6 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
 private fun tabFor(tab: ContentTab): MainTab = when (tab) {
     ContentTab.QURAN -> MainTab.QURAN
     ContentTab.MEDIA -> MainTab.MEDIA
-    ContentTab.FEED -> MainTab.FEED
 }
 
 @Composable

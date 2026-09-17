@@ -1,13 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Quran Reminder — a fixed 2x3 widget (two cells wide, three tall).
+
+     The size is the point rather than a default: a verse needs vertical room to
+     be readable, and 2x3 is the smallest shape that holds a title, a verse and
+     its citation without the verse being cut to a single line. It is therefore
+     NOT resizable — `resizeMode` is absent, which means "none", so a launcher can
+     neither shrink it into illegibility nor stretch it into a mostly-empty box.
+
+     `targetCellWidth`/`targetCellHeight` are what Android 12+ uses to place the
+     widget; `minWidth`/`minHeight` are the fallback every older launcher reads,
+     and they are the classic formula for those cells (70dp x n - 30dp):
+       width  2 cells -> 110dp
+       height 3 cells -> 180dp
+     A portrait widget has a far narrower content column than the old 4x2 strip,
+     which is why the layout stacks the action buttons under the citation instead
+     of beside the title. -->
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    android:minWidth="280dp"
-    android:minHeight="100dp"
-    android:targetCellWidth="4"
-    android:targetCellHeight="2"
+    android:minWidth="110dp"
+    android:minHeight="180dp"
+    android:targetCellWidth="2"
+    android:targetCellHeight="3"
     android:updatePeriodMillis="0"
     android:initialLayout="@layout/widget_quran_reminder"
-    android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen"
     android:description="@string/widget_quran_reminder_description"
     android:previewLayout="@layout/widget_quran_reminder"

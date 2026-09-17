@@ -210,13 +210,24 @@ export async function closePool(): Promise<void> {
   if (migrationPool) await migrationPool.end();
 }
 
+/**
+ * "host/database" of the configured target, for a log line that says which
+ * database a command is about to touch. Never credentials: this is printed by
+ * `db:reset` before it deletes a schema, where "which one am I on?" is the one
+ * question worth answering out loud.
+ */
+export function databaseTarget(): string {
+  try {
+    const u = new URL(env.DATABASE_URL_DIRECT ?? env.DATABASE_URL);
+    return `${u.hostname}${u.pathname}`;
+  } catch {
+    /* parseUrl already validated the shape at boot */
+    return '(unparseable DATABASE_URL)';
+  }
+}
+
 if (env.NODE_ENV === 'development') {
   // Visibility that the right database is targeted, without ever printing
   // credentials. Development only so test output stays readable.
-  try {
-    const u = new URL(env.DATABASE_URL);
-    console.log(`[db] target ${u.hostname}${u.pathname}`);
-  } catch {
-    /* parseUrl already validated the shape at boot */
-  }
+  console.log(`[db] target ${databaseTarget()}`);
 }

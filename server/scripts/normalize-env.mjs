@@ -72,8 +72,9 @@ export function stripQuotes(raw) {
  * Unquoted is safest for the common case, but two shapes break it: a `#`
  * anywhere (dotenv treats the rest of the line as a comment) and leading or
  * trailing whitespace. Those get double quotes, with any interior `"` and any
- * backslash escaped — backslash matters because the Firebase private key
- * carries literal `\n` that must survive as two characters, not a newline.
+ * backslash escaped — the backslash matters for any value that carries literal
+ * `\n` (a PEM body in a deployment that pastes one) which must survive as two
+ * characters rather than becoming a newline.
  */
 export function renderValue(value) {
   const needsQuoting =

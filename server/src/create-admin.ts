@@ -1,14 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { closePool, db } from './db.js';
 import { env } from './env.js';
-import { ensureSuperAdmin, hasAnyAdmin, resetSuperAdminPassword } from './admin/bootstrap.js';
+import { ensureSuperAdmin, resetSuperAdminPassword } from './admin/bootstrap.js';
 
 /**
  * Provision the initial SUPER_ADMIN (§17).
  *
- * The `create-admin` npm script has pointed at this file since the first
- * milestone; this is the milestone that makes it match the model. It is how the
- * FIRST administrator comes to exist — and the only way, on purpose:
+ * This is how the FIRST administrator comes to exist — and the only way, on
+ * purpose:
  *
  *  * **Not an endpoint.** An unauthenticated "create the first admin" route is
  *    not a bootstrap, it is a backdoor. A CLI, run by whoever has deploy access,
@@ -137,11 +136,6 @@ async function main(): Promise<void> {
   console.log(`    id     ${result.adminId ?? ''}`);
   console.log(`    email  ${env.SUPER_ADMIN_EMAIL ?? ''}`);
   console.log('');
-}
-
-/** True when this deployment can be signed into at all. */
-export async function adminsReady(): Promise<boolean> {
-  return hasAnyAdmin(db);
 }
 
 // Never let a credential reach a log through an unhandled rejection: the
