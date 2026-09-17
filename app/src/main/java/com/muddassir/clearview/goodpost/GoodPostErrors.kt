@@ -130,6 +130,34 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
 }
 
 /**
+ * Whether a failed sign-in means "this server speaks a different contract".
+ *
+ * The administrator sign-in route takes `{email, password}` and answers with a
+ * token or `invalid_credentials`. Three answers cannot come from a server that
+ * implements it, and every one of them was being reported as a wrong password:
+ *
+ *  * **404** — no route there at all. The backend was built without an
+ *    administrator surface.
+ *  * **405** — something is at that path, but not for this method.
+ *  * **`invalid_request`** — the body was refused as malformed by a server that
+ *    wanted a different body. The previous deployment's login also required a
+ *    PHONE NUMBER, so it answered exactly this to a well-formed request from
+ *    this app: a correct password came back as "invalid credentials" and sent
+ *    whoever typed it off to reset something that was never wrong.
+ *
+ * The last rule only holds because this client cannot send a malformed body.
+ * `adminSignIn` refuses an unparsable address or an empty password locally, and
+ * the Continue button is disabled while either field is blank — so a 400 on this
+ * route is never this app's own doing.
+ */
+internal fun signInHitAnotherContract(status: Int, code: String): Boolean =
+    when {
+        status == 404 || status == 405 -> true
+        code == "invalid_request" -> true
+        else -> false
+    }
+
+/**
  * Mirror of the server's email check, for the administrator sign-in field.
  *
  * Deliberately as loose as the backend's, because the authoritative test of an

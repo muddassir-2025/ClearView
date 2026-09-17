@@ -26,7 +26,6 @@ data class GoodPostChannel(
     val categorySlug: String?,
     val categoryLabel: String?,
     val countryCode: String?,
-    /** ISO instant, used by the channel information page's "Created on". */
     /**
      * A short-lived signed URL for the channel's profile image, or null.
      *
@@ -38,6 +37,7 @@ data class GoodPostChannel(
      * meant to be temporary, so the backend never sends one.
      */
     val iconUrl: String?,
+    /** ISO instant, used by the channel information page's "Created on". */
     val createdAt: String,
     /** When it last published, or null if it never has. */
     val lastPostAt: String?,

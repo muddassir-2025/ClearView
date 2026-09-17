@@ -273,6 +273,26 @@ class GoodPostPublicTest {
         assertEquals(GoodPostError.Unknown, goodPostErrorFor("something_new"))
     }
 
+    @Test
+    fun `a sign-in refused by a different contract is named as one, not as a bad password`() {
+        // The previous deployment's login also demanded a phone number, so it
+        // refused a well-formed request from this app as malformed — and the
+        // person typing a CORRECT password was told their credentials were
+        // wrong, which is the report this rule exists to answer.
+        assertTrue(signInHitAnotherContract(400, "invalid_request"))
+        assertTrue(signInHitAnotherContract(404, "not_found"))
+        assertTrue(signInHitAnotherContract(405, "http_error"))
+
+        // Everything a server that DOES implement this contract may answer is
+        // left alone: a wrong password must keep reading as a wrong password,
+        // and a locked account must keep saying so.
+        assertFalse(signInHitAnotherContract(401, "invalid_credentials"))
+        assertFalse(signInHitAnotherContract(401, "unauthorized"))
+        assertFalse(signInHitAnotherContract(403, "admin_disabled"))
+        assertFalse(signInHitAnotherContract(429, "rate_limited"))
+        assertFalse(signInHitAnotherContract(500, "server_error"))
+    }
+
     // ── Attaching a file (§21, §22) ───────────────────────────────────────
 
     @Test
@@ -349,6 +369,6 @@ class GoodPostPublicTest {
  */
 private val GoodPostChannelFields = setOf(
     "id", "slug", "name", "description", "categorySlug", "categoryLabel",
-    "countryCode", "createdAt", "lastPostAt", "lastPostType", "lastPostPreview",
-    "shareLink"
+    "countryCode", "iconUrl", "createdAt", "lastPostAt", "lastPostType",
+    "lastPostPreview", "shareLink"
 )

@@ -562,13 +562,18 @@ class GoodPostViewModel : ViewModel() {
                     loadAdminChannels()
                 }
 
-                // A 404 here is not a credential problem: it means this backend
-                // has no administrator route. Saying so is the difference between
-                // "your password is wrong" and "this deployment has no login to
-                // offer", and only one of those is worth acting on.
+                // A refusal this contract cannot produce is not a credential
+                // problem: it means the backend is a different one. Naming that
+                // is the difference between "your password is wrong" and "this
+                // is not the server you think it is", and only one of those is
+                // worth acting on.
                 is ApiResult.Failed -> uiState = uiState.copy(
                     adminBusy = false,
-                    messageCode = if (result.status == 404) "admin_unavailable" else result.code
+                    messageCode = if (signInHitAnotherContract(result.status, result.code)) {
+                        "admin_unavailable"
+                    } else {
+                        result.code
+                    }
                 )
 
                 ApiResult.Unreachable -> uiState = uiState.copy(
