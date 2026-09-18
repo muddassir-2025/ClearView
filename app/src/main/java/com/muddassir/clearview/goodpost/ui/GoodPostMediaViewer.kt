@@ -108,6 +108,16 @@ internal fun MediaViewer(
     starred: Boolean = false,
     onToggleStar: () -> Unit = {},
     /**
+     * What a share of this file carries besides the file (§15): the post's words
+     * and the channel's link, composed by the caller with [shareCaptionFor].
+     *
+     * Handed in rather than looked up here, because this viewer is opened from
+     * four places that each hold the post differently — the feed's page, the
+     * gallery's media list, the information page and a search's results — and only
+     * the screen that opened it knows which of them the post is in.
+     */
+    shareCaption: String? = null,
+    /**
      * The file was removed from this device.
      *
      * The caller closes the viewer, because what it is looking at no longer
@@ -190,6 +200,7 @@ internal fun MediaViewer(
             contentType = contentType,
             starred = starred,
             onToggleStar = onToggleStar,
+            shareCaption = shareCaption,
             onDeleted = onDeleted,
             onClose = onClose
         )
@@ -587,6 +598,7 @@ private fun ViewerBar(
     contentType: String?,
     starred: Boolean,
     onToggleStar: () -> Unit,
+    shareCaption: String?,
     onDeleted: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -620,6 +632,7 @@ private fun ViewerBar(
                 contentType = contentType,
                 starred = starred,
                 onToggleStar = onToggleStar,
+                shareCaption = shareCaption,
                 onDeleted = onDeleted
             )
         }

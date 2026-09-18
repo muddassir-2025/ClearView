@@ -206,7 +206,10 @@ internal fun GoodPostChannelSearch(
                     viewerPostId = null
                     viewerMediaId = null
                 },
-                onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } }
+                onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } },
+                // The searched post's own words, out of this screen's results
+                // rather than the channel's page, and the channel's link (§15).
+                shareCaption = state.shareCaptionFor(viewerPostId)
             )
         }
     }

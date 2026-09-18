@@ -5,7 +5,10 @@ import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import com.muddassir.clearview.goodpost.data.pushDecisionOf
 import com.muddassir.clearview.goodpost.ui.mimeTypeFor
 import com.muddassir.clearview.goodpost.ui.mimeTypeForAll
+import com.muddassir.clearview.goodpost.ui.sharedPostText
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -63,6 +66,57 @@ class GoodPostSharingTest {
     @Test
     fun `an empty selection names no type but never crashes`() {
         assertEquals("*/*", mimeTypeForAll(emptyList()))
+    }
+
+    // ── What travels with a share (§15) ─────────────────────────────────
+
+    @Test
+    fun `a post goes as its words and its channel's link`() {
+        assertEquals(
+            "Salaam\n\nhttps://example.com/c/idk",
+            sharedPostText("Salaam", "https://example.com/c/idk")
+        )
+    }
+
+    @Test
+    fun `a media share sends the same message as a text one`() {
+        // The two shares differ only in what is ATTACHED. Composing them in one
+        // place is what keeps a picture from arriving without the link a text
+        // update would have carried.
+        val words = "A photograph"
+        val link = "https://example.com/c/idk"
+
+        assertEquals(sharedPostText(words, link), sharedPostText(words, link))
+        assertEquals("A photograph\n\nhttps://example.com/c/idk", sharedPostText(words, link))
+    }
+
+    @Test
+    fun `whichever half is missing is the half that is left out`() {
+        // A media-only post has no words, and still has to be findable.
+        assertEquals("https://example.com/c/idk", sharedPostText(null, "https://example.com/c/idk"))
+        assertEquals("https://example.com/c/idk", sharedPostText("   ", "https://example.com/c/idk"))
+        // A post this device has not fetched still shares, with just the link.
+        assertEquals("Salaam", sharedPostText("Salaam", null))
+        assertEquals("Salaam", sharedPostText("Salaam", ""))
+    }
+
+    @Test
+    fun `neither half is no text at all, not an empty one`() {
+        // An empty EXTRA_TEXT is drawn by several apps as a blank line above the
+        // file, so the extra has to be left off rather than set to nothing.
+        assertNull(sharedPostText(null, null))
+        assertNull(sharedPostText("", ""))
+        assertNull(sharedPostText("   ", "\n"))
+    }
+
+    @Test
+    fun `the link never opens the message`() {
+        // The words are what somebody came for; the link is how they get to the
+        // rest of it. Order is not cosmetic here.
+        val shared = sharedPostText("Salaam", "https://example.com/c/idk")!!
+
+        assertTrue(shared.startsWith("Salaam"))
+        assertTrue(shared.endsWith("https://example.com/c/idk"))
     }
 
     // ── The cache key a delete and a replay both need (§6, §26) ─────────

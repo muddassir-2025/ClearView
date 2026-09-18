@@ -254,6 +254,10 @@ internal fun GoodPostMediaGallery(
                 // A gallery item knows the post it came from, so the same
                 // re-read the feed does is available here.
                 onExpired = { viewModel.refreshPost(viewingItem.postId) },
+                // A grid cell knows which post it belongs to, so a share from here
+                // carries that post's words and the channel's link exactly as a
+                // share from the feed does (§15).
+                shareCaption = state.shareCaptionFor(viewingItem.postId),
                 // No resumeKey: nothing behind this is playing. A grid cell is a
                 // thumbnail, so there is no playhead to hand back to it.
                 onDeleted = { viewing = null }

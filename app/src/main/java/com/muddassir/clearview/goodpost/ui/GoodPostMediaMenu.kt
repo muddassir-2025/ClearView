@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.data.GoodPostDownloads
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
@@ -54,6 +55,16 @@ internal fun MediaActionMenu(
     contentType: String?,
     starred: Boolean,
     onToggleStar: () -> Unit,
+    /**
+     * What travels BESIDE the file: the post's words, and the channel's link.
+     *
+     * Composed by the caller out of [shareCaptionFor], because only the caller
+     * knows which post this file came from. It used to be nothing at all here,
+     * which is why sharing a picture from this menu handed over a bare file while
+     * sharing the same post from the feed handed over the words and the link —
+     * two halves of the same command behaving like two different features.
+     */
+    shareCaption: String? = null,
     /** Called after the local copy was dropped, so a caller can react. */
     onDeleted: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -86,7 +97,7 @@ internal fun MediaActionMenu(
                             if (uri == null) {
                                 showToast(context, R.string.goodpost_save_failed)
                             } else {
-                                shareFile(context, uri, kind, contentType)
+                                shareFile(context, uri, kind, contentType, shareCaption)
                             }
                         }
                     }
@@ -163,8 +174,62 @@ internal fun MediaActionMenu(
 }
 
 /** Hand a file to whatever the device shares with (§15). */
-private fun shareFile(context: Context, uri: Uri, kind: String, contentType: String?) {
-    shareFiles(context, listOf(uri), mimeTypeFor(kind, contentType), null)
+private fun shareFile(
+    context: Context,
+    uri: Uri,
+    kind: String,
+    contentType: String?,
+    caption: String?
+) {
+    shareFiles(context, listOf(uri), mimeTypeFor(kind, contentType), caption)
+}
+
+/**
+ * What travels with a shared post: what it said, and where it came from (§15).
+ *
+ * One function for both kinds of share, because the two are the same message with
+ * a different attachment. A text update goes as its words plus the channel's link;
+ * a picture or a clip goes as the FILE plus those same words plus that same link.
+ *
+ * The link is the half that makes a share findable. A photograph on its own is a
+ * photograph: the person receiving it has no way back to the channel it came
+ * from, and no way to see the rest of it — so a share that drops the link is a
+ * share the recipient cannot act on. Leaving it out of the media share is what
+ * made "Share" do two different things depending on what was shared.
+ *
+ * Null when there is nothing to say and nowhere to point, so a caller omits
+ * `EXTRA_TEXT` entirely rather than attaching an empty string that several apps
+ * draw as a blank line above the file.
+ */
+internal fun sharedPostText(message: String?, link: String?): String? {
+    val words = message?.trim().orEmpty()
+    val where = link?.trim().orEmpty()
+    return when {
+        words.isEmpty() && where.isEmpty() -> null
+        words.isEmpty() -> where
+        where.isEmpty() -> words
+        // The words first, and a blank line between them and the link: the link is
+        // an afterthought to whoever receives this, and an afterthought does not
+        // open the message.
+        else -> "$words\n\n$where"
+    }
+}
+
+/**
+ * The caption this post's media carries when it is shared (§15).
+ *
+ * The post's own words, when this device has them — the feed and the channel's
+ * information page hold the channel's page of posts, and a search holds its own
+ * results — and the channel's link either way. A post this device has not fetched
+ * still shares, with just the link, which is the honest answer: the file is here,
+ * the words are not, and sending the wrong words would be worse than sending
+ * none.
+ */
+internal fun GoodPostUiState.shareCaptionFor(postId: String?): String? {
+    val post = postId?.let { id ->
+        posts.firstOrNull { it.id == id } ?: channelSearchResults.firstOrNull { it.id == id }
+    }
+    return sharedPostText(message = post?.body, link = channel?.shareLink)
 }
 
 /**

@@ -474,6 +474,9 @@ internal fun GoodPostFeed(
                 // can be set from the picture rather than only from the list it
                 // was found in.
                 starred = viewerPostId in state.starredPostIds,
+                // And so does the caption, so sharing a clip from full screen
+                // sends what sharing its post from the feed sends (§15).
+                shareCaption = state.shareCaptionFor(viewerPostId),
                 onToggleStar = {
                     state.posts.firstOrNull { it.id == viewerPostId }?.let(viewModel::toggleStar)
                 },
@@ -612,11 +615,15 @@ private fun PostSelectionBar(
                                         showToast(context, R.string.goodpost_save_failed)
                                     }
                                 } else {
+                                    // The same words AND the same link a text-only
+                                    // share sends: attaching a file is no reason to
+                                    // drop the half that lets the recipient find
+                                    // the channel (§15).
                                     shareFiles(
                                         context = context,
                                         uris = uris,
                                         type = mimeTypeForAll(files.map { it.kind to it.contentType }),
-                                        text = text
+                                        text = sharedPostText(text, link)
                                     )
                                 }
                             }
@@ -1628,12 +1635,11 @@ internal fun shareChannel(
     message: String? = null
 ) {
     if (link.isBlank()) return
+    // The same composition a media share uses, so the two cannot drift apart.
+    val shared = sharedPostText(message, link) ?: return
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
-        putExtra(
-            Intent.EXTRA_TEXT,
-            if (message.isNullOrBlank()) link else "$message\n\n$link"
-        )
+        putExtra(Intent.EXTRA_TEXT, shared)
         putExtra(Intent.EXTRA_SUBJECT, name)
     }
     context.startActivity(Intent.createChooser(send, null))

@@ -317,6 +317,9 @@ internal fun GoodPostChannelInfo(
                 onClose = { viewing = null },
                 onExpired = { viewModel.refreshPost(viewingItem.postId) },
                 starred = state.starredPostIds.contains(viewingItem.postId),
+                // The same caption every other route to this file sends: the
+                // post's words and the channel's link (§15).
+                shareCaption = state.shareCaptionFor(viewingItem.postId),
                 onToggleStar = {
                     state.posts.firstOrNull { it.id == viewingItem.postId }
                         ?.let(viewModel::toggleStar)
