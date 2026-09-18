@@ -133,8 +133,20 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).toContain('<meta property="og:title" content="Dev Updates · ClearView">');
     expect(response.text).toContain('Notes on shipping software.');
 
-    // The handle, the follower count and the picture's own stable URL.
-    expect(response.text).toContain(`>@${slug}<`);
+    // The description sits UNDER the name — it is the answer to "what is this
+    // channel", and the handle that used to sit there was the name again. The
+    // follower count and the picture's own stable URL follow it.
+    const header = response.text.slice(
+      response.text.indexOf('<header class="profile">'),
+      response.text.indexOf('</header>')
+    );
+    expect(header).toContain('<h1>Dev Updates</h1>');
+    expect(header).toContain('Notes on shipping software.');
+    expect(header.indexOf('Notes on shipping software.')).toBeGreaterThan(
+      header.indexOf('<h1>Dev Updates</h1>')
+    );
+    // And no handle line: the slug under the name was the name again.
+    expect(header).not.toMatch(/@(?:[a-z0-9-]+)</);
     expect(response.text).toContain('0 followers');
     expect(response.text).toContain(`/c/${slug}/icon`);
 
@@ -143,8 +155,13 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).toContain('Second post');
     expect(response.text.indexOf('First post')).toBeLessThan(response.text.indexOf('Second post'));
 
-    // A way into the app, which is what turns a visitor into a reader.
+    // A way into the app, which is what turns a visitor into a reader — once,
+    // not twice: the same pair of buttons at the top and the bottom asked a
+    // visitor to choose between two identical things before they had read
+    // anything.
     expect(response.text).toContain(`clearview://goodpost/channel/${slug}`);
+    expect(response.text.match(/Open in ClearView/g)).toHaveLength(1);
+    expect(response.text.match(/Get ClearView/g)).toHaveLength(1);
   });
 
   it('publishes an https share link that matches the page it points at', async () => {
@@ -277,6 +294,91 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).toMatch(/<a class="tile" href="https:\/\/fake-bucket\.test\//);
   });
 
+  it('opens the media in an overlay the visitor can page through (§6)', async () => {
+    // A visitor sent a link with six pictures should be able to see all six
+    // without six round trips through the back button, and without leaving the
+    // channel for an app they may not have.
+    const slug = unique('lightbox');
+    const channelId = await seedChannel(slug);
+    const first = await seedPost(channelId, 'First', 20);
+    await seedImage(first);
+    const second = await seedPost(channelId, 'Second', 10);
+    await seedImage(second);
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    // Each tile says what it is and where it points, which is all the overlay
+    // needs — and the href stays, so a visitor with no JavaScript still gets the
+    // full-size picture.
+    expect(response.text.match(/data-lightbox/g)).toHaveLength(2);
+    expect(response.text).toContain('data-kind="image"');
+    expect(response.text).toMatch(/<a class="tile" href="https:\/\/fake-bucket\.test\/[^"]+" data-lightbox/);
+
+    // One overlay, hidden, with its controls and a way into the app from it.
+    expect(response.text).toContain('<div class="lightbox" id="lightbox" hidden');
+    expect(response.text).toContain('id="lb-stage"');
+    expect(response.text).toContain('id="lb-close"');
+    expect(response.text).toContain('id="lb-prev"');
+    expect(response.text).toContain('id="lb-next"');
+    expect(response.text).toContain('id="lb-count"');
+
+    const script = await request(app).get('/c/app.js');
+    expect(script.text).toContain("getElementById('lightbox')");
+    expect(script.text).toContain('ArrowLeft');
+    expect(script.text).toContain('touchstart');
+  });
+
+  it('draws no overlay on a channel with nothing to show in one', async () => {
+    // A text-only channel has no media, so there is nothing to page through and
+    // the hidden panel is not rendered at all.
+    const slug = unique('nobox');
+    const channelId = await seedChannel(slug);
+    await seedPost(channelId, 'Words only');
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).not.toContain('data-lightbox');
+    expect(response.text).not.toContain('id="lightbox"');
+  });
+
+  it('carries ClearView\'s own mark, in the header and as the tab icon (§14)', async () => {
+    // The split heart is the app's icon, carried over as path data: black left
+    // half, deep-red right half. Both colours are pinned here because the mark
+    // means nothing in one colour, and the page is the only place outside the
+    // launcher that draws it.
+    const slug = unique('brand');
+    await seedChannel(slug, { name: 'Branded' });
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    const header = response.text.slice(
+      response.text.indexOf('<p class="brand">'),
+      response.text.indexOf('</p>', response.text.indexOf('<p class="brand">'))
+    );
+    expect(header).toContain('<span class="brand-mark">');
+    expect(header).toContain('<svg');
+    expect(header).toContain('fill="#000000"');
+    expect(header).toContain('fill="#C62828"');
+    expect(header).toContain('ClearView');
+
+    // And the mark sits on a WHITE tile, which is the only reason the black half
+    // can be seen at all: the page's canvas is near-black, and the app's icon is
+    // a black-and-red heart on white. A logo whose left half has vanished is
+    // worse than no logo, so the pairing is pinned here rather than trusted.
+    expect(response.text).toMatch(/\.brand-mark \{[^}]*background: #ffffff/s);
+    expect(response.text).toContain('<link rel="icon" type="image/svg+xml" href="/c/logo.svg">');
+
+    // And the mark is served, as SVG, at its own stable URL.
+    const logo = await request(app).get('/c/logo.svg');
+    expect(logo.status).toBe(200);
+    expect(logo.headers['content-type']).toContain('image/svg+xml');
+    // Superagent hands an unparsed image/svg+xml body back as a buffer rather than
+    // as text, so read whichever it is: the assertion is about what was served.
+    const svg = typeof logo.text === 'string' ? logo.text : String(logo.body);
+    expect(svg).toContain('#C62828');
+    expect(svg).toContain('<svg');
+  });
+
   it('marks a video tile with a play badge and does not autoplay it', async () => {
     // Six clips starting by themselves is bandwidth the brief rules out (§15), so
     // the tile asks for metadata and a first frame and nothing more.
@@ -306,19 +408,65 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).not.toContain('<video controls');
   });
 
-  it('renders a link post as its own tile with the domain, not as a bare URL', async () => {
+  it('renders a link post as a row with the domain, not as a bare URL', async () => {
     const slug = unique('linkcard');
     const channelId = await seedChannel(slug);
     await seedLinkPost(channelId, 'https://example.com/a-post', 'A post worth reading');
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text).toContain('tile tile-text tile-link');
+    // A row, not a square: words get the width (§7).
+    expect(response.text).toContain('class="post-link-title"');
     expect(response.text).toContain('A post worth reading');
     expect(response.text).toContain('example.com');
-    // A link tile is a preview with nothing behind it here, so it opens the
+    // A link row is a preview with nothing behind it here, so it opens the
     // channel in the app rather than the URL it is about.
     expect(response.text).not.toContain('href="https://example.com/a-post"');
+  });
+
+  it('puts the words in rows above the squares, one post per line (§8)', async () => {
+    const slug = unique('two-sections');
+    const channelId = await seedChannel(slug);
+    // Three posts of words and two of pictures, alternated by time, so the
+    // grouping cannot happen by accident of insertion order.
+    await seedPost(channelId, 'Oldest words', 50);
+    const firstPicture = await seedPost(channelId, 'A caption nobody sees', 40);
+    await seedImage(firstPicture);
+    await seedPost(channelId, 'Middle words', 30);
+    const secondPicture = await seedPost(channelId, 'Another caption', 20);
+    await seedImage(secondPicture);
+    await seedPost(channelId, 'Newest words', 5);
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    // Every text post is a row, in its own container, before the grid.
+    expect(response.text.match(/class="post-row"/g)).toHaveLength(3);
+    expect(response.text.match(/class="tile"/g)).toHaveLength(2);
+    const rows = response.text.indexOf('<div class="rows">');
+    const grid = response.text.indexOf('<div class="grid">');
+    expect(rows).toBeGreaterThan(-1);
+    expect(grid).toBeGreaterThan(rows);
+    // And each row is a line of its own rather than a cell: the container is a
+    // column, which is what "one per line" means in CSS.
+    expect(response.text).toContain('.rows { display: flex; flex-direction: column;');
+    // Newest first inside a section, whichever section it is in.
+    expect(response.text.indexOf('Newest words')).toBeLessThan(
+      response.text.indexOf('Oldest words')
+    );
+    // The media label appears with both sections present, since two groups need
+    // telling apart.
+    expect(response.text).toContain('<h3 class="section-heading">Media</h3>');
+  });
+
+  it('leaves the second heading off when there is only one kind of post', async () => {
+    const slug = unique('one-section');
+    const channelId = await seedChannel(slug);
+    await seedPost(channelId, 'Just words');
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('<h2 class="section-heading">Latest posts</h2>');
+    expect(response.text).not.toContain('<h3 class="section-heading">Media</h3>');
   });
 
   it('shows the newest six posts and nothing older (§12)', async () => {
@@ -333,7 +481,7 @@ describe('the shared-channel page (§6)', () => {
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text.match(/class="tile tile-text"/g)).toHaveLength(6);
+    expect(response.text.match(/class="post-row"/g)).toHaveLength(6);
     expect(response.text).toContain('Update number 0');
     expect(response.text).toContain('Update number 5');
     expect(response.text).not.toContain('Update number 6');

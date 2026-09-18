@@ -7,7 +7,60 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: the shared page as a preview grid (§12)
+## Latest pass: motion, a greeting, and the mark on its tile (§16, §22)
+
+* **The tab has a motion vocabulary, and it is four things.**
+  `ui/GoodPostMotion.kt` holds every duration, curve and helper the tab animates
+  with, so no screen invents its own timing. A **screen change** is a 200ms fade
+  plus a slide of an eighth of the width, and the direction comes from the two
+  back stacks the transition is given: deeper means a push (enters from the
+  right), shallower means a pop (from the left), the same depth means two
+  destinations at one level — Explore for the channel list — which have no
+  direction to report and cross-fade instead. The outgoing screen only fades, and
+  for half the time, because sliding both is a wipe and a wipe across a feed
+  redraws every row on the way past. An **item arriving** is `animateItem()` on
+  the feed, the channel list, Explore, search results, the media grid, the
+  starred list and the composer's attachment strip — this is the motion that makes
+  the server's realtime work visible, since a post that arrives while the screen
+  is open now settles into place instead of appearing under a moving thumb. A
+  **press** is a 0.95 scale on a `graphicsLayer` (`Modifier.waTappable`) on
+  emoji chips, pills and filter pills, with the ripple dropped because on a chip
+  that small it covers the thing being pressed. A **picture arriving** is a 130ms
+  fade in a box that was already the right size, applied to post photos, gallery
+  tiles and avatars — one `animateFloatAsState` call site above the branch, which
+  is why those three draw the placeholder UNDER the picture rather than swapping
+  it for one (a swapped composable starts its animation from its final value and
+  arrives with a pop).
+* **A selection arrives as a layer, not a switch.** The selection fill and the
+  tint over the card are both animated from one `selected` flag, so they cannot
+  half-apply, and the selection bar drops into the place of the title bar it
+  replaces — the same strip, so the motion is what says the MODE changed. The
+  channel form slides up from the bottom and back down, which is what
+  distinguishes the one full-screen surface in the tab that is a step over the
+  tab rather than a destination.
+* **A wait the app cannot hurry along says so.** "Continue with Google" is the
+  longest wait in the product and the only one that leaves the app — Credential
+  Manager, the account picker, Firebase, then this backend, in series. The card
+  keeps its own spinner and a full-screen overlay names the step (`Signing you
+  in…`) with the app's heart pulsing on it, cleared in a `finally` so a thrown
+  connection cannot leave the overlay covering the app forever. A greyed-out card
+  was the previous answer, which reads as a control that refused to work.
+* **A returning creator is greeted.** Landing on a session rather than on the
+  name-a-channel step means the account already existed, so a dialog says so and
+  names the ADDRESS — the one thing the reader can check, and the mistake this is
+  able to catch is the wrong Google account out of several on a shared device.
+  It is a greeting rather than a confirmation: no Cancel beside Continue, and no
+  red on the button, because a red "Continue" teaches a reader that red means
+  nothing.
+* **ClearView's mark now stands on its own tile.** The split heart — black left
+  half, deep-red right half, the same path data as the launcher icon — was drawn
+  bare on the page's near-black canvas, where the black half is invisible and the
+  logo reads as half a heart. It sits on a 25px white rounded tile in the
+  masthead now, exactly the pairing `ic_launcher_background.xml` gives it, and a
+  test pins the pairing rather than trusting it. The favicon is unchanged: a
+  browser tab is not this canvas, and the mark at 16px needs no tile.
+
+## Previous pass: the shared page as a preview (§12)
 
 * **The shared page is a preview, not the channel.** The newest **six** posts and
   nothing else — no paging, no "load older", no complete history. The limit is in
@@ -15,33 +68,40 @@ was removed rather than patched.
   the top of `public/share.ts`), not a filter over a full read, so the media of
   post seven is never signed, transferred or billed. A test seeds eight posts and
   asserts the seventh is absent from the HTML.
-* **A profile header, then a grid.** Round channel picture, name, `@handle`,
-  follower count and the description in one raised card, stacked and centred under
-  420px; the two buttons beside and below it; then *Latest posts* and a grid of
-  square tiles — `repeat(auto-fill, minmax(104px, 1fr))`, so three columns on a
-  phone and never a column too thin for a word. Photos and clips are shown
-  `object-fit: cover` (the one place the page crops on purpose, since mixed shapes
-  at true sizes leave the rows ragged); a clip gets a play badge, asks for
-  `preload="metadata"` and seeks `#t=0.1` so the first frame paints — **no
-  autoplay**, because six clips starting at once is bandwidth nobody asked for.
-  Text posts are text tiles with the app's own inline formatting, cut to 140
-  characters at a word boundary with a *Read more →* footer rather than the whole
-  post squeezed into a square; a link post is its own tile with the title and
-  domain. Below the grid: *See more from this channel*, naming the count ("A
-  preview of the newest 6 posts") so the page says what it is, then About
-  ClearView. Every *Open in ClearView* on the page — both buttons and every text
-  or link tile — goes through the app-or-store script, which now wires **every**
+* **A profile header.** The round channel picture, the name, the DESCRIPTION and
+  the channel's two numbers (`1 follower`, plus the category when it has one), in
+  one raised card, stacked and centred under 420px. No handle line: the slug was
+  derived from the name, so a channel called "idk" read "idk / @idk" with the one
+  thing a visitor came to find out nowhere in sight — the slug stays in the URL,
+  the share link and the document title, which is where an identifier is useful.
+* **One pair of buttons, at the bottom.** The same pair used to sit under the
+  header and again under the grid, which asked a visitor to choose between two
+  identical things before they had read anything. They now live with *See more
+  from this channel*, which names the count ("A preview of the newest 6 posts") so
+  the page says what it is, next to About ClearView.
+* **Words in rows, pictures in squares.** Two sections, in that order. A text or
+  link post is a full-width row — one per line, quiet surface, hairline, the
+  words at a reading size and up to 260 characters with a *Read more →* footer,
+  because a paragraph in a 110px square is either three words or a font nobody
+  can read. A link row is the same shape with a headline and a domain. Media then
+  follows as a grid of square tiles — `repeat(auto-fill, minmax(104px, 1fr))`, so
+  three columns on a phone and never a column too thin for a word — under a small
+  *Media* label that appears only when both sections do. Newest first within each
+  section. Photos and clips are `object-fit: cover` (the one place the page crops
+  on purpose, since mixed shapes at true sizes leave the rows ragged); a clip gets
+  a play badge, asks for `preload="metadata"` and seeks `#t=0.1` so the first
+  frame paints — **no autoplay**, because six clips starting at once is bandwidth
+  nobody asked for. Every link on the page that promises the app — the button
+  pair and every row — goes through the app-or-store script, which wires **every**
   `a[data-store]` link rather than only the first.
-* **Tap target per tile kind.** A media tile opens the media itself (it is
-  cropped to a square here, so there must be a way to see all of it); a text or
-  link tile opens the channel in the app, since it has nowhere else to go on the
-  web.
-* **The shared page is a page.** A channel link opens a real channel page —
-  the channel's own picture (through `/c/:slug/icon`, which signs a URL when it is
-  fetched rather than when the page was built), its name, handle, category and
-  follower count, and its posts rendered by type with the app's own inline
-  formatting. A crawler gets `og:title`, `og:description`, `og:image` and a
-  canonical URL.
+* **Tap target per kind.** A media tile opens the media itself (it is cropped to
+  a square here, so there must be a way to see all of it); a text or link row
+  opens the channel in the app, since it has nowhere else to go on the web.
+* **The shared page is a page.** A channel link opens a real channel page rather
+  than a wall of braces, with the channel's own picture (through `/c/:slug/icon`,
+  which signs a URL when it is fetched rather than when the page was built) and
+  its posts rendered by type with the app's own inline formatting. A crawler gets
+  `og:title`, `og:description`, `og:image` and a canonical URL.
 * **The page was also broken, not just plain.** Helmet's default CSP is
   `img-src 'self' data:`, and every image on this page is a presigned URL on the
   bucket's own domain — so the browser loaded none of them and the avatar area sat

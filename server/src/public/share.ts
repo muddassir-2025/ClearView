@@ -233,7 +233,13 @@ const PREVIEW_POSTS = '6';
 const PREVIEW_CHARS = 140;
 
 /**
- * A post's text cut to what a tile can show, and whether it was cut.
+ * The same limit for a full-width row, which has the width to hold more — about
+ * four lines at a reading size, which is where a preview stops being one.
+ */
+const ROW_CHARS = 260;
+
+/**
+ * A post's text cut to what a preview can show, and whether it was cut.
  *
  * Cut at a word boundary rather than mid-word, then stripped of trailing
  * punctuation and of a trailing formatting marker: a cut that lands inside
@@ -279,14 +285,20 @@ function renderMedia(media: {
  * in the app, and printing it over the picture would be the caption covering the
  * thing it describes.
  *
+ * ## Media only
+ *
+ * Words do not come through here: a text or link post is a full-width ROW
+ * ([postRow]), because a paragraph in a 110px square is either three words or a
+ * font nobody can read. The two layouts are two sections of the page, so this
+ * function only ever draws a square.
+ *
  * ## What a tap does
  *
- * A media tile opens the media — the signed URL, full size, in the browser.
- * The tile crops it to a square, so a tap that did nothing would leave a visitor
- * no way to see the whole of it, and this is the one kind of tile with somewhere
- * else to go on the web. A text or link tile is a preview with nothing behind it
- * here, so it opens the channel in the app, which is the page's whole purpose.
- * Both are real `<a>` elements; nothing depends on the script.
+ * A media tile opens the media — the signed URL, full size, in the browser. The
+ * tile crops it to a square, so a tap that did nothing would leave a visitor no
+ * way to see the whole of it, and this is the one kind of tile with somewhere
+ * else to go on the web. It is a real `<a>` element; nothing depends on the
+ * script.
  *
  * ## Why the video is asked for a tenth of a second
  *
@@ -310,8 +322,7 @@ function postTile(
       readonly height: number | null;
     }[];
     readonly createdAt: string;
-  },
-  deepLink: string
+  }
 ): string {
   const when = escapeHtml(readableDate(post.createdAt));
   // The exact instant, for anything that reads the page rather than looks at it.
@@ -320,47 +331,74 @@ function postTile(
   // the element's tooltip.
   const stamp = `<time datetime="${escapeHtml(machineDate(post.createdAt))}">${when}</time>`;
 
-  // ── A picture or a clip ──
   const first = post.media[0];
   const href = first === undefined || first.url === null ? null : safeAttributeUrl(first.url);
-  if (first !== undefined && href !== null) {
-    const clip = first.kind === 'video';
-    return `<a class="tile" href="${href}" rel="noopener" title="${when}">
+  if (first === undefined || href === null) return '';
+
+  const clip = first.kind === 'video';
+  // `data-lightbox` is what the page's script turns into "open the overlay at this
+  // tile" (§6). The href stays a real URL, so a visitor with no JavaScript still
+  // gets the full-size picture — the overlay is an improvement on that, not the
+  // only way to see it.
+  return `<a class="tile" href="${href}" data-lightbox data-kind="${
+    clip ? 'video' : 'image'
+  }" rel="noopener" title="${when}">
   ${renderMedia(first)}${
     clip ? '\n  <span class="play" aria-hidden="true">\u25b6</span>' : ''
   }
   <span class="sr">${clip ? 'Video' : 'Image'} posted ${stamp}</span>
 </a>`;
-  }
+}
+
+/**
+ * A post with no media, as a full-width row (§7, §8).
+ *
+ * One row per line, the whole width of the page, because words need the width and
+ * a grid has none to spare: the same post as a square tile was three lines of
+ * type in a 110px column. It also gives the text room to be worth reading — a
+ * longer preview at a real reading size, rather than a caption.
+ *
+ * A link post is the same row with a headline and a domain where the body would
+ * be, which is how the app draws one.
+ *
+ * Nothing here links to the web: a row is a preview of something that lives in
+ * the app, so tapping it opens the channel there — the same promise every button
+ * on the page makes.
+ */
+function postRow(
+  post: {
+    readonly body: string | null;
+    readonly linkUrl: string | null;
+    readonly linkTitle: string | null;
+    readonly createdAt: string;
+  },
+  deepLink: string
+): string {
+  const when = escapeHtml(readableDate(post.createdAt));
+  const stamp = `<time datetime="${escapeHtml(machineDate(post.createdAt))}">${when}</time>`;
+  const open = `href="${escapeHtml(deepLink)}" rel="noopener" title="${when}"`;
 
   // ── A link ──
-  // Drawn as the app draws it — a title and a domain — with the title cut to
-  // what one line of a tile holds, because a headline is not a tile.
   if (post.linkUrl !== null) {
-    const href = safeAttributeUrl(post.linkUrl);
-    if (href !== null) {
-      const title = post.linkTitle?.trim();
-      const heading = previewOf(title && title !== '' ? title : domainOf(post.linkUrl), 44);
-      return `<a class="tile tile-text tile-link" href="${escapeHtml(deepLink)}" rel="noopener" title="${when}">
-  <span class="tile-link-title">${escapeHtml(heading.text)}${heading.truncated ? '\u2026' : ''}</span>
-  <span class="tile-link-domain">${escapeHtml(domainOf(post.linkUrl))}</span>
-  <span class="tile-foot">Open \u2192</span>
+    const title = post.linkTitle?.trim();
+    const heading = previewOf(title && title !== '' ? title : domainOf(post.linkUrl), 96);
+    return `<a class="post-row" ${open}>
+  <span class="post-link-title">${escapeHtml(heading.text)}${heading.truncated ? '\u2026' : ''}</span>
+  <span class="post-link-domain">${escapeHtml(domainOf(post.linkUrl))}</span>
+  <span class="post-row-foot">Open \u2192</span>
   <span class="sr">Link posted ${stamp}</span>
 </a>`;
-    }
   }
 
   // ── Words ──
-  const cut = post.body === null || post.body.trim() === '' ? null : previewOf(post.body);
+  const cut = post.body === null || post.body.trim() === '' ? null : previewOf(post.body, ROW_CHARS);
   const shown =
-    cut === null
-      ? '<span class="dim">This update has no text.</span>'
-      : renderBody(cut.text);
+    cut === null ? 'This update has no text.' : renderBody(cut.text);
   const foot = cut !== null && cut.truncated ? 'Read more \u2192' : 'Open \u2192';
 
-  return `<a class="tile tile-text" href="${escapeHtml(deepLink)}" rel="noopener" title="${when}">
-  <span class="tile-body">${shown}</span>
-  <span class="tile-foot">${foot}</span>
+  return `<a class="post-row" ${open}>
+  <span class="post-row-body">${shown}</span>
+  <span class="post-row-foot">${foot}</span>
   <span class="sr">Post from ${stamp}</span>
 </a>`;
 }
@@ -385,6 +423,23 @@ export function buildShareRouter(database: Queryable, store: ObjectStore): Route
   router.get('/app.js', (_req: Request, res: Response) => {
     res.type('application/javascript').setHeader('Cache-Control', 'public, max-age=3600');
     res.send(APP_JS);
+  });
+
+  /**
+   * ClearView's mark, for the tab and for anything that asks for it by URL (§14).
+   *
+   * Its own route rather than a data: URI so the favicon is cacheable and can be
+   * referenced from a head that has no markup of its own to inline it into. The
+   * page's header draws the same mark inline — a logo that pops in a moment after
+   * the brand line it belongs to is worse than no logo.
+   *
+   * Registered before `/:slug` for the same reason `/app.js` is: two path
+   * segments here, one in the channel route, so a channel called "logo.svg" is
+   * still reachable.
+   */
+  router.get('/logo.svg', (_req: Request, res: Response) => {
+    res.type('image/svg+xml').setHeader('Cache-Control', 'public, max-age=604800');
+    res.send(LOGO_SVG);
   });
 
   /**
@@ -478,6 +533,20 @@ const BLANK_ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1" viewBox="0 0 1 1"></svg>';
 
 /**
+ * ClearView's mark: the split heart (§14).
+ *
+ * The SAME geometry as the app's launcher icon — `ic_launcher_foreground.xml`, a
+ * black heart with its right half painted deep red — carried over as path data
+ * rather than as a picture, so the line between the halves stays sharp at any
+ * size, the file is a kilobyte, and there is nothing extra to fetch or cache.
+ *
+ * The viewBox crops to the heart: the source draws it at x=32..76, y=33.8..74.2
+ * on the icon's 108-unit canvas, and a favicon that is 44% empty canvas is a
+ * favicon that looks too small in a tab.
+ */
+const LOGO_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="32 33.8 44 40.4" role="img" aria-label="ClearView"><path fill="#000000" d="M54,74.185 l-3.19,-2.904 C39.48,61.007 32,54.231 32,45.915 C32,39.139 37.324,33.815 44.1,33.815 c3.828,0 7.502,1.782 9.9,4.598 C56.398,35.597 60.072,33.815 63.9,33.815 C70.676,33.815 76,39.139 76,45.915 c0,8.316 -7.48,15.092 -18.81,25.388 L54,74.185z"/><path fill="#C62828" d="M54,38.413 C56.398,35.597 60.072,33.815 63.9,33.815 C70.676,33.815 76,39.139 76,45.915 c0,8.316 -7.48,15.092 -18.81,25.388 L54,74.185z"/></svg>`;
+
+/**
  * The script served at `/c/app.js` (§6).
  *
  * Written as ES5 on purpose — an older WebView inside a messaging app is exactly
@@ -485,10 +554,12 @@ const BLANK_ICON =
  * It is also deliberately tiny: one listener, one timer, nothing to fail.
  */
 const APP_JS = `(function () {
+  // ── The app-or-store links ──
+  //
   // Every link that promises the app, not just the one at the top: the page has
-  // a second pair at the bottom and every text tile carries the same promise, and
-  // a script that wired up only the first would leave three of them dead for a
-  // visitor with a browser and no app.
+  // a second pair at the bottom and every row carries the same promise, and a
+  // script that wired up only the first would leave the rest dead for a visitor
+  // with a browser and no app.
   var links = document.querySelectorAll('a[data-store]');
 
   var wire = function (link) {
@@ -514,6 +585,128 @@ const APP_JS = `(function () {
   };
 
   for (var i = 0; i < links.length; i++) wire(links[i]);
+
+  // ── The lightbox (§6) ──
+  //
+  // A visitor sent a link with six pictures should be able to look at all six
+  // without six back-and-forths, and without leaving the channel. So a tap on a
+  // media tile opens the media HERE, over the page, with the other tiles a swipe
+  // or an arrow away.
+  //
+  // Built from the tiles that are already in the document: nothing is fetched
+  // until it is shown (the browser serves the ones the grid already loaded from
+  // its cache), and the overlay holds one element at a time, so the cost of
+  // paging through six is one image.
+  var tiles = document.querySelectorAll('[data-lightbox]');
+  var box = document.getElementById('lightbox');
+  if (!tiles.length || !box) return;
+
+  var stage = document.getElementById('lb-stage');
+  var counter = document.getElementById('lb-count');
+  var closeButton = document.getElementById('lb-close');
+  var prevButton = document.getElementById('lb-prev');
+  var nextButton = document.getElementById('lb-next');
+  var at = 0;
+
+  var show = function (index) {
+    if (index < 0) index = tiles.length - 1;
+    if (index >= tiles.length) index = 0;
+    at = index;
+
+    var tile = tiles[index];
+    var clip = tile.getAttribute('data-kind') === 'video';
+    // The tile's own URL. The fragment is dropped for a clip: the grid asked for
+    // a frame at 0.1s so the tile had something to paint, and starting the
+    // visitor there in the player is pointless.
+    var src = String(tile.getAttribute('href')).replace('#t=0.1', '');
+
+    var el = document.createElement(clip ? 'video' : 'img');
+    el.className = 'lb-media';
+    el.setAttribute('src', src);
+    if (clip) {
+      el.setAttribute('controls', '');
+      el.setAttribute('autoplay', '');
+      el.setAttribute('playsinline', '');
+    } else {
+      el.setAttribute('alt', '');
+    }
+
+    // Replacing the element, rather than reusing it: a clip that is removed from
+    // the document stops, which is the whole of the "pause the last one" logic.
+    stage.innerHTML = '';
+    stage.appendChild(el);
+
+    counter.textContent = index + 1 + ' / ' + tiles.length;
+    var many = tiles.length > 1;
+    prevButton.hidden = !many;
+    nextButton.hidden = !many;
+  };
+
+  var close = function () {
+    box.hidden = true;
+    stage.innerHTML = '';
+    document.documentElement.style.overflow = '';
+  };
+
+  var open = function (index) {
+    if (document.documentElement.style.overflow !== 'hidden') {
+      box.hidden = false;
+      // The page behind must not scroll while the overlay is up, or a swipe meant
+      // to move between pictures moves the page.
+      document.documentElement.style.overflow = 'hidden';
+    }
+    show(index);
+    closeButton.focus();
+  };
+
+  for (var t = 0; t < tiles.length; t++) {
+    (function (tile, index) {
+      tile.addEventListener('click', function (event) {
+        event.preventDefault();
+        open(index);
+      });
+    })(tiles[t], t);
+  }
+
+  closeButton.addEventListener('click', close);
+  prevButton.addEventListener('click', function () {
+    show(at - 1);
+  });
+  nextButton.addEventListener('click', function () {
+    show(at + 1);
+  });
+
+  // Tapping the dark surround closes, tapping the picture does not.
+  box.addEventListener('click', function (event) {
+    if (event.target === box) close();
+  });
+
+  document.addEventListener('keydown', function (event) {
+    if (box.hidden) return;
+    if (event.key === 'Escape') close();
+    if (event.key === 'ArrowLeft') show(at - 1);
+    if (event.key === 'ArrowRight') show(at + 1);
+  });
+
+  // Swipe, because this page is opened on a phone from a chat. 40px is the point
+  // where a deliberate swipe stops looking like a scroll that went nowhere.
+  var startX = 0;
+  stage.addEventListener(
+    'touchstart',
+    function (event) {
+      startX = event.changedTouches[0].clientX;
+    },
+    false
+  );
+  stage.addEventListener(
+    'touchend',
+    function (event) {
+      var moved = event.changedTouches[0].clientX - startX;
+      if (moved > 40) show(at - 1);
+      if (moved < -40) show(at + 1);
+    },
+    false
+  );
 })();
 `;
 
@@ -544,7 +737,21 @@ function channelPage(
     .filter((item): item is string => item !== null)
     .join('<span class="sep">·</span>');
 
-  const tiles = posts.map((post) => postTile(post, rawDeepLink)).join('\n');
+  // Two layouts, in two sections (§7, §8): words as full-width rows on their own
+  // lines, then the pictures and clips as squares. Grouped rather than interleaved
+  // because a grid with a paragraph in the middle of it is neither a grid nor a
+  // readable page — and because the rows have to come first for the squares to
+  // form whole rows of their own at the bottom.
+  //
+  // The order WITHIN each section is still newest first, which is the only order
+  // a preview can honestly claim.
+  const mediaPosts = posts.filter(
+    (post) => post.media[0] !== undefined && post.media[0].url !== null
+  );
+  const textPosts = posts.filter((post) => !mediaPosts.includes(post));
+
+  const rows = textPosts.map((post) => postRow(post, rawDeepLink)).join('\n');
+  const tiles = mediaPosts.map(postTile).join('\n');
 
   // The bottom section says what this page is (§11, §12). Naming the count is
   // the honest version of "this is a preview": a visitor can see that the page
@@ -574,12 +781,12 @@ function channelPage(
 <meta property="og:url" content="${shareUrl}">
 <meta property="og:image" content="${escapeHtml(new URL(iconPath, env.PUBLIC_BASE_URL).toString())}">
 <meta name="twitter:card" content="summary">
-<link rel="icon" href="${iconPath}">
+<link rel="icon" type="image/svg+xml" href="/c/logo.svg">
 <style>${STYLES}</style>
 </head>
 <body>
 <main>
-  <p class="brand">ClearView \u00b7 Good Post</p>
+  <p class="brand"><span class="brand-mark">${LOGO_SVG}</span><span>ClearView</span><span class="brand-sep">\u00b7</span><span class="brand-sub">Good Post</span></p>
 
   <header class="profile">
     <div class="avatar">
@@ -588,24 +795,24 @@ function channelPage(
     </div>
     <div class="identity">
       <h1>${name}</h1>
-      <p class="handle">${handle}</p>
+      <p class="description">${escapeHtml(description)}</p>
       <p class="facts">${facts}</p>
     </div>
   </header>
 
-  <p class="description">${escapeHtml(description)}</p>
-
-  <div class="cta">
-    <a class="button primary" href="${deepLink}" data-store="${store}">Open in ClearView</a>
-    <a class="button" href="${store}" rel="noopener">Get ClearView</a>
-  </div>
-  <p class="cta-note">Reading a channel never needs an account.</p>
-
   ${
-    tiles === ''
+    rows === '' && tiles === ''
       ? '<p class="dim empty">No posts yet. This channel has not posted anything — check back later.</p>'
-      : `<h2 class="section-heading">Latest posts</h2>\n  <div class="grid">\n${tiles}\n  </div>`
+      : '<h2 class="section-heading">Latest posts</h2>'
   }
+  ${rows === '' ? '' : `<div class="rows">\n${rows}\n  </div>`}
+  ${
+    // The second heading appears only when both sections do: with one of them
+    // there is nothing to tell apart, and "Media" over an empty page is a label
+    // for a section that is not there.
+    tiles === '' || rows === '' ? '' : '<h3 class="section-heading">Media</h3>'
+  }
+  ${tiles === '' ? '' : `<div class="grid">\n${tiles}\n  </div>`}
 
   <section class="more">
     <h2>${previewHeading}</h2>
@@ -614,6 +821,7 @@ function channelPage(
       <a class="button primary" href="${deepLink}" data-store="${store}">Open in ClearView</a>
       <a class="button" href="${store}" rel="noopener">Get ClearView</a>
     </div>
+    <p class="cta-note">Reading a channel never needs an account.</p>
   </section>
 
   <section class="about">
@@ -632,6 +840,20 @@ function channelPage(
     <a href="${shareUrl}">${name}</a>
   </footer>
 </main>
+${
+  // The overlay itself, empty (§6). Rendered with the page and left hidden, so
+  // opening it is a class change rather than a second request, and so a visitor
+  // whose JavaScript never ran sees nothing at all instead of a dead panel.
+  tiles === ''
+    ? ''
+    : `<div class="lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Media from this channel">
+  <div class="lb-stage" id="lb-stage"></div>
+  <button type="button" class="lb-btn lb-close" id="lb-close" aria-label="Close">\u00d7</button>
+  <button type="button" class="lb-btn lb-prev" id="lb-prev" aria-label="Previous">\u2039</button>
+  <button type="button" class="lb-btn lb-next" id="lb-next" aria-label="Next">\u203a</button>
+  <div class="lb-bar"><span id="lb-count"></span><a href="${deepLink}" data-store="${store}">Open in ClearView</a></div>
+</div>`
+}
 <script src="/c/app.js" defer></script>
 </body>
 </html>
@@ -726,15 +948,41 @@ h1, h2 { line-height: 1.25; }
 h1 { font-size: 21px; margin: 0 0 2px; }
 h2 { font-size: 16px; margin: 0 0 8px; }
 
-/* The masthead: whose page this is, in the app's own product voice. */
+/* The masthead: whose page this is, in the app's own product voice, under the
+   app's own mark (§14). */
 .brand {
-  margin: 0 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0 0 18px;
   color: var(--dim);
   font-size: 11.5px;
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
 }
+
+/*
+ * The mark gets the app icon's own white tile, and the tile is not decoration.
+ *
+ * ClearView's heart is BLACK with its right half in deep red — the launcher icon
+ * paints it on the solid white background of ic_launcher_background.xml, and that
+ * pairing is what makes both halves visible at once. Dropped bare onto this
+ * page's near-black canvas the black
+ * half disappears and the logo reads as half a heart, which is a worse outcome
+ * than no logo. On white it is the icon, at any size, in either theme. */
+.brand-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  height: 25px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.brand svg { width: 14px; height: 13px; display: block; }
+.brand-sep { color: var(--divider); }
+.brand-sub { color: var(--dim); opacity: 0.75; }
 
 /*
  * The channel, as a profile rather than a byline (§3).
@@ -763,9 +1011,20 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 }
 .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .avatar-initial { color: var(--accent); font-size: 30px; font-weight: 700; }
+/*
+ * The identity is the name, what the channel is about, and its two numbers —
+ * and NOT the handle.
+ *
+ * The @slug line used to sit under the name and it was the name again: the slug
+ * is derived from it, so a channel called "idk" read "idk / @idk" with the one
+ * thing a visitor came to find out nowhere in sight. The description is what
+ * belongs there (§3); the slug is still in the URL, the share link and the
+ * document title, which is where an identifier is useful and a person is not
+ * reading it.
+ */
 .identity { min-width: 0; }
-.handle { margin: 0; color: var(--dim); font-size: 14px; }
-.facts { margin: 4px 0 0; color: var(--dim); font-size: 13px; }
+.description { margin: 6px 0 0; color: var(--text); font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.facts { margin: 7px 0 0; color: var(--dim); font-size: 13px; }
 .sep { margin: 0 6px; color: var(--divider); }
 @media (prefers-color-scheme: light) { .sep { color: var(--dim); } }
 
@@ -780,16 +1039,7 @@ h2 { font-size: 16px; margin: 0 0 8px; }
   .identity { width: 100%; }
 }
 
-.description {
-  margin: 16px 0 0;
-  color: var(--text);
-  font-size: 15px;
-  text-align: center;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
 .description:empty { display: none; }
-@media (min-width: 421px) { .description { text-align: left; } }
 
 /*
  * Two buttons, side by side while they fit and stacked when they do not (§4).
@@ -818,7 +1068,40 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 }
 
 /*
- * The preview grid (§5–§8).
+ * Words, as rows (§7): one post per line, the full width of the page.
+ *
+ * This is what a text post gets instead of a square: the same post in a 110px
+ * column was three lines of type, and a paragraph is the one thing a grid cannot
+ * hold. A row is quiet on purpose — a surface, a hairline and space, with the
+ * words at a reading size rather than a caption's.
+ */
+.rows { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.post-row {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 15px 16px;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: 14px;
+  color: var(--text);
+  text-decoration: none;
+}
+.post-row:active { opacity: 0.9; }
+.post-row-body { font-size: 15px; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
+.post-row-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13.5px;
+  background: var(--raised);
+  padding: 1px 5px;
+  border-radius: 6px;
+}
+.post-link-title { font-size: 15.5px; font-weight: 600; overflow-wrap: anywhere; }
+.post-link-domain { color: var(--dim); font-size: 12.5px; }
+.post-row-foot { color: var(--accent); font-size: 12.5px; font-weight: 600; }
+
+/*
+ * The media grid (§5, §6, §8) — squares, under the rows.
  *
  * auto-fill with a 104px floor rather than a flat three columns: three on any
  * phone worth the name, two on a very narrow one, four on a tablet — and never a
@@ -835,6 +1118,8 @@ h2 { font-size: 16px; margin: 0 0 8px; }
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
+/* The Media label sits under the rows it follows, so it needs less air above. */
+h3.section-heading { margin-top: 22px; font-size: 11.5px; }
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
@@ -853,34 +1138,6 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 }
 .tile:active { opacity: 0.9; }
 .tile-media { width: 100%; height: 100%; display: block; object-fit: cover; background: var(--raised); }
-.tile-text {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 11px;
-}
-.tile-body {
-  font-size: 13px;
-  line-height: 1.45;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-}
-.tile-body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  background: var(--raised);
-  padding: 1px 4px;
-  border-radius: 5px;
-}
-.tile-link { justify-content: space-between; }
-.tile-link-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
-.tile-link-domain { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
-.tile-foot { color: var(--accent); font-size: 11.5px; font-weight: 600; }
 .play {
   position: absolute;
   right: 7px; top: 7px;
@@ -891,6 +1148,68 @@ h2 { font-size: 16px; margin: 0 0 8px; }
   font-size: 10px;
   display: flex; align-items: center; justify-content: center;
 }
+/*
+ * The lightbox (§6).
+ *
+ * Fixed, dark and full-bleed whatever the page's colour scheme is: an overlay is
+ * about the picture, and a light scrim around a photograph on a light page makes
+ * the photograph look like a mistake. The hidden attribute wins over the flex
+ * display, which is why it is repeated with the attribute selector.
+ *
+ * The controls are 44px circles — the smallest thing a thumb reliably hits —
+ * drawn in the corner rather than in a bar, so nothing steals height from the
+ * media on a phone held upright.
+ */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(4, 8, 10, 0.94);
+  padding: 16px;
+  touch-action: pan-y;
+}
+.lightbox[hidden] { display: none; }
+.lb-stage { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.lb-media {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 10px;
+  background: #000000;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+.lb-btn {
+  position: absolute;
+  width: 44px; height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(20, 26, 30, 0.75);
+  color: #ffffff;
+  font-size: 21px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  padding: 0;
+}
+.lb-btn:active { opacity: 0.8; }
+.lb-close { top: 14px; right: 14px; }
+.lb-prev { left: 12px; top: 50%; margin-top: -22px; }
+.lb-next { right: 12px; top: 50%; margin-top: -22px; }
+.lb-bar {
+  position: absolute;
+  left: 0; right: 0; bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.lb-bar a { color: #ffffff; font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(255, 255, 255, 0.4); }
+
 /* Read by a screen reader, not drawn: the tile's only label is its date. */
 .sr {
   position: absolute;
