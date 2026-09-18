@@ -7,7 +7,33 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: a still for every clip (§22, §24)
+## Latest pass: a rename makes a new share link (§6)
+
+* **The share URL is versioned on the channel's identity.** A messaging app
+  caches the card it built from a URL, for days, and there is no header, no
+  purge endpoint and no `Cache-Control` that asks it to look again — so a channel
+  renamed from *idk* to *goodpost* went on arriving as *idk*, with its old
+  picture, for exactly as long as the crawler felt like it. `channelShareLink`
+  now carries `?v=<channelIdentityVersion>`, a short digest of the name, the
+  description, the category and the picture (`channels/identity.ts`). A rename is
+  therefore a URL no crawler has ever seen, and a channel nobody edits keeps one
+  stable link that crawlers can serve from cache forever.
+* **The preview image is versioned with it** (`/c/<slug>/icon?v=<version>`, and
+  the page and the deep link both use that URL). The signed URL a channel
+  carries points at the same object for as long as that object is the picture;
+  its PATH is the identity, which is what the digest is given, because the
+  storage key is not in that module's hands. The route ignores the parameter —
+  it signs whatever the picture is at the moment it is asked.
+* **Counters are deliberately not in the digest.** Followers, posts and views
+  change constantly, and folding them in would hand every channel a new share
+  URL every day for a card that looks the same.
+* **The About card says what ClearView is, in full**, as seven short paragraphs
+  rather than one line — the not-found page keeps only the first of them
+  (`ABOUT_CLEARVIEW_LEAD`), because a dead end is not the place for a product
+  tour, and taking that line from the same list is what stops the two pages
+  describing two products.
+
+## Previous pass: a still for every clip (§22, §24)
 
 * **A video tile now shows a frame of the video.** A channel's media strip and
   the *Media and links* grid drew a grey square with a camera icon for every
@@ -39,7 +65,7 @@ was removed rather than patched.
   call `GoodPostVideoPoster.forget`, so a removed clip does not leave its frame
   drawing in the grid.
 
-## Previous pass: three of each, and every card dated (§7, §11, §12)
+## Earlier pass: three of each, and every card dated (§7, §11, §12)
 
 * **Three of words, three of media.** The split is explicit — `PREVIEW_ROWS` and
   `PREVIEW_TILES` — rather than "the newest six, split up". Splitting six would

@@ -4,6 +4,7 @@ import type { Express } from 'express';
 import type { PGlite } from '@electric-sql/pglite';
 import { buildApp } from '../src/app.js';
 import { isShareableBase } from '../src/channels/service.js';
+import { channelIdentityVersion } from '../src/channels/identity.js';
 import { applyAllMigrations, asQueryable, freshDatabase, one, resetData } from './helpers/database.js';
 import { FakeObjectStore } from './helpers/storage.js';
 import { UnconfiguredObjectStore } from '../src/media/store.js';
@@ -231,7 +232,7 @@ describe('the shared-channel page (§6)', () => {
     // It still introduces the app, in the same words the channel page uses: this
     // is a dead end a visitor may be seeing first, and two pages describing two
     // different products is how a brand reads as unfinished.
-    expect(missing.text).toContain('Read and search the Quran');
+    expect(missing.text).toContain('For a more focused and personalized digital experience');
 
     // A suspended channel is a 404 here for the same reason it is one in the API.
     const suspended = unique('suspended');
@@ -644,10 +645,34 @@ describe('the shared-channel page (§6)', () => {
     // And the paragraph describes the whole app rather than only channels: a
     // visitor who arrived from a shared link has met Good Post and nothing else.
     const about = response.text.slice(response.text.indexOf('<section class="about">'));
-    expect(about).toContain('Read and search the Quran');
-    expect(about).toContain('follow channels like this one');
-    expect(about).toContain('screen-time');
-    expect(about).toContain('content protection');
+    expect(about).toContain('For a more focused and personalized digital experience');
+    expect(about).toContain('Watch what you want, not what they want.');
+    expect(about).toContain('Customize your YouTube and Instagram feeds');
+    expect(about).toContain('With GoodPost, you can also follow channels');
+    expect(about).toContain('Watch what you want. Follow what matters. Stay focused.');
+  });
+
+  it('changes the preview image URL when the channel is renamed (§6)', async () => {
+    // A messaging app caches the card it built from a URL and nothing can ask it
+    // to look again, so the image behind the card is versioned on the channel's
+    // identity. Two channels that differ only in name must not share an image
+    // URL, or a rename would keep showing the old name's picture.
+    const before = unique('renamed');
+    const channelId = await seedChannel(before, { name: 'Before' });
+
+    const first = await request(app).get(`/c/${before}`);
+    const versionOf = (html: string) => /\/icon\?v=([0-9a-f]+)/.exec(html)?.[1] ?? '';
+    expect(versionOf(first.text)).toMatch(/^[0-9a-f]{8}$/);
+
+    await pglite.query(`UPDATE channels SET name = $2 WHERE id = $1`, [channelId, 'After']);
+
+    const second = await request(app).get(`/c/${before}`);
+    expect(versionOf(second.text)).not.toBe(versionOf(first.text));
+
+    // And an edit that changes nothing a card shows leaves the URL alone, so a
+    // channel nobody touches keeps one stable link for a crawler to reuse.
+    const third = await request(app).get(`/c/${before}`);
+    expect(versionOf(third.text)).toBe(versionOf(second.text));
   });
 
   it('says a channel with no posts is empty rather than rendering nothing', async () => {
@@ -707,5 +732,40 @@ describe('deciding whether a base URL is worth putting in a share link', () => {
     expect(isShareableBase('clearview://goodpost')).toBe(false);
     expect(isShareableBase('')).toBe(false);
     expect(isShareableBase('not a url at all')).toBe(false);
+  });
+});
+
+describe('the version a share link and its picture are signed with (§6)', () => {
+  const base = {
+    name: 'Goodpost',
+    description: 'Updates from Goodpost',
+    categorySlug: 'news',
+    iconIdentity: 'goodpost/channels/avatars/a.png',
+  };
+
+  it('is stable while the channel is, which is what lets a crawler keep its card', () => {
+    expect(channelIdentityVersion(base)).toBe(channelIdentityVersion({ ...base }));
+    expect(channelIdentityVersion(base)).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('changes for every edit a preview card would show', () => {
+    // Each of these is a share that must not be answered out of a messaging app's
+    // cache: a rename and a new picture are the two an owner actually does, and
+    // "still the old name and the old image" is what it looks like without this.
+    const original = channelIdentityVersion(base);
+    expect(channelIdentityVersion({ ...base, name: 'Goodpost Two' })).not.toBe(original);
+    expect(
+      channelIdentityVersion({ ...base, iconIdentity: 'goodpost/channels/avatars/b.png' })
+    ).not.toBe(original);
+    expect(channelIdentityVersion({ ...base, description: null })).not.toBe(original);
+    expect(channelIdentityVersion({ ...base, categorySlug: null })).not.toBe(original);
+  });
+
+  it('ignores nothing that is a channel name, including one that only looks alike', () => {
+    // The four fields are joined with a separator rather than concatenated, so
+    // "ab"+"c" cannot hash the same as "a"+"bc".
+    expect(
+      channelIdentityVersion({ ...base, name: 'ab', description: 'c' })
+    ).not.toBe(channelIdentityVersion({ ...base, name: 'a', description: 'bc' }));
   });
 });

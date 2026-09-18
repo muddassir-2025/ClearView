@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from 'express';
 import { getPublicChannel, channelDeepLink } from '../channels/service.js';
+import { channelIdentityVersion } from '../channels/identity.js';
 import { listPublicChannelPosts } from './service.js';
 import type { Queryable } from '../db.js';
 import type { ObjectStore } from '../media/store.js';
@@ -217,6 +218,24 @@ function domainOf(url: string): string {
     return new URL(url).host.replace(/^www\./, '');
   } catch {
     return '';
+  }
+}
+
+/**
+ * The object path inside a signed URL.
+ *
+ * This page is handed the channel's picture as a SIGNED URL — the same picture
+ * signed a second later is a different string — so the identity of the object is
+ * its path, which does not change until the picture does. That is exactly what
+ * [channelIdentityVersion] needs, and why it asks for an `iconIdentity` rather
+ * than for a key: the storage key is not in this module's hands.
+ */
+function objectPathOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return null;
   }
 }
 
@@ -763,23 +782,28 @@ const APP_JS = `(function () {
 /**
  * What ClearView is, for the two pages that have to introduce it (§5).
  *
- * One paragraph, and deliberately about the whole app rather than about channels:
- * a visitor arriving from a shared link has met Good Post and nothing else, so
- * this is the only place the rest of it is named. The four things it lists are
- * the app's four tabs in the order they appear — the Quran, media, channels, and
- * the tools behind "More" — described in the general terms a stranger can picture
- * rather than as feature names they cannot.
+ * One paragraph per idea, in the order a stranger should meet them, and about
+ * the whole app rather than about channels: a visitor arriving from a shared link
+ * has met Good Post and nothing else, so this is the only place the rest of it is
+ * named. Plain text, so whoever interpolates it is the one that escapes it.
  *
- * Shared by the channel page and the not-found page so the two cannot drift into
- * describing two different products, and plain text so it is escaped by whoever
- * interpolates it.
+ * The not-found page shows only the FIRST line ([ABOUT_CLEARVIEW_LEAD]). A dead
+ * end is not the place for a product tour, and taking that line from this list
+ * rather than writing a second one is what keeps the two pages from describing
+ * two different products.
  */
-const ABOUT_CLEARVIEW =
-  'A calm place for the time you spend on a phone. Read and search the Quran, ' +
-  'keep your own media without an endless feed, follow channels like this one, ' +
-  'and set the limits around all of it — to-dos, a zikr counter, screen-time ' +
-  'limits and content protection, in one app. Reading never needs an account, ' +
-  'and nothing here is built to keep you scrolling.';
+const ABOUT_CLEARVIEW_LINES: readonly string[] = [
+  'For a more focused and personalized digital experience, download ClearView and create your own customized digital experience.',
+  'Watch what you want, not what they want.',
+  'ClearView brings together personalized media, productivity, protection, and positive content in one place. Customize your YouTube and Instagram feeds, discover content without unnecessary distractions, and use tools designed to help you stay focused and in control.',
+  'With GoodPost, you can also follow channels and discover useful, meaningful, and positive posts — including text, images, and videos — without the noise of a traditional social media feed.',
+  'ClearView is built around one simple idea: you should have more control over what you see and how you use your digital time.',
+  'More features and improvements are coming as ClearView continues to grow.',
+  'Watch what you want. Follow what matters. Stay focused.',
+];
+
+/** The one line a dead-end page introduces the app with — the list's own lead. */
+const ABOUT_CLEARVIEW_LEAD = ABOUT_CLEARVIEW_LINES[0] ?? 'ClearView.';
 
 /** The channel page, with the preview card a messaging app will build. */
 function channelPage(
@@ -797,7 +821,18 @@ function channelPage(
   const shareUrl = escapeHtml(new URL(`/c/${channel.slug}`, env.PUBLIC_BASE_URL).toString());
   // Same-origin and signed at fetch time, so a crawler that reads this page
   // tomorrow still gets a picture (§6). The page and the deep link both use it.
-  const iconPath = `/c/${encodeURIComponent(channel.slug)}/icon`;
+  //
+  // Versioned on the channel's identity, like the share link itself: a crawler
+  // that kept the old picture under an unchanged URL would show the old channel,
+  // and no header can ask it to look again. The route ignores the parameter — it
+  // signs whatever the channel's picture is at the moment it is asked.
+  const iconVersion = channelIdentityVersion({
+    name: channel.name,
+    description: channel.description,
+    categorySlug: channel.categorySlug,
+    iconIdentity: objectPathOf(channel.iconUrl),
+  });
+  const iconPath = `/c/${encodeURIComponent(channel.slug)}/icon?v=${iconVersion}`;
   const store = escapeHtml(playStoreUrl());
   const initial = escapeHtml(channel.name.trim().slice(0, 1).toUpperCase() || 'C');
 
@@ -917,7 +952,7 @@ function channelPage(
 
   <section class="about">
     <h2>ClearView</h2>
-    <p>${ABOUT_CLEARVIEW}</p>
+${ABOUT_CLEARVIEW_LINES.map((line) => `    <p>${escapeHtml(line)}</p>`).join('\n')}
     <p class="about-cta"><a href="${store}" rel="noopener">Explore ClearView on Google Play \u2192</a></p>
   </section>
 
@@ -971,7 +1006,7 @@ function notFoundPage(slug: string, reason: string): string {
   ${slug === '' ? '' : `<p class="dim">Link: <code>/c/${escapeHtml(slug)}</code></p>`}
   <section class="about">
     <h2>ClearView</h2>
-    <p>${ABOUT_CLEARVIEW}</p>
+    <p>${escapeHtml(ABOUT_CLEARVIEW_LEAD)}</p>
     <p class="about-cta"><a href="${escapeHtml(playStoreUrl())}" rel="noopener">Explore ClearView on Google Play →</a></p>
   </section>
 </main>
@@ -1354,8 +1389,14 @@ h3.section-heading { margin-top: 22px; font-size: 11.5px; }
   border: 1px solid var(--divider);
   border-radius: var(--radius);
 }
-.about p { margin: 0; color: var(--dim); font-size: 14px; }
-.about-cta { margin-top: 10px !important; }
+.about p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.65; }
+/*
+ * Several short paragraphs, so they need the air between them that a single one
+ * did not: set solid, seven lines read as a block of text rather than as a
+ * description with a beginning and an end.
+ */
+.about p + p { margin-top: 9px; }
+.about-cta { margin-top: 12px !important; }
 .about-cta a { color: var(--accent); font-weight: 600; text-decoration: none; font-size: 14px; }
 
 footer {

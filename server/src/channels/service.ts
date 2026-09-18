@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { channelIdentityVersion } from './identity.js';
 import { env } from '../env.js';
 import { cursorKeyOf, isoOrNull, one, type Queryable } from '../db.js';
 import { badRequest, conflict, forbidden, notFound } from '../http/errors.js';
@@ -211,10 +212,15 @@ export interface ChannelRow {
  * `localhost` is the one case that keeps the old behaviour: a development build
  * has no address anybody else can reach, so it hands out the deep link rather
  * than an `http://localhost:8080/...` that would be broken for every recipient.
+ *
+ * The `?v=` is [channelIdentityVersion], and it is not decoration: a messaging
+ * app caches the card it built from a URL and there is no way to ask it to look
+ * again, so a renamed channel needs a URL it has never seen. A channel nobody
+ * edits keeps one stable link.
  */
-function channelShareLink(slug: string): string {
+function channelShareLink(slug: string, version: string): string {
   return isShareableBase(env.PUBLIC_BASE_URL)
-    ? new URL(`/c/${slug}`, env.PUBLIC_BASE_URL).toString()
+    ? new URL(`/c/${slug}?v=${version}`, env.PUBLIC_BASE_URL).toString()
     : `clearview://goodpost/channel/${slug}`;
 }
 
@@ -289,7 +295,17 @@ export function mapChannel(
     // created a moment ago has none, and the read paths that matter select the
     // count. Zero rather than null so the app has one shape to render.
     followerCount: row.follower_count ?? 0,
-    shareLink: channelShareLink(row.slug),
+    // Versioned on the channel's identity, not on when this row was read: see
+    // [channelIdentityVersion] for why a rename has to produce a new URL.
+    shareLink: channelShareLink(
+      row.slug,
+      channelIdentityVersion({
+        name: row.name,
+        description: row.description,
+        categorySlug: row.category_slug,
+        iconIdentity: row.icon_object_key,
+      })
+    ),
     ...(includeStatus ? { status: row.status } : {})
   };
 }
