@@ -6,6 +6,9 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -66,6 +69,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
@@ -356,9 +360,20 @@ internal fun GoodPostFeed(
 
                     items(entries, key = { it.key }) { entry ->
                         when (entry) {
-                            is FeedEntry.Separator -> WaDatePill(entry.label)
+                            is FeedEntry.Separator -> WaDatePill(
+                                text = entry.label,
+                                // The day a post belongs to arrives and leaves with
+                                // it, so the pill animates like any other row
+                                // rather than blinking into a gap.
+                                modifier = Modifier.animateItem()
+                            )
+
                             is FeedEntry.Post -> PostItem(
                                 post = entry.post,
+                                // §12, §22: a post that arrives over the poll, or
+                                // that is deleted while the feed is open, moves
+                                // its neighbours instead of snapping them.
+                                modifier = Modifier.animateItem(),
                                 selected = state.selectedPostIds.contains(entry.post.id),
                                 starred = entry.post.id in state.starredPostIds,
                                 // §9: tapping a chip on the card does what the
@@ -700,21 +715,26 @@ private fun ReactionRow(
     val shown = reactions.filterNot { it.isEmpty }
     if (shown.isEmpty()) return
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
-    ) {
-        shown.forEach { reaction ->
-            ReactionChip(
-                emoji = reaction.emoji,
-                count = reaction.count,
-                mine = reaction.emoji == mine,
-                enabled = enabled && onReact != null,
-                onClick = { onReact?.invoke(reaction.emoji) }
-            )
+    // §22: reactions arrive from OTHER phones (§12), so a chip appearing between
+    // two glances at the same post should look like it was added rather than like
+    // the row was redrawn.
+    WaAppear(enter = WaMotion.chipEnter()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            shown.forEach { reaction ->
+                ReactionChip(
+                    emoji = reaction.emoji,
+                    count = reaction.count,
+                    mine = reaction.emoji == mine,
+                    enabled = enabled && onReact != null,
+                    onClick = { onReact?.invoke(reaction.emoji) }
+                )
+            }
         }
     }
 }
@@ -742,7 +762,9 @@ private fun ReactionChip(
             .clip(shape)
             .background(if (mine) Wa.Accent.copy(alpha = 0.18f) else Wa.Pressed)
             .border(1.dp, if (mine) Wa.Accent else Color.Transparent, shape)
-            .clickable(enabled = enabled, onClick = onClick)
+            // §22: a chip is the smallest thing a finger has to hit in this tab,
+            // so the press is answered on the chip itself.
+            .waTappable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -860,6 +882,16 @@ private fun GoodPostPost.copyText(): String = buildString {
 @Composable
 internal fun PostItem(
     post: GoodPostPost,
+    /**
+     * Where this card sits in its list (§22).
+     *
+     * The feed passes `Modifier.animateItem()`, which is what makes a post that
+     * arrives while the screen is open — the one thing a channel does without the
+     * reader asking (§12) — slide in and settle rather than appear mid-scroll
+     * under a thumb that is still moving. Defaulted so a preview of a post, which
+     * is not in a list, has nothing to pass.
+     */
+    modifier: Modifier = Modifier,
     selected: Boolean,
     /**
      * Whether this reader has starred the post (§9).
@@ -903,23 +935,40 @@ internal fun PostItem(
 ) {
     val context = LocalContext.current
 
+    // §22: the selection states are animated rather than switched. A long press
+    // is a deliberate gesture, and a card that jumps to a different colour makes
+    // the press feel like it landed on something else; a fifth of a second makes
+    // it read as the card answering. Both values are driven from `selected`, so
+    // the tint and the layer always arrive together — a half-applied selection is
+    // the one look that would be worse than no animation at all.
+    val selectionFill by animateColorAsState(
+        targetValue = if (selected) Wa.Selected else Color.Transparent,
+        animationSpec = tween(durationMillis = WaMotion.SELECT_MS),
+        label = "wa-selected-fill"
+    )
+    val scrim by animateFloatAsState(
+        targetValue = if (selected) WaSelectionScrim else 0f,
+        animationSpec = tween(durationMillis = WaMotion.SELECT_MS),
+        label = "wa-selected-layer"
+    )
+
     // The selection fill is on this wrapper rather than inside the bubble: the
     // bubble paints its own background over whatever it is given, so a highlight
     // passed inwards would be covered by the very container it is meant to mark.
     // That is also why the selection LAYER is painted in `drawWithContent` below
     // instead of being a tint behind the content — behind it is invisible.
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(if (selected) Wa.Selected else Color.Transparent)
+            .background(selectionFill)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .drawWithContent {
                 drawContent()
                 // §5: the layer a selected post gets, like a selected message in
                 // a chat. Over the whole card — bubble, photo, video poster — so
                 // "this one is picked" is visible from the picture alone.
-                if (selected) drawRect(color = Wa.Accent.copy(alpha = WaSelectionScrim))
+                if (scrim > 0f) drawRect(color = Wa.Accent.copy(alpha = scrim))
             }
     ) {
         WaPostContainer {
@@ -1122,26 +1171,38 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
     }
 
     val current = bitmap
-    if (current != null) {
-        Image(
-            bitmap = current.asImageBitmap(),
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            // No clip of its own: the caller decides the shape, because the
-            // caller is the one that knows what it is drawing (§6).
-            modifier = modifier
-        )
-    } else {
-        // The same box the picture will occupy, so the load is a fade rather
-        // than a resize — the placeholder is the caller's modifier, sizing and
-        // all, not a size of its own.
+    // ONE call site for the fade, above the branch, and that is the whole reason
+    // this is a Box rather than an if/else (§22): a composable that is replaced
+    // by another one starts its animation from the new value, so a picture that
+    // swapped places with its own placeholder would arrive instantly. Keeping
+    // both children composed and animating one opacity is what turns "the photo
+    // is there now" into a fade.
+    val alpha = waImageFade(loaded = current != null)
+
+    Box(modifier = modifier) {
+        // The placeholder stays UNDER the picture for the length of the fade, so
+        // the box is never briefly empty — which is the one thing worse than a
+        // picture arriving late.
         WaMediaPlaceholder(
-            modifier = modifier,
+            modifier = Modifier.matchParentSize(),
             icon = Icons.Filled.Link,
             label = if (url.isNullOrBlank()) {
                 stringResource(R.string.goodpost_media_unavailable)
             } else null
         )
+
+        if (current != null) {
+            Image(
+                bitmap = current.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                // No clip of its own: the caller decides the shape, because the
+                // caller is the one that knows what it is drawing (§6).
+                modifier = Modifier
+                    .matchParentSize()
+                    .alpha(alpha)
+            )
+        }
     }
 }
 
@@ -1345,6 +1406,7 @@ internal fun ChannelInputBar(
                 items(state.composerAttachments, key = { it.uri }) { attachment ->
                     Box(
                         modifier = Modifier
+                            .animateItem()
                             .size(56.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .background(Wa.Pressed),

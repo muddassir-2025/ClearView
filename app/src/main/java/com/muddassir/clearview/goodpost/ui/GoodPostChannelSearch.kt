@@ -131,6 +131,8 @@ internal fun GoodPostChannelSearch(
                     items(state.channelSearchResults, key = { it.id }) { post ->
                         PostItem(
                             post = post,
+                            // §22: results arrive per keystroke and per page.
+                            modifier = Modifier.animateItem(),
                             selected = false,
                             // A result is read here and acted on in the feed, so
                             // it has no tap of its own. Inert rather than

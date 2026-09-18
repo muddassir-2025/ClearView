@@ -169,6 +169,11 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
 
                     ChannelRow(
                         channel = channel,
+                        // §12, §22: the list is refreshed in place while the
+                        // reader watches it, so a channel that starts following,
+                        // or one whose account was just deleted, moves the rows
+                        // around it instead of making them jump.
+                        modifier = Modifier.animateItem(),
                         selected = state.selectedChannelIds.contains(channel.id),
                         selectionActive = state.channelSelectionActive,
                         manageable = manageable,
@@ -379,6 +384,7 @@ private fun ChannelsHeader(onExplore: () -> Unit) {
 @Composable
 private fun ChannelRow(
     channel: GoodPostChannel,
+    modifier: Modifier = Modifier,
     selected: Boolean,
     selectionActive: Boolean,
     manageable: Boolean,
@@ -409,6 +415,7 @@ private fun ChannelRow(
 
     WaChannelRow(
         title = channel.name,
+        modifier = modifier,
         preview = preview,
         previewIsPostBody = previewIsPostBody,
         timestamp = if (posted) waListStamp(at) else null,

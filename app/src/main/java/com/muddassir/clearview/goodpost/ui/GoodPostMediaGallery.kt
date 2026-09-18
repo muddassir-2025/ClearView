@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -194,6 +195,10 @@ internal fun GoodPostMediaGallery(
                 items(state.media, key = { it.id }) { item ->
                     MediaCell(
                         item = item,
+                        // §22: deleting files from this device removes them from
+                        // the grid, and a tile going away should close the gap
+                        // rather than make the rest jump into it.
+                        modifier = Modifier.animateItem(),
                         selected = state.selectedMediaIds.contains(item.id),
                         selectionActive = state.selectedMediaIds.isNotEmpty(),
                         onClick = {
@@ -287,6 +292,7 @@ internal fun GoodPostMediaGallery(
 @Composable
 private fun MediaCell(
     item: GoodPostMediaItem,
+    modifier: Modifier = Modifier,
     selected: Boolean,
     selectionActive: Boolean,
     onClick: () -> Unit,
@@ -298,8 +304,13 @@ private fun MediaCell(
         if (bitmap == null) bitmap = GoodPostImages.load(item.url, maxWidthPx = 360)
     }
 
+    val current = bitmap
+    // §22: a tile's picture fades in over the icon that stands for it, so a grid
+    // filling in at scrolling speed does not flicker (§13).
+    val alpha = waImageFade(loaded = current != null)
+
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(RoundedCornerShape(10.dp))
@@ -311,20 +322,23 @@ private fun MediaCell(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         contentAlignment = Alignment.Center
     ) {
-        val current = bitmap
+        // Drawn underneath the picture for the length of the fade, so the tile is
+        // never briefly empty.
+        Icon(
+            imageVector = if (item.isVideo) Icons.Filled.Videocam else Icons.Filled.PlayArrow,
+            contentDescription = stringResource(R.string.goodpost_media_unavailable),
+            tint = Wa.TextDim,
+            modifier = Modifier.size(22.dp)
+        )
+
         if (current != null) {
             androidx.compose.foundation.Image(
                 bitmap = current.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Icon(
-                imageVector = if (item.isVideo) Icons.Filled.Videocam else Icons.Filled.PlayArrow,
-                contentDescription = stringResource(R.string.goodpost_media_unavailable),
-                tint = Wa.TextDim,
-                modifier = Modifier.size(22.dp)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .alpha(alpha)
             )
         }
 

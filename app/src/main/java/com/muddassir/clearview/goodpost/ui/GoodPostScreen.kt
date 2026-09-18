@@ -2,6 +2,12 @@ package com.muddassir.clearview.goodpost.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -123,55 +129,113 @@ fun GoodPostTab(
     BackHandler(enabled = state.backStack.size > 1) { viewModel.back() }
 
     WaBackdrop {
-        when (val screen = state.screen) {
-            GoodPostScreen.Home -> GoodPostHome(state = state, viewModel = viewModel)
+        // §22: one transition for every move on the tab, rather than each screen
+        // choosing its own. The target is the whole STACK and the content key is
+        // the screen on top of it, which is what lets the transition tell a push
+        // from a pop: two stacks of different depths are a navigation, and two of
+        // the same depth are a swap with no direction to report. Keying on the
+        // top screen is also what stops an ordinary state change — a post
+        // arriving, a count ticking — from animating the screen underneath it.
+        AnimatedContent(
+            targetState = state.backStack,
+            modifier = Modifier.fillMaxSize(),
+            contentKey = { stack -> stack.last() },
+            transitionSpec = {
+                WaMotion.screenChange(
+                    forward = targetState.size > initialState.size,
+                    sameDepth = targetState.size == initialState.size
+                )
+            },
+            label = "goodpost-screen"
+        ) { stack ->
+            when (val screen = stack.last()) {
+                GoodPostScreen.Home -> GoodPostHome(state = state, viewModel = viewModel)
 
-            GoodPostScreen.Explore -> GoodPostExplore(state = state, viewModel = viewModel)
+                GoodPostScreen.Explore -> GoodPostExplore(state = state, viewModel = viewModel)
 
-            is GoodPostScreen.Channel -> GoodPostFeed(
-                state = state,
-                channelId = screen.channelId,
-                editable = false,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.Channel -> GoodPostFeed(
+                    state = state,
+                    channelId = screen.channelId,
+                    editable = false,
+                    viewModel = viewModel
+                )
 
-            is GoodPostScreen.ChannelInfo -> GoodPostChannelInfo(
-                state = state,
-                channelId = screen.channelId,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.ChannelInfo -> GoodPostChannelInfo(
+                    state = state,
+                    channelId = screen.channelId,
+                    viewModel = viewModel
+                )
 
-            is GoodPostScreen.ChannelMedia -> GoodPostMediaGallery(
-                state = state,
-                channelId = screen.channelId,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.ChannelMedia -> GoodPostMediaGallery(
+                    state = state,
+                    channelId = screen.channelId,
+                    viewModel = viewModel
+                )
 
-            is GoodPostScreen.ChannelSearch -> GoodPostChannelSearch(
-                state = state,
-                channelId = screen.channelId,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.ChannelSearch -> GoodPostChannelSearch(
+                    state = state,
+                    channelId = screen.channelId,
+                    viewModel = viewModel
+                )
 
-            is GoodPostScreen.Starred -> GoodPostStarredScreen(
-                state = state,
-                channelId = screen.channelId,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.Starred -> GoodPostStarredScreen(
+                    state = state,
+                    channelId = screen.channelId,
+                    viewModel = viewModel
+                )
 
-            GoodPostScreen.AdminLogin -> AdminLoginScreen(state = state, viewModel = viewModel)
+                GoodPostScreen.AdminLogin -> AdminLoginScreen(state = state, viewModel = viewModel)
 
-            is GoodPostScreen.AdminChannel -> GoodPostFeed(
-                state = state,
-                channelId = screen.channelId,
-                editable = true,
-                viewModel = viewModel
-            )
+                is GoodPostScreen.AdminChannel -> GoodPostFeed(
+                    state = state,
+                    channelId = screen.channelId,
+                    editable = true,
+                    viewModel = viewModel
+                )
+            }
         }
     }
 
-    if (state.channelFormOpen) {
+    // §22: the channel form comes up from the bottom and goes back down, which is
+    // what says "this is a step over the tab" rather than "you have gone
+    // somewhere". It is the only full-screen surface in the tab that is not a
+    // destination, and the motion is the only thing that distinguishes the two.
+    AnimatedVisibility(
+        visible = state.channelFormOpen,
+        enter = slideInVertically(
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            initialOffsetY = { height -> height }
+        ),
+        exit = slideOutVertically(
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            targetOffsetY = { height -> height }
+        ),
+        label = "goodpost-channel-form"
+    ) {
         ChannelFormScreen(state = state, viewModel = viewModel)
+    }
+
+    // §16: the longest wait in the product, and the only one the reader cannot
+    // hurry along — the Google account exchange runs away from this screen
+    // entirely. It covers the tab rather than the sign-in screen alone because
+    // the tab is what is on screen while it runs; see [WaBusyOverlay].
+    if (state.creatorGoogleBusy) {
+        WaBusyOverlay(text = stringResource(R.string.goodpost_signing_in))
+    }
+
+    // §16: a creator whose account was already here is greeted rather than
+    // dropped onto a list. Shown over whatever screen the session landed on, so
+    // it is the same greeting whether Google or the password form got them in.
+    state.welcomeEmail?.let { email ->
+        WaConfirmDialog(
+            title = stringResource(R.string.goodpost_welcome_back),
+            message = stringResource(R.string.goodpost_welcome_back_note, email),
+            confirmLabel = stringResource(R.string.goodpost_welcome_continue),
+            onConfirm = viewModel::clearWelcome,
+            onDismiss = viewModel::clearWelcome,
+            destructive = false,
+            hideDismiss = true
+        )
     }
 
     state.messageCode?.let { code ->

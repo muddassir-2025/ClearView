@@ -149,6 +149,9 @@ internal fun GoodPostStarredScreen(
             items(entries, key = { it.postId }) { entry ->
                 StarredRow(
                     entry = entry,
+                    // §22: unstarring a message removes it from this list, which
+                    // is the list's whole purpose — the rest close the gap.
+                    modifier = Modifier.animateItem(),
                     highlight = query,
                     onOpen = { viewModel.openChannel(channelId) },
                     onUnstar = { viewModel.unstarPost(entry.postId) }
@@ -168,6 +171,7 @@ internal fun GoodPostStarredScreen(
 @Composable
 private fun StarredRow(
     entry: GoodPostStarredEntry,
+    modifier: Modifier = Modifier,
     highlight: String,
     onOpen: () -> Unit,
     onUnstar: () -> Unit
@@ -176,7 +180,7 @@ private fun StarredRow(
         ?: stringResource(starredMediaLabel(entry.kind))
 
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onOpen)

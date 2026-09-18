@@ -236,6 +236,10 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
                 WaGoogleButton(
                     text = stringResource(R.string.goodpost_continue_with_google),
                     enabled = !state.adminBusy,
+                    // §16: the card keeps its own spinner while it is the thing
+                    // being waited on, so the reader is looking at the button they
+                    // pressed rather than at a card that went grey.
+                    busy = state.creatorGoogleBusy,
                     onClick = { viewModel.creatorSignInWithGoogle(activity) }
                 )
 

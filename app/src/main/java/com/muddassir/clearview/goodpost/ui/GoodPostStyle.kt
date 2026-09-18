@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
@@ -52,10 +53,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.autofill.ContentType
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -349,6 +358,13 @@ internal fun WaAvatar(
         image = GoodPostImages.load(url, widthPx)
     }
 
+    val bitmap = local ?: image
+    // §22: a picture that arrives fades in over the initial rather than replacing
+    // it. It matters most in the one case the avatar is most looked at — a channel
+    // whose image was just changed — where a pop of the new one read as the row
+    // being redrawn rather than as the change having been saved.
+    val alpha = waImageFade(loaded = bitmap != null)
+
     Box(
         modifier = modifier
             .size(size)
@@ -356,20 +372,21 @@ internal fun WaAvatar(
             .background(Wa.avatarFill(name)),
         contentAlignment = Alignment.Center
     ) {
-        val bitmap = local ?: image
+        // The initial is drawn under the picture for the length of the fade, so
+        // the circle is never empty.
+        Text(
+            text = name.trim().take(1).uppercase(Locale.getDefault()),
+            color = Color.White,
+            fontSize = (size.value * 0.42f).sp,
+            fontWeight = FontWeight.Medium
+        )
+
         if (bitmap != null) {
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            Text(
-                text = name.trim().take(1).uppercase(Locale.getDefault()),
-                color = Color.White,
-                fontSize = (size.value * 0.42f).sp,
-                fontWeight = FontWeight.Medium
+                modifier = Modifier.fillMaxSize().alpha(alpha)
             )
         }
     }
@@ -563,6 +580,11 @@ internal fun WaSelectionBar(
     modifier: Modifier = Modifier,
     actions: @Composable () -> Unit = {}
 ) {
+    // §22: the bar drops into the place of the title bar it replaces. It is the
+    // same strip in the same spot, so the motion is what tells the reader that
+    // the bar did not change but the MODE did — which is otherwise the one thing
+    // a selection is easy to miss.
+    WaAppear(enter = WaMotion.barEnter()) {
     Column(modifier = modifier.fillMaxWidth().background(Wa.Selected)) {
         Row(
             modifier = Modifier
@@ -593,6 +615,7 @@ internal fun WaSelectionBar(
 
             actions()
         }
+    }
     }
 }
 
@@ -689,7 +712,24 @@ internal fun WaConfirmDialog(
     message: String,
     confirmLabel: String,
     onConfirm: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    /**
+     * Whether the confirming action destroys something (§17).
+     *
+     * True for the actions that cannot be taken back — a delete, a post taken off
+     * the server — where the colour is part of the warning. False for a dialog
+     * that is only telling the reader something, because a red "Continue" on a
+     * greeting teaches the reader that red does not mean anything.
+     */
+    destructive: Boolean = true,
+    /**
+     * Whether the way out is offered.
+     *
+     * A confirmation needs one ("Cancel" is half of what it is FOR), an
+     * announcement does not: two buttons that do the same thing invites the
+     * reader to look for the difference.
+     */
+    hideDismiss: Boolean = false
 ) {
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -702,15 +742,17 @@ internal fun WaConfirmDialog(
             Text(text = message, color = Wa.TextDim, fontSize = 14.sp, lineHeight = 20.sp)
             Spacer(Modifier.height(14.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_cancel),
-                    onClick = onDismiss
-                )
+                if (!hideDismiss) {
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_cancel),
+                        onClick = onDismiss
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 WaTextAction(
                     text = confirmLabel,
                     onClick = onConfirm,
-                    destructive = true
+                    destructive = destructive
                 )
             }
         }
@@ -729,7 +771,8 @@ internal fun WaPillButton(
         modifier = modifier
             .clip(CircleShape)
             .background(if (filled) Wa.Accent else Wa.Bar)
-            .clickable(onClick = onClick)
+            // §22: the press is answered on the pill.
+            .waTappable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 7.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -918,6 +961,72 @@ internal fun WaGoogleButton(
 }
 
 /**
+ * A step that the app cannot finish on its own, said out loud (§16).
+ *
+ * "Continue with Google" is the longest wait in the product and the only one
+ * that leaves the app: Credential Manager, Google's account picker, Firebase, and
+ * then the backend, one after another, with nothing on this screen able to move
+ * any of it along. A greyed-out card for that is the worst possible answer — it
+ * looks exactly like a control that refused to work.
+ *
+ * So the screen says what it is waiting for, over a scrim that cannot be
+ * dismissed, and the mark on it moves. The motion is the point: a still spinner
+ * is a still screen, and a reader who cannot tell whether anything is happening
+ * taps again.
+ *
+ * The heart is the app's own mark — the split heart of the launcher icon, drawn
+ * here in the accent colour rather than in its two halves: a black half on a
+ * near-black surface is half a heart, and this is not a place to spend an asset
+ * on a logo nobody stops to read.
+ */
+@Composable
+internal fun WaBusyOverlay(text: String, modifier: Modifier = Modifier) {
+    val pulse by rememberInfiniteTransition(label = "wa-busy").animateFloat(
+        initialValue = 0.88f,
+        targetValue = 1.08f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 760, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "wa-busy-scale"
+    )
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            // Not opaque: the form behind it stays legible, because the reader is
+            // going to come back to it and should not have to re-find it.
+            .background(Wa.Canvas.copy(alpha = 0.93f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                modifier = Modifier
+                    .size(72.dp)
+                    .graphicsLayer {
+                        scaleX = pulse
+                        scaleY = pulse
+                    }
+                    .clip(CircleShape)
+                    .background(Wa.Bar),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Favorite,
+                    contentDescription = null,
+                    tint = Wa.Accent,
+                    modifier = Modifier.size(32.dp)
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            Text(text = text, color = Wa.Text, fontSize = 15.sp)
+        }
+    }
+}
+
+/**
  * A card on the sign-in screen that opens something below it ("Other ways").
  *
  * The same shape and height as [WaGoogleButton], on purpose: the two sit one
@@ -1089,20 +1198,25 @@ internal fun WaFollowAction(
 internal fun WaUnreadBadge(count: Int) {
     if (count <= 0) return
 
-    Box(
-        modifier = Modifier
-            .size(20.dp)
-            .clip(CircleShape)
-            .background(Wa.Accent),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = if (count > 99) "99+" else count.toString(),
-            color = Wa.OnAccent,
-            fontSize = if (count > 99) 9.sp else 11.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1
-        )
+    // §22: the badge appears rather than blinking into place — it arrives because
+    // a channel posted while the reader was elsewhere (§12), and the whole point
+    // of the count is that the thing it counts is new.
+    WaAppear(enter = WaMotion.badgeEnter()) {
+        Box(
+            modifier = Modifier
+                .size(20.dp)
+                .clip(CircleShape)
+                .background(Wa.Accent),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = if (count > 99) "99+" else count.toString(),
+                color = Wa.OnAccent,
+                fontSize = if (count > 99) 9.sp else 11.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -1294,7 +1408,9 @@ internal fun WaFilterPill(
                 color = if (selected) Wa.Accent else Wa.Divider,
                 shape = RoundedCornerShape(16.dp)
             )
-            .clickable(onClick = onClick)
+            // §22: a category pill is tapped repeatedly while browsing, and the
+            // press is what says the tap landed.
+            .waTappable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 7.dp)
     ) {
         Text(

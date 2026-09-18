@@ -77,6 +77,11 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
                 items(state.explore, key = { it.id }) { channel ->
                     WaChannelRow(
                         title = channel.name,
+                        // §22: this list is filtered as the reader types and
+                        // re-fetched as they browse, so rows enter and leave on
+                        // almost every keystroke — they move instead of
+                        // rebuilding the list under the reader's eye.
+                        modifier = Modifier.animateItem(),
                         // A description is what a reader decides on here, so it
                         // is the second line — with a plain fallback rather than
                         // an empty one for a channel that has not written one.

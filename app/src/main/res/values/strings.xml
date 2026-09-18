@@ -117,10 +117,13 @@
     <!-- Quran search (top-bar search icon + search sheet) -->
     <string name="quran_search">Search Quran</string>
     <string name="quran_search_back">Back</string>
-    <!-- The field's own example, and only that: the tab above it already says
-         what is being searched, so "Search by word or verse" repeated the
-         heading and pushed the one useful part of the hint out of view. -->
-    <string name="quran_search_hint">search by word or verse (eg: mercy or 2:55)</string>
+    <!-- The field's own example, and only that, SHORT ENOUGH TO FIT ON ONE LINE.
+         It has been cut twice now (the tab above already says what is being
+         searched) and this is the second cut: at 14sp in the width a 360dp screen
+         leaves beside the leading icon, roughly 30 characters fit, and a longer
+         hint does not wrap — it clips, so the half that was meant to help is the
+         half nobody sees. Both accepted forms are still named. -->
+    <string name="quran_search_hint">Word or verse (2:55)</string>
     <string name="quran_search_clear">Clear search</string>
     <string name="quran_search_idle">Type above to search the Quran</string>
     <string name="quran_search_no_results">No verses found</string>
@@ -128,7 +131,7 @@
     <string name="quran_search_mode_search">Search</string>
     <string name="quran_search_mode_surah">Surah</string>
     <string name="quran_search_mode_bookmarks">Bookmarks</string>
-    <string name="quran_search_hint_surah">Search surahs by name or number</string>
+    <string name="quran_search_hint_surah">Surah name or number</string>
     <!-- Shown while a surah is open: the same field now narrows that surah. -->
     <string name="quran_search_hint_in_surah">Search inside this surah</string>
     <string name="quran_surah_no_matches">No surahs found</string>
@@ -945,6 +948,18 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_expand">Show</string>
     <string name="goodpost_collapse">Hide</string>
     <string name="goodpost_creator_note">Sign in to create and run your own channel. Readers never need an account.</string>
+    <!-- Shown over the sign-in screen while the Google account is exchanged for
+         a session. It names the wait rather than describing the technology: the
+         reader pressed a card and is now looking at a screen that cannot move
+         until Google, Firebase and the backend have each answered in turn. -->
+    <string name="goodpost_signing_in">Signing you in…</string>
+    <!-- A creator who signed in to an account that already existed. The address
+         is named because it is the one thing they can check: an account on a
+         shared device, or the wrong Google account out of several, is exactly
+         the mistake this sentence is able to catch. -->
+    <string name="goodpost_welcome_back">Welcome back</string>
+    <string name="goodpost_welcome_back_note">%1$s already has a channel account, so you are signed in. Your channels are below.</string>
+    <string name="goodpost_welcome_continue">Continue</string>
     <string name="goodpost_creator_name_channel">Name your channel</string>
     <string name="goodpost_creator_name_note">This is the last step. Your channel is created with this account and you can rename it later.</string>
     <string name="goodpost_creator_channel_name">Channel name</string>

@@ -298,6 +298,29 @@ data class GoodPostUiState(
     val creatorChannelName: String = "",
 
     /**
+     * True from the moment "Continue with Google" is tapped until the session
+     * comes back, or the attempt is over (§16).
+     *
+     * Separate from [adminBusy] because it is not the same wait. [adminBusy] is
+     * every action that must not be tapped twice — a sign-in, a save, a post
+     * being published — while this one is specifically the exchange that leaves
+     * the app entirely: the account picker, then Google, then Firebase, then the
+     * backend. Nothing on the screen can advance it, so the screen says so
+     * instead of leaving a greyed-out card looking like a refusal.
+     */
+    val creatorGoogleBusy: Boolean = false,
+
+    /**
+     * The address of a creator who signed in to an account that already existed
+     * (§16), so the screen can say welcome back rather than nothing.
+     *
+     * Null in every other case: a new creator is told nothing because there is
+     * nothing to tell, and a super administrator signing in with a password is
+     * not a returning CREATOR.
+     */
+    val welcomeEmail: String? = null,
+
+    /**
      * Whether the "Other ways" panel on the sign-in screen is open (§16).
      *
      * Closed until it is asked for. It holds the two fields a deployment-
@@ -2185,6 +2208,11 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(creatorChannelName = value, messageCode = null)
     }
 
+    /** Dismiss the returning-creator greeting (§16). */
+    fun clearWelcome() {
+        uiState = uiState.copy(welcomeEmail = null)
+    }
+
     /** Open or close the "Other ways" panel, which is a choice and not an error. */
     fun toggleOtherWays() {
         uiState = uiState.copy(otherWaysOpen = !uiState.otherWaysOpen, messageCode = null)
@@ -2242,18 +2270,27 @@ class GoodPostViewModel : ViewModel() {
      */
     fun creatorSignInWithGoogle(activity: Activity) {
         val repo = repository ?: return
-        uiState = uiState.copy(adminBusy = true, messageCode = null)
+        uiState = uiState.copy(adminBusy = true, creatorGoogleBusy = true, messageCode = null)
 
         viewModelScope.launch {
-            when (val result = repo.googleCreatorToken(activity)) {
-                // Dismissing the picker is not a failure and gets no message.
-                GoogleSignIn.Cancelled -> uiState = uiState.copy(adminBusy = false)
-                GoogleSignIn.Failed -> uiState = uiState.copy(
-                    adminBusy = false,
-                    messageCode = "creator_signin_failed"
-                )
+            try {
+                when (val result = repo.googleCreatorToken(activity)) {
+                    // Dismissing the picker is not a failure and gets no message.
+                    GoogleSignIn.Cancelled -> uiState = uiState.copy(adminBusy = false)
+                    GoogleSignIn.Failed -> uiState = uiState.copy(
+                        adminBusy = false,
+                        messageCode = "creator_signin_failed"
+                    )
 
-                is GoogleSignIn.Token -> continueCreatorSignIn(repo, result.idToken)
+                    is GoogleSignIn.Token -> continueCreatorSignIn(repo, result.idToken)
+                }
+            } finally {
+                // Every exit, including the one where `continueCreatorSignIn` threw
+                // on a lost connection: the step is over, so whatever it put on the
+                // screen comes off. A `finally` rather than four assignments,
+                // because the state that matters here is the one where the overlay
+                // is still covering the app and nothing will ever clear it.
+                uiState = uiState.copy(creatorGoogleBusy = false)
             }
         }
     }
@@ -2378,6 +2415,13 @@ class GoodPostViewModel : ViewModel() {
             is ApiResult.Ok -> when (val value = result.value) {
                 is CreatorSignIn.Session -> {
                     creatorIdToken = null
+                    // §16: `Session` (rather than `NeedsChannel`) means this
+                    // account was already here, so the reader is greeted instead
+                    // of dropped onto a list with no word about what happened.
+                    // It is the same branch for both ways in — Google and the
+                    // email/password form — because "the account already exists"
+                    // is the same fact in both.
+                    uiState = uiState.copy(welcomeEmail = value.session.email)
                     landAdminSession(value.session)
                 }
 

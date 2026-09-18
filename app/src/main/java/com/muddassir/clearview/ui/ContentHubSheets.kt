@@ -497,7 +497,23 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
 
     // Opening a different surah starts with the text, not with the last surah's
     // search term still narrowing it (§10).
-    LaunchedEffect(openSurah) { readerSearchOpen = false }
+    LaunchedEffect(openSurah) {
+        readerSearchOpen = false
+        // And the term itself goes with it. Leaving it behind meant the NEXT time
+        // the field was opened it came back pre-filled, narrowing a surah the
+        // reader had not typed anything into.
+        if (openSurah == null) query = ""
+    }
+
+    // A term belongs to the tab it was typed on (§10).
+    //
+    // Switching tabs used to carry it across, on the theory that a reader who
+    // typed "mercy" and then tapped Surah meant to filter those too. In practice
+    // the three tabs answer three different questions — words in the Quran, a
+    // surah by name, what I saved — and a term from one of them arrives as a
+    // filter the reader never asked for: an empty Surah list, or a Bookmarks tab
+    // insisting there is nothing to show. Each tab opens clean.
+    LaunchedEffect(tab) { query = "" }
 
     Dialog(
         onDismissRequest = onDismiss,
