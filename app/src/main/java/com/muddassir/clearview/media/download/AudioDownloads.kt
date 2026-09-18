@@ -6,6 +6,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.muddassir.clearview.media.model.MediaVideo
+import com.muddassir.clearview.media.playback.AudioPlayback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -323,7 +324,7 @@ object AudioDownloads {
     // ── Deletion (always allowed) ──────────────────────────────────
 
     fun delete(videoId: String) {
-        if (OfflineAudioPlayer.playingVideoId.value == videoId) OfflineAudioPlayer.stop()
+        if (AudioPlayback.playingVideoId.value == videoId) AudioPlayback.stop()
         val s = storeOrThrow()
         scope.launch {
             withContext(Dispatchers.IO) { s.delete(videoId) }
@@ -334,7 +335,7 @@ object AudioDownloads {
     fun deleteMany(ids: List<String>) {
         // Manual deletion must never be restricted — but deleting the audio
         // that is currently playing should stop it first (like single delete).
-        if (OfflineAudioPlayer.playingVideoId.value in ids) OfflineAudioPlayer.stop()
+        if (AudioPlayback.playingVideoId.value in ids) AudioPlayback.stop()
         val s = storeOrThrow()
         scope.launch {
             withContext(Dispatchers.IO) { s.deleteMany(ids.toSet()) }

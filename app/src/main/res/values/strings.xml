@@ -613,10 +613,18 @@ This video cannot be played inside the app.</string>
 
     <!-- Offline-audio background playback (foreground media service) -->
     <string name="audio_notification_channel">Audio playback</string>
-    <string name="audio_notification_channel_desc">Controls for the offline audio playing in the background</string>
+    <string name="audio_notification_channel_desc">Controls for the audio playing in the background</string>
     <string name="audio_notification_play">Play</string>
     <string name="audio_notification_pause">Pause</string>
     <string name="audio_notification_stop">Stop</string>
+    <!-- Shown while a stream is filling its buffer: the notification must not
+         look identical to a player that has stopped responding. -->
+    <string name="audio_notification_buffering">Buffering…</string>
+    <!-- The sleep timer, on the notification's second line: the screen people
+         look at when they set a timer and put the phone down. %1$s is what is
+         playing, %2$s the time left. -->
+    <string name="audio_notification_sleep_remaining">%1$s · %2$s left</string>
+    <string name="audio_notification_sleep_end_of_track">%1$s · stops after this</string>
 
     <plurals name="quran_verse_interval_set">
         <item quantity="one">New verse every %1$d hour</item>

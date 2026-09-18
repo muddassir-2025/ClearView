@@ -47,7 +47,6 @@ import com.muddassir.clearview.media.data.MediaBadge
 import com.muddassir.clearview.media.data.MediaRepository
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
-import com.muddassir.clearview.media.download.OfflineAudioPlayer
 import com.muddassir.clearview.media.model.MediaChannelUpdate
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.ui.AudioPlayerScreen

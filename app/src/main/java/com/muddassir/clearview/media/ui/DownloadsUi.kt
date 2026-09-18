@@ -86,7 +86,7 @@ import com.muddassir.clearview.media.data.UserPlaylistStore
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
 import com.muddassir.clearview.media.download.DownloadStatus
-import com.muddassir.clearview.media.download.OfflineAudioPlayer
+import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.model.DownloadSourceFilter
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.util.formatBytes
@@ -762,8 +762,8 @@ fun MiniAudioCard(
     onAddToPlaylist: (() -> Unit)? = null,
     onDelete: (() -> Unit)? = null
 ) {
-    val isCurrent = OfflineAudioPlayer.playingVideoId.value == item.videoId
-    val isPlaying = isCurrent && OfflineAudioPlayer.isPlaying.value
+    val isCurrent = AudioPlayback.playingVideoId.value == item.videoId
+    val isPlaying = isCurrent && AudioPlayback.isPlaying.value
     var menuOpen by remember { mutableStateOf(false) }
 
     Row(
@@ -867,7 +867,7 @@ fun MiniAudioCard(
                         },
                         onClick = {
                             menuOpen = false
-                            if (isCurrent) OfflineAudioPlayer.toggle() else onPlay()
+                            if (isCurrent) AudioPlayback.toggle() else onPlay()
                         }
                     )
                     onAddToPlaylist?.let { addToPlaylist ->

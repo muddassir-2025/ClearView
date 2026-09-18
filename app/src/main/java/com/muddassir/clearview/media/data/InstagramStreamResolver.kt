@@ -106,17 +106,29 @@ object InstagramStreamResolver {
     private const val EXPIRY_MARGIN_MS = 2 * 60 * 1000L
 
     /**
-     * The instant a signed CDN URL stops working, from its own `oe` parameter.
+     * The instant a signed CDN URL stops working, from the expiry in its own
+     * query string.
      *
-     * Meta puts the expiry in the query string as hexadecimal seconds —
-     * `…?oe=68CD1F00&oh=…` — so a URL that carries one can be judged on its own
-     * evidence rather than on a guess about how long it usually lasts. Null when
-     * there is no `oe`, which is not an error: the plain TTL then decides.
+     * Two providers, two spellings, and both are read here rather than at each
+     * call site because the rule is one rule — a URL that states when it dies
+     * is judged on that statement:
+     *
+     *  - Meta writes `…?oe=68CD1F00&oh=…`, **hexadecimal** seconds.
+     *  - Google writes `…&expire=1758300000&…` on YouTube's stream URLs,
+     *    **decimal** seconds — and those are the URLs listen mode plays, so
+     *    without this the audio cache would fall back to the plain TTL and hand
+     *    the player a URL that had already lapsed.
+     *
+     * Null when neither is present, which is not an error: the plain TTL then
+     * decides.
      */
     internal fun expiresAtMillis(url: String): Long? {
-        val raw = Regex("[?&]oe=([0-9A-Fa-f]+)").find(url)?.groupValues?.get(1) ?: return null
-        val seconds = raw.toLongOrNull(16) ?: return null
-        return seconds * 1000L
+        val hex = Regex("[?&]oe=([0-9A-Fa-f]+)").find(url)?.groupValues?.get(1)
+        if (hex != null) {
+            return hex.toLongOrNull(16)?.let { it * 1000L }
+        }
+        val decimal = Regex("[?&]expire=(\\d+)").find(url)?.groupValues?.get(1) ?: return null
+        return decimal.toLongOrNull()?.let { it * 1000L }
     }
 
     /**

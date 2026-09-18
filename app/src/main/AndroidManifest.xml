@@ -196,11 +196,14 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- Offline-audio foreground playback service: owns the MediaPlayer
+        <!-- Background audio foreground playback service: owns the MediaPlayer
              so audio continues in the background, with a media notification
-             (play/pause/stop + lock-screen controls via MediaSessionCompat). -->
+             (play/pause/stop + lock-screen controls via MediaSessionCompat).
+             Serves BOTH sources — a downloaded file and the audio-only stream
+             of a video that was never downloaded (listen mode) — which is why
+             it lives in media/playback rather than media/download. -->
         <service
-            android:name=".media.download.AudioPlaybackService"
+            android:name=".media.playback.AudioPlaybackService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 

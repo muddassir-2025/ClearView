@@ -142,7 +142,7 @@ class AudioDownloadStore(context: Context) {
      * Imports audio files the user picked from the device (SAF document Uris)
      * into the offline library: each file is COPIED into [audioDir] and
      * registered as a [DownloadItem] (source [DownloadItem.SOURCE_DEVICE]) so
-     * it appears in the Downloads list and plays through [OfflineAudioPlayer]
+     * it appears in the Downloads list and plays through [AudioPlayback]
      * exactly like a downloaded one. Returns the [DownloadItem]s actually
      * imported (callers can e.g. add them to a user playlist).
      *

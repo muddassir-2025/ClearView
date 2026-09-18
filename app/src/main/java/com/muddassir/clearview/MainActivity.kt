@@ -41,6 +41,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.muddassir.clearview.media.download.AudioDownloads
+import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.worker.AudioWorkScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.phonelimit.PhoneLimitCoordinator
@@ -160,6 +161,12 @@ open class MainActivity : ComponentActivity() {
         // cleanup worker (expired / orphans / stale .part files).
         AudioDownloads.initialize(this)
         AudioWorkScheduler.ensureScheduled(this)
+
+        // Background audio: binds the facade to the process so its transport
+        // commands (pause/seek/stop) work before anything has been played in
+        // this process — otherwise a resumed session shows a dead pause button
+        // on a player that is audibly running.
+        AudioPlayback.initialize(this)
 
         // Use ViewModelProvider (not @Composable viewModel()) since we're in onCreate
         val viewModel = ViewModelProvider(this).get(MainViewModel::class.java)

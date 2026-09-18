@@ -58,6 +58,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -86,6 +87,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -119,11 +121,13 @@ import com.muddassir.clearview.media.model.InstagramMediaType
 import com.muddassir.clearview.media.model.MediaPlatform
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.model.UserPlaylist
+import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.util.formatBytes
 import com.muddassir.clearview.media.util.formatEtaRemaining
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -454,6 +458,68 @@ fun VideoPlayerScreen(
     // the toggle applies + persists the change immediately.
     var isMuted by remember {
         mutableStateOf(playerPrefs.getBoolean(KEY_MUTED, true))
+    }
+
+    // ── Listen mode (background audio) ──────────────────────────────
+    // Whether the app's ONE background audio player is holding THIS video. The
+    // same question whether it is playing a downloaded file or a resolved audio
+    // stream: the reader asked to hear this video, and which of the two it
+    // turned out to be is not their business.
+    val isListening = AudioPlayback.playingVideoId.value == video.videoId
+    // True while a stream this device has never resolved is being looked up.
+    // That is a real network round trip, and a button that appears to do
+    // nothing for three seconds reads as broken.
+    var listenPreparing by remember(video.videoId) { mutableStateOf(false) }
+    val listenScope = rememberCoroutineScope()
+
+    /**
+     * Starts listening, or stops it when this video is already what is playing.
+     *
+     * The in-screen player is paused FIRST, and that is the whole reason this is
+     * one function rather than a line at the button: listening and watching the
+     * same video are mutually exclusive, and two copies of the same audio a few
+     * hundred milliseconds apart is the one failure mode of this feature that is
+     * worse than not having it.
+     */
+    fun toggleListen() {
+        if (isListening) {
+            AudioPlayback.stop()
+            return
+        }
+        sendCommand("pause")
+        listenPreparing = true
+        listenScope.launch {
+            val started = AudioPlayback.playVideo(
+                context = context.applicationContext,
+                video = video,
+                // Carry on from where the video is: handing over mid-lecture and
+                // starting again at zero throws away the position the reader
+                // was on.
+                startAtMs = (transportPosition * 1000.0).toLong()
+            )
+            listenPreparing = false
+            if (!started) {
+                Toast.makeText(
+                    context,
+                    "Couldn't start listening to this video",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    /**
+     * Play/pause from any transport, with the same exclusivity rule from the
+     * other side: resuming the video stops listening to it, so the two can
+     * never be heard at once.
+     */
+    fun togglePlayback() {
+        if (isPlaying) {
+            sendCommand("pause")
+        } else {
+            if (AudioPlayback.playingVideoId.value == video.videoId) AudioPlayback.stop()
+            sendCommand("play")
+        }
     }
 
     fun shareVideo() {
@@ -820,9 +886,7 @@ fun VideoPlayerScreen(
                             canSeek = transportDuration > 0.0 && !isLiveNow,
                             show = true
                         ),
-                        onTogglePlay = {
-                            sendCommand(if (isPlaying) "pause" else "play")
-                        },
+                        onTogglePlay = { togglePlayback() },
                         onSeekBack10 = { sendCommand("back10") },
                         onSeekForward10 = { sendCommand("fwd10") },
                         onSeek = { target -> requestScrub(target) },
@@ -878,7 +942,7 @@ fun VideoPlayerScreen(
                     modifier = Modifier
                         .align(Alignment.Center)
                         .size(68.dp)
-                        .clickable { sendCommand("play") },
+                        .clickable { togglePlayback() },
                     shape = CircleShape,
                     color = Color.Black.copy(alpha = 0.55f)
                 ) {
@@ -1054,6 +1118,18 @@ fun VideoPlayerScreen(
                 onWatchAgain = { requestSeek(0.0) },
                 onShare = { shareVideo() },
                 onHide = { showHideConfirm = true },
+                // Listen mode lives in the transport row; these two give it
+                // words in the ⋮ menu and own the sleep timer, which only means
+                // anything while the background player holds this video.
+                isListening = isListening,
+                listenPreparing = listenPreparing,
+                onListen = { toggleListen() },
+                onSleepTimer = { minutes ->
+                    AudioPlayback.setSleepTimer(context.applicationContext, minutes)
+                },
+                onSleepEndOfTrack = {
+                    AudioPlayback.setSleepAtEndOfTrack(context.applicationContext, true)
+                },
                 onMarkWatched = {
                     progressStore.set(video.videoId, 1f)
                     progressRevision++
@@ -1070,7 +1146,7 @@ fun VideoPlayerScreen(
                     // post has no playback at all — no bar for either.
                     show = !isLiveNow && !video.isInstagramImage
                 ),
-                onTogglePlay = { sendCommand(if (isPlaying) "pause" else "play") },
+                onTogglePlay = { togglePlayback() },
                 onSeekBack10 = { sendCommand("back10") },
                 onSeekForward10 = { sendCommand("fwd10") },
                 // YouTube scrubs through the dedicated "move the playhead"
@@ -1295,6 +1371,16 @@ private fun PlayerControlPanel(
     onWatchAgain: () -> Unit,
     onShare: () -> Unit,
     onHide: () -> Unit,
+    /** True while the background audio player holds THIS video (listen mode). */
+    isListening: Boolean,
+    /** True while a stream is being resolved to start listen mode. */
+    listenPreparing: Boolean,
+    /** Start or stop listen mode (background audio) for this video. */
+    onListen: () -> Unit,
+    /** ⋮ menu → Sleep timer, in minutes from now; null turns it off. */
+    onSleepTimer: (Int?) -> Unit,
+    /** ⋮ menu → Sleep timer → stop when this track ends. */
+    onSleepEndOfTrack: () -> Unit,
     /** ⋮ menu → Remove (manually added). */
     onRemoveManual: () -> Unit,
     onMarkWatched: () -> Unit,
@@ -1315,6 +1401,13 @@ private fun PlayerControlPanel(
 ) {
     val context = LocalContext.current
     var showMoreMenu by remember { mutableStateOf(false) }
+    // The sleep timer is the background player's, so the panel only offers it
+    // while the background player is holding this video — a timer set on a
+    // session that is not running would do nothing and say nothing.
+    var showSleepDialog by remember { mutableStateOf(false) }
+    val sleepRemainingMs = AudioPlayback.sleepRemainingMs.longValue
+    val sleepEndOfTrack = AudioPlayback.sleepEndOfTrack.value
+    val sleepChoiceMinutes = AudioPlayback.sleepChoiceMinutes.value
     // Custom playback speed (0.25×–5×, 0.05 steps) — opened from the speed menu.
     var showCustomSpeedDialog by remember { mutableStateOf(false) }
     var customSpeed by remember { mutableStateOf(playbackRate) }
@@ -1414,6 +1507,39 @@ private fun PlayerControlPanel(
                     expanded = showMoreMenu,
                     onDismissRequest = { showMoreMenu = false }
                 ) {
+                    // The headline action of the player, in words: the
+                    // headphones button in the transport row is the fast path,
+                    // and this is the one that explains itself.
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (isListening) "Stop listening" else "Listen in background")
+                        },
+                        enabled = !listenPreparing,
+                        leadingIcon = {
+                            Icon(Icons.Filled.Headphones, contentDescription = null)
+                        },
+                        onClick = {
+                            showMoreMenu = false
+                            onListen()
+                        }
+                    )
+                    if (isListening) {
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (sleepTimerArmed(sleepRemainingMs, sleepEndOfTrack)) {
+                                        "Sleep timer · ${sleepTimerLabel(sleepRemainingMs, sleepEndOfTrack)}"
+                                    } else {
+                                        "Sleep timer…"
+                                    }
+                                )
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                showSleepDialog = true
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Add to playlist…") },
                         onClick = {
@@ -1565,7 +1691,20 @@ private fun PlayerControlPanel(
                 onSeekBack10 = onSeekBack10,
                 onSeekForward10 = onSeekForward10,
                 onSeek = onSeek,
-                onToggleMute = onToggleMute
+                onToggleMute = onToggleMute,
+                onListen = onListen,
+                isListening = isListening,
+                listenPreparing = listenPreparing
+            )
+        }
+
+        if (showSleepDialog) {
+            SleepTimerDialog(
+                chosenMinutes = sleepChoiceMinutes,
+                endOfTrack = sleepEndOfTrack,
+                onCountdown = onSleepTimer,
+                onEndOfTrack = onSleepEndOfTrack,
+                onDismiss = { showSleepDialog = false }
             )
         }
 
@@ -1906,7 +2045,14 @@ private fun VideoTransportControls(
     onPrevious: (() -> Unit)? = null,
     onNext: (() -> Unit)? = null,
     canGoPrevious: Boolean = true,
-    canGoNext: Boolean = true
+    canGoNext: Boolean = true,
+    /**
+     * Listen mode (background audio). Omitted by callers that do not offer it —
+     * the vertical Shorts viewer, where swiping is the whole interaction.
+     */
+    onListen: (() -> Unit)? = null,
+    isListening: Boolean = false,
+    listenPreparing: Boolean = false
 ) {
     // While the user drags, the slider follows the finger instead of the
     // player's periodic position reports; the seek is committed on release.
@@ -2022,6 +2168,40 @@ private fun VideoTransportControls(
                 onClick = onToggleMute,
                 tint = iconTint
             )
+            onListen?.let { listen ->
+                Box(contentAlignment = Alignment.Center) {
+                    // Armed, a filled disc sits behind the icon. A tint change
+                    // alone would be invisible in the control panel, where the
+                    // resting tint is ALREADY the accent colour — the one place
+                    // this state most needs to be legible.
+                    if (isListening) {
+                        Surface(
+                            shape = CircleShape,
+                            color = (if (onDark) Color.White else MaterialTheme.colorScheme.primary)
+                                .copy(alpha = 0.18f),
+                            modifier = Modifier.size(44.dp)
+                        ) {}
+                    }
+                    // The wait is drawn around the button, never in its place:
+                    // resolving an audio stream can take a few seconds, and the
+                    // reader must still be able to tap it again to change their
+                    // mind.
+                    if (listenPreparing) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(46.dp),
+                            strokeWidth = 2.dp,
+                            color = iconTint.copy(alpha = 0.5f)
+                        )
+                    }
+                    TransportIconButton(
+                        icon = Icons.Filled.Headphones,
+                        label = if (isListening) "Stop listening" else "Listen in background",
+                        enabled = !listenPreparing,
+                        onClick = listen,
+                        tint = if (isListening) MaterialTheme.colorScheme.primary else iconTint
+                    )
+                }
+            }
             // Speed — the SAME real player call the panel's Speed action uses
             // (setPlaybackRate through the IFrame API / setPlaybackParams for
             // Instagram). Offered here because the fullscreen Shorts viewer has

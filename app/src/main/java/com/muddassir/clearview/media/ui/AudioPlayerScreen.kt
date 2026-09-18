@@ -57,7 +57,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
-import com.muddassir.clearview.media.download.OfflineAudioPlayer
+import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.util.formatBytes
 import com.muddassir.clearview.media.util.formatDownloadDate
 import kotlinx.coroutines.Dispatchers
@@ -70,8 +70,12 @@ import java.io.File
  * left-aligned title/channel, an elegant seek slider (elapsed left, time
  * remaining right), a clean transport row (previous / ‑10s / play‑pause /
  * +10s / next) and a playback-speed pill (0.5x–2x) pinned to the bottom
- * corner. Plays the locally downloaded file through [OfflineAudioPlayer] — no
+ * corner. Plays the locally downloaded file through [AudioPlayback] — no
  * network, no WebView. Fully functional in airplane mode.
+ *
+ * A sleep-timer pill sits beside the speed pill: set here, enforced by the
+ * playback service, so it keeps counting with the screen off — which is the
+ * only condition it is ever used in.
  *
  * [hasPrevious] / [hasNext] reflect the CURRENT queue the audio was started
  * from (a playlist, the Downloads list, or the whole offline library); the
@@ -95,18 +99,24 @@ fun AudioPlayerScreen(
     LaunchedEffect(item.videoId) {
         val file = AudioDownloads.audioFile(context, item)
         if (file.exists()) {
-            OfflineAudioPlayer.play(context, item)
+            AudioPlayback.play(context, item)
             AudioDownloads.markPlayed(item.videoId)
         } else {
             fileMissing = true
         }
     }
 
-    val isPlaying = OfflineAudioPlayer.isPlaying.value
-    val positionMs = OfflineAudioPlayer.positionMs.longValue
-    val durationMs = OfflineAudioPlayer.durationMs.longValue
-    val speed = OfflineAudioPlayer.speed.value
+    val isPlaying = AudioPlayback.isPlaying.value
+    val positionMs = AudioPlayback.positionMs.longValue
+    val durationMs = AudioPlayback.durationMs.longValue
+    val speed = AudioPlayback.speed.value
     var showSpeedMenu by remember { mutableStateOf(false) }
+    // The sleep timer: set here, enforced by the service (so it keeps counting
+    // with the screen off — the only condition it is ever used in).
+    val sleepRemainingMs = AudioPlayback.sleepRemainingMs.longValue
+    val sleepEndOfTrack = AudioPlayback.sleepEndOfTrack.value
+    val sleepChoiceMinutes = AudioPlayback.sleepChoiceMinutes.value
+    var showSleepDialog by remember { mutableStateOf(false) }
 
     if (fileMissing) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -181,7 +191,7 @@ fun AudioPlayerScreen(
                     value = dragFraction ?: (positionSeconds / durationSeconds).coerceIn(0f, 1f),
                     onValueChange = { dragFraction = it },
                     onValueChangeFinished = {
-                        dragFraction?.let { OfflineAudioPlayer.seekTo((it * durationMs).toLong()) }
+                        dragFraction?.let { AudioPlayback.seekTo((it * durationMs).toLong()) }
                         dragFraction = null
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -234,7 +244,7 @@ fun AudioPlayerScreen(
                     )
                 }
                 IconButton(
-                    onClick = { OfflineAudioPlayer.seekTo((positionMs - 10_000L).coerceAtLeast(0L)) },
+                    onClick = { AudioPlayback.seekTo((positionMs - 10_000L).coerceAtLeast(0L)) },
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
@@ -253,7 +263,7 @@ fun AudioPlayerScreen(
                     shape = CircleShape,
                     color = MaterialTheme.colorScheme.primary
                 ) {
-                    IconButton(onClick = { OfflineAudioPlayer.toggle() }) {
+                    IconButton(onClick = { AudioPlayback.toggle() }) {
                         Icon(
                             if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                             contentDescription = if (isPlaying) "Pause" else "Play",
@@ -264,7 +274,7 @@ fun AudioPlayerScreen(
                 }
                 Spacer(Modifier.width(10.dp))
                 IconButton(
-                    onClick = { OfflineAudioPlayer.seekTo(positionMs + 10_000L) },
+                    onClick = { AudioPlayback.seekTo(positionMs + 10_000L) },
                     modifier = Modifier.size(48.dp)
                 ) {
                     Icon(
@@ -350,11 +360,36 @@ fun AudioPlayerScreen(
                                     { Icon(Icons.Filled.Check, contentDescription = null) }
                                 } else null,
                                 onClick = {
-                                    OfflineAudioPlayer.setSpeed(context, rate.toFloat())
+                                    AudioPlayback.setSpeed(context, rate.toFloat())
                                     showSpeedMenu = false
                                 }
                             )
                         }
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                Box {
+                    SleepTimerPill(
+                        remainingMs = sleepRemainingMs,
+                        endOfTrack = sleepEndOfTrack,
+                        onClick = { showSleepDialog = true }
+                    )
+                    if (showSleepDialog) {
+                        SleepTimerDialog(
+                            chosenMinutes = sleepChoiceMinutes,
+                            endOfTrack = sleepEndOfTrack,
+                            // "Off" arrives as a null countdown, which is the
+                            // same call that set the timer — one entry point, so
+                            // the timer cannot be set through a path that does
+                            // not also cancel it.
+                            onCountdown = { minutes ->
+                                AudioPlayback.setSleepTimer(context, minutes)
+                            },
+                            onEndOfTrack = {
+                                AudioPlayback.setSleepAtEndOfTrack(context, true)
+                            },
+                            onDismiss = { showSleepDialog = false }
+                        )
                     }
                 }
             }

@@ -145,4 +145,45 @@ class InstagramStreamResolverTest {
         // A blank URL is never usable, whatever the clocks say.
         assertFalse(InstagramStreamResolver.isStreamUsable("", now, now))
     }
+
+    // ── The other provider's spelling (listen mode) ─────────────────────
+
+    @Test
+    fun `a YouTube stream URL's expiry is read from its decimal expire parameter`() {
+        // Google states it in DECIMAL seconds on the googlevideo URLs listen mode
+        // plays — a different spelling AND a different base from Meta's `oe`, and
+        // reading one as the other is how the audio cache hands the player a URL
+        // that has already lapsed.
+        assertEquals(
+            1_758_300_000_000L,
+            InstagramStreamResolver.expiresAtMillis(
+                "https://r1.googlevideo.com/videoplayback?expire=1758300000&itag=140&sig=abc"
+            )
+        )
+        // Decimal, not hex: the same digits read as hex would be ~4.3e9 seconds,
+        // which is a century in the future and would keep a dead URL alive.
+        assertEquals(
+            1_000_000_000_000L,
+            InstagramStreamResolver.expiresAtMillis("https://x/videoplayback?expire=1000000000")
+        )
+    }
+
+    @Test
+    fun `Meta's own expiry wins when a URL somehow carries both`() {
+        assertEquals(
+            0x68CD1F00L * 1000L,
+            InstagramStreamResolver.expiresAtMillis(
+                "https://x/reel.mp4?oe=68CD1F00&expire=1758300000"
+            )
+        )
+    }
+
+    @Test
+    fun `a stale YouTube stream is not reused`() {
+        val now = 1_700_000_000_000L
+        val fresh = "https://r1.googlevideo.com/videoplayback?expire=${(now / 1000L) + 3600L}"
+        val stale = "https://r1.googlevideo.com/videoplayback?expire=${(now / 1000L) - 60L}"
+        assertTrue(InstagramStreamResolver.isStreamUsable(fresh, now, now))
+        assertFalse(InstagramStreamResolver.isStreamUsable(stale, now, now))
+    }
 }
