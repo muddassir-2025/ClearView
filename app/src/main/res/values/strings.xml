@@ -141,6 +141,19 @@
         <item quantity="other">%1$d of %2$d verses match</item>
     </plurals>
     <string name="quran_bookmarks_loading">Loading bookmarks…</string>
+
+    <!-- The surah reader (the full scrollable surah opened from Search → Surah).
+         It is a reading page, so these are the few chrome strings that survive:
+         which way the text is set, where you are in the surah, and the two ways
+         to move through a search inside it. -->
+    <string name="quran_reader_search">Search inside this surah</string>
+    <!-- The surah's own numbers, under its name. "Surah 16 • 128 ayahs" — the
+         same two facts the dashboard gives a verse's surah. -->
+    <string name="quran_reader_meta">Surah %1$d • %2$d ayahs</string>
+    <string name="quran_reader_arabic">Arabic</string>
+    <string name="quran_reader_english">English</string>
+    <!-- Jumps to the next verse matching the field's term, wrapping at the end. -->
+    <string name="quran_reader_matches_next">Next match</string>
     <plurals name="quran_search_results_count">
         <item quantity="one">%1$d result</item>
         <item quantity="other">%1$d results</item>

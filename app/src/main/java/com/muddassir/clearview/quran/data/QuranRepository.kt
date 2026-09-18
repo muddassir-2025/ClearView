@@ -226,9 +226,9 @@ class QuranRepository(context: Context) {
 
             val lower = q.lowercase()
             // "2:255", "2 255" or "2.255" → exact reference.
-            val ref = REFERENCE_REGEX.find(q)
-            val refSurah = ref?.groupValues?.get(1)?.toIntOrNull()
-            val refAyah = ref?.groupValues?.get(2)?.toIntOrNull()
+            val ref = verseReference(q)
+            val refSurah = ref?.first
+            val refAyah = ref?.second
             val plainNumber = q.toIntOrNull()
 
             val matches = ArrayList<QuranVerse>(minOf(limit, 64))
@@ -329,9 +329,29 @@ class QuranRepository(context: Context) {
         @Volatile
         private var EnglishVersesCache: List<QuranVerse>? = null
         private var versesStamp = -1L
-
-        // "2:255", "2 255" or "2.255" → exact surah:ayah reference.
-        private val REFERENCE_REGEX =
-            Regex("""^\s*(\d+)\s*[:.\s]\s*(\d+)\s*$""")
     }
+}
+
+// "2:255", "2 255" or "2.255" → a surah and an ayah.
+private val VERSE_REFERENCE = Regex("""^\s*(\d+)\s*[:.\s]\s*(\d+)\s*$""")
+
+/**
+ * The surah and ayah a term names, or null when it is not a reference.
+ *
+ * One parser for the forms the app accepts, shared by the two places that take a
+ * reference from a reader: the Quran search, where it means "that verse anywhere",
+ * and the continuous surah reader, where it means "that verse, if this is its
+ * surah". Two copies of this regex would drift — whichever was edited first would
+ * leave the other refusing a form the rest of the app accepts.
+ *
+ * The pattern is anchored, so `2:255` is a reference while `surah 2:255` is a term
+ * to search for, which is what keeps a reader typing words from being read as
+ * coordinates. Digits that overflow an Int fall through as a term rather than
+ * crashing, which is the same answer a term gets.
+ */
+internal fun verseReference(query: String): Pair<Int, Int>? {
+    val match = VERSE_REFERENCE.find(query.trim()) ?: return null
+    val surah = match.groupValues[1].toIntOrNull() ?: return null
+    val ayah = match.groupValues[2].toIntOrNull() ?: return null
+    return surah to ayah
 }

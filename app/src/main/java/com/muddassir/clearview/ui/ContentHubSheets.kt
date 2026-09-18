@@ -7,6 +7,8 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -26,6 +28,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -67,6 +71,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -96,8 +101,10 @@ import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
+import com.muddassir.clearview.quran.data.verseReference
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.util.copyVerseToClipboard
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import java.time.Instant
 import java.time.LocalDate
@@ -431,6 +438,14 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // is destructive, so the list always asks Remove / Cancel first.
     var pendingRemove by remember { mutableStateOf<QuranVerse?>(null) }
     var searching by remember { mutableStateOf(false) }
+    // The reader's field is behind its search icon, and starts closed (§2).
+    //
+    // The three tabs are three QUESTIONS, so a field on screen is what they are:
+    // the reader arrives and types. A surah is a piece of scripture, and opening
+    // it behind a keyboard with the text pushed up out of the way is not reading
+    // it — so the icon is there when it is wanted, and the Quran is what is on
+    // screen when it is not.
+    var readerSearchOpen by remember { mutableStateOf(false) }
     val tab = state.quranSheetTab
     val openSurah = state.openSurahNumber
     val keyboard = LocalSoftwareKeyboardController.current
@@ -460,14 +475,24 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
         }
     }
 
-    // Autofocus + open the keyboard the moment the screen opens. The short
-    // delay lets the dialog window attach before the IME is asked to show —
-    // calling show() in the same frame is silently dropped on some devices.
-    LaunchedEffect(Unit) {
+    // Autofocus + open the keyboard wherever there IS a field: on entry to the
+    // tabbed view, and when the reader's search icon opens one. The short delay
+    // lets the dialog window attach before the IME is asked to show — calling
+    // show() in the same frame is silently dropped on some devices.
+    //
+    // Guarded rather than unconditional because the reader opens with no field at
+    // all, and requesting focus on a requester that is not attached to anything
+    // is an error rather than a no-op.
+    LaunchedEffect(openSurah, readerSearchOpen) {
+        if (openSurah != null && !readerSearchOpen) return@LaunchedEffect
         focusRequester.requestFocus()
         delay(150)
         keyboard?.show()
     }
+
+    // Opening a different surah starts with the text, not with the last surah's
+    // search term still narrowing it (§10).
+    LaunchedEffect(openSurah) { readerSearchOpen = false }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -551,48 +576,68 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f).padding(start = 8.dp)
                         )
+                        // §10: searching INSIDE the surah, kept — as an icon that
+                        // opens the field over the text rather than a field that
+                        // holds a line of the screen open the whole time.
+                        IconButton(onClick = {
+                            readerSearchOpen = !readerSearchOpen
+                            if (!readerSearchOpen) {
+                                query = ""
+                                keyboard?.hide()
+                            }
+                        }) {
+                            Icon(
+                                if (readerSearchOpen) Icons.Filled.Close else Icons.Filled.Search,
+                                contentDescription = stringResource(R.string.quran_reader_search)
+                            )
+                        }
                     }
                 }
 
                 // ── The field, on its own line under them ──
+                //
+                // Hidden in the reader until its search icon is tapped, and
+                // cleared on the way out so the next surah opens whole.
+                if (openSurah == null || readerSearchOpen) {
                 OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                        .focusRequester(focusRequester),
-                    placeholder = {
-                        Text(
-                            stringResource(
-                                when {
-                                    // In the reader the field narrows the surah,
-                                    // which is the only thing it can usefully do
-                                    // there.
-                                    openSurah != null -> R.string.quran_search_hint_in_surah
-                                    tab == QuranSheetTab.SURAH -> R.string.quran_search_hint_surah
-                                    tab == QuranSheetTab.BOOKMARKS -> R.string.quran_bookmarks_search_hint
-                                    else -> R.string.quran_search_hint
-                                }
-                            )
-                        )
-                    },
-                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                    trailingIcon = {
-                        if (query.isNotBlank()) {
-                            IconButton(onClick = { query = "" }) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = stringResource(R.string.quran_search_clear)
+                        value = query,
+                        onValueChange = { query = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .focusRequester(focusRequester),
+                        placeholder = {
+                            Text(
+                                stringResource(
+                                    when {
+                                        // In the reader the field finds verses
+                                        // inside the open surah, which is the only
+                                        // thing it can usefully do there.
+                                        openSurah != null -> R.string.quran_search_hint_in_surah
+                                        tab == QuranSheetTab.SURAH -> R.string.quran_search_hint_surah
+                                        tab == QuranSheetTab.BOOKMARKS -> R.string.quran_bookmarks_search_hint
+                                        else -> R.string.quran_search_hint
+                                    }
                                 )
+                            )
+                        },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (query.isNotBlank()) {
+                                IconButton(onClick = { query = "" }) {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = stringResource(R.string.quran_search_clear)
+                                    )
+                                }
                             }
-                        }
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(28.dp),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
-                )
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(28.dp),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
+                    )
+                }
 
                 Spacer(Modifier.height(4.dp))
 
@@ -759,6 +804,28 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
  * ("18:10") — rather than searching the whole Quran under a heading that says
  * otherwise. A reader who wants the whole Quran taps back to the Search tab.
  */
+/** The two ways a surah is read: the Arabic, or the translation (§3). */
+private enum class QuranReadMode { ARABIC, ENGLISH }
+
+/**
+ * The surah reader (§1–§10): one continuous scroll of scripture.
+ *
+ * It used to be a column of rounded CARDS, one per verse, each with its own
+ * reference line and copy/bookmark buttons — which is a list of verses, not a
+ * surah. Reading Quran is continuous: the eye moves down the page through the
+ * text, and four borders per screen, a repeated reference row and two buttons
+ * per verse interrupt exactly that. So there are no cards here at all: the text
+ * sits directly on the page, separated by space and typography, and the per-verse
+ * actions appear under the verse they belong to when it is tapped (§8).
+ *
+ * There is no Previous/Next either (§6). Those exist in the one-verse dashboard
+ * screen, where a single ayah is the unit; here the whole surah is loaded at once
+ * and the reader moves through it by scrolling, which is what the app's own
+ * dashboard already does.
+ *
+ * What is NOT changed: the data source, the parse, the search, the bookmark store
+ * and the copy action are all the ones that were already here (§11).
+ */
 @Composable
 private fun SurahReader(
     state: ContentHubState,
@@ -766,6 +833,17 @@ private fun SurahReader(
     query: String
 ) {
     var verses by remember(surahNumber) { mutableStateOf<List<QuranVerse>?>(null) }
+    // Arabic first: this is the Quran, and the translation is what a reader turns
+    // to when they want it. The mode is not persisted between surahs on purpose —
+    // opening a surah fresh is opening the Quran.
+    var mode by remember(surahNumber) { mutableStateOf(QuranReadMode.ARABIC) }
+    // Which verse's actions are showing, by key. One at a time: a second tap
+    // moves them rather than opening a second set.
+    var actionsFor by remember(surahNumber) { mutableStateOf<String?>(null) }
+    var matchCursor by remember(surahNumber) { mutableStateOf(0) }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     // Parsed once per surah per process (the state caches it), off the main
     // thread — a 286-verse surah is a real parse.
@@ -773,46 +851,126 @@ private fun SurahReader(
         verses = withContext(Dispatchers.IO) { state.surahVerses(surahNumber) }
     }
 
-    val all = verses
-    val q = query.trim()
-    val shown = remember(all, q) {
-        val list = all ?: return@remember emptyList()
-        if (q.isEmpty()) list
-        else {
-            val lower = q.lowercase()
-            list.filter {
-                it.text.lowercase().contains(lower) ||
-                    "${it.surahNumber}:${it.ayahNumber}".contains(lower) ||
-                    it.ayahNumber.toString() == lower
-            }
+    // The opening line, taken from the edition's own 1:1 rather than typed out
+    // here. This corpus is IndoPak, where the basmala is spelled
+    // "بِسْمِ اللَّهِ الرَّحْمٰنِ الرَّحِيمِ" — a hand-written Uthmani rendering would
+    // have put a wasla under the alef on the one line in the surah that did not
+    // match the 6235 around it. Blank when the Arabic is not cached, in which
+    // case the reader opens without it: a missing line is better than an
+    // invented one. Al-Faatiha itself is cached after the first reader opens.
+    var basmala by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        basmala = withContext(Dispatchers.IO) {
+            state.surahVerses(1).firstOrNull { it.ayahNumber == 1 }?.arabicText.orEmpty()
         }
     }
 
+    val all = verses
+    val q = query.trim()
+    // The VERSES that match, not a filtered list: the surah stays whole and the
+    // matches are marked in it, because a reader searching inside a surah is
+    // looking for a place in the text, not a separate list of extracts (§10).
+    val matches = remember(all, q) {
+        val list = all ?: return@remember emptyList()
+        matchingVerseIndices(list, q)
+    }
+
+    // A new term starts the count over, so "next" means the first match of what is
+    // in the box rather than a position left over from the previous word.
+    LaunchedEffect(q, all) { matchCursor = 0 }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        // What is open and how long it is. The counts come from the verses that
-        // loaded, so they can never disagree with the list under them. The surah's
-        // name itself is in the top row (next to the back arrow), so this is the
-        // reading position rather than a second title.
-        Text(
-            text = when {
-                all == null -> stringResource(R.string.quran_bookmarks_loading)
-                q.isNotEmpty() -> pluralStringResource(
-                    R.plurals.quran_surah_matches_count,
-                    shown.size,
-                    shown.size,
-                    all.size
+        // ── What is open ──
+        //
+        // Centred and plain, in the same visual language as the Quran dashboard
+        // (§9): the name, its translation, and the surah's own numbers. Not in a
+        // card — a card here would be the very thing this screen is removing.
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = QuranJsonParser.surahName(surahNumber),
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center
+            )
+            val meaning = QuranJsonParser.surahTranslation(surahNumber)
+            if (meaning.isNotBlank()) {
+                Text(
+                    text = meaning,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
                 )
-                else -> pluralStringResource(
-                    R.plurals.quran_surah_verses_count,
-                    all.size,
-                    all.size
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = stringResource(
+                    R.string.quran_reader_meta,
+                    surahNumber,
+                    all?.size ?: 0
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        // ── Arabic | English, one at a time (§3) ──
+        //
+        // Never side by side: two columns of two scripts on a phone is a
+        // comparison table, and what a reader wants is one text they can read.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            QuranSegment(
+                selected = mode == QuranReadMode.ARABIC,
+                label = stringResource(R.string.quran_reader_arabic),
+                modifier = Modifier.weight(1f),
+                onClick = { mode = QuranReadMode.ARABIC }
+            )
+            QuranSegment(
+                selected = mode == QuranReadMode.ENGLISH,
+                label = stringResource(R.string.quran_reader_english),
+                modifier = Modifier.weight(1f),
+                onClick = { mode = QuranReadMode.ENGLISH }
+            )
+        }
+
+        // ── What was found in the surah, and the way to it (§10) ──
+        //
+        // A count and a Next rather than a scroll that fires while the reader is
+        // still typing: the text jumps under the thumb once per keystroke
+        // otherwise, and the reader cannot tell which match they were taken to.
+        if (q.isNotEmpty() && all != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = pluralStringResource(
+                        R.plurals.quran_surah_matches_count,
+                        matches.size,
+                        matches.size,
+                        all.size
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
                 )
-            },
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-        )
+                if (matches.isNotEmpty()) {
+                    TextButton(onClick = {
+                        val index = matches[matchCursor.coerceIn(0, matches.size - 1)]
+                        matchCursor = (matchCursor + 1) % matches.size
+                        scope.launch { listState.animateScrollToItem(index) }
+                    }) {
+                        Text(stringResource(R.string.quran_reader_matches_next))
+                    }
+                }
+            }
+        }
 
         when {
             all == null -> Row(
@@ -827,33 +985,93 @@ private fun SurahReader(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
             all.isEmpty() -> Text(
                 text = stringResource(R.string.quran_verse_unavailable),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
             )
-            shown.isEmpty() -> Text(
-                text = stringResource(R.string.quran_surah_no_matches),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
-            )
+
             else -> LazyColumn(
+                state = listState,
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
+                // Wider than the gaps between the cards it replaced: with no
+                // borders, SPACE is what separates one ayah from the next (§7).
+                verticalArrangement = Arrangement.spacedBy(26.dp)
             ) {
-                items(shown, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
-                    SurahVerseRow(
-                        verse = verse,
-                        query = q,
-                        bookmarked = "${verse.surahNumber}:${verse.ayahNumber}" in
-                            state.bookmarkKeys,
-                        onToggleBookmark = {
-                            state.toggleBookmarkAt(verse.surahNumber, verse.ayahNumber)
+                item(key = "surah-head") {
+                    SurahHead(surahNumber = surahNumber, mode = mode, basmala = basmala)
+                }
+
+                itemsIndexed(
+                    all,
+                    key = { _, verse -> "${verse.surahNumber}:${verse.ayahNumber}" }
+                ) { index, verse ->
+                    val key = "${verse.surahNumber}:${verse.ayahNumber}"
+                    val bookmarked = key in state.bookmarkKeys
+                    val matching = index in matches
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            // Tap or hold reveals this verse's actions (§8). Not a
+                            // tap target that CHANGES the reading position: a tap
+                            // in a list of 286 rows is a way to lose your place.
+                            .combinedClickable(
+                                onClick = { actionsFor = if (actionsFor == key) null else key },
+                                onLongClick = { actionsFor = key }
+                            )
+                    ) {
+                        if (mode == QuranReadMode.ARABIC) {
+                            ArabicVerse(
+                                verse = verse,
+                                query = q,
+                                bookmarked = bookmarked,
+                                matching = matching
+                            )
+                        } else {
+                            EnglishVerse(
+                                verse = verse,
+                                query = q,
+                                matching = matching
+                            )
                         }
-                    )
+
+                        if (actionsFor == key) {
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                QuranSegment(
+                                    selected = false,
+                                    label = stringResource(R.string.quran_verse_copy),
+                                    onClick = {
+                                        copyVerseToClipboard(context, verse)
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.quran_verse_copied),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        actionsFor = null
+                                    }
+                                )
+                                QuranSegment(
+                                    selected = bookmarked,
+                                    label = stringResource(
+                                        if (bookmarked) R.string.quran_bookmark_removed
+                                        else R.string.quran_bookmark
+                                    ),
+                                    onClick = {
+                                        state.toggleBookmarkAt(
+                                            verse.surahNumber,
+                                            verse.ayahNumber
+                                        )
+                                        actionsFor = null
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -861,97 +1079,167 @@ private fun SurahReader(
 }
 
 /**
- * One verse of the reader: reference, the Arabic, the translation, and the two
- * per-verse actions a reader actually uses — bookmark and copy.
+ * The surah's own opening (§2): the basmala, in Arabic mode only.
  *
- * Deliberately not a tap target. Tapping a verse used to mean "make this the
- * current verse", which in a list of 286 rows is a way to lose your place; the
- * actions are on the row instead, where they cannot be hit by accident.
+ * A liturgical line that the corpus carries as ayah 1 of Al-Faatiha and nowhere
+ * else, passed in from there rather than written here (see the reader). It opens
+ * every surah except At-Tawba, which is the one surah that does not carry it. It
+ * is NOT shown in English mode: it is the Arabic that is being opened, and a
+ * translated basmala above a translation of the surah is a line of the reader's
+ * own commentary.
  */
 @Composable
-private fun SurahVerseRow(
+private fun SurahHead(surahNumber: Int, mode: QuranReadMode, basmala: String) {
+    if (mode != QuranReadMode.ARABIC) return
+    if (surahNumber == 9) return
+    if (basmala.isBlank()) return
+
+    Text(
+        text = basmala,
+        fontSize = 24.sp,
+        lineHeight = 44.sp,
+        fontFamily = FontFamily.Serif,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.fillMaxWidth()
+    )
+}
+
+/**
+ * One ayah, as scripture (§4).
+ *
+ * Large Arabic type, the app's own serif face, centred, with a line height that
+ * leaves the harakat room to breathe — the same treatment the Quran dashboard
+ * gives a verse, minus the card. The ayah number rides INSIDE the running text as
+ * the end-of-ayah ornament `۝` followed by Arabic-Indic digits, which is what a
+ * printed mushaf does and what "verse numbers integrated naturally" means: no
+ * badge, no separate counter, no second row.
+ */
+@Composable
+private fun ArabicVerse(
     verse: QuranVerse,
     query: String,
     bookmarked: Boolean,
-    onToggleBookmark: () -> Unit
+    matching: Boolean
 ) {
-    val context = LocalContext.current
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = stringResource(
-                        R.string.quran_ayah_progress_short,
-                        verse.ayahNumber,
-                        verse.totalAyahs
-                    ),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.weight(1f)
-                )
-                IconButton(onClick = {
-                    copyVerseToClipboard(context, verse)
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.quran_verse_copied),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }) {
-                    Icon(
-                        Icons.Filled.ContentCopy,
-                        contentDescription = stringResource(R.string.quran_verse_copy),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                IconButton(onClick = onToggleBookmark) {
-                    Icon(
-                        imageVector = if (bookmarked) Icons.Filled.Bookmark
-                        else Icons.Outlined.Bookmark,
-                        contentDescription = stringResource(
-                            if (bookmarked) R.string.quran_bookmark_removed
-                            else R.string.quran_bookmark
-                        ),
-                        tint = if (bookmarked) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
+    val accent = MaterialTheme.colorScheme.primary
+    val body = MaterialTheme.colorScheme.onSurface
+    val ornament = if (bookmarked) accent else body.copy(alpha = 0.55f)
+
+    val text = remember(verse, query, bookmarked, matching, ornament, accent) {
+        buildAnnotatedString {
             if (verse.arabicText.isNotBlank()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = verse.arabicText,
-                    fontSize = 23.sp,
-                    lineHeight = 40.sp,
-                    fontFamily = FontFamily.Serif
-                )
+                append(highlightMatches(verse.arabicText, query.ifBlank { null }, accent))
+                append("  ")
             }
-            Spacer(Modifier.height(8.dp))
-            // bodyLarge rather than bodyMedium: this is the text a reader is
-            // actually here to read, one verse at a time, and the smaller size
-            // that was right for a two-line search snippet is not right for a
-            // page of scripture.
-            Text(
-                text = highlightMatches(
-                    verse.text,
-                    query,
-                    MaterialTheme.colorScheme.primary
-                ),
-                style = MaterialTheme.typography.bodyLarge,
-                lineHeight = 24.sp,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            withStyle(SpanStyle(color = ornament, fontWeight = FontWeight.SemiBold)) {
+                append("۝" + arabicDigits(verse.ayahNumber))
+            }
+        }
+    }
+
+    Text(
+        text = text,
+        fontSize = 30.sp,
+        lineHeight = 52.sp,
+        fontFamily = FontFamily.Serif,
+        textAlign = TextAlign.Center,
+        // RTL is the script's own direction — the paragraph direction is taken
+        // from the first strong character, so the Arabic lays itself out from the
+        // right without being told.
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (matching) Modifier.background(accent.copy(alpha = 0.06f)) else Modifier)
+    )
+}
+
+/**
+ * One ayah, as the translation (§5).
+ *
+ * A paragraph, not a card and not a blockquote: the reference rides at the end of
+ * the sentence it belongs to — `[N]`, the way the app's other translation surfaces
+ * write it — and the type is the app's serif, set at reading size with room
+ * between the lines. Left-aligned: a page of centred prose is harder to read, and
+ * centring is what marks the Arabic as a different thing from the words around it.
+ */
+@Composable
+private fun EnglishVerse(verse: QuranVerse, query: String, matching: Boolean) {
+    val accent = MaterialTheme.colorScheme.primary
+
+    val text = remember(verse, query, matching, accent) {
+        buildAnnotatedString {
+            append(highlightMatches(verse.text, query.ifBlank { null }, accent))
+            append(" ")
+            withStyle(SpanStyle(color = accent, fontWeight = FontWeight.SemiBold)) {
+                append("[" + verse.ayahNumber + "]")
+            }
+        }
+    }
+
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleMedium,
+        fontFamily = FontFamily.Serif,
+        lineHeight = 32.sp,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (matching) Modifier.background(accent.copy(alpha = 0.06f)) else Modifier)
+    )
+}
+
+/**
+ * The indices of the verses that match [query], in reading order (§10).
+ *
+ * The same three-way match the tabbed search uses, and literally the same
+ * reference regex — the translation, a `2:255`-style reference, or a bare ayah
+ * number — because "why does it not find 2:255" is a question nobody should have
+ * to ask twice. Matched against the TRANSLATION rather than the Arabic: a reader
+ * on a phone keyboard is typing Latin letters or a reference, and
+ * substring-matching Arabic from a Latin keyboard is not a feature.
+ *
+ * Scoped to the surah it is given, which changes two of the three branches:
+ * a plain number means an AYAH here (the surah is already chosen, so "16" inside
+ * An-Nahl is its sixteenth ayah, not every verse of it), and a reference to
+ * another surah matches nothing rather than reaching outside the text on screen.
+ * Without that, typing `1` in An-Nahl matched all 128 verses, because every
+ * reference in the surah starts with the digits "16".
+ */
+internal fun matchingVerseIndices(verses: List<QuranVerse>, query: String): List<Int> {
+    val q = query.trim()
+    if (q.isEmpty()) return emptyList()
+
+    val lower = q.lowercase()
+    val ref = verseReference(q)
+    val refSurah = ref?.first
+    val refAyah = ref?.second
+    val plainNumber = q.toIntOrNull()
+
+    return verses.indices.filter { index ->
+        val verse = verses[index]
+        when {
+            refSurah != null && refAyah != null ->
+                verse.surahNumber == refSurah && verse.ayahNumber == refAyah
+            plainNumber != null -> verse.ayahNumber == plainNumber
+            else ->
+                verse.text.lowercase().contains(lower) ||
+                    verse.surahName.lowercase().contains(lower) ||
+                    "${verse.surahNumber}:${verse.ayahNumber}".contains(lower)
         }
     }
 }
+
+/**
+ * [value] in Arabic-Indic digits, which is what an ayah number wears in the text.
+ *
+ * Unicode puts the digits INSIDE the `۝` ornament by convention, and the ornament
+ * is a mark, not a font — so the digits have to be the ones a mushaf uses rather
+ * than Latin ones sitting next to an Arabic symbol.
+ */
+internal fun arabicDigits(value: Int): String =
+    value.toString().map { character ->
+        if (character in '0'..'9') ('\u0660' + (character - '0')) else character
+    }.joinToString("")
 
 /**
  * The Bookmarks tab (§3, §10): every saved verse, filtered by the same field the
