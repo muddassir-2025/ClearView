@@ -16,9 +16,16 @@ import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -471,6 +478,17 @@ fun VideoPlayerScreen(
     // nothing for three seconds reads as broken.
     var listenPreparing by remember(video.videoId) { mutableStateOf(false) }
     val listenScope = rememberCoroutineScope()
+    // What the reader actually waits through is TWO phases, and only the first
+    // one is [listenPreparing]. Once the audio URL is resolved the service
+    // still has to bind, prepare a MediaPlayer and buffer the first bytes of
+    // the stream (AudioPlayback.buffering) — several seconds of silence during
+    // which the video id is ALREADY loaded, so the transport flips to "Stop
+    // listening" and, without this, the wait loses every sign that anything is
+    // still happening. Both phases count as "starting" for the UI: the
+    // headphones keep pulsing and the caption stays up until sound genuinely
+    // begins.
+    val listenStarting = listenPreparing ||
+        (isListening && AudioPlayback.buffering.value)
 
     /**
      * Starts listening, or stops it when this video is already what is playing.
@@ -1122,7 +1140,7 @@ fun VideoPlayerScreen(
                 // words in the ⋮ menu and own the sleep timer, which only means
                 // anything while the background player holds this video.
                 isListening = isListening,
-                listenPreparing = listenPreparing,
+                listenPreparing = listenStarting,
                 onListen = { toggleListen() },
                 onSleepTimer = { minutes ->
                     AudioPlayback.setSleepTimer(context.applicationContext, minutes)
@@ -1373,7 +1391,10 @@ private fun PlayerControlPanel(
     onHide: () -> Unit,
     /** True while the background audio player holds THIS video (listen mode). */
     isListening: Boolean,
-    /** True while a stream is being resolved to start listen mode. */
+    /**
+     * True while listen mode is still starting: the stream is being resolved,
+     * or its first bytes are still buffering (both are silent waits).
+     */
     listenPreparing: Boolean,
     /** Start or stop listen mode (background audio) for this video. */
     onListen: () -> Unit,
@@ -1694,6 +1715,9 @@ private fun PlayerControlPanel(
                 onToggleMute = onToggleMute,
                 onListen = onListen,
                 isListening = isListening,
+                // The panel is handed the screen's combined "still starting"
+                // state and simply forwards it — it has no view of the
+                // background player's buffering.
                 listenPreparing = listenPreparing
             )
         }
@@ -2049,6 +2073,11 @@ private fun VideoTransportControls(
     /**
      * Listen mode (background audio). Omitted by callers that do not offer it —
      * the vertical Shorts viewer, where swiping is the whole interaction.
+     * While [listenPreparing] the headphones icon pulses and a short
+     * "Preparing audio…" caption is drawn under the bar. That flag must stay
+     * true for the WHOLE silent wait (stream resolution AND the first bytes
+     * buffering), or the animation ends while the reader is still hearing
+     * nothing.
      */
     onListen: (() -> Unit)? = null,
     isListening: Boolean = false,
@@ -2169,6 +2198,28 @@ private fun VideoTransportControls(
                 tint = iconTint
             )
             onListen?.let { listen ->
+                // While the audio is being resolved, the headphones ICON itself
+                // breathes (a slow in-and-out scale). The ring below already
+                // says "working", but a spinning ring is easy to read as
+                // background chrome; a moving icon is what tells the reader
+                // their tap landed on the right button and audio is on its way.
+                // The transition is only created while preparing, so an idle
+                // transport runs no animation at all. Resolving a stream can
+                // take seconds, and the button stays tappable throughout (the
+                // reader may change their mind) — hence a draw-time scale, never
+                // a layout or hit-target change.
+                val listenPulse = if (listenPreparing) {
+                    rememberInfiniteTransition(label = "listen-preparing")
+                } else null
+                val iconScale = listenPulse?.animateFloat(
+                    initialValue = 0.88f,
+                    targetValue = 1.1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 620, easing = FastOutSlowInEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "listen-icon-pulse"
+                )?.value ?: 1f
                 Box(contentAlignment = Alignment.Center) {
                     // Armed, a filled disc sits behind the icon. A tint change
                     // alone would be invisible in the control panel, where the
@@ -2198,7 +2249,8 @@ private fun VideoTransportControls(
                         label = if (isListening) "Stop listening" else "Listen in background",
                         enabled = !listenPreparing,
                         onClick = listen,
-                        tint = if (isListening) MaterialTheme.colorScheme.primary else iconTint
+                        tint = if (isListening) MaterialTheme.colorScheme.primary else iconTint,
+                        iconScale = iconScale
                     )
                 }
             }
@@ -2244,6 +2296,31 @@ private fun VideoTransportControls(
                 )
             }
         }
+
+        // The wait, in words. The pulsing icon and the ring say that something
+        // is happening; this says WHAT — the reader tapped "listen" and for a
+        // few seconds nothing will be audible, because the audio stream has to
+        // be resolved (a real network round trip) before playback starts.
+        // Shown only while preparing, and grown/shrunk rather than toggled in,
+        // so the bar slides instead of jumping when the wait begins and ends.
+        AnimatedVisibility(
+            visible = listenPreparing,
+            enter = fadeIn(tween(durationMillis = 180)) +
+                expandVertically(tween(durationMillis = 220)),
+            exit = fadeOut(tween(durationMillis = 140)) +
+                shrinkVertically(tween(durationMillis = 180))
+        ) {
+            Text(
+                text = "Preparing audio…",
+                style = MaterialTheme.typography.labelMedium,
+                color = labelColor,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+            )
+        }
     }
 }
 
@@ -2254,7 +2331,10 @@ private fun TransportIconButton(
     enabled: Boolean,
     onClick: () -> Unit,
     emphasized: Boolean = false,
-    tint: Color = Color.White
+    tint: Color = Color.White,
+    /** Draw-time scale only (never layout/hit-test): used to pulse an icon
+     *  while a wait is in progress. 1f leaves the icon exactly as it was. */
+    iconScale: Float = 1f
 ) {
     IconButton(
         onClick = onClick,
@@ -2265,7 +2345,9 @@ private fun TransportIconButton(
             imageVector = icon,
             contentDescription = label,
             tint = tint.copy(alpha = if (enabled) 1f else 0.4f),
-            modifier = Modifier.size(if (emphasized) 34.dp else 28.dp)
+            modifier = Modifier
+                .size(if (emphasized) 34.dp else 28.dp)
+                .scale(iconScale)
         )
     }
 }
