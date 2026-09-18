@@ -172,10 +172,22 @@ internal fun GoodPostChannelSearch(
                     ) {
                         item(key = "empty") {
                             if (term.isBlank()) {
-                                WaEmptyState(
-                                    title = stringResource(R.string.goodpost_search_channel_prompt_title),
-                                    note = stringResource(R.string.goodpost_search_channel_prompt_note)
-                                )
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 40.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    WaSearchIllustration(
+                                        text = stringResource(R.string.goodpost_search_channel_prompt_title)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        text = stringResource(R.string.goodpost_search_channel_prompt_note),
+                                        color = Wa.TextDim,
+                                        fontSize = 14.sp
+                                    )
+                                }
                             } else {
                                 WaEmptyState(
                                     title = stringResource(R.string.goodpost_search_channel_empty_title),

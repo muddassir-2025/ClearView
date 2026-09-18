@@ -26,9 +26,9 @@ class ClearViewBackendClient(private val context: Context) {
     companion object {
         private const val TAG = "ClearViewBackend"
 
-        /** ClearView backend URL (Cloudflare tunnel). */
+        /** ClearView backend URL (Render). */
         @Volatile
-        var baseUrl: String = "https://websites-checking-confirmed-pipes.trycloudflare.com"
+        var baseUrl: String = "https://clearview-1neb.onrender.com"
 
         private const val CONNECT_TIMEOUT_MS = 4_000
         private const val READ_TIMEOUT_MS = 4_000
