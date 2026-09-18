@@ -68,6 +68,19 @@ internal class GoodPostStarred(context: Context) {
         write(read().filterNot { it.postId == postId })
     }
 
+    /**
+     * Drop every star that came from [channelId].
+     *
+     * For the one case a post-level removal cannot cover: the channel itself was
+     * deleted. Its rows name a channel that is no longer there, and the words
+     * alone are a message with no way back to where it came from — which is the
+     * half of a bookmark that makes it one.
+     */
+    fun removeChannel(channelId: String) {
+        if (channelId.isBlank()) return
+        write(read().filterNot { it.channelId == channelId })
+    }
+
     // ── Storage ─────────────────────────────────────────────────────────
 
     private fun read(): List<GoodPostStarredEntry> {

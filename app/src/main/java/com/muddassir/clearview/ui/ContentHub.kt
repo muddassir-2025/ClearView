@@ -10,12 +10,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Notifications
@@ -1305,12 +1305,19 @@ data class ContentHubNavItem(
 fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
     ContentHubNavItem(
         ContentTab.QURAN,
-        { Icon(Icons.AutoMirrored.Filled.MenuBook, contentDescription = null) },
+        // An open book with its ribbon, rather than the flat `MenuBook`: the two
+        // tabs below are already a megaphone and an ellipsis, and the row reads as
+        // one set of marks only if each has the same weight and the same rounded
+        // Material silhouette (§1).
+        { Icon(Icons.Filled.AutoStories, contentDescription = null) },
         stringResource(R.string.quran_tab)
     ),
     ContentHubNavItem(
         ContentTab.MEDIA,
-        { Icon(Icons.Filled.PlayCircle, contentDescription = null) },
+        // A rounded screen with a play triangle, rather than a bare `PlayCircle`:
+        // the circle read as an action button the size of a tab, which is what a
+        // play glyph means everywhere else in this app.
+        { Icon(Icons.Filled.SmartDisplay, contentDescription = null) },
         stringResource(R.string.media_tab)
     )
 )

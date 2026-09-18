@@ -1433,11 +1433,11 @@ class GoodPostViewModel : ViewModel() {
         // places, and it is the same set the feed reads.
         val postIds = items.map { it.postId }
         hiddenStore?.hide(postIds)
+        forgetStars(postIds)
 
         uiState = uiState.copy(
             media = uiState.media.filterNot { selected.contains(it.id) },
             posts = uiState.posts.filterNot { postIds.contains(it.id) },
-            starred = uiState.starred.filterNot { postIds.contains(it.postId) },
             selectedMediaIds = emptySet(),
             messageCode = null
         )
@@ -1474,6 +1474,7 @@ class GoodPostViewModel : ViewModel() {
         if (posts.isEmpty()) return
 
         hiddenStore?.hide(posts.map { it.id })
+        forgetStars(posts.map { it.id })
 
         viewModelScope.launch {
             // Every media URL of every hidden post, so the phone stops holding the
@@ -1487,7 +1488,6 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             posts = uiState.posts.filterNot { selected.contains(it.id) },
             media = uiState.media.filterNot { selected.contains(it.postId) },
-            starred = uiState.starred.filterNot { selected.contains(it.postId) },
             selectedPostIds = emptySet(),
             messageCode = "deleted_from_device"
         )
@@ -1517,6 +1517,9 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = repo.adminDeletePosts(postIds)) {
                 is ApiResult.Ok -> {
+                    // Only once the server has agreed: a refused delete leaves the
+                    // posts standing, and the stars pointing at them should too.
+                    forgetStars(postIds)
                     uiState = uiState.copy(
                         media = uiState.media.filterNot { selected.contains(it.id) },
                         posts = uiState.posts.filterNot { postIds.contains(it.id) },
@@ -1603,10 +1606,17 @@ class GoodPostViewModel : ViewModel() {
                 }
             }
 
+            // A deleted channel takes its stars with it, by the same rule a
+            // deleted post does: the rows name a channel that is no longer there.
+            permitted.forEach { starredStore?.removeChannel(it) }
+
             // Removed locally whatever succeeded, then reloaded: the server is
             // the only thing that knows what is left, and guessing would leave a
             // row on screen for a channel that no longer exists.
             uiState = uiState.copy(
+                starredPostIds = starredStore?.all()?.map { it.postId }?.toSet()
+                    ?: uiState.starredPostIds,
+                starred = uiState.starred.filterNot { permitted.contains(it.channelId) },
                 adminChannels = uiState.adminChannels.filterNot { permitted.contains(it.id) },
                 channels = uiState.channels.filterNot { permitted.contains(it.id) },
                 selectedChannelIds = emptySet(),
@@ -1696,6 +1706,31 @@ class GoodPostViewModel : ViewModel() {
             if (everyOneHasIt || post.myReaction != emoji) react(post, emoji)
         }
         clearPostSelection()
+    }
+
+    /**
+     * Take the stars pointing at these posts off this device (§9).
+     *
+     * A star is a COPY of the row — see [GoodPostStarred] — and that copy is what
+     * lets a bookmark outlive the server's thirty-day window (§14). It is also
+     * what would let it outlive the reader's own deletion of the message, so every
+     * path that deletes a post or its media comes through here and empties the
+     * STORE, not just the list on screen. Filtering `uiState.starred` alone is the
+     * bug this closes: [refreshStars] re-reads the store, so the star came
+     * straight back the next time the starred list was opened.
+     *
+     * A star whose post the SERVER removed, or let age out, is deliberately left
+     * alone: no device can tell that apart from a post it simply has not fetched
+     * yet, and guessing would throw a bookmark away on a bad connection.
+     */
+    private fun forgetStars(postIds: Collection<String>) {
+        if (postIds.isEmpty()) return
+        val store = starredStore ?: return
+        postIds.forEach { store.remove(it) }
+        uiState = uiState.copy(
+            starredPostIds = uiState.starredPostIds - postIds.toSet(),
+            starred = uiState.starred.filterNot { postIds.contains(it.postId) }
+        )
     }
 
     /** The stars belonging to one channel, for its information page (§11). */
@@ -1829,13 +1864,14 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = repo.adminDeletePosts(selected)) {
                 is ApiResult.Ok -> {
+                    // A deleted post takes its media and its bookmark with it: a
+                    // starred row for something that no longer exists is a row
+                    // that opens onto nothing — and the star on disk is the one
+                    // that used to bring it back.
+                    forgetStars(selected)
                     uiState = uiState.copy(
                         posts = uiState.posts.filterNot { selected.contains(it.id) },
-                        // A deleted post takes its media and its bookmark with it:
-                        // a starred row for something that no longer exists is a
-                        // row that opens onto nothing.
                         media = uiState.media.filterNot { selected.contains(it.postId) },
-                        starred = uiState.starred.filterNot { selected.contains(it.postId) },
                         selectedPostIds = emptySet()
                     )
                     // Reloaded rather than trusted: a page boundary can shift when

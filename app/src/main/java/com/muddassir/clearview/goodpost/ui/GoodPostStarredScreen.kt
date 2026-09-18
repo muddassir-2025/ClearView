@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -62,9 +63,11 @@ import com.muddassir.clearview.goodpost.data.parseIsoMillis
  * Tap opens the channel the message came from, which is the same answer the
  * information page gave and the only honest one: a star outlives the post it
  * points at (the server keeps thirty days, the star keeps the words), so a deep
- * link is a link that 404s. The star itself is tappable in place, so a list of
- * bookmarks can be pruned without leaving it, and the row disappears the moment
- * it is unstarred rather than on the next visit.
+ * link is a link that 404s. The star at the row's trailing edge is tappable in
+ * place — hollow, and in the accent, because the filled star on the left is the
+ * row's status and the two must not be drawn the same — so a list of bookmarks
+ * can be pruned without leaving it, and the row disappears the moment it is
+ * unstarred rather than on the next visit.
  *
  * ## The search
  *
@@ -214,12 +217,19 @@ private fun StarredRow(
 
         // The way back off the list. An icon rather than a menu: there is exactly
         // one thing to do with a bookmark besides open it.
+        //
+        // A HOLLOW star, in the accent, and not the filled one the row already
+        // carries on its left. Both were filled stars in the same dim grey before
+        // — so the control that undoes a bookmark was drawn as the badge that says
+        // the bookmark exists, and the one thing this screen can do read as a
+        // second, decorative status. Hollow is the state it leads to, which is how
+        // every bookmark control in every app says "tap to undo".
         IconButton(onClick = onUnstar) {
             Icon(
-                imageVector = Icons.Filled.Star,
+                imageVector = Icons.Filled.StarBorder,
                 contentDescription = stringResource(R.string.goodpost_unstar),
-                tint = Wa.TextDim,
-                modifier = Modifier.size(18.dp)
+                tint = Wa.Accent,
+                modifier = Modifier.size(20.dp)
             )
         }
     }
