@@ -13,10 +13,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.Badge
@@ -62,6 +62,7 @@ import com.muddassir.clearview.quran.data.QuranRepository
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.ui.DhikrCounterScreen
 import com.muddassir.clearview.quran.ui.QuranTab
+import com.muddassir.clearview.todo.data.TodoCodec
 import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.todo.data.TodoStore
 import com.muddassir.clearview.todo.ui.TodoScreen
@@ -75,6 +76,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
 /**
  * Shared Islamic-content hub — the exact experience the Quran Reminder widget
@@ -87,6 +92,15 @@ import kotlinx.coroutines.withContext
  * bar can trigger (share / bookmark / copy / new verse / interval).
  */
 enum class ContentTab { QURAN, MEDIA }
+
+/**
+ * The three views of the Quran screen (§1–§3).
+ *
+ * One surface with three tabs rather than three entry points, because they are
+ * the same question asked three ways — find a verse by its words, find a surah
+ * by name, or go back to one you kept — and a reader moves between them.
+ */
+enum class QuranSheetTab { SEARCH, SURAH, BOOKMARKS }
 
 class ContentHubState(appContext: Context) {
 
@@ -119,6 +133,31 @@ class ContentHubState(appContext: Context) {
     var refreshIntervalHours by mutableStateOf(DEFAULT_REFRESH_INTERVAL_HOURS)
     var isBookmarked by mutableStateOf(false)
 
+    // ── The Quran reader: search, surahs and bookmarks (§1–§3) ──────
+
+    /**
+     * Which of the three tabs the Quran screen is showing.
+     *
+     * Held here rather than in the dialog's own `remember`, so switching tabs —
+     * or opening a surah and coming back — does not re-parse anything: the screen
+     * is one surface with three views, not three screens to reload.
+     */
+    var quranSheetTab by mutableStateOf(QuranSheetTab.SEARCH)
+
+    /** The surah the continuous reader has open, or null while the tabs are showing. */
+    var openSurahNumber by mutableStateOf<Int?>(null)
+
+    /**
+     * Every "surah:ayah" this device has bookmarked.
+     *
+     * One value for the whole hub, read from the same store the bookmark button
+     * writes to. The surah reader draws 286 rows that each need an answer, and a
+     * per-row prefs read would be 286 file reads; a per-row COPY of the answer
+     * would be 286 chances to disagree with the top-bar icon. This is the single
+     * source both read, and it changes the moment a bookmark does.
+     */
+    var bookmarkKeys by mutableStateOf<Set<String>>(emptySet())
+
     // ── Media notifications (channel updates) ──────────────────────
     var mediaNotificationsEnabled by mutableStateOf(true)
     var mediaUpdates by mutableStateOf<List<MediaChannelUpdate>>(emptyList())
@@ -130,11 +169,46 @@ class ContentHubState(appContext: Context) {
     // the badge was already cleared).
     var unreadUpdateIds by mutableStateOf<Set<String>>(emptySet())
 
+    /**
+     * What the bell's badge counts (§5): everything that wants attention, from
+     * every feature, not just the channel updates.
+     *
+     * Media updates clear when they are seen (they are news). A todo clears when
+     * it is done — so its number stays until the work does, which is the point of
+     * putting it on a badge. The Quran leg is a cadence rather than an event and
+     * never counts.
+     */
+    val unreadNotificationCount: Int
+        get() = unreadMediaUpdates + dueTodoNotifications.unreadNotificationCount()
+
+    /**
+     * Every notification the app has, newest first — one list, for the one bell.
+     *
+     * Ordering is by moment, and the entries with no moment (the Quran cadence)
+     * sort last because 0 is the oldest value there is. Within a kind the section
+     * heading in the sheet is what separates them, so a todo and a channel update
+     * from the same minute never have to be told apart by their wording.
+     */
+    fun notificationEntries(): List<HubNotification> =
+        (mediaNotificationEntries() + dueTodoNotifications + quranNotificationEntries())
+            .inNotificationOrder()
+
     // ── Quran notifications (new verse) ────────────────────────────
     var quranNotificationsEnabled by mutableStateOf(true)
 
     // ── Todo reminders (alarm notifications) ───────────────────────
     var todoNotificationsEnabled by mutableStateOf(true)
+
+    /**
+     * The To Do leg of the notification centre (§5), rebuilt from the todo store.
+     *
+     * Cached rather than derived on every read because building it means reading
+     * the store — every todo, its schedule, its completion history — which is a
+     * file read, and a property that does that would do it once per frame.
+     * Rebuilt when the Quran tab opens, when the toggle changes, and when the
+     * Todo screen closes (completing a todo is what makes its entry go away).
+     */
+    var dueTodoNotifications by mutableStateOf<List<HubNotification>>(emptyList())
 
     // Haramayn Live (Makkah & Madinah) opened from the Media tab's shortcut.
     // Rendered as a full-screen overlay (its own embedded player) so it never
@@ -145,8 +219,6 @@ class ContentHubState(appContext: Context) {
     var showSearchSheet by mutableStateOf(false)
     var showSettingsSheet by mutableStateOf(false)
     var showNotificationsSheet by mutableStateOf(false)
-    // Bookmarks manager opened from the settings sheet.
-    var showBookmarksSheet by mutableStateOf(false)
     // Dhikr Counter screen opened from the settings sheet's Dhikr card.
     var showDhikrCounter by mutableStateOf(false)
     // Todo screen opened from the settings sheet's Todo card.
@@ -162,6 +234,9 @@ class ContentHubState(appContext: Context) {
 
     private val appContext: Context = appContext
     private val quranRepository = QuranRepository(appContext)
+
+    /** Surah verses parsed once per process, keyed by surah number (§2). */
+    private val surahVerseCache = mutableMapOf<Int, List<QuranVerse>>()
     private val mediaRepository = MediaRepository(appContext)
     private val islamicDateStore = IslamicDateStore(appContext)
     private val todoStore = TodoStore(appContext)
@@ -184,6 +259,7 @@ class ContentHubState(appContext: Context) {
         quranNotificationsEnabled = quranRepository.getQuranNotificationsEnabled()
         todoNotificationsEnabled = todoStore.getTodoNotificationsEnabled()
         islamicDateAdjustment = islamicDateStore.adjustmentDays()
+        bookmarkKeys = quranRepository.getBookmarks()
         verseLoading = true
     }
 
@@ -232,6 +308,7 @@ class ContentHubState(appContext: Context) {
             refreshNavAvailability()
         }
         refreshMediaUpdates()
+        refreshTodoReminders()
     }
 
     // ── Media notifications (channel updates) ──────────────────────
@@ -306,6 +383,10 @@ class ContentHubState(appContext: Context) {
         todoNotificationsEnabled = enabled
         todoStore.setTodoNotificationsEnabled(enabled)
         TodoScheduler.rescheduleAll(appContext)
+        // The To Do leg of the bell follows the toggle immediately, in both
+        // directions: turning reminders off should empty that section now, not
+        // at the next launch.
+        refreshTodoReminders()
     }
 
     /** Persists the ±1 day Islamic-date adjustment (0 = the default Umm al-Qura date). */
@@ -315,13 +396,43 @@ class ContentHubState(appContext: Context) {
     }
 
     /**
-     * Opens the notifications panel; viewing it marks every listed update as
-     * seen (clears the bell / tab / launcher badges), like opening the Media
-     * tab does.
+     * Opens the notifications panel; viewing it marks everything it lists as
+     * seen (clears the bell / tab / launcher badges), like opening the Media tab
+     * does.
+     *
+     * The To Do leg is acknowledged too, and that is the whole point of opening
+     * the panel: a badge that survived being read would be a badge that means
+     * "something is due", which is what the todo list and the widget are for. The
+     * ENTRY stays (the todo is still due — pretending otherwise would be a lie);
+     * only its weight on the bell is spent.
      */
     fun openNotificationsPanel() {
         markMediaUpdatesSeen()
+        markTodoRemindersSeen()
         showNotificationsSheet = true
+    }
+
+    /**
+     * Records that the reader has seen the reminders currently in the list.
+     *
+     * Stamped here, on the open, rather than in the sheet's composition: a sheet
+     * that could not be scrolled is still a sheet that was read, and the write is
+     * one prefs edit either way.
+     */
+    private fun markTodoRemindersSeen() {
+        // The same key [buildTodoNotifications] looked up: the entry's own id
+        // (which already carries the "todo:" prefix) and the moment it spoke.
+        val keys = dueTodoNotifications
+            .filter { it.unread }
+            .map { entry -> "${entry.id}#${entry.at}" }
+        if (keys.isEmpty()) return
+        scope.launch {
+            withContext(Dispatchers.IO) { todoStore.markRemindersSeen(keys) }
+            // Recompute, so the number falls immediately rather than at the next
+            // launch — and so a todo that is genuinely still unread (one whose
+            // moment arrives while the panel is open) is not silently swallowed.
+            dueTodoNotifications = withContext(Dispatchers.IO) { buildTodoNotifications() }
+        }
     }
 
     /**
@@ -340,6 +451,149 @@ class ContentHubState(appContext: Context) {
             MediaNotifier.cancelSummary(appContext)
             MediaBadge.setBadge(appContext, 0)
         }
+    }
+
+    /**
+     * The channel updates as notifications (§5).
+     *
+     * Their words and their actions are the ones this sheet always had — what
+     * changed is that they are now one kind among several rather than the only
+     * thing a reader can be told about.
+     */
+    private fun mediaNotificationEntries(): List<HubNotification> =
+        mediaUpdates.map { update ->
+            HubNotification(
+                id = "media:${update.latestVideoId}",
+                kind = HubNotificationKind.MEDIA,
+                title = update.channelName,
+                body = update.latestVideoTitle,
+                at = update.publishedAtEpochMillis,
+                unread = update.latestVideoId in unreadUpdateIds,
+                onOpen = {
+                    showNotificationsSheet = false
+                    playMediaUpdate(update)
+                },
+                onDismiss = { dismissUpdate(update.latestVideoId) }
+            )
+        }
+
+    /**
+     * The Quran reminder as a notification (§5).
+     *
+     * Deliberately the only QURAN entry and deliberately never unread: the verse
+     * reminder is a standing arrangement, not something that happened. A reader
+     * who opens the bell should be able to see what the app is set to tell them
+     * about and where it has got to, without that inflating a badge about news.
+     * Tapping it closes the sheet — the verse is the Quran tab, which the sheet
+     * is covering.
+     */
+    private fun quranNotificationEntries(): List<HubNotification> {
+        if (!quranNotificationsEnabled) return emptyList()
+        val v = verse ?: return emptyList()
+        val cadence = appContext.resources.getQuantityString(
+            R.plurals.quran_verse_refresh_note_hours,
+            refreshIntervalHours,
+            refreshIntervalHours
+        )
+        return listOf(
+            HubNotification(
+                // The heading above this entry already says "Quran reminders", so
+                // the card itself says WHICH verse rather than repeating it.
+                id = "quran:reminder",
+                kind = HubNotificationKind.QURAN,
+                title = "${v.surahName} ${v.surahNumber}:${v.ayahNumber}",
+                body = cadence,
+                at = 0,
+                unread = false,
+                onOpen = { showNotificationsSheet = false }
+            )
+        )
+    }
+
+    /**
+     * Rebuilds the To Do leg of the notification centre (§5) from the store.
+     *
+     * Only REMINDED todos appear. A todo without a reminder is a note to the
+     * reader, not a promise by the app to interrupt them, and listing it here
+     * would make the bell's number mean "things I wrote down once".
+     */
+    fun refreshTodoReminders() {
+        scope.launch {
+            dueTodoNotifications = withContext(Dispatchers.IO) { buildTodoNotifications() }
+        }
+    }
+
+    /**
+     * The todos that are due today, uncompleted, and set to remind.
+     *
+     * An entry is unread once its reminder moment has arrived AND the reader has
+     * not already been shown that moment; before either, it is listed but does not
+     * count — a todo due at five should not be in a badge at nine in the morning,
+     * and one the reader has already read about should not be in it at all. A todo
+     * with a reminder but no time of its own is due from the start of its day.
+     */
+    private fun buildTodoNotifications(): List<HubNotification> {
+        if (!todoNotificationsEnabled) return emptyList()
+        val today = LocalDate.now()
+        val now = System.currentTimeMillis()
+        val timeFormat = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT)
+        return todoStore.getItems()
+            .filterNot { TodoCodec.isArchived(it, today) }
+            .filterNot { TodoCodec.completedOn(it, today) }
+            // The moment a reminder first speaks also decides whether there is a
+            // reminder to speak at all, so the "no reminder / switched off / not
+            // active today" cases are one rule rather than three filters that
+            // have to stay in agreement.
+            .mapNotNull { item ->
+                TodoCodec.reminderMomentMillis(item, today)?.let { at -> item to at }
+            }
+            // Read once, so the same set answers every row (§ the store's note on
+            // why the key is the reminder's own moment).
+            .let { pairs ->
+                val seen = todoStore.getSeenReminders()
+                pairs.map { (item, at) -> Triple(item, at, "todo:${item.id}#$at" in seen) }
+            }
+            .map { (item, at, acknowledged) ->
+                HubNotification(
+                    id = "todo:${item.id}",
+                    kind = HubNotificationKind.TO_DO,
+                    title = item.title,
+                    // Details when the todo has them, otherwise when it is due —
+                    // which is the thing a reader opening this list wants to know
+                    // about a reminder.
+                    body = item.details.ifBlank {
+                        when {
+                            item.timeStartMinutes != null && item.timeEndMinutes != null ->
+                                timeFormat.format(
+                                    LocalTime.of(
+                                        item.timeStartMinutes / 60,
+                                        item.timeStartMinutes % 60
+                                    )
+                                ) + " – " + timeFormat.format(
+                                    LocalTime.of(
+                                        item.timeEndMinutes / 60,
+                                        item.timeEndMinutes % 60
+                                    )
+                                )
+                            item.timeMinutes != null ->
+                                timeFormat.format(
+                                    LocalTime.of(item.timeMinutes / 60, item.timeMinutes % 60)
+                                )
+                            else -> appContext.getString(R.string.todo_notifications_note)
+                        }
+                    },
+                    at = at,
+                    unread = now >= at && !acknowledged,
+                    // Opening it opens the To Do list, which is where a todo can
+                    // actually be dealt with. There is no ✕: the way to make this
+                    // entry go away is to do the todo, and a dismiss that merely
+                    // hid it would be a lie about that.
+                    onOpen = {
+                        showNotificationsSheet = false
+                        showTodoScreen = true
+                    }
+                )
+            }
     }
 
     /**
@@ -608,6 +862,51 @@ class ContentHubState(appContext: Context) {
     /** Resolves every saved bookmark into its full verse (enriched with Arabic). */
     suspend fun bookmarkedVerses(): List<QuranVerse> = quranRepository.getBookmarkedVerses()
 
+    // ── The surah reader (§2) ───────────────────────────────────────
+
+    /** Verses of one surah, so the reader can be one scrollable list. */
+    suspend fun surahVerses(surahNumber: Int): List<QuranVerse> {
+        // Cached per surah for the process: a 286-verse surah is re-parsed on
+        // every open otherwise, and stepping between two surahs would do it
+        // repeatedly. The edition itself is stamped by the repository, so a new
+        // download is still picked up on the next launch.
+        surahVerseCache[surahNumber]?.let { return it }
+        val verses = quranRepository.getSurahVerses(surahNumber)
+        if (verses.isNotEmpty()) surahVerseCache[surahNumber] = verses
+        return verses
+    }
+
+    /** Opens the continuous reader for one surah. */
+    fun openSurah(surahNumber: Int) {
+        openSurahNumber = surahNumber
+    }
+
+    /** Back out of the reader, to the tabs it was opened from (§10). */
+    fun closeSurah() {
+        openSurahNumber = null
+    }
+
+    /**
+     * Bookmark or unbookmark one verse, from anywhere (§2, §3).
+     *
+     * The single write path: the surah reader's rows, the bookmarks tab and the
+     * top bar all come through here, and all of them read [bookmarkKeys]
+     * afterwards, so the three can never show different answers. Returns the new
+     * state, which is what a row needs to draw itself.
+     */
+    fun toggleBookmarkAt(surahNumber: Int, ayahNumber: Int): Boolean {
+        val added = quranRepository.toggleBookmark(surahNumber, ayahNumber)
+        bookmarkKeys = quranRepository.getBookmarks()
+        // Keep the top-bar icon honest when the verse on the home tab is the one
+        // that was just toggled from a list.
+        verse?.let { current ->
+            if (current.surahNumber == surahNumber && current.ayahNumber == ayahNumber) {
+                isBookmarked = added
+            }
+        }
+        return added
+    }
+
     /** Number of saved bookmarks (instant prefs read, for the settings card). */
     val bookmarkCount: Int
         get() = quranRepository.getBookmarks().size
@@ -615,8 +914,16 @@ class ContentHubState(appContext: Context) {
     /** Removes a bookmark (no-op when not bookmarked); updates the top-bar icon. */
     fun removeBookmark(surahNumber: Int, ayahNumber: Int) {
         quranRepository.removeBookmark(surahNumber, ayahNumber)
+        bookmarkKeys = quranRepository.getBookmarks()
         refreshBookmarkState()
     }
+
+    /** "surah:ayah", the form the bookmark set is keyed on. */
+    private fun keyOf(surahNumber: Int, ayahNumber: Int) = "$surahNumber:$ayahNumber"
+
+    /** Whether one verse is bookmarked, by the same key the store uses. */
+    fun isVerseBookmarked(surahNumber: Int, ayahNumber: Int): Boolean =
+        keyOf(surahNumber, ayahNumber) in bookmarkKeys
 
     fun cancel() {
         scope.cancel()
@@ -801,16 +1108,18 @@ fun ContentHubTopBar(
                         contentDescription = stringResource(R.string.quran_search)
                     )
                 }
-                // More options: verse refresh interval + notification toggles and
-                // the feature hub (Dhikr counter, Todo, bookmarks) — no longer
-                // just settings, so it uses the overflow icon.
+                // Settings: the verse refresh interval and the notification
+                // toggles — everything this sheet decides. The To Do, Dhikr,
+                // Bookmarks and Phone Limit cards that used to sit under them are
+                // no longer features of the Quran tab; they live in More, and a
+                // gear is the honest icon for what is left (§4).
                 IconButton(
                     onClick = { state.showSettingsSheet = true },
                     enabled = state.verse != null && !state.verseLoading
                 ) {
                     Icon(
-                        Icons.Filled.MoreVert,
-                        contentDescription = stringResource(R.string.quran_more_options)
+                        Icons.Filled.Settings,
+                        contentDescription = stringResource(R.string.quran_settings_title)
                     )
                 }
                 IconButton(
@@ -826,16 +1135,18 @@ fun ContentHubTopBar(
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                // Notifications: opens the updates panel; badge = unread count.
+                // Notifications: everything the app has to say (§5) — channel
+                // updates, To Do reminders, the Quran cadence — behind one bell
+                // with one count, rather than a Media-only one.
                 IconButton(
                     onClick = { state.openNotificationsPanel() },
                     enabled = state.verse != null && !state.verseLoading
                 ) {
-                    if (state.unreadMediaUpdates > 0) {
+                    if (state.unreadNotificationCount > 0) {
                         BadgedBox(
                             badge = {
                                 Badge {
-                                    Text(state.unreadMediaUpdates.coerceAtMost(99).toString())
+                                    Text(state.unreadNotificationCount.coerceAtMost(99).toString())
                                 }
                             }
                         ) {
@@ -870,6 +1181,21 @@ fun ContentHubTopBar(
         )
     }
 
+    ContentHubOverlays(state)
+}
+
+/**
+ * The full-screen surfaces the hub can open over whatever is behind them: the
+ * Quran reader's search / settings / notification sheets, and the To Do, Dhikr
+ * and Phone Limit screens.
+ *
+ * Separate from [ContentHubTopBar] because they are no longer reachable from the
+ * Quran tab alone (§4, §7): More opens the same three utilities, and a utility
+ * that could only be reached by first switching to the Quran tab would leave the
+ * More tab looking like a second, emptier copy of that menu.
+ */
+@Composable
+fun ContentHubOverlays(state: ContentHubState) {
     // Sheets opened from the Quran tab top bar: search, settings, notifications
     // and the bookmarks manager (the latter is opened from the settings sheet).
     if (state.showSearchSheet) {
@@ -881,14 +1207,17 @@ fun ContentHubTopBar(
     if (state.showNotificationsSheet) {
         NotificationsSheet(state = state, onDismiss = { state.showNotificationsSheet = false })
     }
-    if (state.showBookmarksSheet) {
-        BookmarksSheet(state = state, onDismiss = { state.showBookmarksSheet = false })
-    }
     if (state.showDhikrCounter) {
         DhikrCounterScreen(onDismiss = { state.showDhikrCounter = false })
     }
     if (state.showTodoScreen) {
-        TodoScreen(onDismiss = { state.showTodoScreen = false })
+        TodoScreen(onDismiss = {
+            state.showTodoScreen = false
+            // Completing a todo is the way its notification goes away, and the
+            // To Do screen is where that happens — so the list is rebuilt the
+            // moment it closes rather than at the next launch.
+            state.refreshTodoReminders()
+        })
     }
     if (state.showIslamicDateSheet) {
         IslamicDateAdjustmentSheet(
@@ -898,7 +1227,7 @@ fun ContentHubTopBar(
         )
     }
     // Phone Limit: countdown that locks the phone when it expires. Opened from
-    // the settings sheet's "Set Phone Limit" card (Quran tab ⋮ menu).
+    // the More tab's card (and from its widget's deep link).
     if (state.showPhoneLimitSheet) {
         PhoneLimitSheet(onDismiss = { state.showPhoneLimitSheet = false })
     }

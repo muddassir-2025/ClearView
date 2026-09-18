@@ -12,6 +12,7 @@ import {
 } from '../channels/cursor.js';
 import { getPublicChannel, type ChannelPayload } from '../channels/service.js';
 import { mediaForPosts, signObjectUrl, type MediaSummary } from '../media/service.js';
+import { reactionsForPosts, type ReactionCount } from '../reactions/service.js';
 import { UnconfiguredObjectStore, type MediaKind, type ObjectStore } from '../media/store.js';
 
 /**
@@ -30,12 +31,17 @@ import { UnconfiguredObjectStore, type MediaKind, type ObjectStore } from '../me
  *
  * Two rules, and each exists because the alternative leaks something:
  *
- *  * **No counters leave this module.** Not reactions, not views. The schema
- *    has no engagement column to read, and the shapes below have nowhere to put
- *    a number.
+ *  * **No IDENTITY leaves this module.** Who published a post is not part of a
+ *    channel's public surface, and neither is who reacted to it.
  *
- *  * **No identity leaves this module.** Who published a post is not part of a
- *    channel's public surface.
+ *  * **Counters are counts, not lists.** A post carries how many readers chose
+ *    each reaction and how many times it has been read (§9). Those used to be
+ *    refused here outright, and that was the right default for a broadcast
+ *    product with no reader interaction at all; reactions changed the
+ *    requirement, not the reasoning, so the rule is now the narrower one: a
+ *    number may leave, a name may not. Nothing here returns a reader id, an
+ *    email or a list of who reacted, and nothing in the product may sort by
+ *    these — they are drawn on a card and nothing else depends on them.
  *
  * Soft-deleted posts are filtered in SQL for the same reason channels are: a
  * removed post must not be readable, and it must not appear in a preview.
@@ -57,8 +63,9 @@ export type PublicPostType = 'text' | 'image' | 'video' | 'link';
 /**
  * A post as a reader sees it.
  *
- * There is no `viewerCanManage` and no `engagement`: a viewer cannot manage
- * anything, and there is nothing to count. A text-only post needs no bucket —
+ * There is still no `viewerCanManage` and no per-viewer state: a viewer cannot
+ * manage anything, and whether a given reader has reacted is theirs, fetched
+ * separately (see `reactions/service.ts`). A text-only post needs no bucket —
  * `media` is simply empty — which is what keeps S3 optional (§22).
  */
 export interface PublicPost {
@@ -71,6 +78,14 @@ export interface PublicPost {
   readonly media: readonly MediaSummary[];
   readonly createdAt: string;
   readonly editedAt: string | null;
+  /**
+   * How many readers chose each emoji (§9), commonest first.
+   *
+   * A count per emoji and nothing else — no reader is named, and the caller
+   * cannot ask who. Empty for a post nobody has reacted to, which is most of
+   * them, so a client draws nothing rather than an empty row.
+   */
+  readonly reactions: readonly ReactionCount[];
   /**
    * How many times this post has been read (§9).
    *
@@ -153,7 +168,11 @@ export interface PostRow {
  * previous version's `poll -> text` translation is gone with the rows it existed
  * for — there is no longer a type that needs drawing as something it is not.
  */
-export function mapPublicPost(row: PostRow, media: readonly MediaSummary[]): PublicPost {
+export function mapPublicPost(
+  row: PostRow,
+  media: readonly MediaSummary[],
+  reactions: readonly ReactionCount[] = []
+): PublicPost {
   return {
     id: row.id,
     channelId: row.channel_id,
@@ -164,6 +183,7 @@ export function mapPublicPost(row: PostRow, media: readonly MediaSummary[]): Pub
     media,
     createdAt: isoOrNull(row.created_at) ?? '',
     editedAt: isoOrNull(row.edited_at),
+    reactions,
     views: row.view_count ?? 0,
   };
 }
@@ -229,15 +249,16 @@ export async function listPublicChannelPosts(
   );
 
   const { items, hasMore } = withLimit(rows, limit);
-  const media = await mediaForPosts(
-    database,
-    store,
-    items.map((r) => r.id)
-  );
+  // Two aggregates over the page, each one query rather than one per post.
+  const ids = items.map((r) => r.id);
+  const [media, reactions] = await Promise.all([
+    mediaForPosts(database, store, ids),
+    reactionsForPosts(database, ids),
+  ]);
   const last = items[items.length - 1];
 
   return {
-    items: items.map((r) => mapPublicPost(r, media.get(r.id) ?? [])),
+    items: items.map((r) => mapPublicPost(r, media.get(r.id) ?? [], reactions.get(r.id) ?? [])),
     nextCursor:
       hasMore && last ? encodeCursor({ k: cursorKeyOf(last.created_at), id: last.id }) : null,
   };
@@ -321,9 +342,10 @@ export async function getPublicPost(
   if (!row) throw notFound('post_not_found');
 
   const media = await mediaForPosts(database, store, [row.id]);
+  const reactions = await reactionsForPosts(database, [row.id]);
 
   return {
-    ...mapPublicPost(row, media.get(row.id) ?? []),
+    ...mapPublicPost(row, media.get(row.id) ?? [], reactions.get(row.id) ?? []),
     channel: { id: row.channel_id, slug: row.channel_slug, name: row.channel_name },
   };
 }

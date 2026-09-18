@@ -50,7 +50,10 @@ import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.goodpost.ui.GoodPostTab
 import com.muddassir.clearview.goodpost.ui.Wa
 import com.muddassir.clearview.goodpost.ui.ApplyGoodPostStatusBar
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import com.muddassir.clearview.ui.BlockTab
+import com.muddassir.clearview.ui.ContentHubOverlays
+import com.muddassir.clearview.ui.MoreTab
 import com.muddassir.clearview.ui.ContentHubTabContent
 import com.muddassir.clearview.ui.ContentHubTopBar
 import com.muddassir.clearview.ui.ContentTab
@@ -191,7 +194,7 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab { QURAN, MEDIA, GOODPOST, BLOCK }
+private enum class MainTab { QURAN, MEDIA, GOODPOST, MORE }
 
 /**
  * The channel slug carried by a `clearview://goodpost/channel/<slug>` link, or
@@ -237,6 +240,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     var selectedTab by rememberSaveable { mutableStateOf(MainTab.QURAN) }
 
     /**
+     * Whether the More tab is showing Protection rather than its card list (§8).
+     *
+     * One tab, two pages, so the old Block dashboard keeps its place in the
+     * navigation without a fifth item for it — a bottom bar with five entries on
+     * a phone is four labels and one guess.
+     */
+    var moreProtection by rememberSaveable { mutableStateOf(false) }
+
+    /**
      * A channel slug from a share link (§6), waiting to reach Good Post.
      *
      * Deliberately NOT `rememberSaveable`: the home ViewModel holds the opened
@@ -248,13 +260,14 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
 
     // A Todo-reminder notification tap opens straight into the Todo screen —
     // either from a cold start (the launcher intent carries EXTRA_OPEN_TODO) or
-    // a warm start (onNewIntent set todoScreenRequested). Both switch to the
-    // Quran tab first so the top bar that hosts the Todo screen is composed.
+    // a warm start (onNewIntent set todoScreenRequested). Both switch to More,
+    // which is where the Todo screen is opened from (§7) and which composes the
+    // hub's overlays so the screen has something to draw itself in.
     val activity = LocalActivity.current as? MainActivity
     LaunchedEffect(Unit) {
         if (activity?.intent?.getBooleanExtra(TodoNotifier.EXTRA_OPEN_TODO, false) == true) {
             activity.intent.removeExtra(TodoNotifier.EXTRA_OPEN_TODO)
-            selectedTab = MainTab.QURAN
+            selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showTodoScreen = true
         }
@@ -263,7 +276,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(todoRequested) {
         if (todoRequested) {
             activity?.consumeTodoScreenRequest()
-            selectedTab = MainTab.QURAN
+            selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showTodoScreen = true
         }
@@ -279,7 +292,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             ) == true
         ) {
             activity.intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
-            selectedTab = MainTab.QURAN
+            selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
         }
@@ -288,7 +301,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(phoneLimitRequested) {
         if (phoneLimitRequested) {
             activity?.consumePhoneLimitScreenRequest()
-            selectedTab = MainTab.QURAN
+            selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
         }
@@ -371,6 +384,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         hub.exitAudio()
     }
 
+    // System back inside Protection returns to the More list rather than leaving
+    // the app — the same thing the top-bar arrow does, so the two agree.
+    BackHandler(enabled = selectedTab == MainTab.MORE && moreProtection) {
+        moreProtection = false
+    }
+
     // Immersive fullscreen: landscape + (video player OR live tab), or the
     // vertical Shorts-style fullscreen, hides the system bars; portrait
     // restores them. Playback is never restarted because the activity doesn't
@@ -393,42 +412,65 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         },
         topBar = {
             if (!isFullscreen) {
-                if (selectedTab == MainTab.BLOCK) {
+                if (selectedTab == MainTab.MORE) {
                     TopAppBar(
                         title = {
                             Column {
                                 Text(
-                                    "ClearView",
+                                    text = stringResource(
+                                        if (moreProtection) R.string.more_protection_title
+                                        else R.string.more_tab
+                                    ),
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
-                                    stringResource(R.string.block_tab_subtitle),
+                                    text = stringResource(
+                                        if (moreProtection) R.string.more_protection_subtitle
+                                        else R.string.more_tab_subtitle
+                                    ),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         },
-                        actions = {
-                            // Lock indicator — tap to re-lock the Block tab.
-                            IconButton(onClick = {
-                                if (viewModel.hasPassword) {
-                                    viewModel.lockApp()
+                        navigationIcon = {
+                            // Back out of Protection to the More list, rather than
+                            // out of the app: Protection is a page of this tab.
+                            if (moreProtection) {
+                                IconButton(onClick = { moreProtection = false }) {
+                                    Icon(
+                                        Icons.AutoMirrored.Filled.ArrowBack,
+                                        contentDescription = "Back"
+                                    )
                                 }
-                            }) {
-                                Icon(
-                                    imageVector = if (viewModel.isAppLocked && viewModel.hasPassword)
-                                        Icons.Filled.Lock
-                                    else
-                                        Icons.Outlined.LockOpen,
-                                    contentDescription = stringResource(
-                                        if (viewModel.hasPassword) R.string.block_lock_now_locked
-                                        else R.string.block_lock_no_password
-                                    ),
-                                    tint = if (viewModel.hasPassword && viewModel.isAppLocked)
-                                        MaterialTheme.colorScheme.error
-                                    else
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                            }
+                        },
+                        actions = {
+                            // Lock indicator — tap to re-lock Protection. Only on
+                            // the Protection page: there is nothing to lock on the
+                            // card list, and an open padlock beside a todo list
+                            // would be a control that does nothing.
+                            if (moreProtection) {
+                                IconButton(onClick = {
+                                    if (viewModel.hasPassword) {
+                                        viewModel.lockApp()
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = if (viewModel.isAppLocked && viewModel.hasPassword)
+                                            Icons.Filled.Lock
+                                        else
+                                            Icons.Outlined.LockOpen,
+                                        contentDescription = stringResource(
+                                            if (viewModel.hasPassword) R.string.block_lock_now_locked
+                                            else R.string.block_lock_no_password
+                                        ),
+                                        tint = if (viewModel.hasPassword && viewModel.isAppLocked)
+                                            MaterialTheme.colorScheme.error
+                                        else
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         },
                         colors = TopAppBarDefaults.topAppBarColors(
@@ -496,16 +538,20 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         label = { Text(stringResource(R.string.goodpost_tab)) }
                     )
                     NavigationBarItem(
-                        selected = selectedTab == MainTab.BLOCK,
+                        selected = selectedTab == MainTab.MORE,
                         onClick = {
-                            selectedTab = MainTab.BLOCK
-                            // The Block tab replaces the hub content entirely —
+                            selectedTab = MainTab.MORE
+                            // Tapping the tab you are already on returns to its
+                            // list — the usual way back out of a page that a
+                            // bottom bar opened.
+                            moreProtection = false
+                            // The More tab replaces the hub content entirely —
                             // a stale Haramayn overlay must not reappear when the
                             // user comes back to a content tab.
                             hub.showHaramaynLive = false
                         },
-                        icon = { Icon(Icons.Filled.Shield, contentDescription = null) },
-                        label = { Text(stringResource(R.string.block_tab_nav)) }
+                        icon = { Icon(Icons.Filled.MoreHoriz, contentDescription = null) },
+                        label = { Text(stringResource(R.string.more_tab)) }
                     )
                 }
             }
@@ -534,21 +580,39 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
 
         Box(modifier = contentModifier) {
             when (selectedTab) {
-                MainTab.BLOCK -> {
-                    // The Block tab is the ONLY password-protected surface. It
-                    // is gated on first open too: no password set → the setup
-                    // screen forces one before the dashboard is revealed;
-                    // password set but locked → unlock screen; otherwise the
-                    // security dashboard.
-                    if (!viewModel.hasPassword || viewModel.shouldShowLockScreen()) {
-                        LockScreen(
-                            onUnlock = { password -> viewModel.verifyAppPassword(password) },
-                            onSetupPassword = { password -> viewModel.setAppPassword(password) },
-                            hasPassword = viewModel.hasPassword
-                        )
+                MainTab.MORE -> {
+                    if (moreProtection) {
+                        // Protection IS the old Block dashboard — same lock, same
+                        // gate, same screens. Only the tab it is reached from has
+                        // moved (§8), which is why nothing here was rewritten.
+                        //
+                        // It is the ONLY password-protected surface, and it is
+                        // gated on first open too: no password set → the setup
+                        // screen forces one before the dashboard is revealed;
+                        // password set but locked → unlock screen; otherwise the
+                        // security dashboard.
+                        if (!viewModel.hasPassword || viewModel.shouldShowLockScreen()) {
+                            LockScreen(
+                                onUnlock = { password -> viewModel.verifyAppPassword(password) },
+                                onSetupPassword = { password -> viewModel.setAppPassword(password) },
+                                hasPassword = viewModel.hasPassword
+                            )
+                        } else {
+                            BlockTab(viewModel, deviceAdminLauncher)
+                        }
                     } else {
-                        BlockTab(viewModel, deviceAdminLauncher)
+                        MoreTab(
+                            onOpenTodo = { hub.showTodoScreen = true },
+                            onOpenPhoneLimit = { hub.showPhoneLimitSheet = true },
+                            onOpenZikr = { hub.showDhikrCounter = true },
+                            onOpenProtection = { moreProtection = true }
+                        )
                     }
+                    // These utilities ARE the hub's screens (todo, zikr, phone
+                    // limit), so the hub's overlays have to be composed on this
+                    // tab too — this is where they are opened from now, and a
+                    // card that set a flag nothing drew would be a dead button.
+                    ContentHubOverlays(state = hub)
                 }
                 MainTab.GOODPOST -> GoodPostTab(
                     openChannelSlug = pendingChannelSlug,

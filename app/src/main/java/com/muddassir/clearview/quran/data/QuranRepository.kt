@@ -249,6 +249,24 @@ class QuranRepository(context: Context) {
             matches
         }
 
+    /**
+     * Every verse of one surah, in order, for the continuous reader (§2).
+     *
+     * Read from the cached edition rather than searched for one verse at a time:
+     * the translation is already on the device, and a surah is a contiguous run
+     * of it, so this is a filter over parsed data — no network, no per-verse
+     * request, and no limit to page around. An empty list means only that the
+     * edition is not cached yet, which the reader says in words.
+     */
+    suspend fun getSurahVerses(surahNumber: Int): List<QuranVerse> =
+        withContext(Dispatchers.IO) {
+            englishVerses()
+                ?.filter { it.surahNumber == surahNumber }
+                ?.sortedBy { it.ayahNumber }
+                ?.map { enrich(it) }
+                ?: emptyList()
+        }
+
     // ── Bookmarks ────────────────────────────────────────────────────
 
     /** Set of "surah:ayah" strings the user has bookmarked. */

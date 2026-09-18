@@ -21,6 +21,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
 import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostPage
 import com.muddassir.clearview.goodpost.data.GoodPostPost
+import com.muddassir.clearview.goodpost.data.GoodPostReaction
 import com.muddassir.clearview.goodpost.data.GoodPostPush
 import com.muddassir.clearview.goodpost.data.GoodPostStarred
 import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
@@ -98,6 +99,17 @@ sealed interface GoodPostScreen {
      * the whole screen and a selection bar.
      */
     data class ChannelMedia(val channelId: String) : GoodPostScreen
+
+    /**
+     * Every message this reader starred, for one channel (§9, §11).
+     *
+     * The information page shows how many there are and nothing else: it is a
+     * channel's public face, and a list of one reader's private bookmarks sitting
+     * open on it was both the wrong place and the wrong size — a hundred stars
+     * turned the page into a scroll. This screen is where they are read, which is
+     * also what makes searching them possible.
+     */
+    data class Starred(val channelId: String) : GoodPostScreen
 
     /** The administrator way in (§16). */
     data object AdminLogin : GoodPostScreen
@@ -213,6 +225,29 @@ data class GoodPostUiState(
     val starredPostIds: Set<String> = emptySet(),
     /** The starred rows belonging to the channel whose information page is open. */
     val starred: List<GoodPostStarredEntry> = emptyList(),
+
+    /**
+     * The emoji this deployment offers (§9).
+     *
+     * Empty until fetched, and the picker draws nothing while it is: the app
+     * deliberately does not carry its own copy of the list, because a seventh
+     * emoji added on the server must not need an app release to appear — and an
+     * app that guessed would eventually offer one the server refuses.
+     */
+    val reactionEmoji: List<String> = emptyList(),
+
+    /**
+     * The post a reaction has been sent for and not yet answered (§9).
+     *
+     * A SET of ids rather than one, because reacting is also a selection action: a
+     * reader can pick several updates and put the same emoji on all of them, and
+     * those sends are genuinely in flight together. Two reactions to the SAME post
+     * are still impossible, which is the property that mattered — the answer
+     * carries a count, and applying the second answer of one post twice would move
+     * its chip twice. The id is what keeps that from happening, and a set keeps it
+     * without also forbidding the selection.
+     */
+    val reactionBusyIds: Set<String> = emptySet(),
 
     /**
      * Whether this device wants a notification when a followed channel posts (§8).
@@ -950,12 +985,17 @@ class GoodPostViewModel : ViewModel() {
         }
 
         uiState = uiState.copy(postsLoading = true, postsError = null)
+        // The reader's own reactions, asked for alongside the posts (§9). The
+        // public read cannot carry them (it takes no token), so they arrive as a
+        // second, tiny answer and are merged onto whatever page is showing.
+        loadMyReactions(channelId)
+        loadReactionEmoji()
         viewModelScope.launch {
             when (val result = repo.channelPosts(channelId)) {
                 is ApiResult.Ok -> {
                     val items = result.value.items.visibleToMe()
                     uiState = uiState.copy(
-                        posts = items,
+                        posts = applyMyReactions(items),
                         postsCursor = result.value.nextCursor,
                         postsLoading = false,
                         postsStale = false,
@@ -990,6 +1030,183 @@ class GoodPostViewModel : ViewModel() {
         )
     }
 
+    // ── Reactions (§9) ──────────────────────────────────────────────────
+
+    /**
+     * This reader's own reactions, by post id.
+     *
+     * A device cache of the server's answer for the channel currently open: the
+     * posts arrive without it, and merging needs it on every page. Cleared when a
+     * different channel is opened, so a reaction made in one channel can never be
+     * drawn on a post in another (which cannot happen by id, but a stale map is a
+     * bug waiting for an id collision to become visible).
+     */
+    private var myReactions: Map<String, String> = emptyMap()
+    private var myReactionsChannel: String? = null
+
+    /**
+     * Fetches the reader's reactions for [channelId] and re-applies them.
+     *
+     * Failure is deliberately silent: a reader who cannot be told which of their
+     * own reactions are theirs still sees everybody's counts, and an error banner
+     * about a missing token would describe a feature they never asked for.
+     */
+    private fun loadMyReactions(channelId: String) {
+        val repo = repository ?: return
+        if (myReactionsChannel != channelId) {
+            myReactions = emptyMap()
+            myReactionsChannel = channelId
+        }
+        viewModelScope.launch {
+            val map = repo.myReactions(channelId)
+            // A late answer for a channel the reader has left must not be applied
+            // to whatever is on screen now.
+            if (myReactionsChannel != channelId) return@launch
+            myReactions = map
+            uiState = uiState.copy(posts = applyMyReactions(uiState.posts))
+        }
+    }
+
+    /** The vocabulary, fetched once per process. */
+    private fun loadReactionEmoji() {
+        val repo = repository ?: return
+        if (uiState.reactionEmoji.isNotEmpty()) return
+        viewModelScope.launch {
+            val result = repo.reactionEmoji()
+            if (result is ApiResult.Ok && uiState.reactionEmoji.isEmpty()) {
+                uiState = uiState.copy(reactionEmoji = result.value)
+            }
+        }
+    }
+
+    /** Merges this reader's own choices onto a list of posts. */
+    private fun applyMyReactions(posts: List<GoodPostPost>): List<GoodPostPost> {
+        if (myReactions.isEmpty()) return posts
+        return posts.map { post ->
+            val mine = myReactions[post.id]
+            if (mine == post.myReaction) post else post.copy(myReaction = mine)
+        }
+    }
+
+    /**
+     * React to one post, or change the reaction already on it (§9).
+     *
+     * Optimistic, because a reaction is a one-tap gesture that must feel
+     * immediate, and the wrong moment to be truthful is the half second before the
+     * server has answered. The server's own count replaces the guess when it
+     * arrives; on failure the guess is rolled back and the reason is shown, which
+     * is the only honest thing to do with a tap that did not land.
+     *
+     * Tapping the reaction the reader already has takes it off — the same chip
+     * both ways, which is how every messaging app does it and removes the need for
+     * a separate "unreact" control.
+     */
+    fun react(post: GoodPostPost, emoji: String) {
+        val repo = repository ?: return
+        if (post.id in uiState.reactionBusyIds) return
+
+        val previous = post.reactions
+        val previousMine = post.myReaction
+        val removing = previousMine == emoji
+
+        uiState = uiState.copy(
+            reactionBusyIds = uiState.reactionBusyIds + post.id,
+            posts = uiState.posts.map { row ->
+                if (row.id == post.id) row.withReaction(if (removing) null else emoji) else row
+            }
+        )
+
+        viewModelScope.launch {
+            val result = if (removing) repo.unreact(post.id, emoji) else repo.react(post.id, emoji)
+
+            when (result) {
+                is ApiResult.Ok -> {
+                    val answer = result.value
+                    myReactions = if (answer.emoji == null) myReactions - answer.postId
+                    else myReactions + (answer.postId to answer.emoji)
+                    uiState = uiState.copy(
+                        reactionBusyIds = uiState.reactionBusyIds - answer.postId,
+                        posts = uiState.posts.map { row ->
+                            if (row.id != answer.postId) row
+                            else row.copy(
+                                myReaction = answer.emoji,
+                                reactions = row.reactions.recounted(
+                                    emoji = answer.emoji ?: emoji,
+                                    count = answer.count
+                                )
+                            )
+                        }
+                    )
+                }
+
+                is ApiResult.Failed -> {
+                    uiState = uiState.copy(
+                        reactionBusyIds = uiState.reactionBusyIds - post.id,
+                        posts = uiState.posts.map { row ->
+                            if (row.id == post.id) {
+                                row.copy(reactions = previous, myReaction = previousMine)
+                            } else row
+                        },
+                        messageCode = if (result.code == "auth_unavailable") {
+                            "reactions_unavailable"
+                        } else {
+                            "reaction_failed"
+                        }
+                    )
+                }
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    reactionBusyIds = uiState.reactionBusyIds - post.id,
+                    posts = uiState.posts.map { row ->
+                        if (row.id == post.id) row.copy(reactions = previous, myReaction = previousMine)
+                        else row
+                    },
+                    messageCode = "reaction_failed"
+                )
+            }
+        }
+    }
+
+    /**
+     * The post with reaction [emoji] added or taken away, counted locally.
+     *
+     * The +1/-1 here is a GUESS and is replaced by the server's own number the
+     * moment it answers (see [react]). It exists so the chip moves under the
+     * reader's thumb instead of after the round trip.
+     */
+    private fun GoodPostPost.withReaction(emoji: String?): GoodPostPost {
+        val before = myReaction
+        val without = reactions.mapNotNull { reaction ->
+            when (reaction.emoji) {
+                before -> (reaction.count - 1).takeIf { it > 0 }?.let {
+                    reaction.copy(count = it)
+                }
+                else -> reaction
+            }
+        }
+        val next = if (emoji == null) without else {
+            without.map { if (it.emoji == emoji) it.copy(count = it.count + 1) else it }
+                .ifEmpty { without + GoodPostReaction(emoji, 1) }
+        }
+        return copy(myReaction = emoji, reactions = next.sortedByDescending { it.count })
+    }
+
+    /**
+     * [emoji] with the server's count, leaving every other emoji untouched.
+     *
+     * A count of zero drops the chip: the last reader taking their reaction off
+     * leaves no reaction to show, and a "0" beside an emoji would be a number
+     * about something that is not there.
+     */
+    private fun List<GoodPostReaction>.recounted(
+        emoji: String,
+        count: Int
+    ): List<GoodPostReaction> {
+        val without = filterNot { it.emoji == emoji }
+        return (if (count > 0) without + GoodPostReaction(emoji, count) else without)
+            .sortedByDescending { it.count }
+    }
+
     /** The next page of a channel's history (§26: lazy, cursor-paged). */
     fun loadMorePosts() {
         val repo = repository ?: return
@@ -1003,7 +1220,9 @@ class GoodPostViewModel : ViewModel() {
                 is ApiResult.Ok -> {
                     val items = result.value.items.visibleToMe()
                     uiState = uiState.copy(
-                        posts = GoodPostCodec.merge(uiState.posts, items) { it.id },
+                        posts = applyMyReactions(
+                            GoodPostCodec.merge(uiState.posts, items) { it.id }
+                        ),
                         postsCursor = result.value.nextCursor,
                         postsLoadingMore = false
                     )
@@ -1414,12 +1633,79 @@ class GoodPostViewModel : ViewModel() {
         clearPostSelection()
     }
 
+    /**
+     * Put one emoji on every selected update (§9).
+     *
+     * The same rule the star uses, because a selection is one intent and has to
+     * have one answer: if EVERY selected post already carries this emoji the
+     * gesture takes it off all of them, and otherwise it puts it on the ones that
+     * do not have it and leaves the rest alone. Sending the emoji to a post that
+     * already holds it would toggle it OFF, which is how a mixed selection turns
+     * into a scattered one — some set, some cleared, none of it what was asked.
+     *
+     * Each send is per post, and the picker offers exactly the emoji the server
+     * named, so nothing here can invent one the API would refuse.
+     */
+    fun reactToSelectedPosts(emoji: String) {
+        if (emoji.isBlank()) return
+        val selected = uiState.posts.filter { uiState.selectedPostIds.contains(it.id) }
+        if (selected.isEmpty()) return
+
+        val everyOneHasIt = selected.all { it.myReaction == emoji }
+        selected.forEach { post ->
+            if (everyOneHasIt || post.myReaction != emoji) react(post, emoji)
+        }
+        clearPostSelection()
+    }
+
     /** The stars belonging to one channel, for its information page (§11). */
     fun refreshStars(channelId: String) {
         val store = starredStore ?: return
+        // A starred message the reader has since deleted for themselves stays
+        // deleted: the star is a private bookmark, not a copy of the channel, and
+        // letting one resurrect a post this device removed would be the two
+        // answers contradicting each other on one screen (§5).
+        val hidden = hiddenStore
         uiState = uiState.copy(
             starredPostIds = store.all().map { it.postId }.toSet(),
             starred = store.forChannel(channelId)
+                .filterNot { entry -> hidden?.isHidden(entry.postId) == true }
+        )
+    }
+
+    /**
+     * Open the reader's stars for one channel (§9).
+     *
+     * The stars are re-read on the way in rather than trusted from whatever the
+     * information page last loaded: this screen can be reached from an
+     * information page that has been in the back stack while posts were starred
+     * from a feed beneath it, and a bookmark list that is one edit stale is a
+     * list that loses a bookmark.
+     */
+    fun openStarred(channelId: String) {
+        refreshStars(channelId)
+        open(GoodPostScreen.Starred(channelId))
+    }
+
+    /**
+     * Remove one star, from a list that holds rows rather than posts (§9).
+     *
+     * [toggleStar] needs the post itself, because a star KEEPS the row; a screen
+     * whose entire job is undoing stars already has the row in hand, so it hands
+     * back the id. Both write through the same store, so the two lists can never
+     * disagree about what is starred.
+     */
+    fun unstarPost(postId: String) {
+        val store = starredStore ?: return
+        store.remove(postId)
+        val hidden = hiddenStore
+        val channelId = (uiState.screen as? GoodPostScreen.Starred)?.channelId
+        uiState = uiState.copy(
+            starredPostIds = store.all().map { it.postId }.toSet(),
+            starred = store.all()
+                .filter { channelId == null || it.channelId == channelId }
+                .filterNot { entry -> hidden?.isHidden(entry.postId) == true },
+            messageCode = "unstarred"
         )
     }
 

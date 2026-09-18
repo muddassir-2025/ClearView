@@ -297,6 +297,33 @@ object TodoCodec {
     /** True when [item] is due on [today] (the only day it can be completed). */
     fun isDueToday(item: TodoItem, today: LocalDate): Boolean = isActiveOn(item, today)
 
+    /**
+     * When [item]'s reminder first comes due on [day], or null if it has none.
+     *
+     * Null covers the three ways a todo can decline to interrupt: no reminder
+     * configured, a reminder that is switched off, or one on a day the todo is
+     * not active. Callers that list or count reminders therefore get "nothing to
+     * say" rather than a midnight default that would look like one.
+     *
+     * The moment itself is the todo's own time, then the start of its window for a
+     * todo that has a range instead (a 4:55–5:20 window reminds from 4:55), then
+     * the start of the day for one with a reminder but no time at all. It is read
+     * here rather than by the caller because "when does this todo speak" is a rule
+     * about todos, and the notification list is not the only thing that will want
+     * it.
+     */
+    fun reminderMomentMillis(item: TodoItem, day: LocalDate): Long? {
+        val reminder = item.reminder ?: return null
+        if (!reminder.enabled) return null
+        if (!isActiveOn(item, day)) return null
+        val minutes = item.timeMinutes ?: item.timeStartMinutes
+        return if (minutes != null) {
+            dayTimeMillis(day, minutes)
+        } else {
+            day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        }
+    }
+
     // ── Strict interval (deadline window) ───────────────────────────
     //
     // A strict-interval todo (strictInterval + timeStart/timeEnd) can ONLY be

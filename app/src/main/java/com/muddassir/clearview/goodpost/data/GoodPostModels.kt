@@ -179,12 +179,58 @@ data class GoodPostPost(
      * was told. So this is a floor and not a truth, which is why it is a quiet
      * stamp on the post rather than a headline number.
      */
-    val views: Int = 0
+    val views: Int = 0,
+    /**
+     * What readers have reacted with, commonest first (§9).
+     *
+     * Counts of readers and nothing else: the names behind them never leave the
+     * server, so this is not a list of who reacted and cannot become one.
+     */
+    val reactions: List<GoodPostReaction> = emptyList(),
+    /**
+     * Which emoji THIS reader picked, if any.
+     *
+     * Not part of the payload: the public read takes no token, so the app fetches
+     * the reader's own reactions for the channel it is showing and merges them in
+     * (see `GoodPostReactions`). Null means "not asked yet", which is why the
+     * chip is drawn as the reader's only when this is set.
+     */
+    val myReaction: String? = null
 ) {
     val hasImage: Boolean get() = media.any { it.isImage }
     val hasVideo: Boolean get() = media.any { it.isVideo }
     val isLink: Boolean get() = !linkUrl.isNullOrBlank()
+
+    /** The reaction this reader has on the post, if the server listed it. */
+    fun reactionCount(emoji: String): Int = reactions.firstOrNull { it.emoji == emoji }?.count ?: 0
 }
+
+/**
+ * One emoji and how many readers chose it (§9).
+ *
+ * A total, not a list. The Android side never learns who, because the API never
+ * says — a reaction count is a property of the post, and the reader's own choice
+ * travels separately as [GoodPostPost.myReaction].
+ */
+data class GoodPostReaction(val emoji: String, val count: Int) {
+    val isEmpty: Boolean get() = count <= 0
+}
+
+/**
+ * The server's answer to setting or clearing one reaction (§9).
+ *
+ * Carried back rather than discarded because the count it holds is the number of
+ * readers currently on that emoji, as the server just saw it — which is what a
+ * card should show. Guessing it locally ("mine, so +1") is right until somebody
+ * else reacts at the same moment, and then the card is quietly wrong until the
+ * next refresh.
+ */
+data class GoodPostReactionResult(
+    val postId: String,
+    /** Null after an un-react. */
+    val emoji: String?,
+    val count: Int
+)
 
 /** A category an Explore filter can offer (§7). */
 data class GoodPostCategory(val slug: String, val label: String)
@@ -313,8 +359,69 @@ internal object GoodPostCodec {
             createdAt = json.optString("createdAt"),
             editedAt = json.nullableString("editedAt"),
             channel = json.optJSONObject("channel")?.let(::channelRef),
-            views = json.optInt("views", 0).coerceAtLeast(0)
+            views = json.optInt("views", 0).coerceAtLeast(0),
+            reactions = reactionArray(json.optJSONArray("reactions"))
         )
+    }
+
+    /**
+     * The reaction counts on a post.
+     *
+     * A zero count is dropped rather than shown: the server only ever sends
+     * emoji somebody chose, and a card that drew "0" next to an emoji would be
+     * describing a reaction that no longer exists.
+     */
+    fun reactionArray(array: JSONArray?): List<GoodPostReaction> {
+        if (array == null) return emptyList()
+        val parsed = ArrayList<GoodPostReaction>(array.length())
+        for (i in 0 until array.length()) {
+            val row = array.optJSONObject(i) ?: continue
+            val emoji = row.optString("emoji")
+            val count = row.optInt("count", 0)
+            if (emoji.isBlank() || count <= 0) continue
+            parsed.add(GoodPostReaction(emoji = emoji, count = count))
+        }
+        return parsed
+    }
+
+    /**
+     * A `{ reactions: { postId: emoji } }` body — the reader's own choices.
+     *
+     * Tolerant of an unknown post id: the map is merged into whatever page is on
+     * screen, and a reaction on a post that has scrolled out of the window is
+     * simply not drawn.
+     */
+    fun readerReactions(body: JSONObject): Map<String, String> {
+        val row = body.optJSONObject("reactions") ?: return emptyMap()
+        val map = HashMap<String, String>(row.length())
+        row.keys().forEach { key ->
+            val emoji = row.optString(key)
+            if (emoji.isNotBlank()) map[key] = emoji
+        }
+        return map
+    }
+
+    /** A `{ reaction: { postId, emoji, count } }` body. */
+    fun reactionResult(body: JSONObject): GoodPostReactionResult? {
+        val row = body.optJSONObject("reaction") ?: return null
+        val postId = row.optString("postId")
+        if (postId.isBlank()) return null
+        return GoodPostReactionResult(
+            postId = postId,
+            emoji = row.nullableString("emoji"),
+            count = row.optInt("count", 0).coerceAtLeast(0)
+        )
+    }
+
+    /** The six offered (§9), from `GET /readers/reactions`. */
+    fun reactionVocabulary(body: JSONObject): List<String> {
+        val array = body.optJSONArray("emoji") ?: return emptyList()
+        val list = ArrayList<String>(array.length())
+        for (i in 0 until array.length()) {
+            val emoji = array.optString(i)
+            if (emoji.isNotBlank()) list.add(emoji)
+        }
+        return list
     }
 
     fun mediaItem(json: JSONObject): GoodPostMediaItem? {

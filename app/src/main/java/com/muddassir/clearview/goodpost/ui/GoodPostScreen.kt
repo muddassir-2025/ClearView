@@ -153,6 +153,12 @@ fun GoodPostTab(
                 viewModel = viewModel
             )
 
+            is GoodPostScreen.Starred -> GoodPostStarredScreen(
+                state = state,
+                channelId = screen.channelId,
+                viewModel = viewModel
+            )
+
             GoodPostScreen.AdminLogin -> AdminLoginScreen(state = state, viewModel = viewModel)
 
             is GoodPostScreen.AdminChannel -> GoodPostFeed(

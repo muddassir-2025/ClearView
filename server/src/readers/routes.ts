@@ -11,11 +11,19 @@ import {
   followChannel,
   listFollowedChannels,
   markChannelRead,
+  requireActiveChannel,
   setChannelMuted,
   unfollowChannel,
   type ReaderRef,
 } from './service.js';
 import { registerDevice, unregisterDevice } from '../notifications/service.js';
+import {
+  clearPostReaction,
+  isReactionEmoji,
+  listReaderReactions,
+  setPostReaction,
+  REACTION_EMOJI,
+} from '../reactions/service.js';
 
 /**
  * A reader's own routes (§3–§6), mounted at `/api/v1/readers`.
@@ -95,6 +103,17 @@ const DeviceSchema = z.object({
 const PageQuerySchema = z.object({
   limit: z.string().max(10).optional(),
   cursor: z.string().max(512).optional(),
+});
+
+/**
+ * A reaction (§9): one of the six emoji the product offers, and nothing else.
+ *
+ * Validated against the same list the database constrains, so a client that
+ * sends a seventh emoji is told it is wrong rather than being refused by a
+ * constraint violation that would arrive as an opaque 500.
+ */
+const ReactionSchema = z.object({
+  emoji: z.string().max(8).refine(isReactionEmoji, { message: 'unknown_emoji' }),
 });
 
 /**
@@ -221,6 +240,69 @@ export function buildReadersRouter(
       await unregisterDevice(database, reader.id, token);
     }
     res.status(200).json({ device: { token, platform: 'android', registered: false } });
+  });
+
+  /**
+   * The vocabulary (§9).
+   *
+   * Published rather than hard-coded in the client, so the app cannot offer an
+   * emoji the server would refuse. It needs no token: it is the same six for
+   * everybody, and a client that is about to sign in still has to draw them.
+   */
+  router.get('/reactions', (_req, res) => {
+    res.status(200).json({ emoji: REACTION_EMOJI });
+  });
+
+  /**
+   * This reader's reactions in one channel (§9).
+   *
+   * A channel rather than "all of them": the reader's reactions across the whole
+   * product are a record of what they have read, and the only place that record
+   * is needed is a channel they are looking at. Scoped to the caller in SQL - no
+   * route here takes a reader id.
+   */
+  router.get('/me/reactions/:channelIdOrSlug', async (req, res) => {
+    const { reader } = await requireReader(req, database, verifier);
+    const idOrSlug = pathParam(req, 'channelIdOrSlug');
+    // Resolved through the same lookup a follow uses, so a channel that does not
+    // exist, is suspended or was deleted answers here exactly as it does there.
+    const channel = await requireActiveChannel(database, idOrSlug);
+    res.status(200).json({ reactions: await listReaderReactions(database, reader.id, channel.id) });
+  });
+
+  /**
+   * React to a post, or change the reaction (§9).
+   *
+   * PUT on the reader's reaction to one post: the path names everything that
+   * identifies it, the body is the value being set, and a repeat is the same
+   * state as the first — the definition of idempotent. A POST would suggest a
+   * second reaction could accumulate, which is the one thing this cannot do.
+   */
+  router.put('/me/reactions/:postId', write, async (req, res) => {
+    const { reader } = await requireReader(req, database, verifier);
+    const body = parseBody(ReactionSchema, req.body);
+    const postId = pathParam(req, 'postId');
+    res
+      .status(200)
+      .json({ reaction: await setPostReaction(database, reader.id, postId, body.emoji) });
+  });
+
+  /**
+   * Take the reaction back off (§9).
+   *
+   * DELETE of the reaction itself, so the path is the post and there is no body
+   * to get wrong. The emoji the client believed was there may travel as a query
+   * parameter, and only so the answer can carry the count of THAT emoji - the
+   * number the card is currently showing.
+   */
+  router.delete('/me/reactions/:postId', write, async (req, res) => {
+    const { reader } = await requireReader(req, database, verifier);
+    const postId = pathParam(req, 'postId');
+    const raw = req.query['emoji'];
+    const emoji = typeof raw === 'string' && raw.length <= 8 ? raw : null;
+    res
+      .status(200)
+      .json({ reaction: await clearPostReaction(database, reader.id, postId, emoji) });
   });
 
   /**

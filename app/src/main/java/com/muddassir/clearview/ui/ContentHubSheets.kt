@@ -35,15 +35,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
-import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.AlertDialog
@@ -67,7 +67,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,6 +83,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -94,10 +94,10 @@ import androidx.core.content.ContextCompat
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
-import com.muddassir.clearview.media.model.MediaChannelUpdate
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
 import com.muddassir.clearview.quran.model.QuranVerse
+import com.muddassir.clearview.quran.util.copyVerseToClipboard
 import kotlinx.coroutines.Dispatchers
 import java.time.Instant
 import java.time.LocalDate
@@ -109,10 +109,18 @@ import kotlinx.coroutines.withContext
 
 /**
  * Settings bottom sheet (opened from the Quran tab's gear icon): the verse
- * refresh interval (presets + a custom slider), the Media / Quran
- * notification toggles, and a card opening the bookmarks manager. Permission
- * is requested when a toggle is turned ON without the OS permission, and once
- * on first open if a toggle already defaults ON.
+ * refresh interval (presets + a custom slider) and the notification toggles.
+ * Permission is requested when a toggle is turned ON without the OS permission,
+ * and once on first open if a toggle already defaults ON.
+ *
+ * ## What is deliberately NOT here (§4)
+ *
+ * The To Do, Dhikr, Bookmarks and Phone Limit cards used to sit under these
+ * settings, which made the Quran tab's menu the app's junk drawer: a reader who
+ * wanted their todo list had to open the Quran, then a sheet, then a card. They
+ * are ClearView features rather than Quran settings, and they are cards in the
+ * More tab now. What is left is everything this sheet actually decides — when the
+ * next verse arrives, and what the app may notify about.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -172,206 +180,8 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                 fontWeight = FontWeight.Bold
             )
 
-            Spacer(Modifier.height(20.dp))
-            // ── 1. Bookmark ──
-            // Closes settings first so the two sheets never stack on screen.
-            Card(
-                onClick = {
-                    onDismiss()
-                    state.showBookmarksSheet = true
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Filled.Bookmark,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.quran_bookmarks_view),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = pluralStringResource(
-                                R.plurals.quran_bookmarks_note,
-                                state.bookmarkCount,
-                                state.bookmarkCount
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        Icons.Filled.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            // ── 2. Dhikr ──
-            // Directly below the Bookmark card. Closes settings first so the
-            // counter gets the whole screen.
-            Card(
-                onClick = {
-                    onDismiss()
-                    state.showDhikrCounter = true
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "📿",
-                        fontSize = 24.sp,
-                        modifier = Modifier.size(28.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.dhikr_counter_card_title),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = stringResource(R.string.dhikr_counter_card_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        Icons.Filled.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            // ── 3. Todo ──
-            // Directly below the Dhikr card. Closes settings first so the
-            // Todo screen gets the whole screen.
-            Card(
-                onClick = {
-                    onDismiss()
-                    state.showTodoScreen = true
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "✅",
-                        fontSize = 24.sp,
-                        modifier = Modifier.size(28.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.todo_card_title),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = stringResource(R.string.todo_card_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        Icons.Filled.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            // ── 4. Phone Limit ──
-            // Countdown that locks the phone when it expires; runs in the
-            // background via a foreground service. Closes settings first so
-            // the phone-limit sheet gets the screen.
-            Card(
-                onClick = {
-                    onDismiss()
-                    state.showPhoneLimitSheet = true
-                },
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Filled.Timer,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = stringResource(R.string.phone_limit_menu_title),
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = stringResource(R.string.phone_limit_menu_note),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Icon(
-                        Icons.Filled.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-            HorizontalDivider()
-            Spacer(Modifier.height(16.dp))
-
-            // ── 5. Quran / New Verse ──
+            Spacer(Modifier.height(4.dp))
+            // ── 1. Quran / New Verse ──
             Text(
                 text = stringResource(R.string.quran_settings_section_quran),
                 style = MaterialTheme.typography.titleSmall,
@@ -407,7 +217,7 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
             HorizontalDivider()
             Spacer(Modifier.height(16.dp))
 
-            // ── 5. Notifications ──
+            // ── 2. Notifications ──
             Text(
                 text = stringResource(R.string.quran_notifications_title),
                 style = MaterialTheme.typography.titleSmall,
@@ -549,16 +359,66 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
     }
 }
 
-/** Search modes for the full-screen Quran search. */
-private enum class QuranSearchMode { SEARCH, SURAH }
+/**
+ * One tab of the Quran screen's top row: Search / Surah / Bookmarks (§1).
+ *
+ * A text segment rather than a Material `FilterChip`, for two reasons that both
+ * come from this being a three-way switch rather than a filter: a chip reserves
+ * space for a leading check mark (so the row jitters as the selection moves and
+ * the three never line up), and chips size themselves to their labels, which
+ * makes "Search" narrow and "Bookmarks" wide. Equal thirds that re-colour when
+ * picked read as one control, which is what it is.
+ */
+@Composable
+private fun QuranSegment(
+    selected: Boolean,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        contentColor = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp, horizontal = 4.dp)
+        )
+    }
+}
 
 /**
- * Full-screen Quran search (opened from the Quran tab's search icon): a search
- * field pinned in the top bar with real-time debounced results (matches
- * highlighted), plus a "Surah" browse mode listing all 114 surahs for quick
- * jumps. Tapping a result (or surah) opens it as the current verse.
+ * The Quran screen's three views (§1–§3), held in [ContentHubState.quranSheetTab]
+ * so switching between them — or opening a surah and coming back — never
+ * re-parses anything, and so the screen returns where the reader left it.
  *
- * Implemented as a full-screen dialog so results get the whole screen instead
+ * Full-screen search (opened from the Quran tab's search icon): one search field
+ * above three tabs.
+ *
+ * * **Search** — verses matching the field, debounced, matches highlighted.
+ * * **Surah** — all 114 surahs, filtered by the same field; tapping one opens the
+ *   *continuous* reader for that surah, where the field filters within the surah
+ *   instead. The old behaviour jumped to a single verse and left the reader
+ *   stepping through the surah one screen at a time; a surah is read by
+ *   scrolling it (§2).
+ * * **Bookmarks** — every verse this device has saved, filtered by the same
+ *   field, with per-item removal.
+ *
+ * The single field is the point: the three tabs are three questions about the
+ * same text, and a reader who types "mercy" then taps Surah expects the filter to
+ * follow them rather than start over.
+ *
+ * Implemented as a full-screen dialog so the lists get the whole screen instead
  * of fighting a bottom sheet for space with the keyboard.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -566,14 +426,20 @@ private enum class QuranSearchMode { SEARCH, SURAH }
 fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<QuranVerse>?>(null) }
-    var mode by remember { mutableStateOf(QuranSearchMode.SEARCH) }
+    var bookmarks by remember { mutableStateOf<List<QuranVerse>?>(null) }
+    // Verse awaiting removal confirmation (null = no dialog). Removing a bookmark
+    // is destructive, so the list always asks Remove / Cancel first.
+    var pendingRemove by remember { mutableStateOf<QuranVerse?>(null) }
     var searching by remember { mutableStateOf(false) }
+    val tab = state.quranSheetTab
+    val openSurah = state.openSurahNumber
     val keyboard = LocalSoftwareKeyboardController.current
     val focusRequester = remember { FocusRequester() }
 
-    // Debounced search; Surah mode (and blank query) show their own content.
-    LaunchedEffect(query, mode) {
-        if (mode == QuranSearchMode.SURAH || query.isBlank()) {
+    // Debounced search; the other two tabs (and a blank query) show their own
+    // content and need no request.
+    LaunchedEffect(query, tab) {
+        if (tab != QuranSheetTab.SEARCH || query.isBlank()) {
             searching = false
             results = null
             return@LaunchedEffect
@@ -582,6 +448,16 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
         delay(250)
         results = withContext(Dispatchers.IO) { state.searchQuran(query) }
         searching = false
+    }
+
+    // The bookmarks, re-read whenever the tab is opened and whenever a bookmark
+    // changes anywhere in the app. [ContentHubState.bookmarkKeys] is the single
+    // source for "what is bookmarked", so this list and the top-bar icon cannot
+    // disagree (§3, §10).
+    LaunchedEffect(tab, state.bookmarkKeys) {
+        if (tab == QuranSheetTab.BOOKMARKS) {
+            bookmarks = withContext(Dispatchers.IO) { state.bookmarkedVerses() }
+        }
     }
 
     // Autofocus + open the keyboard the moment the screen opens. The short
@@ -613,79 +489,142 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                     .navigationBarsPadding()
                     .imePadding()
             ) {
-                // ── Top bar: back + search field ──
+                // ── Top bar: the back arrow, then the three tabs (§1) ──
+                //
+                // The arrow gets its own line's worth of height but shares the row
+                // with the tabs, so the tabs sit where a reader's eye already is
+                // and the field below gets the full width instead of being squeezed
+                // between two controls. The tabs are equal thirds of the space the
+                // arrow leaves — "centred" on a phone is this, and three unequal
+                // chips would fit badly as soon as the names changed length.
+                //
+                // While a surah is open the row carries the surah's name instead:
+                // there is nothing to switch to from inside a surah (the back
+                // arrow is how you leave, §10), and the name is what the reader
+                // needs to know at that point.
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
+                        .padding(start = 4.dp, end = 12.dp, top = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onDismiss) {
+                    // Back leaves one layer at a time: out of a surah first, into
+                    // the tabs it was opened from (§10), then out of the screen.
+                    IconButton(onClick = {
+                        if (openSurah != null) state.closeSurah() else onDismiss()
+                    }) {
                         Icon(
                             Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = stringResource(R.string.quran_search_back)
                         )
                     }
-                    OutlinedTextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        modifier = Modifier.weight(1f).focusRequester(focusRequester),
-                        placeholder = {
-                            Text(
-                                stringResource(
-                                    if (mode == QuranSearchMode.SURAH) R.string.quran_search_hint_surah
-                                    else R.string.quran_search_hint
-                                )
+                    if (openSurah == null) {
+                        Row(
+                            modifier = Modifier.weight(1f).padding(start = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            QuranSegment(
+                                selected = tab == QuranSheetTab.SEARCH,
+                                label = stringResource(R.string.quran_search_mode_search),
+                                modifier = Modifier.weight(1f),
+                                onClick = { state.quranSheetTab = QuranSheetTab.SEARCH }
                             )
-                        },
-                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (query.isNotBlank()) {
-                                IconButton(onClick = { query = "" }) {
-                                    Icon(
-                                        Icons.Filled.Close,
-                                        contentDescription = stringResource(R.string.quran_search_clear)
-                                    )
+                            QuranSegment(
+                                selected = tab == QuranSheetTab.SURAH,
+                                label = stringResource(R.string.quran_search_mode_surah),
+                                modifier = Modifier.weight(1f),
+                                onClick = { state.quranSheetTab = QuranSheetTab.SURAH }
+                            )
+                            QuranSegment(
+                                selected = tab == QuranSheetTab.BOOKMARKS,
+                                label = stringResource(R.string.quran_search_mode_bookmarks),
+                                modifier = Modifier.weight(1f),
+                                onClick = { state.quranSheetTab = QuranSheetTab.BOOKMARKS }
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = QuranJsonParser.surahName(openSurah),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f).padding(start = 8.dp)
+                        )
+                    }
+                }
+
+                // ── The field, on its own line under them ──
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp)
+                        .focusRequester(focusRequester),
+                    placeholder = {
+                        Text(
+                            stringResource(
+                                when {
+                                    // In the reader the field narrows the surah,
+                                    // which is the only thing it can usefully do
+                                    // there.
+                                    openSurah != null -> R.string.quran_search_hint_in_surah
+                                    tab == QuranSheetTab.SURAH -> R.string.quran_search_hint_surah
+                                    tab == QuranSheetTab.BOOKMARKS -> R.string.quran_bookmarks_search_hint
+                                    else -> R.string.quran_search_hint
                                 }
+                            )
+                        )
+                    },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (query.isNotBlank()) {
+                            IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = stringResource(R.string.quran_search_clear)
+                                )
                             }
-                        },
-                        singleLine = true,
-                        shape = RoundedCornerShape(28.dp),
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
+                        }
+                    },
+                    singleLine = true,
+                    shape = RoundedCornerShape(28.dp),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
+                )
+
+                Spacer(Modifier.height(4.dp))
+
+                // A surah is open: the reader takes the whole screen below the
+                // field, whichever tab it was opened from.
+                if (openSurah != null) {
+                    SurahReader(
+                        state = state,
+                        surahNumber = openSurah,
+                        query = query
                     )
+                    return@Column
                 }
 
-                // ── Mode toggle: Search | Surah ──
-                Row(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilterChip(
-                        selected = mode == QuranSearchMode.SEARCH,
-                        onClick = { mode = QuranSearchMode.SEARCH },
-                        label = { Text(stringResource(R.string.quran_search_mode_search)) }
+                when (tab) {
+                    QuranSheetTab.SURAH -> SurahBrowseList(
+                        state = state,
+                        query = query
                     )
-                    FilterChip(
-                        selected = mode == QuranSearchMode.SURAH,
-                        onClick = { mode = QuranSearchMode.SURAH },
-                        label = { Text(stringResource(R.string.quran_search_mode_surah)) }
-                    )
-                }
 
-                Spacer(Modifier.height(8.dp))
-
-                when (mode) {
-                    QuranSearchMode.SURAH -> SurahBrowseList(
+                    QuranSheetTab.BOOKMARKS -> BookmarksTab(
                         state = state,
                         query = query,
+                        bookmarks = bookmarks,
                         onOpenVerse = {
                             state.goToVerse(it)
                             onDismiss()
-                        }
+                        },
+                        onRemove = { pendingRemove = it }
                     )
 
-                    QuranSearchMode.SEARCH -> {
+                    QuranSheetTab.SEARCH -> {
                         // Capture the state once into an immutable local: `results`
                         // is a mutable state that becomes null when the query is
                         // cleared, and the lazy list content below is evaluated
@@ -766,28 +705,350 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
             }
         }
     }
+
+    // ── Remove confirmation (Remove / Cancel) ──────────────────────
+    //
+    // Lives on the screen rather than in the bookmarks list so the dialog is not
+    // thrown away with the row it belongs to: the removed row is recomposed out
+    // of the list the moment the bookmark changes, and the confirmation must
+    // outlive that recomposition to be answered.
+    pendingRemove?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingRemove = null },
+            title = { Text(stringResource(R.string.quran_bookmarks_remove_confirm_title)) },
+            text = { Text(stringResource(R.string.quran_bookmarks_remove_confirm_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.removeBookmark(target.surahNumber, target.ayahNumber)
+                    bookmarks = bookmarks?.filterNot {
+                        it.surahNumber == target.surahNumber &&
+                            it.ayahNumber == target.ayahNumber
+                    } ?: emptyList()
+                    pendingRemove = null
+                }) {
+                    Text(
+                        text = stringResource(R.string.quran_bookmarks_remove_confirm),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemove = null }) {
+                    Text(stringResource(R.string.quran_cancel))
+                }
+            }
+        )
+    }
+}
+
+/**
+ * The continuous surah reader (§2): one surah, one scroll, all of it.
+ *
+ * ## Why it replaces the verse-by-verse flow
+ *
+ * The old path opened a surah's *first verse* and then moved through the rest
+ * with Previous / Next — so reading Al-Kahf was 110 screens and 110 taps, each
+ * one a fresh lookup, and the reader could never see where they were in the
+ * surah. A surah is a text you read by scrolling, which is what this is: the
+ * whole surah in one lazy list, each verse carrying the same bookmark and copy
+ * actions it has everywhere else.
+ *
+ * ## The field still does something
+ *
+ * Typing filters WITHIN the surah — matching the English text or the reference
+ * ("18:10") — rather than searching the whole Quran under a heading that says
+ * otherwise. A reader who wants the whole Quran taps back to the Search tab.
+ */
+@Composable
+private fun SurahReader(
+    state: ContentHubState,
+    surahNumber: Int,
+    query: String
+) {
+    var verses by remember(surahNumber) { mutableStateOf<List<QuranVerse>?>(null) }
+
+    // Parsed once per surah per process (the state caches it), off the main
+    // thread — a 286-verse surah is a real parse.
+    LaunchedEffect(surahNumber) {
+        verses = withContext(Dispatchers.IO) { state.surahVerses(surahNumber) }
+    }
+
+    val all = verses
+    val q = query.trim()
+    val shown = remember(all, q) {
+        val list = all ?: return@remember emptyList()
+        if (q.isEmpty()) list
+        else {
+            val lower = q.lowercase()
+            list.filter {
+                it.text.lowercase().contains(lower) ||
+                    "${it.surahNumber}:${it.ayahNumber}".contains(lower) ||
+                    it.ayahNumber.toString() == lower
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // What is open and how long it is. The counts come from the verses that
+        // loaded, so they can never disagree with the list under them. The surah's
+        // name itself is in the top row (next to the back arrow), so this is the
+        // reading position rather than a second title.
+        Text(
+            text = when {
+                all == null -> stringResource(R.string.quran_bookmarks_loading)
+                q.isNotEmpty() -> pluralStringResource(
+                    R.plurals.quran_surah_matches_count,
+                    shown.size,
+                    shown.size,
+                    all.size
+                )
+                else -> pluralStringResource(
+                    R.plurals.quran_surah_verses_count,
+                    all.size,
+                    all.size
+                )
+            },
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+        )
+
+        when {
+            all == null -> Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = stringResource(R.string.quran_bookmarks_loading),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            all.isEmpty() -> Text(
+                text = stringResource(R.string.quran_verse_unavailable),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+            )
+            shown.isEmpty() -> Text(
+                text = stringResource(R.string.quran_surah_no_matches),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+            )
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(shown, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
+                    SurahVerseRow(
+                        verse = verse,
+                        query = q,
+                        bookmarked = "${verse.surahNumber}:${verse.ayahNumber}" in
+                            state.bookmarkKeys,
+                        onToggleBookmark = {
+                            state.toggleBookmarkAt(verse.surahNumber, verse.ayahNumber)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One verse of the reader: reference, the Arabic, the translation, and the two
+ * per-verse actions a reader actually uses — bookmark and copy.
+ *
+ * Deliberately not a tap target. Tapping a verse used to mean "make this the
+ * current verse", which in a list of 286 rows is a way to lose your place; the
+ * actions are on the row instead, where they cannot be hit by accident.
+ */
+@Composable
+private fun SurahVerseRow(
+    verse: QuranVerse,
+    query: String,
+    bookmarked: Boolean,
+    onToggleBookmark: () -> Unit
+) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(
+                        R.string.quran_ayah_progress_short,
+                        verse.ayahNumber,
+                        verse.totalAyahs
+                    ),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = {
+                    copyVerseToClipboard(context, verse)
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.quran_verse_copied),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) {
+                    Icon(
+                        Icons.Filled.ContentCopy,
+                        contentDescription = stringResource(R.string.quran_verse_copy),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(onClick = onToggleBookmark) {
+                    Icon(
+                        imageVector = if (bookmarked) Icons.Filled.Bookmark
+                        else Icons.Outlined.Bookmark,
+                        contentDescription = stringResource(
+                            if (bookmarked) R.string.quran_bookmark_removed
+                            else R.string.quran_bookmark
+                        ),
+                        tint = if (bookmarked) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            if (verse.arabicText.isNotBlank()) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    text = verse.arabicText,
+                    fontSize = 23.sp,
+                    lineHeight = 40.sp,
+                    fontFamily = FontFamily.Serif
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            // bodyLarge rather than bodyMedium: this is the text a reader is
+            // actually here to read, one verse at a time, and the smaller size
+            // that was right for a two-line search snippet is not right for a
+            // page of scripture.
+            Text(
+                text = highlightMatches(
+                    verse.text,
+                    query,
+                    MaterialTheme.colorScheme.primary
+                ),
+                style = MaterialTheme.typography.bodyLarge,
+                lineHeight = 24.sp,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/**
+ * The Bookmarks tab (§3, §10): every saved verse, filtered by the same field the
+ * other two tabs use.
+ *
+ * The list is passed in already loaded (the screen owns that, so switching tabs
+ * does not re-read the store) and removal is reported up to the screen's own
+ * confirmation dialog.
+ */
+@Composable
+private fun BookmarksTab(
+    state: ContentHubState,
+    query: String,
+    bookmarks: List<QuranVerse>?,
+    onOpenVerse: (QuranVerse) -> Unit,
+    onRemove: (QuranVerse) -> Unit
+) {
+    val q = query.trim()
+    val filtered = remember(bookmarks, q) {
+        val list = bookmarks ?: return@remember emptyList()
+        if (q.isEmpty()) list
+        else {
+            val lower = q.lowercase()
+            list.filter {
+                it.text.lowercase().contains(lower) ||
+                    it.surahName.lowercase().contains(lower) ||
+                    "${it.surahNumber}:${it.ayahNumber}".contains(lower)
+            }
+        }
+    }
+
+    when {
+        bookmarks == null -> Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = stringResource(R.string.quran_bookmarks_loading),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        bookmarks.isEmpty() -> Text(
+            text = stringResource(R.string.quran_bookmarks_empty),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+        )
+        filtered.isEmpty() -> Text(
+            text = stringResource(R.string.quran_bookmarks_no_match),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+        )
+        else -> Column(modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = pluralStringResource(
+                    R.plurals.quran_bookmarks_count,
+                    bookmarks.size,
+                    bookmarks.size
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filtered, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
+                    VerseSearchRow(
+                        verse = verse,
+                        highlight = query,
+                        onClick = { onOpenVerse(verse) },
+                        onRemove = { onRemove(verse) }
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**
  * All 114 surahs with number + transliterated name + translation, filtered
- * live by the shared search field ([query]); tapping one opens its first
- * verse (via the reference search, so it also enriches the Arabic text). The
- * names come from [QuranJsonParser] — pure, no network — so the list renders
- * and filters immediately; only the jump needs the translation cache.
+ * live by the shared search field ([query]); tapping one opens the continuous
+ * reader for it (§2). The names come from [QuranJsonParser] — pure, no network —
+ * so the list renders and filters immediately.
  */
 @Composable
 private fun SurahBrowseList(
     state: ContentHubState,
-    query: String,
-    onOpenVerse: (QuranVerse) -> Unit
+    query: String
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    // Read via stringResource (not context.getString) so the value tracks
-    // configuration changes — lint treats context reads inside composables as
-    // an error since they aren't recomposed when the configuration changes.
-    val verseUnavailable = stringResource(R.string.quran_verse_unavailable)
-
     // Filter the 114 surahs by the shared search field: a blank query shows
     // all of them; a pure number matches the surah number exactly ("2" →
     // Surah 2); anything else is a case-insensitive substring match on the
@@ -827,54 +1088,48 @@ private fun SurahBrowseList(
             val name = QuranJsonParser.surahName(number)
             val translation = QuranJsonParser.surahTranslation(number)
             Card(
-                onClick = {
-                    scope.launch {
-                        val first = withContext(Dispatchers.IO) {
-                            state.searchQuran("$number:1").firstOrNull()
-                        }
-                        if (first != null) {
-                            onOpenVerse(first)
-                        } else {
-                            // Not cached yet — the jump can't resolve.
-                            Toast.makeText(context, verseUnavailable, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                },
+                // Opens the whole surah, not its first verse (§2): the reader
+                // scrolls from here, and the surah's own text is what it needs —
+                // nothing to look up first, so the tap is instant and cannot fail.
+                onClick = { state.openSurah(number) },
                 modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                 )
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     // Two-digit number badge.
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(10.dp),
                         color = MaterialTheme.colorScheme.primaryContainer
                     ) {
                         Text(
                             text = number.toString().padStart(2, '0'),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            style = MaterialTheme.typography.labelLarge,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                     }
-                    Spacer(Modifier.width(12.dp))
+                    Spacer(Modifier.width(14.dp))
+                    // titleMedium / bodyMedium rather than the smaller pair this
+                    // list used: the surah names are 114 rows of the thing the
+                    // reader came for, not a dense index they are skimming past.
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = name,
-                            style = MaterialTheme.typography.titleSmall,
+                            style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         if (translation.isNotBlank()) {
-                            Spacer(Modifier.height(1.dp))
+                            Spacer(Modifier.height(2.dp))
                             Text(
                                 text = translation,
-                                style = MaterialTheme.typography.bodySmall,
+                                style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -1001,215 +1256,46 @@ private fun highlightMatches(text: String, query: String?, color: Color): Annota
 }
 
 /**
- * Bookmarks manager bottom sheet (opened from the settings sheet's "View
- * bookmarks" card): every saved verse with a local filter, tap-to-open and
- * per-item remove. Removing a bookmark that is currently displayed also
- * updates the top-bar bookmark icon (via [ContentHubState.removeBookmark]).
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun BookmarksSheet(state: ContentHubState, onDismiss: () -> Unit) {
-    var bookmarks by remember { mutableStateOf<List<QuranVerse>?>(null) }
-    var query by remember { mutableStateOf("") }
-    // Verse awaiting removal confirmation (null = no dialog). Removing a
-    // bookmark is destructive, so the sheet always asks Remove / Cancel first.
-    var pendingRemove by remember { mutableStateOf<QuranVerse?>(null) }
-
-    // Load once when the sheet opens (null = still loading).
-    LaunchedEffect(Unit) {
-        bookmarks = withContext(Dispatchers.IO) { state.bookmarkedVerses() }
-    }
-
-    // Local filter over the already-loaded list (bookmarks are few, so
-    // re-filtering in memory on every keystroke is instant).
-    val filtered = remember(bookmarks, query) {
-        val list = bookmarks ?: return@remember emptyList()
-        if (query.isBlank()) list
-        else {
-            val lower = query.trim().lowercase()
-            list.filter {
-                it.text.lowercase().contains(lower) ||
-                    it.surahName.lowercase().contains(lower) ||
-                    "${it.surahNumber}:${it.ayahNumber}".contains(lower)
-            }
-        }
-    }
-
-    // Same stable-local pattern as QuranSearchScreen: `bookmarks` is a nullable
-    // mutable state and the lazy list / click lambdas must not read `!!` on it
-    // after the `when` is chosen. Declared at function level so the remove
-    // confirmation dialog below can also use it.
-    val list = bookmarks
-
-    Dialog(
-        onDismissRequest = onDismiss,
-        // Full width + edge-to-edge so imePadding() below actually receives the
-        // IME insets and the list shrinks above the keyboard (same pattern as
-        // the Quran search screen).
-        //
-        // WHY A DIALOG, NOT A BOTTOM SHEET: ModalBottomSheet wraps its content
-        // in its own vertical scroll, so a LazyColumn nested inside it creates
-        // TWO competing scrollers. When the list hits the bottom and the user
-        // keeps scrolling, the overscroll propagates through the sheet's
-        // scroll container into its nested-scroll (drag-to-dismiss) connection
-        // — the whole sheet gets dragged down and springs back, which is the
-        // flicker/shake. A full-screen dialog gives the LazyColumn a single
-        // bounded, sole-scroller layout (no nested scrolling) — the exact
-        // setup that already works in the Quran search screen.
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .imePadding()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 24.dp)
-            ) {
-                // Top bar: back arrow + title (the back arrow dismisses, like
-                // the Quran search screen).
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.quran_bookmarks_close)
-                        )
-                    }
-                    Text(
-                        text = stringResource(R.string.quran_bookmarks_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text(stringResource(R.string.quran_bookmarks_search_hint)) },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (query.isNotBlank()) {
-                        IconButton(onClick = { query = "" }) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = stringResource(R.string.quran_search_clear)
-                            )
-                        }
-                    }
-                },
-                singleLine = true
-            )
-            Spacer(Modifier.height(12.dp))
-
-            when {
-                list == null -> Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        text = stringResource(R.string.quran_bookmarks_loading),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                list.isEmpty() -> Text(
-                    text = stringResource(R.string.quran_bookmarks_empty),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                filtered.isEmpty() -> Text(
-                    text = stringResource(R.string.quran_bookmarks_no_match),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                else -> {
-                    Text(
-                        text = pluralStringResource(
-                            R.plurals.quran_bookmarks_count,
-                            list.size,
-                            list.size
-                        ),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(filtered, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
-                            VerseSearchRow(
-                                verse = verse,
-                                highlight = query,
-                                onClick = {
-                                    state.goToVerse(verse)
-                                    onDismiss()
-                                },
-                                onRemove = { pendingRemove = verse }
-                            )
-                        }
-                    }
-                }
-            }
-            }
-        }
-    }
-
-    // ── Remove confirmation (Remove / Cancel) ──────────────────────
-    pendingRemove?.let { target ->
-        AlertDialog(
-            onDismissRequest = { pendingRemove = null },
-            title = { Text(stringResource(R.string.quran_bookmarks_remove_confirm_title)) },
-            text = { Text(stringResource(R.string.quran_bookmarks_remove_confirm_text)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    state.removeBookmark(target.surahNumber, target.ayahNumber)
-                    bookmarks = bookmarks?.filterNot {
-                        it.surahNumber == target.surahNumber &&
-                            it.ayahNumber == target.ayahNumber
-                    } ?: emptyList()
-                    pendingRemove = null
-                }) {
-                    Text(
-                        text = stringResource(R.string.quran_bookmarks_remove_confirm),
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { pendingRemove = null }) {
-                    Text(stringResource(R.string.quran_cancel))
-                }
-            }
-        )
-    }
-}
-
-/**
- * Notifications bottom sheet (opened from the Quran tab's bell icon): every
- * channel update ("… has an update"), with tap-to-play and per-item dismiss.
+ * The notification centre (§5): everything ClearView has to tell the reader,
+ * from every feature, behind the one bell in the Quran tab's bar.
+ *
+ * ## Why it is grouped rather than one list
+ *
+ * A channel that posted, a todo that is due and a verse reminder are three
+ * different kinds of thing and only one of them is news — presented flat, a
+ * reader scanning for "what happened" has to read every card to find out which
+ * sort it is. The section heading (from the kind's own icon and name) answers
+ * that before the card does, and the count beside it says how many in that group
+ * are new.
+ *
+ * ## What the buttons do
+ *
+ * "Clear all" remains what it always was — a Media action, shown only when there
+ * are channel updates to clear, because it cannot clear a todo or a reminder and
+ * a button that silently did nothing to half the list would be worse than none.
+ * Per-card ✕ is likewise offered only by the kinds that own a row that can be
+ * removed.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+
+    // Rebuilt only when a source changes. Each entry carries a relative
+    // timestamp, and building the list formats none of them without a recompose
+    // anyway — but rebuilding on every frame would re-read the To Do leg and
+    // allocate labels for nothing.
+    val entries = remember(
+        state.mediaUpdates,
+        state.unreadUpdateIds,
+        state.dueTodoNotifications,
+        state.quranNotificationsEnabled,
+        state.verse,
+        state.refreshIntervalHours
+    ) { state.notificationEntries() }
+
+    val hasChannelUpdates = entries.any { it.kind == HubNotificationKind.MEDIA }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -1227,7 +1313,7 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.weight(1f)
                 )
-                if (state.mediaUpdates.isNotEmpty()) {
+                if (hasChannelUpdates) {
                     TextButton(onClick = { state.clearAllUpdates() }) {
                         Text(stringResource(R.string.media_update_clear_all))
                     }
@@ -1235,7 +1321,7 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
             }
             Spacer(Modifier.height(4.dp))
             when {
-                state.mediaUpdatesLoading && state.mediaUpdates.isEmpty() -> {
+                state.mediaUpdatesLoading && entries.isEmpty() -> {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -1249,7 +1335,7 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                         )
                     }
                 }
-                state.mediaUpdates.isEmpty() -> {
+                entries.isEmpty() -> {
                     // Elegant empty state: a soft icon, a title and a hint.
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
@@ -1281,122 +1367,35 @@ fun NotificationsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                     }
                 }
                 else -> {
-                    val context = LocalContext.current
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 460.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
-                        state.mediaUpdates.forEach { update ->
-                            NotificationCard(
-                                update = update,
-                                unread = update.latestVideoId in state.unreadUpdateIds,
-                                relativeTime = relativeUpdateTime(
-                                    context,
-                                    update.publishedAtEpochMillis
-                                ),
-                                onClick = {
-                                    onDismiss()
-                                    state.playMediaUpdate(update)
-                                },
-                                onDismissUpdate = { state.dismissUpdate(it) }
+                        // The kinds in a fixed order rather than by time, so the
+                        // reader learns where to look: channel news first, then
+                        // what they owe today, then the standing reminder.
+                        HubNotificationKind.entries.forEach { kind ->
+                            val group = entries.filter { it.kind == kind }
+                            if (group.isEmpty()) return@forEach
+                            HubNotificationSectionHeader(
+                                kind = kind,
+                                unread = group.count { it.unread }
                             )
-                            Spacer(Modifier.height(8.dp))
+                            group.forEach { entry ->
+                                HubNotificationCard(
+                                    entry = entry,
+                                    relativeTime = relativeUpdateTime(context, entry.at),
+                                    onClick = entry.onOpen,
+                                    onDismiss = entry.onDismiss
+                                )
+                                Spacer(Modifier.height(8.dp))
+                            }
+                            Spacer(Modifier.height(4.dp))
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/**
- * One notification card inside the sheet: a clean rounded card with a subtle
- * unread accent, a wrapping title/body, a relative timestamp and a per-item
- * dismiss button.
- */
-@Composable
-private fun NotificationCard(
-    update: MediaChannelUpdate,
-    unread: Boolean,
-    relativeTime: String,
-    onClick: () -> Unit,
-    onDismissUpdate: (String) -> Unit
-) {
-    Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (unread) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
-            }
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 14.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Surface(
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-            ) {
-                Icon(
-                    Icons.Filled.PlayCircle,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(8.dp).size(22.dp)
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = stringResource(R.string.media_has_update, update.channelName),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (unread) {
-                        Spacer(Modifier.width(6.dp))
-                        Surface(
-                            shape = CircleShape,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(8.dp)
-                        ) {}
-                    }
-                }
-                if (update.latestVideoTitle.isNotBlank()) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        text = update.latestVideoTitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                if (relativeTime.isNotBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = relativeTime,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            IconButton(onClick = { onDismissUpdate(update.latestVideoId) }) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = stringResource(R.string.media_update_dismiss),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(18.dp)
-                )
             }
         }
     }

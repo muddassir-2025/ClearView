@@ -1,8 +1,20 @@
 <resources>
     <string name="app_name">ClearView</string>
-    <!-- Block tab lock / password setup (shown before the Block dashboard) -->
-    <string name="block_tab_subtitle">Security &amp; controls</string>
-    <string name="block_tab_nav">Block</string>
+
+    <!-- ── More tab (the fourth bottom-nav item) ─────────────────────────
+         "More" rather than "Block" because the tab is no longer only the
+         security dashboard: it is where ClearView's everyday utilities live and
+         Protection is one of its cards. -->
+    <string name="more_tab">More</string>
+    <string name="more_tab_subtitle">Tools &amp; protection</string>
+    <string name="more_section_tools">TOOLS</string>
+    <string name="more_section_protection">PROTECTION</string>
+    <!-- The Protection card, and the page it opens (the old Block dashboard). -->
+    <string name="more_protection_title">Protection</string>
+    <string name="more_protection_subtitle">Security &amp; controls</string>
+    <string name="more_protection_note">Blocking, keywords, websites, DNS and app lock</string>
+
+    <!-- Block/Protection lock / password setup (shown before the dashboard) -->
     <string name="block_lock_set_title">Set Block Password</string>
     <string name="block_lock_title">Block Tab Locked</string>
     <string name="block_lock_set_note">Create a password to protect the Block tab (keywords, websites and protection controls)</string>
@@ -91,7 +103,6 @@
     <string name="quran_ayah_progress_desc">Ayah %1$d of %2$d in this surah</string>
     <!-- Compact ayah/total used in dense rows (search results, bookmarks, widget). -->
     <string name="quran_ayah_progress_short">%1$d/%2$d</string>
-    <string name="quran_more_options">More options</string>
     <string name="quran_settings_title">Settings</string>
     <string name="quran_notifications_title">Notifications</string>
     <string name="quran_notifications">Quran Reminders</string>
@@ -106,25 +117,36 @@
     <!-- Quran search (top-bar search icon + search sheet) -->
     <string name="quran_search">Search Quran</string>
     <string name="quran_search_back">Back</string>
-    <string name="quran_search_hint">Search by word or verse (e.g. mercy, 2:255)</string>
+    <!-- The field's own example, and only that: the tab above it already says
+         what is being searched, so "Search by word or verse" repeated the
+         heading and pushed the one useful part of the hint out of view. -->
+    <string name="quran_search_hint">search by word or verse (eg: mercy or 2:55)</string>
     <string name="quran_search_clear">Clear search</string>
     <string name="quran_search_idle">Type above to search the Quran</string>
     <string name="quran_search_no_results">No verses found</string>
     <string name="quran_search_loading">Searching…</string>
     <string name="quran_search_mode_search">Search</string>
     <string name="quran_search_mode_surah">Surah</string>
+    <string name="quran_search_mode_bookmarks">Bookmarks</string>
     <string name="quran_search_hint_surah">Search surahs by name or number</string>
+    <!-- Shown while a surah is open: the same field now narrows that surah. -->
+    <string name="quran_search_hint_in_surah">Search inside this surah</string>
     <string name="quran_surah_no_matches">No surahs found</string>
+    <plurals name="quran_surah_verses_count">
+        <item quantity="one">%1$d verse</item>
+        <item quantity="other">%1$d verses</item>
+    </plurals>
+    <plurals name="quran_surah_matches_count">
+        <item quantity="one">%1$d of %2$d verses matches</item>
+        <item quantity="other">%1$d of %2$d verses match</item>
+    </plurals>
     <string name="quran_bookmarks_loading">Loading bookmarks…</string>
     <plurals name="quran_search_results_count">
         <item quantity="one">%1$d result</item>
         <item quantity="other">%1$d results</item>
     </plurals>
 
-    <!-- Quran bookmarks manager (opened from the settings sheet) -->
-    <string name="quran_bookmarks_title">Bookmarks</string>
-    <string name="quran_bookmarks_view">View bookmarks</string>
-    <string name="quran_bookmarks_close">Close bookmarks</string>
+    <!-- Quran bookmarks (the Bookmarks tab of the Quran screen's search) -->
     <string name="quran_bookmarks_search_hint">Filter bookmarks</string>
     <string name="quran_bookmarks_empty">No bookmarks yet. Tap the bookmark icon on a verse to save it here.</string>
     <string name="quran_bookmarks_no_match">No bookmarks match your filter</string>
@@ -133,10 +155,6 @@
     <string name="quran_bookmarks_remove_confirm_text">This verse will be removed from your bookmarks.</string>
     <string name="quran_bookmarks_remove_confirm">Remove</string>
     <string name="quran_cancel">Cancel</string>
-    <plurals name="quran_bookmarks_note">
-        <item quantity="one">%1$d verse saved</item>
-        <item quantity="other">%1$d verses saved</item>
-    </plurals>
     <plurals name="quran_bookmarks_count">
         <item quantity="one">%1$d bookmarked verse</item>
         <item quantity="other">%1$d bookmarked verses</item>
@@ -532,7 +550,7 @@
     <string name="progress_card_share_via">Share progress card</string>
     <string name="progress_card_share_failed">Couldn\'t share the card</string>
 
-    <!-- Quran settings sheet (three-dot menu) section headers -->
+    <!-- Quran settings sheet (the gear in the top bar) section headers -->
     <string name="quran_settings_section_quran">Quran / New Verse</string>
 
     <!-- In-app media player (YouTube IFrame API) -->
@@ -568,7 +586,7 @@ This video cannot be played inside the app.</string>
         <item quantity="other">Refreshes automatically every %1$d hours · works offline</item>
     </plurals>
 
-    <!-- Phone Limit (Quran tab → ⋮ menu → Set Phone Limit) -->
+    <!-- Phone Limit (More tab → Set Phone Limit) -->
     <string name="phone_limit_menu_title">Set Phone Limit</string>
     <string name="phone_limit_menu_note">Countdown that locks your phone when it expires — runs in the background</string>
     <string name="phone_limit_setup_title">Set Phone Limit</string>
@@ -588,7 +606,7 @@ This video cannot be played inside the app.</string>
     <string name="phone_limit_notification_channel_desc">Remaining time while a phone limit is running</string>
     <string name="phone_limit_expired_title">Time\'s up</string>
     <string name="phone_limit_expired_text">Your phone limit has ended.</string>
-    <string name="phone_limit_expired_no_admin_text">Your phone limit has ended, but the phone could not be locked — ClearView must be a Device Admin to lock the screen. Enable it from the app: Quran tab → ⋮ → Set Phone Limit.</string>
+    <string name="phone_limit_expired_no_admin_text">Your phone limit has ended, but the phone could not be locked — ClearView must be a Device Admin to lock the screen. Enable it from the app: More → Set Phone Limit.</string>
     <string name="phone_limit_requires_admin">To lock the phone when the timer ends, ClearView must be a Device Admin. Enable it below — the system settings will open.</string>
     <string name="phone_limit_enable_admin">Enable Device Admin</string>
     <string name="phone_limit_admin_explanation">Device Admin lets the app lock your phone when the phone limit reaches zero. No other device-management permission is used.</string>
@@ -727,9 +745,27 @@ This video cannot be played inside the app.</string>
     <!-- Starred messages (§9), on a channel's information page. -->
     <string name="goodpost_starred">Starred messages</string>
     <string name="goodpost_starred_none">Hold a post and choose Star to keep it here.</string>
+    <string name="goodpost_starred_search">Search starred messages</string>
+    <string name="goodpost_starred_no_matches">Nothing matched</string>
+    <string name="goodpost_starred_no_matches_note">No starred message contains that. Try a word from the message, or the channel\'s name.</string>
+    <plurals name="goodpost_starred_count">
+        <item quantity="one">%1$d message</item>
+        <item quantity="other">%1$d messages</item>
+    </plurals>
     <string name="goodpost_star">Star</string>
     <string name="goodpost_unstar">Remove star</string>
     <string name="goodpost_starred_added">Starred</string>
+    <!-- Reactions (§9).
+
+         "React" is the action offered on a selection; "React with …" is what one
+         chip says on its own, so a reader on a screen reader hears which emoji a
+         control would set rather than a row of identical buttons. -->
+    <string name="goodpost_react">React</string>
+    <string name="goodpost_react_with">React with %1$s</string>
+    <string name="goodpost_react_with_count">React with %1$s, %2$d in total</string>
+    <string name="goodpost_react_remove">Remove your %1$s reaction</string>
+    <string name="goodpost_error_reaction_failed">That reaction did not save. Please try again.</string>
+    <string name="goodpost_error_reactions_unavailable">Reactions are not available right now.</string>
     <string name="goodpost_starred_removed">Star removed</string>
 
     <!-- Managing what is on this device (§6, §15). -->

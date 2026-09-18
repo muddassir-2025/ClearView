@@ -8,6 +8,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.AddReaction
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Visibility
@@ -64,6 +67,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -97,6 +101,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostFormat
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostPost
+import com.muddassir.clearview.goodpost.data.GoodPostReaction
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import com.muddassir.clearview.goodpost.data.applyGoodPostFormat
@@ -355,6 +360,13 @@ internal fun GoodPostFeed(
                             is FeedEntry.Post -> PostItem(
                                 post = entry.post,
                                 selected = state.selectedPostIds.contains(entry.post.id),
+                                starred = entry.post.id in state.starredPostIds,
+                                // §9: tapping a chip on the card does what the
+                                // picker does for one post — sets this reader's
+                                // emoji on it, or takes it off when it is
+                                // already theirs.
+                                onReact = { emoji -> viewModel.react(entry.post, emoji) },
+                                reacting = entry.post.id in state.reactionBusyIds,
                                 onClick = {
                                     // In selection mode a tap adds to the
                                     // selection; otherwise a post has no tap
@@ -481,11 +493,32 @@ private fun PostSelectionBar(
     // Deleting is not a thing that happens on a tap any more (§5, §17).
     var confirmingDelete by remember { mutableStateOf(false) }
 
+    // §9: the emoji picker is open. Local, like the confirmation above and for
+    // the same reason — it is a step inside one gesture rather than a fact about
+    // the selection, and it must not outlive the bar it belongs to. Leaving the
+    // selection (or acting on it) discards this composable, and with it the flag.
+    var pickingReaction by remember { mutableStateOf(false) }
+
     Box {
     WaSelectionBar(
         count = state.selectedPostIds.size,
         onClose = viewModel::clearPostSelection,
         actions = {
+            // §9: one emoji for the WHOLE selection. Offered before the editor
+            // because it is the one action here that needs no permission:
+            // anybody who can read a channel can put a reaction on what it
+            // published, and the star beside it is the same kind of thing.
+            //
+            // Held back until the server has named its emoji (§9): the app keeps
+            // no copy of the list, so a control drawn before the answer arrives
+            // could not say what it does.
+            if (state.reactionEmoji.isNotEmpty()) {
+                WaIconAction(
+                    icon = Icons.Filled.AddReaction,
+                    description = stringResource(R.string.goodpost_react),
+                    onClick = { pickingReaction = !pickingReaction }
+                )
+            }
             if (editable && selected.size == 1) {
                 WaIconAction(
                     icon = Icons.Filled.Edit,
@@ -586,6 +619,23 @@ private fun PostSelectionBar(
         }
     )
 
+        // §9: the emoji row, on its own line above the action bar. It grows the
+        // bar rather than floating over the feed, so the update the reader just
+        // picked is never covered by the control that reacts to it.
+        if (pickingReaction && state.reactionEmoji.isNotEmpty()) {
+            ReactionPicker(
+                emoji = state.reactionEmoji,
+                onPick = { chosen ->
+                    // Closing first: the send clears the selection, which removes
+                    // this bar — and a flag written after that would be a write
+                    // into a composable that no longer exists.
+                    pickingReaction = false
+                    viewModel.reactToSelectedPosts(chosen)
+                },
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+        }
+
         if (confirmingDelete) {
             val count = state.selectedPostIds.size
             WaDeleteDialog(
@@ -629,6 +679,123 @@ private fun PostSelectionBar(
 private data class Shareable(val url: String, val kind: String, val contentType: String?)
 
 /**
+ * What readers have put on one post (§9).
+ *
+ * A single row of chips, the reader's own drawn differently: an emoji with no
+ * indication of whose it is leaves the reader tapping a control to find out what
+ * they already chose. Tapping a chip toggles that emoji, which is the same
+ * gesture the picker performs — one post at a time instead of a selection.
+ *
+ * No empty state: a post nobody has reacted to draws nothing at all, because a
+ * "no reactions yet" line under every update in a channel is furniture that has
+ * to be scrolled past to read the update above it.
+ */
+@Composable
+private fun ReactionRow(
+    reactions: List<GoodPostReaction>,
+    mine: String?,
+    enabled: Boolean,
+    onReact: ((String) -> Unit)?
+) {
+    val shown = reactions.filterNot { it.isEmpty }
+    if (shown.isEmpty()) return
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        shown.forEach { reaction ->
+            ReactionChip(
+                emoji = reaction.emoji,
+                count = reaction.count,
+                mine = reaction.emoji == mine,
+                enabled = enabled && onReact != null,
+                onClick = { onReact?.invoke(reaction.emoji) }
+            )
+        }
+    }
+}
+
+/**
+ * One emoji and its count (§9).
+ *
+ * Rounded to a pill rather than a square chip, so it reads as an attachment to
+ * the post the way a chat's reaction does. The count is compacted
+ * ([waCompactCount]) like every other number in the tab: "1.2K" fits beside an
+ * emoji where "1243" does not.
+ */
+@Composable
+private fun ReactionChip(
+    emoji: String,
+    count: Int,
+    mine: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val shape = RoundedCornerShape(50)
+
+    Row(
+        modifier = Modifier
+            .clip(shape)
+            .background(if (mine) Wa.Accent.copy(alpha = 0.18f) else Wa.Pressed)
+            .border(1.dp, if (mine) Wa.Accent else Color.Transparent, shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = emoji, fontSize = 12.sp)
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = waCompactCount(count),
+            color = if (mine) Wa.Accent else Wa.BubbleTime,
+            fontSize = 11.sp,
+            fontWeight = if (mine) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * The emoji a reader may choose from (§9).
+ *
+ * The list comes from the server, which is the only place it is defined: the app
+ * deliberately carries no copy, so a seventh emoji added to the API appears here
+ * without an app release. The shape is a bar rather than a dialog because this is
+ * a one-tap gesture on the thing behind it, and it sits above the action row
+ * instead of replacing it so the reader can see what they are reacting to.
+ */
+@Composable
+private fun ReactionPicker(
+    emoji: List<String>,
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .padding(bottom = 2.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(Wa.Bar)
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        emoji.forEach { face ->
+            Text(
+                text = face,
+                fontSize = 22.sp,
+                modifier = Modifier
+                    .clip(CircleShape)
+                    .clickable { onPick(face) }
+                    .padding(8.dp)
+            )
+        }
+    }
+}
+
+/**
  * How many files one share may carry.
  *
  * Not a technical limit — the intent can hold more — but past a handful the
@@ -637,6 +804,28 @@ private data class Shareable(val url: String, val kind: String, val contentType:
  * anybody shares in one gesture.
  */
 private const val SHARE_FILE_LIMIT = 10
+
+/**
+ * The box a post's picture is drawn in — width / height.
+ *
+ * Fixed rather than taken from each file, so every post with an image is the
+ * same shape (§18). 4:3 shows a whole typical photo without letterboxing it into
+ * a strip, and the crop loses only the edges of a portrait shot, whose full frame
+ * is one tap away in the viewer.
+ */
+private const val POST_PHOTO_ASPECT = 4f / 3f
+
+/** The same for video: 16:9, what a phone or a channel actually shoots in. */
+private const val POST_VIDEO_ASPECT = 16f / 9f
+
+/**
+ * How strongly a selected post is tinted.
+ *
+ * Measured against a dark bubble and a bright photo: light enough that the
+ * content underneath stays readable (the reader still needs to know WHICH post
+ * they picked), strong enough to be obvious at a glance in a scrolling list.
+ */
+internal const val WaSelectionScrim = 0.22f
 
 /**
  * A post's text, as something worth copying.
@@ -672,8 +861,27 @@ private fun GoodPostPost.copyText(): String = buildString {
 internal fun PostItem(
     post: GoodPostPost,
     selected: Boolean,
+    /**
+     * Whether this reader has starred the post (§9).
+     *
+     * Drawn on the card rather than only in the bar that acts on a selection: a
+     * star is a bookmark, and a bookmark that cannot be seen from the list it
+     * was made in is one the reader has to remember. Defaulted so a screen with
+     * no reader context — an administrator's own feed — draws nothing new.
+     */
+    starred: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    /**
+     * Reacts to this post with one emoji (§9).
+     *
+     * Null on a screen with no reader to attribute a reaction to — the starred
+     * list, an administrator's own preview — where the chips are drawn as plain
+     * counts instead of as controls that could only fail when tapped.
+     */
+    onReact: ((String) -> Unit)? = null,
+    /** True while a reaction for this post is on its way to the server (§9). */
+    reacting: Boolean = false,
     /** Opens one of this post's attachments in the app (§9). */
     onOpenMedia: (GoodPostMedia) -> Unit,
     /**
@@ -698,37 +906,65 @@ internal fun PostItem(
     // The selection fill is on this wrapper rather than inside the bubble: the
     // bubble paints its own background over whatever it is given, so a highlight
     // passed inwards would be covered by the very container it is meant to mark.
+    // That is also why the selection LAYER is painted in `drawWithContent` below
+    // instead of being a tint behind the content — behind it is invisible.
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(if (selected) Wa.Selected else Color.Transparent)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .drawWithContent {
+                drawContent()
+                // §5: the layer a selected post gets, like a selected message in
+                // a chat. Over the whole card — bubble, photo, video poster — so
+                // "this one is picked" is visible from the picture alone.
+                if (selected) drawRect(color = Wa.Accent.copy(alpha = WaSelectionScrim))
+            }
     ) {
         WaPostContainer {
             post.media.forEach { asset ->
                 if (asset.isImage) {
                     RemoteImage(
                         url = asset.url,
+                        // A fixed box, not the file's own proportions (§18). Every
+                        // post that carries a picture is then the same height, so
+                        // the feed does not step up and down it as the reader
+                        // scrolls, and one post's photo can never push the next
+                        // post's text off the screen. Cropped to fill, like the
+                        // preview in a chat; the full frame is one tap away.
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(min = 180.dp, max = 420.dp)
+                            .aspectRatio(POST_PHOTO_ASPECT)
                             .clip(RoundedCornerShape(8.dp))
                             // A photo opens full size in the app, and can be kept
                             // from there (§15). It used to do nothing at all,
                             // which read as a broken image rather than a picture
                             // that simply is not interactive.
-                            .clickable(enabled = !asset.url.isNullOrBlank()) {
-                                onOpenMedia(asset)
-                            }
+                            //
+                            // Holding it selects the post, because the picture is
+                            // the biggest part of it to aim at: a tap it answers
+                            // itself, a hold it passes back up to the bubble.
+                            .combinedClickable(
+                                enabled = !asset.url.isNullOrBlank(),
+                                onClick = { onOpenMedia(asset) },
+                                onLongClick = onLongClick
+                            )
                     )
                     Spacer(Modifier.height(4.dp))
                 } else {
                     InlineVideoCard(
                         url = asset.url.orEmpty(),
-                        aspect = aspectOf(asset.width, asset.height),
+                        // Fixed as well, and letterboxed rather than cropped when
+                        // the file disagrees: cropping a portrait clip hides the
+                        // half of it the channel shot.
+                        aspect = POST_VIDEO_ASPECT,
                         onOpen = { from -> onOpenMediaAt(asset, from) },
-                        onRefreshUrl = onRefreshMedia
+                        onRefreshUrl = onRefreshMedia,
+                        // §5: the card paints its own selection layer — see
+                        // the sheets inside [InlineVideoCard].
+                        selected = selected,
+                        onLongPress = onLongClick
                     )
                     Spacer(Modifier.height(4.dp))
                 }
@@ -774,6 +1010,18 @@ internal fun PostItem(
                 )
             }
 
+            // §9: what readers have put on this update. Inside the bubble and
+            // above the timestamp, which is where a chat shows a reaction — it
+            // belongs to the post it is on, not to the list around it.
+            if (post.reactions.isNotEmpty()) {
+                ReactionRow(
+                    reactions = post.reactions,
+                    mine = post.myReaction,
+                    enabled = onReact != null && !reacting,
+                    onReact = onReact
+                )
+            }
+
             Spacer(Modifier.height(2.dp))
 
             Row(
@@ -786,12 +1034,34 @@ internal fun PostItem(
                 // it before should not have to wonder whether they misremembered
                 // it. There is no other furniture in this row: what a post can do
                 // is reached by holding it (§5).
+                if (starred) {
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = stringResource(R.string.goodpost_starred),
+                        tint = Wa.BubbleTime,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                }
                 if (post.editedAt != null) {
                     Text(
                         text = stringResource(R.string.goodpost_edited),
                         color = Wa.BubbleTime,
                         fontSize = 11.sp
                     )
+                }
+                if (selected) {
+                    // The tick sits in the meta row, where a reader looks for
+                    // "what happened to this message" — the same place a chat
+                    // puts read receipts. The layer above already says it is
+                    // picked; this says it without relying on colour alone.
+                    Icon(
+                        Icons.Filled.CheckCircle,
+                        contentDescription = stringResource(R.string.goodpost_selected),
+                        tint = Wa.Accent,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(Modifier.width(5.dp))
                 }
                 Spacer(Modifier.weight(1f))
 
@@ -852,8 +1122,11 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
             modifier = modifier.clip(RoundedCornerShape(11.dp))
         )
     } else {
+        // The same box the picture will occupy, so the load is a fade rather
+        // than a resize — the placeholder is the caller's modifier, sizing and
+        // all, not a size of its own.
         WaMediaPlaceholder(
-            modifier = modifier.aspectRatio(1.4f),
+            modifier = modifier,
             icon = Icons.Filled.Link,
             label = if (url.isNullOrBlank()) {
                 stringResource(R.string.goodpost_media_unavailable)

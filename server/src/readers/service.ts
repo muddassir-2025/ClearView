@@ -408,7 +408,14 @@ async function unreadCountOf(
 }
 
 /** A channel a reader may act on: it exists and it is open. */
-async function requireActiveChannel(
+/**
+ * The channel a reader-scoped path names, from an id or a slug.
+ *
+ * Exported because the reaction routes resolve a channel the same way a follow
+ * does, and one resolver is what keeps "which channel is this" answering the
+ * same 404 to every reader-facing path.
+ */
+export async function requireActiveChannel(
   database: Queryable,
   idOrSlug: string
 ): Promise<{ id: string }> {

@@ -4,6 +4,7 @@ import android.content.Context
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.widget.TodoWidgetProvider
 import java.time.LocalDate
+import java.time.ZoneId
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
@@ -156,6 +157,43 @@ class TodoStore(context: Context) {
         prefs.edit().putString(KEY_SCHEDULED_ALARMS, o.toString()).apply()
     }
 
+    // ── Reminder acknowledgements ──────────────────────────────────
+    //
+    // Which reminder moments the reader has already been SHOWN, so the count on
+    // the notification bell can go away when the centre is opened. A todo cannot
+    // be "read" the way a channel update can — the work is either done or it is
+    // not — so the badge and the list have to mean different things: the list
+    // keeps saying the todo is due today (it is), while the number stops counting
+    // it once the reader has looked.
+    //
+    // The key is the todo AND the moment it spoke, not just the todo, which is
+    // what makes it re-arm by itself: tomorrow's 4:55 is a different moment, so
+    // tomorrow's reminder counts again without anything having to reset it.
+
+    /** Reminder moments already shown: "todoId#momentMillis". */
+    fun getSeenReminders(): Set<String> =
+        prefs.getStringSet(KEY_SEEN_REMINDERS, emptySet()) ?: emptySet()
+
+    /**
+     * Records that the reader has now seen [keys].
+     *
+     * Prunes as it writes: a key's moment is part of the key, so anything from
+     * before today can never be looked up again — keeping those would grow the set
+     * by one entry per todo per day forever. Parsing a key back out is the price,
+     * and it is paid once per open rather than once per read.
+     */
+    fun markRemindersSeen(keys: Collection<String>) {
+        if (keys.isEmpty()) return
+        val startOfToday = LocalDate.now().atStartOfDay(ZoneId.systemDefault())
+            .toInstant().toEpochMilli()
+        val kept = getSeenReminders().filterTo(mutableSetOf()) { key ->
+            val moment = key.substringAfterLast('#').toLongOrNull()
+            moment != null && moment >= startOfToday
+        }
+        kept.addAll(keys)
+        prefs.edit().putStringSet(KEY_SEEN_REMINDERS, kept).apply()
+    }
+
     // ── Snoozed-reminder tracking ──────────────────────────────────
     //
     // A snooze re-schedules an occurrence to now+delay with the SAME request
@@ -225,5 +263,6 @@ class TodoStore(context: Context) {
         private const val KEY_SCHEDULED_ALARMS = "scheduled_alarms"
         private const val KEY_SNOOZED_REMINDERS = "snoozed_reminders"
         private const val KEY_PROGRESS_CARD_NAME = "progress_card_name"
+        private const val KEY_SEEN_REMINDERS = "seen_reminders"
     }
 }

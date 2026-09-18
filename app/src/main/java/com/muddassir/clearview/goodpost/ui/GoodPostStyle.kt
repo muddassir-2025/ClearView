@@ -1471,6 +1471,12 @@ internal fun goodPostErrorText(code: String): String {
         "starred" -> return stringResource(R.string.goodpost_starred_added)
         "unstarred" -> return stringResource(R.string.goodpost_starred_removed)
         "deleted_from_device" -> return stringResource(R.string.goodpost_deleted_from_device)
+        // §9: a reaction that did not save, and reactions this deployment cannot
+        // take at all. The second is not the reader's fault and not worth a
+        // retry, so it says so instead of blaming the network.
+        "reaction_failed" -> return stringResource(R.string.goodpost_error_reaction_failed)
+        "reactions_unavailable" ->
+            return stringResource(R.string.goodpost_error_reactions_unavailable)
     }
 
     val error = goodPostErrorFor(code)

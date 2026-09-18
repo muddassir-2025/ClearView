@@ -55,9 +55,10 @@ import kotlinx.coroutines.delay
  * English translation — plus Previous/Next verse navigation (wrapping across
  * surah boundaries) and subtle actions (New Verse / Copy).
  *
- * The refresh-frequency picker, the Media/Quran notification toggles and the
- * updates feed live in the top-bar Settings / Notifications sheets instead,
- * so the home page stays a clean verse reader.
+ * The refresh-frequency picker and the notification toggles live in the
+ * top-bar Settings sheet, the notification feed behind the bell beside it, and
+ * the To Do / Dhikr / Phone Limit features in the More tab — so the home page
+ * stays a clean verse reader.
  *
  * Below the verse actions sits the Umm al-Qura Islamic date (Saudi Arabia
  * default calendar) with a small edit icon that opens the ±1 day adjustment

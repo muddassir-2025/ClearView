@@ -7,7 +7,47 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: video, device deletes, stars, notifications, tab list
+## Latest pass: reactions, and a video card that answers the bubble
+
+* **Reactions are real rows.** `post_reactions` (migration 006) holds one emoji
+  per reader per post, so reacting again is an UPDATE and not a second row. The
+  API publishes its own vocabulary (`GET /api/v1/readers/reactions` — the six
+  emoji, no token needed) and the app carries **no copy of it**: a seventh emoji
+  added on the server appears without an app release, and an app cannot offer one
+  the API would refuse. Counts ride on the public post payload; a reader's own
+  choice travels separately (`GET /api/v1/readers/me/reactions/:channel`), because
+  the public read takes no credential and must not pretend to know who is asking.
+* **Reacting is one gesture in two places.** Tapping a chip on a card toggles
+  that emoji for that post. Picking several posts and tapping **React** in the
+  selection bar puts one emoji on all of them — and takes it off all of them only
+  when every selected post already carries it, which is the same rule the star
+  uses. Each send is optimistic and corrected by the server's own count.
+* **A video card answers the bubble now.** `PlayerView` is a real Android view
+  inside the composition, and a real view is composited *above* the Compose
+  content drawn around it: the bubble's selection tint never appeared on a clip,
+  and a press that landed on the surface was answered by the player rather than
+  by the bubble — holding a clip did nothing at all. The card now carries its own
+  transparent gesture sheet and its own tint, both drawn above the player and
+  below the elapsed-time readout and the speaker, which keep their own taps.
+* **Reactions, starred messages and views are inside the post card**, where the
+  reader looks for them, and the channel list card keeps only what a list needs.
+
+## Previous pass: fixed media, a selection layer, and holding the media
+
+* **Media is drawn in a fixed box.** A post's picture occupies 4:3 (cropped to
+  fill) and its video 16:9 (letterboxed), whatever the file's own dimensions are
+  — so the feed does not step up and down as it is scrolled, and no photo can
+  push the next post off the screen. The full frame is one tap away in the
+  viewer.
+* **Selecting shows.** A selected post is tinted by a layer painted *over* the
+  bubble (`drawWithContent`, so it covers a photo and a video poster too) and a
+  tick appears in its meta row. The tint used to be drawn behind the bubble,
+  where the bubble's own background hid it — selecting a post changed nothing on
+  screen.
+* **Holding the media selects the post.** A photo passes a long press up to the
+  bubble, so the biggest part of a post to aim at is also a way to pick it up.
+
+## Previous pass: video, device deletes, stars, notifications, tab list
 
 * **Video plays inline.** Feed cards autoplay muted, only while mostly on screen
   and only while the app is in front, and only one card can have sound. Tapping
@@ -178,6 +218,10 @@ request body.
 | `POST` | `/api/v1/me/following/:idOrSlug` | Follow a channel |
 | `DELETE` | `/api/v1/me/following/:idOrSlug` | Unfollow it |
 | `POST` | `/api/v1/me/following/:idOrSlug/read` | Mark it read, which clears its badge |
+| `GET` | `/api/v1/readers/reactions` | §9: the emoji this deployment offers. No token — it is the same six for everybody, and a client that is about to sign in still has to draw them |
+| `GET` | `/api/v1/me/reactions/:idOrSlug` | §9: the caller's own reactions in one channel, as post → emoji |
+| `PUT` | `/api/v1/me/reactions/:postId` | §9: set or change the caller's reaction on one post |
+| `DELETE` | `/api/v1/me/reactions/:postId` | §9: take it off. The emoji may travel as `?emoji=`, only so the answer can carry that emoji's new count |
 
 A deployment with no `FIREBASE_PROJECT_ID` still serves the whole public read
 API and answers these routes with `auth_unavailable` — a supported state rather
@@ -227,7 +271,7 @@ channel exists.
 
 ### Database (Neon PostgreSQL)
 
-Five tables, and there is nothing else:
+Eleven tables, and there is nothing else:
 
 | Table | Holds |
 |---|---|
@@ -240,13 +284,18 @@ Five tables, and there is nothing else:
 | `admin_audit_logs` | Append-only record of every administrative action, with a hashed IP |
 | `readers` | The anonymous uid, and when it was last seen. **No email, no name, no phone, no profile** |
 | `channel_follows` | reader → channel, plus muted and last-read-at |
+| `reader_devices` | FCM registration tokens, so a channel's update can be pushed (§8) |
+| `post_reactions` | post + reader + one emoji, `UNIQUE (post_id, reader_id)`. The emoji is checked against the API's own list by a constraint, so drift is a failed insert and not a seventh chip nobody planned |
 
-There is no `users`, no `post_reactions`, no `post_views`, no `notifications`,
-no `device_tokens`, and no `admin_users.phone_hash` or `posts.deleted_reason`.
-The schema is `server/migrations/001_init.sql` (the seven publishing tables),
-`002_readers.sql` (the two reader tables) and `003_creator_accounts.sql` (which
-makes `password_hash` nullable and adds the unique `firebase_uid`) — nine tables
-in all. A reader who never follows anything has a row in none of them.
+There is no `users`, no `notifications`, no follower graph to speak of, and no
+`admin_users.phone_hash` or `posts.deleted_reason`. A post's view counter is a
+column on `posts` (004), not a table of reads, because nothing asks WHO read an
+update — only how many opened it. The schema is `001_init.sql` (the seven
+publishing tables), `002_readers.sql` (readers and follows),
+`003_creator_accounts.sql` (nullable `password_hash`, unique `firebase_uid`),
+`004_post_views.sql` (the counter), `005_reader_devices.sql` (push tokens) and
+`006_post_reactions.sql` — eleven tables in all. A reader who never follows
+anything, reacts to nothing and installs nothing has a row in none of them.
 
 **One identity can be linked to one account (§16).** A sign-in is matched by
 `firebase_uid`; failing that, it may be matched onto an administrator that

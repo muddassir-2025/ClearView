@@ -299,8 +299,8 @@ internal fun GoodPostChannelInfo(
             Spacer(Modifier.height(24.dp))
 
             StarredMessages(
-                entries = state.starred,
-                onOpenChannel = { viewModel.openChannel(channel.id) }
+                count = state.starred.size,
+                onOpen = { viewModel.openStarred(channel.id) }
             )
 
             Spacer(Modifier.height(40.dp))
@@ -326,23 +326,25 @@ internal fun GoodPostChannelInfo(
 }
 
 /**
- * The reader's own bookmarks for this channel (§9, §11).
+ * The reader's own bookmarks for this channel (§9, §11), as an entry point.
  *
- * Local, and built from the copy the star kept rather than from the post: the
- * rows stay readable after the server's thirty-day window has passed (§14) and
- * they cost no request to draw, which is what makes them belong on a page that
- * is otherwise a channel's public face.
- *
- * Tapping one opens the channel. The post itself may be past retention, so a
- * deep link to a row that no longer exists would be the less honest of the two.
+ * Local, and it costs no request to draw — the stars are on this device, so a
+ * channel's public page can say how many there are without asking the server
+ * anything. The LIST is one tap away rather than on this page: it was inline
+ * here, and a reader with forty stars turned a channel's information page into
+ * a scroll (§11). The count stays, because knowing whether it is worth opening
+ * is the whole reason to show the row at all.
  */
 @Composable
 private fun StarredMessages(
-    entries: List<GoodPostStarredEntry>,
-    onOpenChannel: () -> Unit
+    count: Int,
+    onOpen: () -> Unit
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
@@ -352,63 +354,31 @@ private fun StarredMessages(
             modifier = Modifier.size(20.dp)
         )
         Spacer(Modifier.width(12.dp))
-        Text(
-            text = stringResource(R.string.goodpost_starred),
-            color = Wa.Text,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.weight(1f)
-        )
-        if (entries.isNotEmpty()) {
-            Text(text = "${entries.size}", color = Wa.TextDim, fontSize = 14.sp)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.goodpost_starred),
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = if (count == 0) {
+                    stringResource(R.string.goodpost_starred_none)
+                } else {
+                    pluralStringResource(R.plurals.goodpost_starred_count, count, count)
+                },
+                color = Wa.TextDim,
+                fontSize = 13.sp
+            )
         }
-    }
-
-    Spacer(Modifier.height(8.dp))
-
-    if (entries.isEmpty()) {
-        Text(
-            text = stringResource(R.string.goodpost_starred_none),
-            modifier = Modifier.padding(horizontal = 20.dp),
-            color = Wa.TextDim,
-            fontSize = 13.sp
+        Icon(
+            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null,
+            tint = Wa.TextDim,
+            modifier = Modifier.size(20.dp)
         )
-        return
     }
-
-    entries.forEach { entry ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onOpenChannel)
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = entry.body?.takeIf { it.isNotBlank() }
-                        ?: stringResource(mediaEntryLabel(entry.kind)),
-                    color = Wa.Text,
-                    fontSize = 14.sp,
-                    maxLines = 2
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    text = waListStamp(parseIsoMillis(entry.createdAt)),
-                    color = Wa.TextDim,
-                    fontSize = 12.sp
-                )
-            }
-        }
-    }
-}
-
-/** The word a media-only starred row is described by. */
-private fun mediaEntryLabel(kind: String): Int = when (kind) {
-    "image" -> R.string.goodpost_posted_photo
-    "video" -> R.string.goodpost_posted_video
-    "link" -> R.string.goodpost_posted_link
-    else -> R.string.goodpost_posted_something
 }
 
 /**

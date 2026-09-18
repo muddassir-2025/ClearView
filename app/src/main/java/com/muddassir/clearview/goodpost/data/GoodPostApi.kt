@@ -245,6 +245,75 @@ class GoodPostApi(
             parse = { }
         )
 
+    // ── Reactions (§9) ──────────────────────────────────────────────────
+
+    /**
+     * The emoji the product offers (§9).
+     *
+     * Fetched rather than hard-coded in the app: the server refuses anything
+     * outside its own list, and an app carrying a copy of it would one day offer
+     * a seventh emoji the server rejects — a button that always fails. No token:
+     * it is the same six for everybody.
+     */
+    suspend fun reactionEmoji(): ApiResult<List<String>> =
+        parsedGet("$READER_PATH/reactions", GoodPostCodec::reactionVocabulary)
+
+    /**
+     * The caller's own reactions in one channel (§9).
+     *
+     * A second, tiny read alongside the public posts, because the public payload
+     * cannot carry per-reader state — it answers without a token by design. The
+     * app merges the two when it opens a channel.
+     */
+    suspend fun myReactions(token: String, idOrSlug: String): ApiResult<Map<String, String>> =
+        parsedCall(
+            "GET",
+            "$READER_PATH/me/reactions/${encode(idOrSlug)}",
+            null,
+            token,
+            GoodPostCodec::readerReactions
+        )
+
+    /**
+     * React to a post, or change the reaction (§9).
+     *
+     * PUT: the path names the reader's reaction to one post and the body is the
+     * value, so repeating it is the same state rather than a second reaction.
+     */
+    suspend fun react(
+        token: String,
+        postId: String,
+        emoji: String
+    ): ApiResult<GoodPostReactionResult> =
+        parsedCall(
+            "PUT",
+            "$READER_PATH/me/reactions/${encode(postId)}",
+            JSONObject().put("emoji", emoji),
+            token,
+            ::reactionBody
+        )
+
+    /**
+     * Take the reaction back off (§9).
+     *
+     * The emoji the app was showing travels as a query parameter, so the answer
+     * can carry the count of THAT emoji — the number currently on screen, which is
+     * the one the card has to correct.
+     */
+    suspend fun unreact(
+        token: String,
+        postId: String,
+        emoji: String?
+    ): ApiResult<GoodPostReactionResult> =
+        parsedCall(
+            "DELETE",
+            "$READER_PATH/me/reactions/${encode(postId)}" +
+                (emoji?.takeIf { it.isNotBlank() }?.let { "?emoji=${encode(it)}" } ?: ""),
+            null,
+            token,
+            ::reactionBody
+        )
+
     /**
      * Clear a channel's unread badge (§5): the reader has opened it.
      *
@@ -270,6 +339,16 @@ class GoodPostApi(
      */
     private fun followBody(body: JSONObject): GoodPostFollow =
         GoodPostCodec.follow(body) ?: throw ContractBreak()
+
+    /**
+     * A `{ reaction: {...} }` body, or a contract break.
+     *
+     * The count is the reason the answer is read at all, so a body without one is
+     * not "no reaction" — it is an answer this client cannot use, and the same
+     * retryable failure as any other unreadable 2xx.
+     */
+    private fun reactionBody(body: JSONObject): GoodPostReactionResult =
+        GoodPostCodec.reactionResult(body) ?: throw ContractBreak()
 
     /** One channel, by uuid or by the slug a share link carries (§6). */
     suspend fun channel(idOrSlug: String): ApiResult<GoodPostChannel> =

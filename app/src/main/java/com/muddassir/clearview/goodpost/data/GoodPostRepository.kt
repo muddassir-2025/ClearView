@@ -158,6 +158,48 @@ internal class GoodPostRepository(
         return api.markChannelRead(token, idOrSlug)
     }
 
+    // ── Reactions (§9) ──────────────────────────────────────────────────
+
+    /**
+     * The emoji the server offers (§9).
+     *
+     * Not reader-scoped and not cached: it is six characters fetched once when
+     * the app first needs them, and caching would be a second copy of the
+     * server's own list to keep in step.
+     */
+    suspend fun reactionEmoji(): ApiResult<List<String>> = api.reactionEmoji()
+
+    /**
+     * This reader's reactions in one channel (§9).
+     *
+     * Merged onto the public posts by the ViewModel, because the two answers
+     * cannot come from one request: the posts are readable with no token at all,
+     * and a reader's own choices are only knowable to somebody who has proved
+     * they are that reader.
+     *
+     * A missing identity is NOT an error here — a reader with no token simply has
+     * no reactions to show, and the counts (which are public) still draw.
+     */
+    suspend fun myReactions(idOrSlug: String): Map<String, String> {
+        val token = identity.token() ?: return emptyMap()
+        return when (val result = api.myReactions(token, idOrSlug)) {
+            is ApiResult.Ok -> result.value
+            else -> emptyMap()
+        }
+    }
+
+    /** React to a post, or change the reaction (§9). */
+    suspend fun react(postId: String, emoji: String): ApiResult<GoodPostReactionResult> {
+        val token = identity.token() ?: return unverified()
+        return api.react(token, postId, emoji)
+    }
+
+    /** Take this reader's reaction back off a post (§9). */
+    suspend fun unreact(postId: String, emoji: String?): ApiResult<GoodPostReactionResult> {
+        val token = identity.token() ?: return unverified()
+        return api.unreact(token, postId, emoji)
+    }
+
     /**
      * One post, re-read (§9).
      *

@@ -2,7 +2,9 @@ package com.muddassir.clearview.goodpost.ui
 
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -162,7 +164,7 @@ private enum class InlineVideoState { Idle, Loading, Playing, Ended, Failed }
  * audible at once. Playback is gated on how much of the card is on screen, and
  * released outright when the app is backgrounded.
  */
-@OptIn(UnstableApi::class)
+@OptIn(UnstableApi::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun InlineVideoCard(
     url: String,
@@ -183,15 +185,34 @@ internal fun InlineVideoCard(
      * lease, and the only honest retry is a newer one.
      */
     onRefreshUrl: () -> Unit = {},
+    /**
+     * Holding the clip selects the post, like holding any other part of it.
+     *
+     * A press on a clip is answered by the player inside the card rather than by
+     * the bubble above it (see the sheets below), so without this, holding a
+     * clip was the one place in the feed where the post could not be picked up.
+     */
+    onLongPress: () -> Unit = {},
+    /**
+     * The reader has picked this post (§5).
+     *
+     * Painted inside the card, above the player, rather than left to the bubble's
+     * own layer — because a clip is drawn by a real Android view, which composites
+     * above the Compose content around it. A tint the bubble paints over this card
+     * is a tint nobody sees on the video itself.
+     */
+    selected: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     if (url.isBlank()) {
         // Nothing to play and nothing to try. The post is still worth showing —
         // it may carry text — so the card says what is missing and stays quiet.
+        // The same fixed box a playable clip gets, so a broken one is not a
+        // differently-shaped hole in the feed.
         WaMediaPlaceholder(
             modifier = modifier
                 .fillMaxWidth()
-                .height(180.dp),
+                .let { base -> if (aspect != null) base.aspectRatio(aspect) else base.height(220.dp) },
             icon = Icons.Filled.PlayArrow,
             label = stringResource(R.string.goodpost_media_unavailable)
         )
@@ -356,11 +377,7 @@ internal fun InlineVideoCard(
                 val shown = (min(bounds.bottom, window) - max(bounds.top, 0f)).coerceAtLeast(0f)
                 val mostly = shown / bounds.height >= 0.6f
                 if (mostly != visible) visible = mostly
-            }
-            // The tap is "show me this properly", which is the whole card's job.
-            // The speaker below consumes its own tap, so it is not a second
-            // meaning for the same gesture. The playhead goes with it.
-            .clickable { onOpen(position) },
+            },
         contentAlignment = Alignment.Center
     ) {
         AndroidView(
@@ -373,6 +390,37 @@ internal fun InlineVideoCard(
                 }
             },
             modifier = Modifier.fillMaxSize()
+        )
+
+        // §5, §9: the selection layer and the card's own gestures, both on sheets
+        // ABOVE the player.
+        //
+        // PlayerView is a real Android view inside this composition, and a real
+        // view is composited over the Compose content drawn around it: a tint the
+        // bubble paints over the card does not show on the video, and a press that
+        // lands on the surface is answered by the player rather than by the bubble
+        // above it. Drawn here — after the player, before the readouts — the tint
+        // is visible over the clip and the sheets are asked first for a press
+        // anywhere on the card, while the elapsed time and the speaker still sit
+        // above them and keep their own taps.
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Wa.Accent.copy(alpha = WaSelectionScrim))
+            )
+        }
+
+        // The tap is "show me this properly", which is the whole card's job. The
+        // hold is the selection gesture the rest of the post already answers to,
+        // and it has to be here for the same reason the tint does.
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .combinedClickable(
+                    onClick = { onOpen(position) },
+                    onLongClick = onLongPress
+                )
         )
 
         when (state) {
