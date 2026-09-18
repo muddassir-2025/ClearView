@@ -157,6 +157,15 @@
     <string name="quran_reader_english">English</string>
     <!-- Jumps to the next verse matching the field's term, wrapping at the end. -->
     <string name="quran_reader_matches_next">Next match</string>
+    <!-- Hands-free reading: the surah scrolls itself at a pace the reader picks.
+         The icon opens a menu of paces; "Off" is one of them, so stopping is the
+         same gesture as choosing, and nothing needs a second control. -->
+    <string name="quran_reader_auto_scroll">Auto scroll</string>
+    <string name="quran_scroll_speed">Scroll speed</string>
+    <string name="quran_scroll_off">Off</string>
+    <string name="quran_scroll_slow">Slow</string>
+    <string name="quran_scroll_normal">Normal</string>
+    <string name="quran_scroll_fast">Fast</string>
     <plurals name="quran_search_results_count">
         <item quantity="one">%1$d result</item>
         <item quantity="other">%1$d results</item>

@@ -7,9 +7,12 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -41,12 +44,14 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Campaign
@@ -56,11 +61,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -75,12 +83,16 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -451,6 +463,12 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // it — so the icon is there when it is wanted, and the Quran is what is on
     // screen when it is not.
     var readerSearchOpen by remember { mutableStateOf(false) }
+    // Hands-free reading (§1): how fast the open surah scrolls itself, and whether
+    // its speed menu is showing. Owned here rather than inside the reader because
+    // the ICON lives in this row of chrome — one owner for a control and its
+    // state, or the check mark and the page can disagree.
+    var readerSpeed by remember { mutableStateOf(QuranScrollSpeed.OFF) }
+    var readerSpeedMenu by remember { mutableStateOf(false) }
     val tab = state.quranSheetTab
     val openSurah = state.openSurahNumber
     val keyboard = LocalSoftwareKeyboardController.current
@@ -499,6 +517,10 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // search term still narrowing it (§10).
     LaunchedEffect(openSurah) {
         readerSearchOpen = false
+        // A new surah starts still. Resuming a scroll the reader started in the
+        // LAST surah would move text they have not read a word of yet.
+        readerSpeed = QuranScrollSpeed.OFF
+        readerSpeedMenu = false
         // And the term itself goes with it. Leaving it behind meant the NEXT time
         // the field was opened it came back pre-filled, narrowing a surah the
         // reader had not typed anything into.
@@ -606,11 +628,72 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                                 query = ""
                                 keyboard?.hide()
                             }
+                            // Typing inside a surah is not reading it: the page
+                            // must not keep sliding along under a keyboard.
+                            if (readerSearchOpen) readerSpeed = QuranScrollSpeed.OFF
                         }) {
                             Icon(
                                 if (readerSearchOpen) Icons.Filled.Close else Icons.Filled.Search,
                                 contentDescription = stringResource(R.string.quran_reader_search)
                             )
+                        }
+
+                        // §1: hands-free reading. Beside the search icon, in the
+                        // same row the reader is already looking at, and tinted
+                        // while it is running — a page that drifts on its own with
+                        // nothing on screen saying why is a page that looks broken.
+                        Box {
+                            IconButton(onClick = { readerSpeedMenu = true }) {
+                                Icon(
+                                    Icons.Filled.Speed,
+                                    contentDescription = stringResource(
+                                        R.string.quran_reader_auto_scroll
+                                    ),
+                                    tint = if (readerSpeed == QuranScrollSpeed.OFF) {
+                                        LocalContentColor.current
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    }
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = readerSpeedMenu,
+                                onDismissRequest = { readerSpeedMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = stringResource(R.string.quran_scroll_speed),
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    },
+                                    // A heading, not a choice: the paces below are
+                                    // the menu, and Off is one of them rather than
+                                    // a separate switch.
+                                    enabled = false,
+                                    onClick = {}
+                                )
+                                QuranScrollSpeed.entries.forEach { option ->
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(option.label)) },
+                                        trailingIcon = {
+                                            if (option == readerSpeed) {
+                                                Icon(
+                                                    Icons.Filled.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            readerSpeedMenu = false
+                                            readerSpeed = option
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -668,7 +751,9 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                     SurahReader(
                         state = state,
                         surahNumber = openSurah,
-                        query = query
+                        query = query,
+                        speed = readerSpeed,
+                        onSpeedChange = { readerSpeed = it }
                     )
                     return@Column
                 }
@@ -865,6 +950,26 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
 private enum class QuranReadMode { ARABIC, ENGLISH }
 
 /**
+ * How fast the reader scrolls itself, once the reader has asked it to.
+ *
+ * A rate rather than a "slow / normal / fast" multiplier: what a person judges
+ * is how long a line takes to pass, and only a rate says that. The three paces
+ * are about a line a second at the bottom end and roughly two at the top, which
+ * is already faster than anybody reads — the fast end is for finding a place,
+ * not for following the text.
+ *
+ * [OFF] is a member rather than a separate flag so that stopping and choosing
+ * are ONE control: the icon opens a list, the list is where "stop" lives, and
+ * there is no second button to explain.
+ */
+private enum class QuranScrollSpeed(val dpPerSecond: Float, @StringRes val label: Int) {
+    OFF(0f, R.string.quran_scroll_off),
+    SLOW(15f, R.string.quran_scroll_slow),
+    NORMAL(28f, R.string.quran_scroll_normal),
+    FAST(48f, R.string.quran_scroll_fast),
+}
+
+/**
  * The surah reader (§1–§10): one continuous scroll of scripture.
  *
  * It used to be a column of rounded CARDS, one per verse, each with its own
@@ -887,7 +992,16 @@ private enum class QuranReadMode { ARABIC, ENGLISH }
 private fun SurahReader(
     state: ContentHubState,
     surahNumber: Int,
-    query: String
+    query: String,
+    /**
+     * How fast the text should scroll itself, owned by the top bar's speed menu
+     * above this reader rather than here — the control and the state belong to
+     * the same row of chrome, and splitting them across two composables is how a
+     * check mark ends up disagreeing with what the page is doing.
+     */
+    speed: QuranScrollSpeed,
+    /** Called when the reader's own hand, or the end of the surah, stops it. */
+    onSpeedChange: (QuranScrollSpeed) -> Unit
 ) {
     var verses by remember(surahNumber) { mutableStateOf<List<QuranVerse>?>(null) }
     // Arabic first: this is the Quran, and the translation is what a reader turns
@@ -901,6 +1015,7 @@ private fun SurahReader(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val density = LocalDensity.current
 
     // Parsed once per surah per process (the state caches it), off the main
     // thread — a 286-verse surah is a real parse.
@@ -935,6 +1050,44 @@ private fun SurahReader(
     // A new term starts the count over, so "next" means the first match of what is
     // in the box rather than a position left over from the previous word.
     LaunchedEffect(q, all) { matchCursor = 0 }
+
+    // ── Hands-free reading (§1) ──
+    //
+    // Per FRAME rather than per tick of a timer, and from the time each frame
+    // actually took: a fixed `delay` drifts against the display, and a scroll
+    // driven by "how many milliseconds I meant to wait" runs at a different speed
+    // on a 120Hz phone than on a 60Hz one. The remainder is carried rather than
+    // dropped, because a slow pace is well under one pixel per frame — truncating
+    // it every time would leave the page perfectly still at exactly the pace a
+    // reader is most likely to want.
+    //
+    // It stops itself at the end of the surah: a menu that still says the text is
+    // moving, over text that has nowhere left to go, is a control that has stopped
+    // telling the truth.
+    LaunchedEffect(speed, listState, all) {
+        if (speed == QuranScrollSpeed.OFF || all == null) return@LaunchedEffect
+        val pxPerSecond = with(density) { speed.dpPerSecond.dp.toPx() }
+
+        var previous = withFrameNanos { it }
+        var carry = 0f
+        while (true) {
+            val now = withFrameNanos { it }
+            val seconds = (now - previous) / 1_000_000_000f
+            previous = now
+
+            if (!listState.canScrollForward) {
+                onSpeedChange(QuranScrollSpeed.OFF)
+                break
+            }
+
+            carry += pxPerSecond * seconds
+            val whole = carry.toInt()
+            if (whole > 0) {
+                carry -= whole
+                listState.scrollBy(whole.toFloat())
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // ── What is open ──
@@ -1052,7 +1205,29 @@ private fun SurahReader(
 
             else -> LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    // A finger on the page stops it. The reader who reaches in is
+                    // reading something or looking for something, and text moving
+                    // under their hand is the one thing auto-scroll must never do;
+                    // it also means a tap to open a verse's actions does not fight
+                    // the scroll that is carrying it away.
+                    //
+                    // Observed on the INITIAL pass, and never consumed: this is a
+                    // witness, not a gesture. Consuming here would swallow the tap
+                    // on every verse in the surah.
+                    .pointerInput(speed) {
+                        if (speed == QuranScrollSpeed.OFF) return@pointerInput
+                        awaitPointerEventScope {
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.any { it.pressed }) {
+                                    onSpeedChange(QuranScrollSpeed.OFF)
+                                    break
+                                }
+                            }
+                        }
+                    },
                 contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
                 // Wider than the gaps between the cards it replaced: with no
                 // borders, SPACE is what separates one ayah from the next (§7).
