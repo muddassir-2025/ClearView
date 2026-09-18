@@ -146,16 +146,19 @@ describe('public channel list', () => {
     expect(res.body.items.map((c: { slug: string }) => c.slug)).toContain(slug);
   });
 
-  it('never serialises a counter or an owner', async () => {
+  it('serialises the follower and view numbers, and nothing else about a reader', async () => {
     await seedChannel({ slug: unique('cv'), name: 'ClearView', description: 'Daily reminders' });
 
     const res = await request(app).get('/api/v1/channels');
     const channel = res.body.items[0];
 
-    // Followers, post counts, reactions and views do not exist on this surface
-    // by design (§1, §5). Asserted as absent rather than as zero: a zero would
-    // still be a number the client can render.
-    for (const forbidden of ['followerCount', 'postCount', 'ownerId', 'viewerRole', 'isFollowing']) {
+    // §9 asking for a follower count and a view count did not open the door to
+    // the rest of the social graph. Those two are numbers — absent would be a
+    // bug — while everything that would tie a payload to a specific reader
+    // stays off the payload entirely.
+    expect(typeof channel.followerCount).toBe('number');
+    expect(typeof channel.lastPostViews).toBe('number');
+    for (const forbidden of ['postCount', 'ownerId', 'viewerRole', 'isFollowing', 'firebaseUid']) {
       expect(channel).not.toHaveProperty(forbidden);
     }
     expect(channel.shareLink).toContain('clearview://goodpost/channel/');

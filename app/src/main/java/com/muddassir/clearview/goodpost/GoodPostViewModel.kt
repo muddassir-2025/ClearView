@@ -27,8 +27,29 @@ import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.ui.waDayLabel
 import com.muddassir.clearview.goodpost.ui.waSameDay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+
+/**
+ * How many post ids this process remembers having had counted (§9).
+ *
+ * High enough that a reader paging through a channel's thirty days never sees a
+ * post counted twice, low enough that the set cannot be the largest thing the
+ * tab holds.
+ */
+private const val VIEW_REPORT_LIMIT = 500
+
+/**
+ * How long typing has to stop before a search is sent (§7).
+ *
+ * Short enough to feel like the list is following the reader and long enough that
+ * a word typed at speed is one request rather than six. It is a pause and not a
+ * threshold: no term is ever "too short to search for", because a channel called
+ * `P` is a channel somebody is looking for.
+ */
+private const val SEARCH_DEBOUNCE_MS = 250L
 
 /**
  * Where the tab is.
@@ -562,6 +583,51 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
+     * Bring the tab's list up to date, if it is worth asking (§24).
+     *
+     * Called on a slow timer while the Home screen is on top and the app is in
+     * front. Deliberately the CHEAPEST possible poll rather than a realtime
+     * channel: the reader's own follows are one indexed query that returns a
+     * handful of rows, and there is no socket to hold open, no connection to
+     * re-establish after a tunnel change, and nothing running while the screen is
+     * not being looked at.
+     *
+     * Four conditions, each of which would make the request pure waste:
+     *
+     *  * **No repository** — a build with no backend has nothing to ask.
+     *  * **A request already in flight** — the answer on its way IS the update.
+     *  * **Signed in** — the tab is then the administrator's channel list, so the
+     *    list to refresh is that one and the reader's follows are irrelevant.
+     *  * **No reader identity** — follows cannot exist, so the tab is showing the
+     *    catalogue fallback and polling it would be polling somebody else's list.
+     */
+    /**
+     * Re-read whichever channel list this account is looking at.
+     *
+     * One function because there are two lists in one tab — a reader's follows
+     * and an administrator's channels — and a write has to update the one that is
+     * actually on screen. Called after a publish, an edit and a delete, because
+     * each of them changes the row the list draws: its preview, its time, or its
+     * existence.
+     */
+    private fun refreshLists() {
+        if (uiState.isAdmin) loadAdminChannels() else refreshChannels()
+    }
+
+    fun refreshIfIdle() {
+        val repo = repository ?: return
+        if (uiState.channelsLoading || uiState.adminChannelsLoading) return
+
+        if (uiState.isAdmin) {
+            loadAdminChannels()
+            return
+        }
+
+        if (!repo.identifiesReaders) return
+        refreshChannels()
+    }
+
+    /**
      * Follow or unfollow a channel (§4).
      *
      * Optimistic, because the control is a toggle and waiting on a round trip
@@ -594,6 +660,11 @@ class GoodPostViewModel : ViewModel() {
                         followedIds = if (nowFollowing) uiState.followedIds + channelId
                         else uiState.followedIds - channelId
                     )
+                    // The follower COUNT is the server's, and it has just
+                    // changed. Reloaded only when the page showing it is the one
+                    // that was acted on, so following from Explore does not
+                    // re-fetch a channel nobody is looking at.
+                    if (uiState.channel?.id == channelId) loadChannel(channelId)
                     refreshChannels()
                 }
 
@@ -733,13 +804,16 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(postsLoading = true, postsError = null)
         viewModelScope.launch {
             when (val result = repo.channelPosts(channelId)) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    posts = result.value.items,
-                    postsCursor = result.value.nextCursor,
-                    postsLoading = false,
-                    postsStale = false,
-                    postsError = null
-                )
+                is ApiResult.Ok -> {
+                    uiState = uiState.copy(
+                        posts = result.value.items,
+                        postsCursor = result.value.nextCursor,
+                        postsLoading = false,
+                        postsStale = false,
+                        postsError = null
+                    )
+                    reportViews(channelId, result.value.items)
+                }
 
                 is ApiResult.Failed -> uiState = uiState.copy(
                     postsLoading = false,
@@ -774,15 +848,59 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(postsLoadingMore = true)
         viewModelScope.launch {
             when (val result = repo.channelPosts(channelId, cursor)) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    posts = GoodPostCodec.merge(uiState.posts, result.value.items) { it.id },
-                    postsCursor = result.value.nextCursor,
-                    postsLoadingMore = false
-                )
+                is ApiResult.Ok -> {
+                    uiState = uiState.copy(
+                        posts = GoodPostCodec.merge(uiState.posts, result.value.items) { it.id },
+                        postsCursor = result.value.nextCursor,
+                        postsLoadingMore = false
+                    )
+                    reportViews(channelId, result.value.items)
+                }
 
                 else -> uiState = uiState.copy(postsLoadingMore = false)
             }
         }
+    }
+
+    /**
+     * Post ids this run of the app has already had counted (§9).
+     *
+     * Outside the UI state on purpose: nothing draws it, and putting it there
+     * would make every render of a view count recompose the screen. It is scoped
+     * to the process rather than to a channel because a post's identity is a
+     * server id — the same post opened from a search and from the feed is one
+     * read, not two.
+     *
+     * Bounded by clearing it when it grows past [VIEW_REPORT_LIMIT], which is a
+     * crude eviction and knowingly so: the cost of forgetting an id is one extra
+     * count on a post somebody is reading for the second time in a very long
+     * session, and the cost of not bounding it is a set that grows for as long as
+     * the app is open.
+     */
+    private val reportedViews = mutableSetOf<String>()
+
+    /**
+     * Tell the server which of these posts the reader has just been shown (§9).
+     *
+     * Called after a successful page load rather than on each post as it scrolls
+     * past, because "was shown a page" is the only thing this side can know
+     * without a scroll listener that would have to guess at visibility, dwell
+     * time and whether the screen was even on. One request per page is also the
+     * difference between a read that costs one round trip and a read that costs
+     * one per row.
+     *
+     * Failure is silent by design: a count that did not go up is not something a
+     * reader can act on, and reporting it would put an error over a screen that
+     * is working perfectly.
+     */
+    private fun reportViews(channelId: String, posts: List<GoodPostPost>) {
+        val repo = repository ?: return
+        val fresh = posts.map { it.id }.filter { reportedViews.add(it) }
+        if (fresh.isEmpty()) return
+
+        if (reportedViews.size > VIEW_REPORT_LIMIT) reportedViews.clear()
+
+        viewModelScope.launch { repo.reportPostViews(channelId, fresh) }
     }
 
     /** The channel information page's gallery (§13). */
@@ -976,8 +1094,35 @@ class GoodPostViewModel : ViewModel() {
         search()
     }
 
+    /**
+     * The term as it is typed, searched for shortly after typing stops (§7).
+     *
+     * Explore used to wait for the keyboard's search key, which made the screen
+     * feel like a form: type, submit, look. §7 asks for the other behaviour — the
+     * list answers while the reader is still narrowing the words — and the reason
+     * a short pause is part of that is cost rather than taste: one request per
+     * keystroke on a list that is cursor-paged would be several pages fetched and
+     * thrown away for one term.
+     */
     fun onQueryChange(value: String) {
         uiState = uiState.copy(query = value)
+        scheduleSearch()
+    }
+
+    /** The pending debounced search, cancelled whenever a newer one replaces it. */
+    private var searchJob: Job? = null
+
+    private fun scheduleSearch() {
+        searchJob?.cancel()
+        // With nothing to search WITH there is nothing to wait for: the timer
+        // exists to spare the server, and `search()` would return immediately
+        // anyway. A build with no backend configured keeps its term in the box
+        // and asks nothing.
+        if (repository == null) return
+        searchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            search()
+        }
     }
 
     fun selectCategory(slug: String?) {
@@ -990,35 +1135,63 @@ class GoodPostViewModel : ViewModel() {
         search()
     }
 
-    /** Search channels by name and description (§6). */
+    /**
+     * Search channels by name and description (§6, §7).
+     *
+     * The answer is checked against what is in the box before it is shown, and
+     * the check is the point of doing this as a typed-ahead search: two requests
+     * can be in flight at once (a slow "remi" and a fast "reminder"), and
+     * whichever replies LAST would otherwise win. A list that answers "reminder"
+     * with matches for "remi" looks like a broken search rather than a slow one.
+     * Results for a term the reader has already moved on from are dropped, and
+     * the loading flag is left alone because the newer request owns it.
+     */
     fun search() {
         val repo = repository ?: return
+        // An explicit search replaces any debounced one that has not fired yet.
+        searchJob?.cancel()
         val query = uiState.query
         val category = uiState.category
         val sort = uiState.sort
+        val generation = ++searchGeneration
 
         uiState = uiState.copy(exploreLoading = true, exploreError = null)
         viewModelScope.launch {
             when (val result = repo.channels(query = query, category = category, sort = sort)) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    explore = result.value.items,
-                    exploreCursor = result.value.nextCursor,
-                    exploreLoading = false,
-                    exploreError = null
-                )
+                is ApiResult.Ok -> {
+                    if (generation != searchGeneration) return@launch
+                    uiState = uiState.copy(
+                        explore = result.value.items,
+                        exploreCursor = result.value.nextCursor,
+                        exploreLoading = false,
+                        exploreError = null
+                    )
+                }
 
-                is ApiResult.Failed -> uiState = uiState.copy(
-                    exploreLoading = false,
-                    exploreError = result.code
-                )
+                is ApiResult.Failed -> {
+                    if (generation != searchGeneration) return@launch
+                    uiState = uiState.copy(
+                        exploreLoading = false,
+                        exploreError = result.code
+                    )
+                }
 
-                ApiResult.Unreachable -> uiState = uiState.copy(
-                    exploreLoading = false,
-                    exploreError = "unreachable"
-                )
+                ApiResult.Unreachable -> {
+                    if (generation != searchGeneration) return@launch
+                    uiState = uiState.copy(
+                        exploreLoading = false,
+                        exploreError = "unreachable"
+                    )
+                }
             }
         }
     }
+
+    /**
+     * Which search is current. Incremented on every request; a reply whose number
+     * is no longer the latest is a reply to a question that has been replaced.
+     */
+    private var searchGeneration = 0
 
     fun loadMoreChannels() {
         val repo = repository ?: return
@@ -1061,9 +1234,35 @@ class GoodPostViewModel : ViewModel() {
         open(GoodPostScreen.ChannelSearch(channelId))
     }
 
+    /**
+     * The in-channel term as it is typed (§9).
+     *
+     * Debounced for the same reason Explore's is, and stale answers are dropped
+     * the same way: the results of a term that has been edited away must never
+     * land over the results for the term actually in the box.
+     */
     fun onChannelSearchQueryChange(value: String) {
         uiState = uiState.copy(channelSearchQuery = value, messageCode = null)
+
+        channelSearchJob?.cancel()
+        if (value.isBlank()) {
+            // Clearing the box is not a search to run in a moment: the screen
+            // goes back to waiting immediately, with no request at all.
+            uiState = uiState.clearedOfChannelSearch()
+            return
+        }
+
+        // Nothing to search with; see [scheduleSearch].
+        if (repository == null) return
+
+        channelSearchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            searchChannelPosts()
+        }
     }
+
+    /** The pending debounced in-channel search. */
+    private var channelSearchJob: Job? = null
 
     /**
      * Search this channel's posts for what is in the box now.
@@ -1083,6 +1282,9 @@ class GoodPostViewModel : ViewModel() {
             return
         }
 
+        channelSearchJob?.cancel()
+        val generation = ++channelSearchGeneration
+
         uiState = uiState.copy(
             channelSearchTerm = term,
             channelSearchLoading = true,
@@ -1092,25 +1294,37 @@ class GoodPostViewModel : ViewModel() {
 
         viewModelScope.launch {
             when (val result = repo.searchChannelPosts(channelId, term)) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    channelSearchResults = result.value.items,
-                    channelSearchCursor = result.value.nextCursor,
-                    channelSearchLoading = false,
-                    channelSearchError = null
-                )
+                is ApiResult.Ok -> {
+                    if (generation != channelSearchGeneration) return@launch
+                    uiState = uiState.copy(
+                        channelSearchResults = result.value.items,
+                        channelSearchCursor = result.value.nextCursor,
+                        channelSearchLoading = false,
+                        channelSearchError = null
+                    )
+                }
 
-                is ApiResult.Failed -> uiState = uiState.copy(
-                    channelSearchLoading = false,
-                    channelSearchError = result.code
-                )
+                is ApiResult.Failed -> {
+                    if (generation != channelSearchGeneration) return@launch
+                    uiState = uiState.copy(
+                        channelSearchLoading = false,
+                        channelSearchError = result.code
+                    )
+                }
 
-                ApiResult.Unreachable -> uiState = uiState.copy(
-                    channelSearchLoading = false,
-                    channelSearchError = "unreachable"
-                )
+                ApiResult.Unreachable -> {
+                    if (generation != channelSearchGeneration) return@launch
+                    uiState = uiState.copy(
+                        channelSearchLoading = false,
+                        channelSearchError = "unreachable"
+                    )
+                }
             }
         }
     }
+
+    /** Which in-channel search is current; see [searchGeneration]. */
+    private var channelSearchGeneration = 0
 
     /** The next page of a search (§26: lazy, cursor-paged, like every list). */
     fun loadMoreChannelSearch() {
@@ -1998,8 +2212,40 @@ class GoodPostViewModel : ViewModel() {
                 // goes with it (§19 Bug 2). This is the SAME exit path Cancel
                 // takes, which is what stops the two from drifting apart again.
                 resetComposer()
-                // Reloaded on success, so a published post appears immediately and
-                // an edit is visible without a pull (§21).
+
+                // The saved post is put on screen from the SERVER'S OWN answer,
+                // before any re-read (§21).
+                //
+                // The write has already succeeded and the response already holds
+                // the row — so waiting for a follow-up GET before showing it made
+                // a published update appear to vanish: the write landed, the read
+                // was slow or failed, and the reader was left looking at a feed
+                // without the post they had just sent, under a banner saying the
+                // data might be out of date. The refresh below still runs and is
+                // still the authority; it just is not the thing standing between
+                // the reader and their own post.
+                val saved = result.value
+                uiState = if (editingId == null) {
+                    uiState.copy(
+                        // Newest-first on the wire; the feed reverses it for
+                        // display, so a new post goes to the FRONT here.
+                        posts = GoodPostCodec.merge(listOf(saved), uiState.posts) { it.id },
+                        postsStale = false,
+                        postsError = null
+                    )
+                } else {
+                    uiState.copy(
+                        // An edit keeps its place in history: only the row that
+                        // changed is replaced.
+                        posts = uiState.posts.map { if (it.id == saved.id) saved else it },
+                        postsStale = false,
+                        postsError = null
+                    )
+                }
+
+                // The channel's own preview and timestamp moved with the write,
+                // so the list the reader goes back to is told too.
+                refreshLists()
                 loadPosts(channelId)
                 return@launch
             }

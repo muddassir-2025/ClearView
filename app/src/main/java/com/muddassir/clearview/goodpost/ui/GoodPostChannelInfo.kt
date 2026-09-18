@@ -22,14 +22,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Forward
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Forward
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,6 +46,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -150,14 +151,45 @@ internal fun GoodPostChannelInfo(
 
             Spacer(Modifier.height(6.dp))
 
-            // §11: "Public channel" label
-            Text(
-                text = stringResource(R.string.goodpost_public_channel),
+            // §11: "Public channel" label, and the one number that belongs
+            // beside it (§9).
+            //
+            // A follower count is not the social metric §11 refused: that was a
+            // number invented because the space under a name looked empty. This
+            // one is a count of follows the server can point at, and it is the
+            // only measure on this page that a reader can act on — it is what
+            // tells them whether anybody else is here.
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                color = Wa.TextDim,
-                fontSize = 14.sp,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-            )
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.goodpost_public_channel),
+                    color = Wa.TextDim,
+                    fontSize = 14.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                Text(
+                    text = " · ",
+                    color = Wa.TextDim,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = if (channel.followerCount > 0) {
+                        pluralStringResource(
+                            R.plurals.goodpost_follower_count,
+                            channel.followerCount,
+                            waCompactCount(channel.followerCount)
+                        )
+                    } else {
+                        stringResource(R.string.goodpost_no_followers)
+                    },
+                    color = Wa.TextDim,
+                    fontSize = 14.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
 
             Spacer(Modifier.height(24.dp))
 
@@ -165,10 +197,22 @@ internal fun GoodPostChannelInfo(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
+                // §9: follow and unfollow, from the channel's own page.
+                //
+                // This was a Forward arrow, which was the wrong thing twice
+                // over: it duplicated the Share control beside it, and it put
+                // the one action a reader actually takes on a channel — keeping
+                // it — behind a trip back to Explore. Following from here is
+                // also the only place it can be undone without hunting for the
+                // channel again.
+                val following = channel.id in state.followedIds
                 ChannelAction(
-                    icon = Icons.AutoMirrored.Filled.Forward,
-                    label = stringResource(R.string.goodpost_forward),
-                    onClick = { shareChannel(context, channel.name, channel.shareLink) }
+                    icon = if (following) Icons.Filled.Check else Icons.Filled.Add,
+                    label = if (following) stringResource(R.string.goodpost_following)
+                    else stringResource(R.string.goodpost_follow),
+                    tint = if (following) Wa.Accent else Wa.Text,
+                    busy = state.followBusyId == channel.id,
+                    onClick = { viewModel.toggleFollow(channel.id) }
                 )
                 ChannelAction(
                     icon = Icons.Filled.Share,
@@ -227,24 +271,47 @@ internal fun GoodPostChannelInfo(
 }
 
 /**
- * One of the three channel actions: an icon in a round control with its label
+ * One of the channel actions: an icon in a round control with its label
  * underneath (§11, Screenshot 3).
+ *
+ * [busy] is the follow control's own state while the server is being asked: the
+ * control stays where it is and spins, rather than disappearing, so the row does
+ * not reflow under the reader's thumb for the length of a round trip.
  */
 @Composable
-private fun ChannelAction(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun ChannelAction(
+    icon: ImageVector,
+    label: String,
+    onClick: () -> Unit,
+    tint: Color = Wa.Text,
+    busy: Boolean = false
+) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
                 .size(60.dp)
                 .clip(CircleShape)
                 .background(Wa.Bar)
-                .clickable(onClick = onClick),
+                .clickable(enabled = !busy, onClick = onClick),
             contentAlignment = Alignment.Center
         ) {
-            Icon(icon, contentDescription = label, tint = Wa.Text, modifier = Modifier.size(24.dp))
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = Wa.Accent
+                )
+            } else {
+                Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(24.dp))
+            }
         }
         Spacer(Modifier.height(8.dp))
-        Text(text = label, color = Wa.Text, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+        Text(
+            text = label,
+            color = if (busy) Wa.TextDim else tint,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 

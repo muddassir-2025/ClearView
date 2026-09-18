@@ -106,6 +106,24 @@ class GoodPostTextTest {
     }
 
     @Test
+    fun `a selection dragged over surrounding whitespace still formats`() {
+        // A finger drag does not stop at the word: `her world` comes back with a
+        // space on one end. Wrapping that space produces ``` her``` — a pair the
+        // renderer refuses, because its content may not begin with whitespace —
+        // so the button appeared to do nothing at all. The markers go around the
+        // text, and the space stays outside them.
+        val bold = toggle("her world", 4, 10)
+        assertEquals("her *world*", bold.text)
+        assertEquals("*world*", bold.text.substring(bold.selectionStart, bold.selectionEnd))
+
+        val mono = toggle("her world", 3, 10, GoodPostFormat.Monospace)
+        assertEquals("her ```world```", mono.text)
+
+        val leads = toggle("a b c", 1, 4, GoodPostFormat.Italic)
+        assertEquals("a _b_ c", leads.text)
+    }
+
+    @Test
     fun `wrapping is refused for text that is only delimiters`() {
         // `*` selected on its own is not \"already bold\"; stripping it would leave
         // an empty body, so it must be treated as text to wrap instead.

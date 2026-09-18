@@ -45,6 +45,26 @@ data class GoodPostChannel(
     val lastPostType: String?,
     /** The opening of the newest post's text, or null for a media-only post. */
     val lastPostPreview: String?,
+    /**
+     * How many times the newest post has been reported read (§9).
+     *
+     * Zero for a channel that has never posted, and zero for a post nobody has
+     * read: the server sends a number and never a null, so this is one shape to
+     * render rather than two. It describes the Newest post — a channel's total
+     * readership is not a thing this product counts — and the row that shows it
+     * is the one showing that post's preview, which is what keeps the two from
+     * being read as unrelated numbers.
+     */
+    val lastPostViews: Int = 0,
+    /**
+     * How many readers follow this channel (§4).
+     *
+     * A real count of real follows, which is why it is allowed where a social
+     * metric is not: every follow is a decision a person made about this channel,
+     * and the server reads it from the rows rather than from a number kept
+     * beside them.
+     */
+    val followerCount: Int = 0,
     /** App deep link (§6): `clearview://goodpost/channel/<slug>`. */
     val shareLink: String,
     /**
@@ -150,7 +170,16 @@ data class GoodPostPost(
      */
     val editedAt: String? = null,
     /** Present only when the post was fetched on its own. */
-    val channel: GoodPostChannelRef? = null
+    val channel: GoodPostChannelRef? = null,
+    /**
+     * How many readers have reported this post read (§9).
+     *
+     * Reported by the client rather than counted by the server, because the
+     * server does not know when something has been read — it only knows when it
+     * was told. So this is a floor and not a truth, which is why it is a quiet
+     * stamp on the post rather than a headline number.
+     */
+    val views: Int = 0
 ) {
     val hasImage: Boolean get() = media.any { it.isImage }
     val hasVideo: Boolean get() = media.any { it.isVideo }
@@ -215,6 +244,8 @@ internal object GoodPostCodec {
             lastPostAt = json.nullableString("lastPostAt"),
             lastPostType = json.nullableString("lastPostType"),
             lastPostPreview = json.nullableString("lastPostPreview"),
+            lastPostViews = json.optInt("lastPostViews", 0).coerceAtLeast(0),
+            followerCount = json.optInt("followerCount", 0).coerceAtLeast(0),
             shareLink = json.optString("shareLink"),
             status = json.nullableString("status"),
             // Absent on every payload except the reader's own follows, where
@@ -281,7 +312,8 @@ internal object GoodPostCodec {
             media = mediaArray(json.optJSONArray("media")),
             createdAt = json.optString("createdAt"),
             editedAt = json.nullableString("editedAt"),
-            channel = json.optJSONObject("channel")?.let(::channelRef)
+            channel = json.optJSONObject("channel")?.let(::channelRef),
+            views = json.optInt("views", 0).coerceAtLeast(0)
         )
     }
 

@@ -5,6 +5,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import com.muddassir.clearview.goodpost.data.GoodPostFormat
+import com.muddassir.clearview.goodpost.data.applyGoodPostFormat
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -141,5 +143,61 @@ class GoodPostFormattingTest {
         val out = parseGoodPostText("```a*b*c```")
         assertEquals("a*b*c", out.text)
         assertEquals(listOf(0 to 5), out.mono())
+    }
+
+    /**
+     * What the composer does, then what the renderer does with it (§17).
+     *
+     * The two halves of formatting are tested against each other here rather
+     * than apart, and the case is the one that made "monospace does not work" a
+     * true report: the format is applied to a selection, the resulting body is
+     * what the server would store, and THAT string is what the renderer must
+     * understand. A round trip is the only test that can catch the two of them
+     * disagreeing about where the markers go — which is exactly what happened.
+     */
+    @Test
+    fun `every format applied to a selection renders as that format`() {
+        val body = "her world"
+
+        // The span is at the WORD's offsets in the RENDERED string, which are
+        // the same offsets it had in the source: the markers disappear when the
+        // body is rendered, so nothing before the word shifts.
+        val word = listOf(4 to 9)
+
+        val bold = applyGoodPostFormat(body, 4, 9, GoodPostFormat.Bold)
+        assertEquals(word, parseGoodPostText(bold.text).bold())
+
+        val italic = applyGoodPostFormat(body, 4, 9, GoodPostFormat.Italic)
+        assertEquals(word, parseGoodPostText(italic.text).italic())
+
+        val struck = applyGoodPostFormat(body, 4, 9, GoodPostFormat.Strikethrough)
+        assertEquals(word, parseGoodPostText(struck.text).struck())
+
+        val mono = applyGoodPostFormat(body, 4, 9, GoodPostFormat.Monospace)
+        assertEquals(word, parseGoodPostText(mono.text).mono())
+    }
+
+    @Test
+    fun `a selection that includes the space around a word still renders formatted`() {
+        // A drag does not stop on the word: `her world` arrives as [3, 10) with a
+        // space at each end. Wrapping the whitespace produced a body the renderer
+        // refuses, so the button looked broken while doing exactly what it was
+        // told. The markers go around the word.
+        val mono = applyGoodPostFormat("her world", 3, 10, GoodPostFormat.Monospace)
+        val rendered = parseGoodPostText(mono.text)
+        assertEquals("her world", rendered.text)
+        assertEquals(listOf(4 to 9), rendered.mono())
+    }
+
+    @Test
+    fun `formatting survives being reloaded from what was stored`() {
+        // The stored body is the marker string itself, so re-reading it and
+        // re-parsing it — the edit path — must produce the same spans.
+        val stored = applyGoodPostFormat("note this", 5, 9, GoodPostFormat.Bold).text
+        assertEquals("note *this*", stored)
+
+        val again = parseGoodPostText(stored)
+        assertEquals("note this", again.text)
+        assertEquals(listOf(5 to 9), again.bold())
     }
 }

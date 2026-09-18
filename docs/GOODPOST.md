@@ -7,6 +7,10 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
+See also [`WHATSAPP_CHANNELS_UX.md`](WHATSAPP_CHANNELS_UX.md): the interaction
+model this follows, where the code stands against it area by area, and the
+design that keeps a "live" channel list cheap (§22, §24).
+
 ---
 
 ## 1. The three flows
@@ -125,10 +129,18 @@ Express, no queue.
 | `GET` | `/api/v1/channels/:idOrSlug/posts` | Its posts, newest first, keyset-paged |
 | `GET` | `/api/v1/channels/:idOrSlug/media` | Its images, for the profile gallery |
 | `GET` | `/api/v1/posts/:postId` | One post, with the channel it came from |
+| `POST` | `/api/v1/channels/:idOrSlug/posts/views` | §9: report which of this channel's posts a reader was shown (`{ ids: [...] }`) |
 | `GET` | `/health`, `/health/db` | Liveness (never touches Neon) and database readiness |
 
 Every image URL in a response is a short-lived presigned S3 URL. An object key
 is never sent to a client.
+
+Two numbers ride on a channel payload: `followerCount` (a COUNT over
+`channel_follows`) and `lastPostViews` (the newest post's own counter, zero for
+a channel that has never posted). Both are read from real rows. The view report
+is the ONE write on this surface and it takes no credential — it counts reads,
+not readers — and it is scoped to the channel in the path, so a batch naming
+another channel's post counts nothing.
 
 ### Reader API — a Firebase ID token, no account
 
@@ -300,6 +312,65 @@ Short version:
 7. Set the four `AWS_*` values to turn image posts on. Until they are set every
    upload answers `media_unavailable`, which the composer says out loud.
 8. Set `goodPostBaseUrl` in `gradle.properties` to the same host and rebuild.
+
+### The service, field by field
+
+| Setting | Value |
+|---|---|
+| Type | Web service, runtime Node |
+| Root directory | `server` |
+| Build command | `npm ci --include=dev && npm run build` |
+| Start command | `npm start` (`node dist/index.js`) |
+| Health check path | `/health` |
+| Node version | 22 or newer (`engines.node`) |
+
+`--include=dev` is load-bearing rather than decoration: `typescript` and the
+`@types/*` packages are devDependencies, and a production-mode `npm ci` omits
+them, so the build fails with a wall of TS7016 errors rather than a missing
+compiler.
+
+### Environment variables, exactly as the code reads them
+
+Required — the process refuses to boot without them:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Neon pooled connection string (host contains `-pooler`) |
+| `JWT_SECRET` | 32+ random characters |
+| `GOODPOST_HASH_PEPPER` | 32+ random characters |
+| `SUPER_ADMIN_EMAIL` | the one account that can create channels |
+| `SUPER_ADMIN_PASSWORD_HASH` | its bcrypt hash (or `SUPER_ADMIN_PASSWORD`, hashed at boot) |
+
+Needed for the product to be whole:
+
+| Variable | Value |
+|---|---|
+| `PUBLIC_BASE_URL` | the service's own `https://<name>.onrender.com` |
+| `FIREBASE_PROJECT_ID` | `clearview-28413` — without it follows answer `auth_unavailable` |
+| `NODE_ENV` | `production` |
+| `DATABASE_URL_DIRECT` | Neon direct string; read only by the migration runner |
+| `SUPER_ADMIN_DISPLAY_NAME` | `Good Post Admin` |
+| `ADMIN_CONTACT_EMAIL` | public support address the app may show |
+| `POST_RETENTION_DAYS` | `30` (§14) |
+| `ADMIN_MIN_PASSWORD_LENGTH` | `8` — must match `adminMinPasswordLength` in `gradle.properties` |
+
+For image and video posts (all four, server-side only — they never reach the
+app):
+
+| Variable | Value |
+|---|---|
+| `AWS_S3_BUCKET` | the bucket name |
+| `AWS_ACCESS_KEY_ID` | key restricted to that bucket |
+| `AWS_SECRET_ACCESS_KEY` | its secret |
+| `AWS_REGION` | `auto` for Cloudflare R2, the real region for Amazon S3 |
+| `AWS_ENDPOINT_URL` | R2: `https://<account-id>.r2.cloudflarestorage.com`. Empty for Amazon S3 |
+
+**Do not set `PORT`** — Render injects it. `CORS_ORIGINS` stays empty: the
+Android client sends no `Origin` header, and an empty allow-list refuses browsers
+outright, which is the correct posture for an app-only API.
+
+`GOODPOST_HASH_PEPPER` is not decoration either. It peppers the irreversible hash
+of a client IP in the audit log, so the log holds no raw address.
 
 Point an uptime monitor at `GET /health` every few minutes. That path reads
 nothing and writes nothing — it does not touch Neon, deliberately, so a monitor

@@ -91,7 +91,18 @@ android {
         // gradle.properties (goodPostBaseUrl=https://…) or per build with
         // -PgoodPostBaseUrl=https://… . Until it is set, the Good Post tab
         // says so plainly instead of failing with a confusing network error.
-        val goodPostBaseUrl = (project.findProperty("goodPostBaseUrl") as String?).orEmpty()
+        //
+        // Both spellings are accepted because Gradle property names are
+        // case-sensitive and the wrong one fails SILENTLY: `-PgoodpostBaseUrl=…`
+        // (lower-case p, as the notes above and the property below were written)
+        // is a different key from `goodPostBaseUrl`, so it set nothing, the empty
+        // value from gradle.properties won, and the build reported success while
+        // producing an app that says no backend is configured. Flagging a typo as
+        // an error is not possible from here, so both are read instead.
+        val goodPostBaseUrl = (
+            (project.findProperty("goodPostBaseUrl") as String?)?.takeIf { it.isNotBlank() }
+                ?: (project.findProperty("goodpostBaseUrl") as String?)
+            ).orEmpty().trim().trimEnd('/')
         buildConfigField("String", "GOODPOST_BASE_URL", "\"$goodPostBaseUrl\"")
 
         // There is deliberately no contact address configured here any more.

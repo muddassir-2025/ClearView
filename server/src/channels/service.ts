@@ -86,13 +86,17 @@ export interface ChannelPayload {
   /** The opening of the newest post's text, or null for a media-only post. */
   readonly lastPostPreview: string | null;
   /**
-   * The newest post's view count, or null when the channel has never posted.
+   * The newest post's view count, and zero when the channel has never posted.
    *
    * Read from the same lateral join as the preview, for the same reason: a count
    * and the post it describes have to come from one row, and two sources can
    * disagree.
+   *
+   * Zero rather than null for the reason `followerCount` is zero rather than
+   * null: the app renders the number on every card, so one shape is better than
+   * two. A channel with no posts has no views, which is exactly what zero says.
    */
-  readonly lastPostViews: number | null;
+  readonly lastPostViews: number;
   /**
    * How many readers follow this channel (§4).
    *
@@ -279,7 +283,7 @@ export function mapChannel(
     lastPostAt: isoOrNull(row.preview_at),
     lastPostType: row.last_post_type ?? null,
     lastPostPreview: row.last_post_preview ?? null,
-    lastPostViews: row.last_post_views ?? null,
+    lastPostViews: row.last_post_views ?? 0,
     // A channel a query did not count has no followers as far as this payload
     // is concerned, which is true of every row the write paths return: a channel
     // created a moment ago has none, and the read paths that matter select the

@@ -254,6 +254,27 @@ class GoodPostApi(
             GoodPostCodec::postPage
         )
 
+    /**
+     * Tell the server which posts this reader has just seen (§9).
+     *
+     * The one write on the public surface, and it needs no credential: a read is
+     * not an account, and asking somebody to sign in before their read could be
+     * counted would make the count a census of accounts rather than of readers.
+     *
+     * Fire-and-forget from the caller's point of view — nothing in the UI waits
+     * on it, and a failure is not reported, because "we could not count your
+     * read" is not something a reader can act on. The ids are the server's own,
+     * so the worst a wrong batch can do is count a post that was on screen.
+     */
+    suspend fun reportPostViews(idOrSlug: String, postIds: List<String>): ApiResult<Int> =
+        parsedCall(
+            method = "POST",
+            path = "$PUBLIC_PATH/channels/${encode(idOrSlug)}/posts/views",
+            body = JSONObject().apply { put("ids", JSONArray(postIds)) },
+            bearer = null,
+            parse = { body -> body.optInt("counted", 0) }
+        )
+
     /** A channel's images and videos, for the profile gallery (§13). */
     suspend fun channelMedia(
         idOrSlug: String,

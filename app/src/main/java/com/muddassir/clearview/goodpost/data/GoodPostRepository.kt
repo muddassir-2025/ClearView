@@ -175,6 +175,18 @@ internal class GoodPostRepository(
         cursor: String? = null
     ): ApiResult<GoodPostPage<GoodPostPost>> = api.channelPosts(channelId, cursor, term)
 
+    /**
+     * Report that this reader has seen these posts (§9).
+     *
+     * No identity is resolved here, deliberately: the write counts reads, not
+     * readers. Requiring a token would make the number depend on the same
+     * identity follows need, so a post would read as unviewed until somebody
+     * signed in to look at it — and it would say nothing about the readers who
+     * never do.
+     */
+    suspend fun reportPostViews(channelId: String, postIds: List<String>): ApiResult<Int> =
+        api.reportPostViews(channelId, postIds)
+
     /** A channel's images and videos, for the profile gallery (§13). */
     suspend fun channelMedia(
         channelId: String,

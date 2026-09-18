@@ -113,25 +113,51 @@ fun applyGoodPostFormat(
         )
     }
 
-    val selected = text.substring(from, to)
+    // Whitespace at the ends of the selection is left OUTSIDE the markers.
+    //
+    // Nobody selects a word exactly: a drag starts on the character before it and
+    // ends on the space after it. Wrapping what a finger actually covered used to
+    // produce ``` her```, and the renderer refuses a pair whose content begins
+    // with whitespace — so the button looked broken for monospace, italic and
+    // strikethrough alike, and worked only when the selection happened to be
+    // pixel-exact. The markers are moved inside the whitespace instead, which is
+    // what the reader meant and what the stored text has to be to parse.
+    var runStart = from
+    var runEnd = to
+    while (runStart < runEnd && text[runStart].isWhitespace()) runStart++
+    while (runEnd > runStart && text[runEnd - 1].isWhitespace()) runEnd--
+
+    // A selection of nothing BUT whitespace has no text to format. The pair is
+    // planted at the start of it, exactly as for a caret, so the control still
+    // does something predictable rather than silently nothing.
+    if (runStart == runEnd) {
+        val caret = runStart + width
+        return GoodPostFormatEdit(
+            text = text.substring(0, runStart) + marker + marker + text.substring(runStart),
+            selectionStart = caret,
+            selectionEnd = caret
+        )
+    }
+
+    val selected = text.substring(runStart, runEnd)
 
     // Already wrapped inside the selection: take the outer pair off.
     if (format.wraps(selected)) {
         val inner = selected.substring(width, selected.length - width)
         return GoodPostFormatEdit(
-            text = text.substring(0, from) + inner + text.substring(to),
-            selectionStart = from,
-            selectionEnd = from + inner.length
+            text = text.substring(0, runStart) + inner + text.substring(runEnd),
+            selectionStart = runStart,
+            selectionEnd = runStart + inner.length
         )
     }
 
     // The markers sit immediately OUTSIDE the selection, so the highlighted text
     // is already this format. Removing them keeps the same characters highlighted.
-    val outerStart = from - width
-    val outerEnd = to + width
+    val outerStart = runStart - width
+    val outerEnd = runEnd + width
     if (
         outerStart >= 0 && outerEnd <= length &&
-        text.startsWith(marker, outerStart) && text.startsWith(marker, to)
+        text.startsWith(marker, outerStart) && text.startsWith(marker, runEnd)
     ) {
         return GoodPostFormatEdit(
             text = text.substring(0, outerStart) + selected + text.substring(outerEnd),
@@ -142,8 +168,8 @@ fun applyGoodPostFormat(
 
     // Wrap it, and select the whole wrapped run so the button toggles from here.
     return GoodPostFormatEdit(
-        text = text.substring(0, from) + marker + selected + marker + text.substring(to),
-        selectionStart = from,
-        selectionEnd = to + (width * 2)
+        text = text.substring(0, runStart) + marker + selected + marker + text.substring(runEnd),
+        selectionStart = runStart,
+        selectionEnd = runEnd + (width * 2)
     )
 }

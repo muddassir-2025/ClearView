@@ -26,7 +26,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
@@ -104,6 +108,8 @@ fun GoodPostTab(
         return
     }
 
+    KeepTheListCurrent(screen = state.screen, viewModel = viewModel)
+
     // Back pops the in-tab stack. Handled here rather than per screen so the
     // gesture behaves the same on all of them, and returns false at the root so
     // the system can leave the tab.
@@ -151,6 +157,48 @@ fun GoodPostTab(
 
     state.messageCode?.let { code ->
         MessageDialog(code = code, onDismiss = viewModel::clearMessage)
+    }
+}
+
+/**
+ * How often the channel list refreshes itself while it is being looked at (§24).
+ *
+ * A quarter of a minute, and the number is a cost decision rather than an
+ * animation one. Every tick is one small indexed query against the reader's own
+ * follows, so this is a handful of requests per minute of active reading per
+ * device, which is what keeps a free-tier deployment free as usage grows. A
+ * channel's update arriving twenty seconds late is not something a reader can
+ * perceive; a request every second is something the bill can.
+ */
+private const val LIST_REFRESH_MS = 25_000L
+
+/**
+ * Re-fetch the list while the Home screen is in front (§24).
+ *
+ * `repeatOnLifecycle(STARTED)` is what makes this cheap in the way that matters
+ * most: the loop is cancelled when the app goes to the background, so a phone in
+ * a pocket makes no requests at all. Without it a `LaunchedEffect` keeps running
+ * while the composable is in the tree, which for a tab inside a pager is most of
+ * the session — polling on behalf of a reader who is not there.
+ *
+ * Only Home. A feed, a channel's information page and a search are all fetched
+ * when they are opened and are not worth re-checking on a timer: the feed's
+ * update is the reader's next navigation, the information page is static, and a
+ * search is a question the reader asked.
+ */
+@Composable
+private fun KeepTheListCurrent(screen: GoodPostScreen, viewModel: GoodPostViewModel) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(screen, lifecycleOwner) {
+        if (screen != GoodPostScreen.Home) return@LaunchedEffect
+
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                delay(LIST_REFRESH_MS)
+                viewModel.refreshIfIdle()
+            }
+        }
     }
 }
 

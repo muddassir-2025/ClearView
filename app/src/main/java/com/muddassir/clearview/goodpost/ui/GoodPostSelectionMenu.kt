@@ -11,126 +11,132 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.platform.TextToolbar
-import androidx.compose.ui.platform.TextToolbarStatus
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.muddassir.clearview.R
+import androidx.compose.foundation.text.contextmenu.data.TextContextMenuItem
+import androidx.compose.foundation.text.contextmenu.data.TextContextMenuSession
+import androidx.compose.foundation.text.contextmenu.provider.TextContextMenuDataProvider
+import androidx.compose.foundation.text.contextmenu.provider.TextContextMenuProvider
 
 /**
- * The platform's selection menu, captured instead of shown (§7).
+ * The platform's selection menu, refused (§7).
  *
  * Highlighting text inside the composer used to raise Android's own menu —
- * **Cut / Copy / Paste / Select all / Read aloud** — in a light bubble that looks
- * nothing like the rest of Good Post and covers the line being edited. §7 asks
- * for WhatsApp's gesture, and WhatsApp does not show that menu: it shows a small
- * dark bar of formatting actions for the highlighted text.
+ * **Cut / Copy / Paste / Select all / Read aloud** — as a light bubble over the
+ * line being edited, in an app that is otherwise dark. §7 asks for WhatsApp's
+ * gesture, and WhatsApp does not show that menu: it offers formatting for the
+ * highlighted text and keeps the editing line visible.
  *
- * So this replaces it. [showMenu] is where Compose would display the system
- * bubble; overriding it to do nothing is what removes it, and the callbacks it
- * was handed are kept in [actions] so OUR bar can still offer Cut, Copy, Paste
- * and Select all. **Nothing is lost** — the same operations are available, in a
- * menu that belongs to this app and sits in the layout instead of over the text.
+ * ## Why this class replaces the previous one
  *
- * `status` is always [TextToolbarStatus.Hidden]. That is not cosmetic: Compose
- * reads it to decide whether a menu is up, and reporting anything else would make
- * it believe it had shown something it had not.
+ * The old implementation provided a `TextToolbar` through `LocalTextToolbar`,
+ * which is the 1.x API for exactly this and was believed to be the whole
+ * mechanism. It is not any more: Compose 1.12 routes the selection menu through
+ * `LocalTextContextMenuToolbarProvider` (and its dropdown twin) and only falls
+ * back to `TextToolbar` when nothing is provided — so the override was never
+ * consulted, the system bubble appeared exactly as before, and the code that was
+ * meant to prevent it sat there looking correct. That is what this file fixes.
  *
- * ## Why the callbacks are stored rather than invoked
+ * ## What it does
  *
- * They are closures over the platform's current selection and clipboard, and they
- * are only valid while that selection is live. Holding the LATEST set and calling
- * them from a tap on our own bar is the whole mechanism — there is no other way to
- * reach `copy` or `paste`, because those are the platform's operations and are not
- * re-implementable from a Compose text field.
+ * `showTextContextMenu` is where the platform would draw its menu. This
+ * implementation reads the items it was about to offer, hands them to
+ * [onItems] for our own bar to draw in the layout, and shows nothing itself.
+ * **Nothing is lost**: Cut, Copy, Paste and Select all are still available, in
+ * a menu that belongs to this app and sits under the text instead of on top of
+ * it.
+ *
+ * Returning straight away is deliberate rather than lazy. The platform's
+ * implementation suspends until its menu is dismissed; ours has no menu to wait
+ * for, and Compose treats a completed request as a finished one — the selection
+ * stays where the reader put it and the next highlight offers the menu again.
  */
-internal class GoodPostSelectionToolbar(
-    /** Called when the platform offers a menu, with what it would have offered. */
-    private val onActions: (GoodPostClipboardActions) -> Unit
-) : TextToolbar {
+internal class GoodPostTextContextMenuProvider(
+    /** Called with what the platform would have offered. */
+    private val onItems: (List<GoodPostContextMenuAction>) -> Unit
+) : TextContextMenuProvider {
 
-    override val status: TextToolbarStatus get() = TextToolbarStatus.Hidden
+    override suspend fun showTextContextMenu(provider: TextContextMenuDataProvider) {
+        // Only the actions. `TextContextMenuData.components` can also hold
+        // separators and text-classification entries ("Call this number"), and
+        // those have no place in a four-item formatting bar.
+        val actions = provider.data().components
+            .filterIsInstance<TextContextMenuItem>()
+            .map { item ->
+                GoodPostContextMenuAction(
+                    label = item.label,
+                    // The session is the item's own handle on the menu it came
+                    // from; it is closed after the action runs, which is what
+                    // tells Compose the request is finished.
+                    invoke = { item.onClick(it) }
+                )
+            }
 
-    override fun hide() = Unit
-
-    override fun showMenu(
-        rect: Rect,
-        onCopyRequested: (() -> Unit)?,
-        onPasteRequested: (() -> Unit)?,
-        onCutRequested: (() -> Unit)?,
-        onSelectAllRequested: (() -> Unit)?
-    ) {
-        onActions(
-            GoodPostClipboardActions(
-                copy = onCopyRequested,
-                paste = onPasteRequested,
-                cut = onCutRequested,
-                selectAll = onSelectAllRequested
-            )
-        )
+        if (actions.isNotEmpty()) onItems(actions)
     }
 }
 
 /**
- * The clipboard operations the platform offered, none of which is guaranteed.
+ * One action the platform offered, with the words it would have used.
  *
- * Every field is nullable because Compose passes only the ones that apply — a
- * read-only field gets no `cut`, and a clipboard with nothing on it gets no
- * `paste`. Our bar hides what is absent rather than showing a dead button, which
- * is the same rule the artwork follows.
+ * The label is the platform's own string ("Cut", "Copy", "Paste", "Select all"),
+ * already localised, rather than a resource of ours: these are Android's
+ * operations, and inventing our own words for them would mean translating
+ * operations we do not implement.
  */
-internal data class GoodPostClipboardActions(
-    val copy: (() -> Unit)? = null,
-    val paste: (() -> Unit)? = null,
-    val cut: (() -> Unit)? = null,
-    val selectAll: (() -> Unit)? = null
-) {
-    /** Nothing to offer, so our bar should not show its clipboard row. */
-    val isEmpty: Boolean get() = copy == null && paste == null && cut == null && selectAll == null
+internal data class GoodPostContextMenuAction(
+    val label: String,
+    val invoke: (TextContextMenuSession) -> Unit
+)
+
+/**
+ * A session our own bar hands back when it runs an action.
+ *
+ * Compose's session is one method — [TextContextMenuSession.close] — and it is
+ * what the menu implementation is expected to call once it has done whatever it
+ * was asked to do. Our menu is a bar in the layout rather than a popup, so there
+ * is nothing to dismiss, and the call is kept rather than skipped: an item that
+ * performs its action and closes its session is the whole contract, and a
+ * no-op close is a truthful implementation of it.
+ */
+internal val GoodPostNoopMenuSession: TextContextMenuSession = object : TextContextMenuSession {
+    override fun close() = Unit
 }
 
 /**
  * The clipboard half of the selection bar (§7).
  *
- * Rendered beside the formatting buttons so that removing Android's menu did not
+ * Rendered beside the formatting words so that removing Android's menu did not
  * remove the ability to copy or paste. Only the actions the platform actually
- * offered are drawn: with nothing on the clipboard there is no Paste, and with no
- * selection there is no Copy.
+ * offered are drawn: with nothing on the clipboard there is no Paste, and with
+ * no selection there is no Copy.
  */
 @Composable
 internal fun GoodPostClipboardBar(
-    actions: GoodPostClipboardActions?,
+    actions: List<GoodPostContextMenuAction>,
     modifier: Modifier = Modifier
 ) {
-    if (actions == null || actions.isEmpty) return
+    if (actions.isEmpty()) return
 
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        actions.cut?.let { ClipboardAction(R.string.goodpost_cut, it) }
-        // The same entry the post action bar uses: one word, one string.
-        actions.copy?.let { ClipboardAction(R.string.goodpost_copy, it) }
-        actions.paste?.let { ClipboardAction(R.string.goodpost_paste, it) }
-        actions.selectAll?.let { ClipboardAction(R.string.goodpost_select_all, it) }
+        actions.forEach { action ->
+            Text(
+                text = action.label,
+                color = Wa.TextDim,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Wa.Bar)
+                    .clickable { action.invoke(GoodPostNoopMenuSession) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
     }
-}
-
-@Composable
-private fun ClipboardAction(labelRes: Int, onClick: () -> Unit) {
-    Text(
-        text = stringResource(labelRes),
-        color = Wa.TextDim,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.Medium,
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(Wa.Bar)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 6.dp)
-    )
 }

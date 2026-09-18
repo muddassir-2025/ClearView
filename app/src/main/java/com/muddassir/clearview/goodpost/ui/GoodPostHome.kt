@@ -399,6 +399,11 @@ private fun ChannelRow(
         selected = selected,
         avatar = { WaAvatar(name = channel.name, size = 49.dp, url = channel.iconUrl) },
         previewIcon = mediaIcon(channel.lastPostType),
+        // §5: what is waiting, under the time and nowhere else. The view count
+        // is NOT here — it moved into the post it counts (§9), because a number
+        // on a row can only describe the row's own preview, and on a row that
+        // was showing a description it described nothing at all.
+        unreadCount = if (channel.following) channel.unreadCount else 0,
         trailing = {
             // Only while something is selected, and only on the rows it applies
             // to: a control on every row would be the icon soup §5 rules out.

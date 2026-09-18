@@ -618,11 +618,17 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_server">The server had a problem. Try again in a moment.</string>
     <string name="goodpost_error_unknown">Something went wrong. Try again.</string>
 
-    <!-- The channel list's own controls. Nothing here counts anything, and
-         nothing is stored per reader: there is no account for it to attach to
-         (§1, §5). -->
+    <!-- The channel list's own controls.
+
+         The counts that appear on a row are the two §9 asks for: how many
+         readers follow a channel, and how many have opened its newest post.
+         Both are read from real rows — a follow somebody chose, and a read a
+         client reported — and neither is a pass at a social metric. -->
     <string name="goodpost_refresh">Refresh</string>
     <string name="goodpost_more">Load more</string>
+    <!-- The top of a channel's feed (§10). The list reads oldest-to-newest, so
+         history is ABOVE the newest update and this is the word for it. -->
+    <string name="goodpost_older">Load older updates</string>
     <string name="goodpost_search">Search</string>
     <string name="goodpost_all_categories">All</string>
     <string name="goodpost_create_channel">Create a channel</string>
@@ -674,6 +680,24 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_select_all">Select all</string>
     <string name="goodpost_channel">Channel</string>
     <string name="goodpost_public_channel">Public channel</string>
+    <!-- The two numbers a channel carries (§9). The count itself is abbreviated
+         before it is substituted, so the placeholder is a string: "1.2K
+         followers" is a label, and a reader does not need the ten-thousands
+         digit to decide whether a channel is worth following. -->
+    <plurals name="goodpost_follower_count">
+        <item quantity="one">%1$s follower</item>
+        <item quantity="other">%1$s followers</item>
+    </plurals>
+    <plurals name="goodpost_view_count">
+        <item quantity="one">%1$s view</item>
+        <item quantity="other">%1$s views</item>
+    </plurals>
+    <string name="goodpost_no_followers">No followers yet</string>
+    <!-- The eye beside a post's own timestamp. It counts that one post, so it
+         says so; "Views on the last post" described a channel-level statistic
+         that no longer exists and read as a bug to anyone using a screen
+         reader on a feed of thirty of them. -->
+    <string name="goodpost_views_of_latest">Views</string>
     <string name="goodpost_no_description">No description yet</string>
     <string name="goodpost_channel_info">Channel info</string>
     <string name="goodpost_forward">Forward</string>

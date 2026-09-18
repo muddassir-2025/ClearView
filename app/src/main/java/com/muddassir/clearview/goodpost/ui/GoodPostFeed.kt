@@ -10,6 +10,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +27,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -43,6 +46,7 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -61,7 +65,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalTextToolbar
+import androidx.compose.foundation.text.contextmenu.provider.LocalTextContextMenuDropdownProvider
+import androidx.compose.foundation.text.contextmenu.provider.LocalTextContextMenuToolbarProvider
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -118,7 +123,50 @@ internal fun GoodPostFeed(
 ) {
     val context = LocalContext.current
     val channel = state.channel
-    val entries = remember(state.posts) { withDateSeparators(state.posts) }
+
+    // **Oldest at the top, newest at the bottom** — the order a conversation
+    // reads in, and the order WhatsApp Channels uses.
+    //
+    // The server pages newest-first, which is right for the wire: a cursor walks
+    // backwards through history, and the first page is the page anybody wants
+    // first. The SCREEN is the other way round, and the reversal lives here
+    // rather than in the API because it is a presentation decision — a second
+    // client could reasonably want the feed inverted, and it would still get one
+    // consistent payload.
+    //
+    // Reversing also puts the date pills where they belong. They are drawn when
+    // the day changes relative to the previous post in list order, so in this
+    // order a pill sits above the first update of each day rather than below the
+    // last — which is the only placement that reads as "everything under this
+    // heading is that day".
+    val entries = remember(state.posts) { withDateSeparators(state.posts.reversed()) }
+    val listState = rememberLazyListState()
+
+    // Open at the newest update rather than at the top of the history, and
+    // follow a published update to the bottom while the reader is already there.
+    //
+    // The two effects are deliberately separate. The first is per channel and
+    // happens once: arriving in a channel means arriving at what was just said.
+    // The second is per growth and is conditional — a reader who has scrolled up
+    // into old updates must NOT be yanked back to the bottom because somebody
+    // published, which is the behaviour that makes a chat app feel hostile.
+    var openedAt by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(channelId, entries.isNotEmpty()) {
+        if (entries.isNotEmpty() && openedAt != channelId) {
+            listState.scrollToItem(entries.lastIndex)
+            openedAt = channelId
+        }
+    }
+
+    LaunchedEffect(entries.size) {
+        if (entries.isEmpty()) return@LaunchedEffect
+        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+            ?: return@LaunchedEffect
+        // Near the bottom, so the new update is what the reader is looking for.
+        if (lastVisible >= entries.size - 3) {
+            listState.animateScrollToItem(entries.lastIndex)
+        }
+    }
 
     // §19 Bug 1: the composer is the bottom row of this screen, and the screen is
     // hosted inside the app's Scaffold, which reserves room for the navigation bar
@@ -217,6 +265,7 @@ internal fun GoodPostFeed(
 
             Box(modifier = Modifier.weight(1f)) {
                 LazyColumn(
+                    state = listState,
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(
                         start = 10.dp,
@@ -229,6 +278,32 @@ internal fun GoodPostFeed(
                 ) {
                     state.postsError?.let { code ->
                         item(key = "error") { WaErrorNotice(code) }
+                    }
+
+                    // Older updates are at the TOP in this order: the list grows
+                    // upwards into history, which is what scrolling up in a
+                    // conversation is for. A "load more" at the bottom would sit
+                    // under the newest update with nothing below it.
+                    if (state.postsCursor != null) {
+                        item(key = "older") {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (state.postsLoadingMore) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(20.dp),
+                                        strokeWidth = 2.dp,
+                                        color = Wa.Accent
+                                    )
+                                } else {
+                                    WaTextAction(
+                                        text = stringResource(R.string.goodpost_older),
+                                        onClick = viewModel::loadMorePosts
+                                    )
+                                }
+                            }
+                        }
                     }
 
                     items(entries, key = { it.key }) { entry ->
@@ -268,27 +343,6 @@ internal fun GoodPostFeed(
                         }
                     }
 
-                    if (state.postsCursor != null) {
-                        item(key = "more") {
-                            Box(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (state.postsLoadingMore) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                        color = Wa.Accent
-                                    )
-                                } else {
-                                    WaTextAction(
-                                        text = stringResource(R.string.goodpost_more),
-                                        onClick = viewModel::loadMorePosts
-                                    )
-                                }
-                            }
-                        }
-                    }
                 }
 
             }
@@ -469,6 +523,29 @@ internal fun PostItem(
                     )
                 }
                 Spacer(Modifier.weight(1f))
+
+                // §9: how many readers have opened THIS update, inside the
+                // update it belongs to, next to its own timestamp. On the card
+                // in the channel list the number described a different post on
+                // every row; here it is unambiguous, and it is where a channel
+                // owner looks for it.
+                if (post.views > 0) {
+                    Icon(
+                        Icons.Filled.Visibility,
+                        contentDescription = stringResource(R.string.goodpost_views_of_latest),
+                        tint = Wa.BubbleTime,
+                        modifier = Modifier.size(12.dp)
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    Text(
+                        text = waCompactCount(post.views),
+                        color = Wa.BubbleTime,
+                        fontSize = 11.sp,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+
                 WaTimeLabel(
                     text = waClock(parseIsoMillis(post.createdAt)),
                     color = Wa.BubbleTime
@@ -624,7 +701,18 @@ internal fun ChannelInputBar(
         minOf(selectionStart, selectionEnd),
         maxOf(selectionStart, selectionEnd)
     )
-    val fieldValue = TextFieldValue(body, TextRange(selectionStart, selectionEnd))
+    // The body is parsed for display as it is typed, so a format shows up where
+    // the reader applied it instead of only after the post is published.
+    //
+    // This matters most for monospace, which is the one format whose whole point
+    // is how it LOOKS: a reader who taps it and sees nothing change cannot tell
+    // the control from a broken one. The stored string is untouched — the markers
+    // are still in it, which is what keeps the round trip lossless — and the
+    // spans are rebuilt from that string on every edit.
+    val fieldValue = TextFieldValue(
+        annotatedString = parseGoodPostText(body),
+        selection = TextRange(selectionStart, selectionEnd)
+    )
 
     /**
      * Whether anything is actually highlighted (§7).
@@ -645,13 +733,13 @@ internal fun ChannelInputBar(
      * which is also the state a field with no clipboard content is in, and the
      * reason the clipboard row hides itself rather than drawing dead buttons.
      */
-    var clipboardActions by remember { mutableStateOf<GoodPostClipboardActions?>(null) }
+    var clipboardActions by remember { mutableStateOf<List<GoodPostContextMenuAction>>(emptyList()) }
 
-    // Remembered so the field is not given a new toolbar on every recomposition:
+    // Remembered so the field is not given a new provider on every recomposition:
     // Compose compares the local's identity, and a fresh instance each frame would
     // install itself again mid-selection.
-    val selectionToolbar = remember {
-        GoodPostSelectionToolbar { offered -> clipboardActions = offered }
+    val selectionMenu = remember {
+        GoodPostTextContextMenuProvider { offered -> clipboardActions = offered }
     }
 
     // Opening an edit puts the caret at the end of what was published, which is
@@ -788,20 +876,26 @@ internal fun ChannelInputBar(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Wa.Canvas)
-                    .padding(start = 16.dp, end = 16.dp, top = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                GoodPostFormatToolbar(
-                    // A selection is the only thing a button can act on, so its
+                GoodPostFormatMenu(
+                    // A selection is the only thing an entry can act on, so its
                     // active state is a fact about the highlighted text: the
-                    // button reads as a toggle that is already on, not as an
+                    // entry reads as a toggle that is already on, not as an
                     // action still waiting to happen.
                     isActive = { format -> format.wraps(selectedText) },
                     onToggle = ::applyFormat
                 )
 
-                GoodPostClipboardBar(clipboardActions, modifier = Modifier.weight(1f))
+                GoodPostMenuDivider()
+
+                // No weight here: the row scrolls, so "fill the rest" has no
+                // rest to fill — the clipboard actions sit after the words and
+                // move into view with them.
+                GoodPostClipboardBar(clipboardActions)
             }
         }
 
@@ -820,9 +914,17 @@ internal fun ChannelInputBar(
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // The field itself is where Compose installs the selection menu,
-                // so the replacement has to be provided around it (§7).
-                CompositionLocalProvider(LocalTextToolbar provides selectionToolbar) {
+                // The field itself is where Compose installs the selection
+                // menu, so the replacement has to be provided around it (§7).
+                //
+                // Both locals, because Compose picks between them by gesture:
+                // a long press and a right click are different providers, and
+                // overriding only one would leave the other gesture raising
+                // Android's own bubble.
+                CompositionLocalProvider(
+                    LocalTextContextMenuToolbarProvider provides selectionMenu,
+                    LocalTextContextMenuDropdownProvider provides selectionMenu
+                ) {
                     BasicTextField(
                         value = fieldValue,
                         onValueChange = { updated ->

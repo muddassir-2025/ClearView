@@ -48,18 +48,26 @@ class GoodPostPublicTest {
     }
 
     @Test
-    fun `a channel parses, and carries no counter`() {
-        val channel = GoodPostCodec.channel(channelJson())
+    fun `a channel parses, and carries exactly the two numbers §9 asks for`() {
+        val channel = GoodPostCodec.channel(
+            channelJson {
+                put("followerCount", 1204)
+                put("lastPostViews", 37)
+            }
+        )
         assertNotNull(channel)
         assertEquals("ClearView", channel!!.name)
         assertEquals("islamic", channel.categorySlug)
         assertEquals("clearview://goodpost/channel/clearview", channel.shareLink)
+        assertEquals(1204, channel.followerCount)
+        assertEquals(37, channel.lastPostViews)
 
-        // The whole product rule in one assertion, read off the MODEL rather
-        // than off one payload: nothing a public channel carries may be a count
-        // of OTHER people's interest in it, and nothing may be an account (§1,
-        // §5). Adding `followerCount` to the data class — the regression this
-        // product exists to prevent — fails here.
+        // The product rule in one assertion, read off the MODEL rather than off
+        // one payload. §9 added exactly two numbers — how many readers follow a
+        // channel, and how many have opened its newest post — and both are
+        // counts of real rows. Everything else a social app would keep beside a
+        // name stays off this shape: the set below is exhaustive, so adding a
+        // like count, a reaction total or a `postCount` fails here.
         val fields = com.muddassir.clearview.goodpost.data.GoodPostChannel::class.java
             .declaredFields
             .map { it.name }
@@ -504,11 +512,12 @@ private val GoodPostChannelFields = setOf(
     // present only on a payload an administrator received, and it exists so a
     // channel they run can say it is not currently public.
     "status",
+    // The two the product now shows on a row and a channel's page (§9). Both are
+    // counts of rows somebody's action created — a follow, or a read that was
+    // reported — rather than a score kept about a channel.
+    "followerCount", "lastPostViews",
     // §4–§6's four, and every one of them is the READER's own state rather than
-    // a fact about the channel — which is what keeps them on the right side of
-    // §1. `unreadCount` and `followedAt` differ per reader; `following` and
-    // `notificationsMuted` are that reader's settings. None of them is a
-    // measure of how many people care about the channel, and that is the
-    // distinction this set exists to hold: `followerCount` still fails here.
+    // a fact about the channel. `unreadCount` and `followedAt` differ per
+    // reader; `following` and `notificationsMuted` are that reader's settings.
     "unreadCount", "following", "notificationsMuted", "followedAt"
 )

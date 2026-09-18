@@ -394,6 +394,16 @@ internal fun WaChannelRow(
     timestamp: String? = null,
     /** True for today's posts, which tint the stamp green (§4). */
     timestampRecent: Boolean = false,
+    /**
+     * How many updates this reader has not opened (§5).
+     *
+     * Drawn UNDER the timestamp, in the row's right-hand column, which is where
+     * a messaging list puts it: the time says when the last update arrived and
+     * the badge says how much is waiting, and the two belong in the same glance
+     * rather than at opposite ends of the row. Zero draws nothing, so the badge
+     * only ever appears where there is something to open.
+     */
+    unreadCount: Int = 0,
     avatar: @Composable () -> Unit,
     previewIcon: ImageVector? = null,
     /**
@@ -450,15 +460,27 @@ internal fun WaChannelRow(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (timestamp != null) {
+                    if (timestamp != null || unreadCount > 0) {
                         Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = timestamp,
-                            color = if (timestampRecent) Wa.StampRecent else Wa.TextDim,
-                            fontSize = 12.sp,
-                            fontWeight = if (timestampRecent) FontWeight.Medium else FontWeight.Normal,
-                            maxLines = 1
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.End,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            if (timestamp != null) {
+                                Text(
+                                    text = timestamp,
+                                    color = if (timestampRecent) Wa.StampRecent else Wa.TextDim,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (timestampRecent) FontWeight.Medium
+                                    else FontWeight.Normal,
+                                    maxLines = 1
+                                )
+                            }
+                            if (unreadCount > 0) {
+                                Spacer(Modifier.height(3.dp))
+                                WaUnreadBadge(unreadCount)
+                            }
+                        }
                     }
                 }
 
@@ -1039,6 +1061,39 @@ internal fun WaFollowAction(
 }
 
 /**
+ * The unread count on a followed channel (§5).
+ *
+ * A filled circle with the number inside it, at the trailing edge of the row —
+ * the one thing on this list that changes while nobody is looking. It is drawn
+ * only when there IS something unread: a zero badge is a badge that teaches the
+ * reader to stop seeing it, which is how an unread indicator stops working.
+ *
+ * The count is capped at 99+ rather than letting a long number widen the circle,
+ * because the circle's size is part of the row's rhythm — and past a hundred the
+ * exact number stops meaning anything a reader acts on differently.
+ */
+@Composable
+internal fun WaUnreadBadge(count: Int) {
+    if (count <= 0) return
+
+    Box(
+        modifier = Modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(Wa.Accent),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = if (count > 99) "99+" else count.toString(),
+            color = Wa.OnAccent,
+            fontSize = if (count > 99) 9.sp else 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+/**
  * A labelled field, for the administrator forms.
  *
  * `TextField` rather than `OutlinedTextField`: on a dark surface an outline fights
@@ -1566,6 +1621,29 @@ internal fun waSameDay(a: Long, b: Long): Boolean {
 internal fun waShortDate(epochMs: Long?): String {
     if (epochMs == null) return ""
     return Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(listStampFormat)
+}
+
+/**
+ * A count as a label: `0`, `7`, `1.2K`, `48K`, `1.3M` (§9).
+ *
+ * Abbreviated at the point where the exact figure stops being information: a
+ * reader deciding whether to open a channel does not read the last three digits
+ * of its follower count, and the full number would push the channel's name off
+ * the row. Everything below a thousand is shown exactly, because at that size
+ * every one of them is somebody.
+ *
+ * `Locale.US` deliberately: the separator in `1.2K` must not become `1,2K` on a
+ * device whose locale uses a comma for decimals, since the comma already means
+ * "thousands" in the same position.
+ */
+internal fun waCompactCount(count: Int): String {
+    if (count < 1000) return count.toString()
+    val thousands = count / 1000.0
+    return when {
+        count < 10_000 -> String.format(Locale.US, "%.1fK", thousands)
+        count < 1_000_000 -> "${count / 1000}K"
+        else -> String.format(Locale.US, "%.1fM", count / 1_000_000.0)
+    }
 }
 
 /** `Photo · 1.2 MB` — a one-line description of an asset (§9). */
