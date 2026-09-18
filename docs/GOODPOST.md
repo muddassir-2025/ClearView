@@ -7,7 +7,46 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: motion, a greeting, and the mark on its tile (§16, §22)
+## Latest pass: three of each, and every card dated (§7, §11, §12)
+
+* **Three of words, three of media.** The split is explicit — `PREVIEW_ROWS` and
+  `PREVIEW_TILES` — rather than "the newest six, split up". Splitting six would
+  give a photo channel no words at all and a written channel an empty grid;
+  counting the kinds separately gives each section its own reason to exist. The
+  query asks for `PREVIEW_SCAN` (24) posts — one bounded indexed read — because
+  the newest six of a photo channel are six photos, and a page size of six would
+  starve the rows.
+* **A post's KIND decides its section, not whether its media signed.** A post
+  with media rows is media: when its picture could not be signed it does not
+  appear at all, rather than dropping into the rows and printing *"This update
+  has no text"* over a post that is entirely a photograph. A page left with
+  nothing to draw for that reason says so — *"None of this channel's recent posts
+  can be shown here"* — instead of printing *"No posts yet"* over a channel that
+  posts every day, which is a claim about somebody's channel that this page
+  cannot see. `UnconfiguredObjectStore` is what that state is tested with.
+* **Every card carries its date.** A row's is its first line — the full instant,
+  UTC like every other date on this page, in a `<time datetime>` a crawler and a
+  screen reader read as the exact moment — and a tile's is the day in the corner,
+  over the same scrim the play badge uses, because 110px has no room for a
+  timestamp. An update without one is a post of unknown age.
+* **A word post no longer ends in "Open →"** — nor in a *Read more →* under a cut
+  whose end is in the app anyway. The card IS the link and every button says
+  where it leads, so the line said the same thing twice. A link row keeps its one
+  foot, because a headline and a domain could otherwise read as the whole of a
+  post that is really a link to one.
+* **One card at the end: the note and two buttons.** *See more from this
+  channel* carries the honest count (*"a preview of the newest 6 updates"*), the
+  note — **See all posts in the app** — and exactly two ways in. The old separate
+  *Reading a channel never needs an account* line moved into that note instead of
+  becoming a third row on the card.
+* **About ClearView describes the app, not the tab.** `ABOUT_CLEARVIEW` is one
+  paragraph saying what ClearView is in general — the Quran, your own media,
+  channels like the one being viewed, and the limits around all of it — and the
+  not-found page uses the same constant, so the two cannot drift into describing
+  two different products. A visitor who arrived from a shared link has met Good
+  Post and nothing else, which is why this is the place the rest of it is named.
+
+## Previous pass: motion, a greeting, and the mark on its tile (§16, §22)
 
 * **The tab has a motion vocabulary, and it is four things.**
   `ui/GoodPostMotion.kt` holds every duration, curve and helper the tab animates
@@ -60,11 +99,14 @@ was removed rather than patched.
   test pins the pairing rather than trusting it. The favicon is unchanged: a
   browser tab is not this canvas, and the mark at 16px needs no tile.
 
-## Previous pass: the shared page as a preview (§12)
+## Earlier pass: the shared page first became a preview (§12)
+
+Superseded by the section above — the counts and the card layout have both moved
+on since. What has not moved is the rule underneath it.
 
 * **The shared page is a preview, not the channel.** The newest **six** posts and
   nothing else — no paging, no "load older", no complete history. The limit is in
-  the QUERY (`listPublicChannelPosts(…, { limit: PREVIEW_POSTS })`, one constant at
+  the QUERY (`listPublicChannelPosts(…, { limit: PREVIEW_SCAN })`, one constant at
   the top of `public/share.ts`), not a filter over a full read, so the media of
   post seven is never signed, transferred or billed. A test seeds eight posts and
   asserts the seventh is absent from the HTML.
@@ -346,7 +388,7 @@ request body.
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/c/:slug` | The public channel page: identity, the newest six posts as a preview grid, both ways into the app, About ClearView |
+| `GET` | `/c/:slug` | The public channel page: identity, the newest few posts as a preview, both ways into the app, About ClearView |
 | `GET` | `/c/:slug/icon` | A redirect to the channel's picture, signed at fetch time (or a transparent SVG when it has none) |
 | `GET` | `/c/app.js` | The page's one script: try the app, fall back to the store |
 | `GET` | `/api/v1/readers/reactions` | §9: the emoji this deployment offers. No token — it is the same six for everybody, and a client that is about to sign in still has to draw them |

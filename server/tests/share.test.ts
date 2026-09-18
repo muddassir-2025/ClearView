@@ -6,6 +6,7 @@ import { buildApp } from '../src/app.js';
 import { isShareableBase } from '../src/channels/service.js';
 import { applyAllMigrations, asQueryable, freshDatabase, one, resetData } from './helpers/database.js';
 import { FakeObjectStore } from './helpers/storage.js';
+import { UnconfiguredObjectStore } from '../src/media/store.js';
 
 /**
  * The page a shared channel link opens (§6).
@@ -227,6 +228,10 @@ describe('the shared-channel page (§6)', () => {
     expect(missing.headers['content-type']).toContain('text/html');
     expect(missing.text).toContain('Channel unavailable');
     expect(missing.text).not.toContain('"error"');
+    // It still introduces the app, in the same words the channel page uses: this
+    // is a dead end a visitor may be seeing first, and two pages describing two
+    // different products is how a brand reads as unfinished.
+    expect(missing.text).toContain('Read and search the Quran');
 
     // A suspended channel is a 404 here for the same reason it is one in the API.
     const suspended = unique('suspended');
@@ -469,28 +474,44 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).not.toContain('<h3 class="section-heading">Media</h3>');
   });
 
-  it('shows the newest six posts and nothing older (§12)', async () => {
+  it('shows the newest three posts of each kind and nothing older (§12)', async () => {
     // The rule the whole page is built around: a shared link is a preview, not
-    // the channel's archive. Six posts, and the seventh is not on the page at all
-    // — not fetched and hidden, absent, because the page size goes to the query.
+    // the channel's archive. Three of words and three of media, and the fourth
+    // of each is not on the page at all — not fetched and hidden, absent.
+    //
+    // The two kinds are aged alternately, so "the newest three of each" cannot
+    // happen by insertion order: a preview that merely took the newest six and
+    // split them would fail here, because the newest six are three of each only
+    // when the channel alternated by hand.
     const slug = unique('preview');
     const channelId = await seedChannel(slug);
-    for (let i = 0; i < 8; i += 1) {
-      await seedPost(channelId, `Update number ${i}`, i);
+    const pictures: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      await seedPost(channelId, `Words number ${i}`, i * 2);
+    }
+    for (let i = 0; i < 5; i += 1) {
+      const withPicture = await seedPost(channelId, `Caption ${i}`, i * 2 + 1);
+      await seedImage(withPicture);
+      pictures.push(withPicture);
     }
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text.match(/class="post-row"/g)).toHaveLength(6);
-    expect(response.text).toContain('Update number 0');
-    expect(response.text).toContain('Update number 5');
-    expect(response.text).not.toContain('Update number 6');
-    expect(response.text).not.toContain('Update number 7');
+    expect(response.text.match(/class="post-row"/g)).toHaveLength(3);
+    expect(response.text.match(/class="tile"/g)).toHaveLength(3);
+    expect(response.text).toContain('Words number 0');
+    expect(response.text).toContain('Words number 2');
+    expect(response.text).not.toContain('Words number 3');
+    // The fourth picture is absent from the page, and its media was never signed:
+    // the key only reaches the HTML through a URL from the store.
+    for (const id of pictures.slice(0, 3)) expect(response.text).toContain(`${id}.jpg`);
+    for (const id of pictures.slice(3)) expect(response.text).not.toContain(`${id}.jpg`);
     // And the page says what it is rather than pretending to be the whole channel.
-    expect(response.text).toContain('A preview of the newest 6 posts.');
+    expect(response.text).toContain('See all posts in the app.');
+    expect(response.text).toContain('a preview of the newest 6 updates');
   });
 
-  it('shows a long post as a preview with a way into the rest of it', async () => {
+  it('cuts a long post to a preview, and leaves the rest to the app (§7)', async () => {
     const slug = unique('longpost');
     const channelId = await seedChannel(slug);
     const long = `${'The channel keeps posting and the words keep coming. '.repeat(8)}END OF POST`;
@@ -498,11 +519,53 @@ describe('the shared-channel page (§6)', () => {
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text).toContain('Read more →');
-    // Cut at a word, and cut short: a tile that contains the whole post is not a
-    // preview and does not fit in a grid.
+    // Cut at a word, and cut short: a row that contains the whole post is not a
+    // preview.
     expect(response.text).not.toContain('END OF POST');
     expect(response.text).not.toMatch(/coming\.\w/);
+    // And no second invitation to press the card. The card IS the link, so a text
+    // row prints no "Open →" and no "Read more →" under a cut whose end is in the
+    // app anyway.
+    expect(response.text).not.toContain('Read more');
+    expect(response.text).not.toContain('Open \u2192');
+  });
+
+  it('dates every card, in the corner of a tile and above the words', async () => {
+    const slug = unique('dates');
+    const channelId = await seedChannel(slug);
+    await seedPost(channelId, 'Dated words', 90);
+    const picture = await seedPost(channelId, 'Dated picture', 30);
+    await seedImage(picture);
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    // A row shows the full instant, because a row has the width for it; a tile
+    // shows the day, because a 110px square does not.
+    expect(response.text).toMatch(
+      /<time class="post-row-date" datetime="[^"]+">[^<]+UTC<\/time>/
+    );
+    expect(response.text).toMatch(/<time class="tile-date" datetime="[^"]+">\d+ \w+<\/time>/);
+    // The `datetime` is a real instant rather than a repeat of the printed label,
+    // which is what a crawler and a screen reader read.
+    expect(response.text).toMatch(/datetime="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+  });
+
+  it('ends on one card holding two buttons and a note about the app (§11)', async () => {
+    const slug = unique('more');
+    const channelId = await seedChannel(slug);
+    await seedPost(channelId, 'Something worth reading');
+
+    const response = await request(app).get(`/c/${slug}`);
+    const start = response.text.indexOf('<section class="more">');
+    const more = response.text.slice(start, response.text.indexOf('</section>', start));
+
+    expect(more).toContain('See more from this channel');
+    // The note is the point of the card: the page is a preview and the rest is in
+    // the app, said once, next to the two ways in.
+    expect(more).toContain('See all posts in the app');
+    expect(more.match(/class="button primary"/g)).toHaveLength(1);
+    expect(more.match(/class="button"/g)).toHaveLength(1);
+    expect(more.match(/<a /g)).toHaveLength(2);
   });
 
   it('lets the page load media from the bucket rather than only from its own origin', async () => {
@@ -577,6 +640,14 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).toContain('Explore ClearView on Google Play');
     // Concise: one paragraph, not a marketing page.
     expect(response.text.match(/<h2>ClearView<\/h2>/g)).toHaveLength(1);
+
+    // And the paragraph describes the whole app rather than only channels: a
+    // visitor who arrived from a shared link has met Good Post and nothing else.
+    const about = response.text.slice(response.text.indexOf('<section class="about">'));
+    expect(about).toContain('Read and search the Quran');
+    expect(about).toContain('follow channels like this one');
+    expect(about).toContain('screen-time');
+    expect(about).toContain('content protection');
   });
 
   it('says a channel with no posts is empty rather than rendering nothing', async () => {
@@ -586,6 +657,31 @@ describe('the shared-channel page (§6)', () => {
     const response = await request(app).get(`/c/${slug}`);
     expect(response.status).toBe(200);
     expect(response.text).toContain('No posts yet');
+  });
+
+  it('says a channel HAS posts it cannot show, instead of saying it has none', async () => {
+    // A deployment with no bucket serves text posts and signs no media at all,
+    // which is a supported state. The two cases read differently because they ARE
+    // different: "No posts yet" printed over a channel somebody posts to every day
+    // reads as abandoned, and it is a claim about a channel this page cannot see.
+    const slug = unique('nobucket');
+    const channelId = await seedChannel(slug, { name: 'Has Posts' });
+    const picture = await seedPost(channelId, 'A picture', 5);
+    await seedImage(picture);
+
+    const bare = buildApp({
+      database: asQueryable(pglite),
+      store: new UnconfiguredObjectStore(),
+    });
+    const response = await request(bare).get(`/c/${slug}`);
+
+    expect(response.status).toBe(200);
+    expect(response.text).toContain('can be shown here');
+    expect(response.text).not.toContain('No posts yet');
+    // And the page still offers the app, with the generic note rather than a
+    // count of zero.
+    expect(response.text).toContain('Open in ClearView');
+    expect(response.text).not.toContain('newest 0');
   });
 });
 

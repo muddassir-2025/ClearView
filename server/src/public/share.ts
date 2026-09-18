@@ -128,6 +128,25 @@ function machineDate(value: unknown): string {
 }
 
 /**
+ * The same instant, short enough to sit on a picture.
+ *
+ * A tile is about 110px wide and already carries a play badge, so the day and
+ * month is all that fits under a photograph; the full date and time ride in the
+ * tile's tooltip and in nothing else. In UTC like every other date here, and for
+ * the same reason: the server does not know the reader's clock.
+ */
+function shortDate(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '';
+
+  return new Intl.DateTimeFormat('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
+/**
  * One inline format, and the pattern that finds it in a body.
  *
  * These are the SAME four patterns the Android renderer uses (`GoodPostText.kt`),
@@ -212,16 +231,31 @@ function playStoreUrl(): string {
 }
 
 /**
- * How many posts a shared link shows.
+ * How many posts a shared link shows: the newest three of words, three of media.
  *
  * The page is a PREVIEW, not the channel (§12): a visitor follows a link to see
- * what the channel is, and the app is where its history lives. Six is about one
- * screen of a grid, and — the part that matters — it is the number the DATABASE
- * is asked for, not a number this file hides after loading a hundred. The public
- * posts endpoint takes a page size, so the query is `LIMIT 6` and the media
- * beyond it is never signed, never transferred and never billed.
+ * what the channel is, and the app is where its history lives. Six posts is about
+ * one screen, and the split is what keeps both halves of the page honest — a
+ * channel that posts three photos in a row should still show that it writes, and
+ * a channel of nothing but words should not end in an empty grid.
+ *
+ * These two are counts this file APPLIES, not numbers it hides after loading a
+ * hundred: the public posts endpoint takes a page size, so the media beyond what
+ * is drawn here is never signed, never transferred and never billed.
  */
-const PREVIEW_POSTS = '6';
+const PREVIEW_ROWS = 3;
+const PREVIEW_TILES = 3;
+
+/**
+ * How many posts the query may look through to fill those six slots.
+ *
+ * More than six, for a reason: the newest six posts of a photo channel are six
+ * photos, and asking the database for only six would leave the words section
+ * empty on a channel that has plenty of words. 24 is a few screens of a feed —
+ * one indexed read, still bounded, and the point past which a channel has buried
+ * its own text deep enough that a preview of it is honest without it.
+ */
+const PREVIEW_SCAN = '24';
 
 /**
  * The most characters of a post's text a tile shows before it stops.
@@ -325,11 +359,13 @@ function postTile(
   }
 ): string {
   const when = escapeHtml(readableDate(post.createdAt));
-  // The exact instant, for anything that reads the page rather than looks at it.
-  // A tile shows no date of its own — six dates in a grid is six lines of noise —
-  // so this is where the machine-readable one lives, and the human one rides in
-  // the element's tooltip.
-  const stamp = `<time datetime="${escapeHtml(machineDate(post.createdAt))}">${when}</time>`;
+  // One visible date, and it is the short one: the day, in the corner of the
+  // square, over the same scrim the play badge uses. The full instant rides in
+  // the element's tooltip and in `datetime`, because "18 Sept 2026, 13:47 UTC"
+  // across a 110px tile is four lines of date and no picture.
+  const stamp = `<time class="tile-date" datetime="${escapeHtml(
+    machineDate(post.createdAt)
+  )}">${escapeHtml(shortDate(post.createdAt))}</time>`;
 
   const first = post.media[0];
   const href = first === undefined || first.url === null ? null : safeAttributeUrl(first.url);
@@ -346,7 +382,8 @@ function postTile(
   ${renderMedia(first)}${
     clip ? '\n  <span class="play" aria-hidden="true">\u25b6</span>' : ''
   }
-  <span class="sr">${clip ? 'Video' : 'Image'} posted ${stamp}</span>
+  ${stamp}
+  <span class="sr">${clip ? 'Video' : 'Image'}</span>
 </a>`;
 }
 
@@ -364,6 +401,20 @@ function postTile(
  * Nothing here links to the web: a row is a preview of something that lives in
  * the app, so tapping it opens the channel there — the same promise every button
  * on the page makes.
+ *
+ * ## One date, above the words
+ *
+ * Every row carries its date as its first line: an update without one is a post
+ * of unknown age, and the corner badge on a tile is the other half of the same
+ * rule. It is dim and small so it labels the card rather than competing with it.
+ *
+ * ## Why a word post no longer ends in "Open"
+ *
+ * The card itself is the link, and a text row that ended in "Open \u2192" (or in
+ * "Read more \u2192" under a cut that the app is where you finish) said the same
+ * thing twice — once in the sentence, once in the thing you are already pressing.
+ * A link row keeps its single foot, because a headline and a domain could
+ * otherwise read as the whole of a post that is really a link to one.
  */
 function postRow(
   post: {
@@ -375,7 +426,9 @@ function postRow(
   deepLink: string
 ): string {
   const when = escapeHtml(readableDate(post.createdAt));
-  const stamp = `<time datetime="${escapeHtml(machineDate(post.createdAt))}">${when}</time>`;
+  const stamp = `<time class="post-row-date" datetime="${escapeHtml(
+    machineDate(post.createdAt)
+  )}">${when}</time>`;
   const open = `href="${escapeHtml(deepLink)}" rel="noopener" title="${when}"`;
 
   // ── A link ──
@@ -383,23 +436,20 @@ function postRow(
     const title = post.linkTitle?.trim();
     const heading = previewOf(title && title !== '' ? title : domainOf(post.linkUrl), 96);
     return `<a class="post-row" ${open}>
+  ${stamp}
   <span class="post-link-title">${escapeHtml(heading.text)}${heading.truncated ? '\u2026' : ''}</span>
   <span class="post-link-domain">${escapeHtml(domainOf(post.linkUrl))}</span>
   <span class="post-row-foot">Open \u2192</span>
-  <span class="sr">Link posted ${stamp}</span>
 </a>`;
   }
 
   // ── Words ──
   const cut = post.body === null || post.body.trim() === '' ? null : previewOf(post.body, ROW_CHARS);
-  const shown =
-    cut === null ? 'This update has no text.' : renderBody(cut.text);
-  const foot = cut !== null && cut.truncated ? 'Read more \u2192' : 'Open \u2192';
+  const shown = cut === null ? 'This update has no text.' : renderBody(cut.text);
 
   return `<a class="post-row" ${open}>
+  ${stamp}
   <span class="post-row-body">${shown}</span>
-  <span class="post-row-foot">${foot}</span>
-  <span class="sr">Post from ${stamp}</span>
 </a>`;
 }
 
@@ -499,7 +549,7 @@ export function buildShareRouter(database: Queryable, store: ObjectStore): Route
       // the channel, and the app is where the rest of them live. Older posts are
       // not paginated here on purpose — a channel is not an archive (§14), and a
       // crawler walking an unbounded list is a load nobody asked for.
-      const page = await listPublicChannelPosts(database, store, slug, { limit: PREVIEW_POSTS });
+      const page = await listPublicChannelPosts(database, store, slug, { limit: PREVIEW_SCAN });
       posts = page.items;
     } catch (err) {
       const type = err instanceof ApiError ? err.type : 'internal_error';
@@ -710,6 +760,27 @@ const APP_JS = `(function () {
 })();
 `;
 
+/**
+ * What ClearView is, for the two pages that have to introduce it (§5).
+ *
+ * One paragraph, and deliberately about the whole app rather than about channels:
+ * a visitor arriving from a shared link has met Good Post and nothing else, so
+ * this is the only place the rest of it is named. The four things it lists are
+ * the app's four tabs in the order they appear — the Quran, media, channels, and
+ * the tools behind "More" — described in the general terms a stranger can picture
+ * rather than as feature names they cannot.
+ *
+ * Shared by the channel page and the not-found page so the two cannot drift into
+ * describing two different products, and plain text so it is escaped by whoever
+ * interpolates it.
+ */
+const ABOUT_CLEARVIEW =
+  'A calm place for the time you spend on a phone. Read and search the Quran, ' +
+  'keep your own media without an endless feed, follow channels like this one, ' +
+  'and set the limits around all of it — to-dos, a zikr counter, screen-time ' +
+  'limits and content protection, in one app. Reading never needs an account, ' +
+  'and nothing here is built to keep you scrolling.';
+
 /** The channel page, with the preview card a messaging app will build. */
 function channelPage(
   channel: Awaited<ReturnType<typeof getPublicChannel>>,
@@ -743,27 +814,52 @@ function channelPage(
   // readable page — and because the rows have to come first for the squares to
   // form whole rows of their own at the bottom.
   //
+  // Three of each ([PREVIEW_ROWS], [PREVIEW_TILES]) and no more. The two sections
+  // are counted separately because they are shown separately: taking the newest
+  // six posts and splitting them would give a photo channel no words at all and a
+  // written channel an empty grid.
+  //
   // The order WITHIN each section is still newest first, which is the only order
   // a preview can honestly claim.
-  const mediaPosts = posts.filter(
-    (post) => post.media[0] !== undefined && post.media[0].url !== null
-  );
-  const textPosts = posts.filter((post) => !mediaPosts.includes(post));
+  // What a post IS decides which section it belongs in, and a post's media rows
+  // decide that — not whether the signing worked. Classifying on the URL would
+  // send a picture whose link could not be signed into the rows, where it would
+  // print "This update has no text" over a post that is entirely a photograph;
+  // this way it simply does not appear.
+  const withMedia = posts.filter((post) => post.media.length > 0);
+  const withoutMedia = posts.filter((post) => post.media.length === 0);
 
-  const rows = textPosts.map((post) => postRow(post, rawDeepLink)).join('\n');
-  const tiles = mediaPosts.map(postTile).join('\n');
+  const rowPosts = withoutMedia.slice(0, PREVIEW_ROWS);
+  const tilePosts = withMedia
+    .filter((post) => post.media[0]?.url !== null && post.media[0]?.url !== undefined)
+    .slice(0, PREVIEW_TILES);
+  const rows = rowPosts.map((post) => postRow(post, rawDeepLink)).join('\n');
+  const tiles = tilePosts.map(postTile).join('\n');
+  const shown = rowPosts.length + tilePosts.length;
 
   // The bottom section says what this page is (§11, §12). Naming the count is
   // the honest version of "this is a preview": a visitor can see that the page
   // is complete in itself and that the channel is bigger than what they were
   // sent, without the page ever claiming how much bigger. With no posts at all
   // it says that instead, because "the latest 0 updates" is not a sentence.
-  const previewHeading =
-    posts.length === 0 ? 'This channel is on ClearView' : 'See more from this channel';
+  const previewHeading = posts.length === 0 ? 'This channel is on ClearView' : 'See more from this channel';
   const previewNote =
     posts.length === 0
       ? 'Follow it in the app to see what gets posted.'
-      : `A preview of the newest ${posts.length === 1 ? 'post' : `${posts.length} posts`}. Everything before them, and everything this channel posts next, is in ClearView.`;
+      : shown === 0
+        ? 'See all posts in the app — the whole channel, and everything it posts next, is in ClearView. Reading it never needs an account.'
+        : `See all posts in the app. This link is a preview of the newest ${shown} ${shown === 1 ? 'update' : 'updates'} — the whole channel, and everything it posts next, is in ClearView. Reading it never needs an account.`;
+
+  // What stands in for the sections when neither has anything in it. Two states,
+  // not one: "No posts yet" printed over a channel that HAS posted but whose
+  // pictures could not be signed on this deployment would be a lie about somebody
+  // else's channel, and one a visitor would take as the channel being abandoned.
+  const body =
+    shown > 0
+      ? '<h2 class="section-heading">Latest posts</h2>'
+      : posts.length === 0
+        ? '<p class="dim empty">No posts yet. This channel has not posted anything — check back later.</p>'
+        : '<p class="dim empty">None of this channel\u2019s recent posts can be shown here. Open it in ClearView to read them.</p>';
 
   return `<!doctype html>
 <html lang="en">
@@ -800,11 +896,7 @@ function channelPage(
     </div>
   </header>
 
-  ${
-    rows === '' && tiles === ''
-      ? '<p class="dim empty">No posts yet. This channel has not posted anything — check back later.</p>'
-      : '<h2 class="section-heading">Latest posts</h2>'
-  }
+  ${body}
   ${rows === '' ? '' : `<div class="rows">\n${rows}\n  </div>`}
   ${
     // The second heading appears only when both sections do: with one of them
@@ -821,16 +913,11 @@ function channelPage(
       <a class="button primary" href="${deepLink}" data-store="${store}">Open in ClearView</a>
       <a class="button" href="${store}" rel="noopener">Get ClearView</a>
     </div>
-    <p class="cta-note">Reading a channel never needs an account.</p>
   </section>
 
   <section class="about">
     <h2>ClearView</h2>
-    <p>
-      A focused place to spend time online on purpose: the Quran, a calm media
-      space, channel updates like this one, content controls, and simple
-      productivity tools — in one app, without a feed built to keep you scrolling.
-    </p>
+    <p>${ABOUT_CLEARVIEW}</p>
     <p class="about-cta"><a href="${store}" rel="noopener">Explore ClearView on Google Play \u2192</a></p>
   </section>
 
@@ -884,10 +971,7 @@ function notFoundPage(slug: string, reason: string): string {
   ${slug === '' ? '' : `<p class="dim">Link: <code>/c/${escapeHtml(slug)}</code></p>`}
   <section class="about">
     <h2>ClearView</h2>
-    <p>
-      A focused place to spend time online on purpose: the Quran, a calm media
-      space, channel updates, content controls and simple productivity tools.
-    </p>
+    <p>${ABOUT_CLEARVIEW}</p>
     <p class="about-cta"><a href="${escapeHtml(playStoreUrl())}" rel="noopener">Explore ClearView on Google Play →</a></p>
   </section>
 </main>
@@ -1060,11 +1144,9 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 }
 .button.primary { background: var(--accent); color: var(--on-accent); }
 .button:active { opacity: 0.85; }
-.cta-note { margin: 10px 0 0; color: var(--dim); font-size: 12.5px; }
 @media (max-width: 420px) {
   .cta { justify-content: center; }
   .button { flex: 1 1 auto; text-align: center; }
-  .cta-note { text-align: center; }
 }
 
 /*
@@ -1099,6 +1181,12 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .post-link-title { font-size: 15.5px; font-weight: 600; overflow-wrap: anywhere; }
 .post-link-domain { color: var(--dim); font-size: 12.5px; }
 .post-row-foot { color: var(--accent); font-size: 12.5px; font-weight: 600; }
+/*
+ * The date on a row: the first line of the card, dim and small so it labels the
+ * post instead of competing with the words. Tabular figures because dates in a
+ * column of rows should line up — proportional ones make the column look ragged.
+ */
+.post-row-date { color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; }
 
 /*
  * The media grid (§5, §6, §8) — squares, under the rows.
@@ -1147,6 +1235,23 @@ h3.section-heading { margin-top: 22px; font-size: 11.5px; }
   color: #ffffff;
   font-size: 10px;
   display: flex; align-items: center; justify-content: center;
+}
+/*
+ * The day a tile was posted, over the same scrim the play badge uses — white on
+ * a photograph needs one, and the same treatment at the other corner is what
+ * makes the pair look deliberate rather than stuck on. The square is cropped
+ * from the media, so the badge has to survive whatever is underneath it.
+ */
+.tile-date {
+  position: absolute;
+  left: 7px; bottom: 7px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  font-size: 10.5px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
 }
 /*
  * The lightbox (§6).
@@ -1210,7 +1315,11 @@ h3.section-heading { margin-top: 22px; font-size: 11.5px; }
 }
 .lb-bar a { color: #ffffff; font-weight: 600; text-decoration: none; border-bottom: 1px solid rgba(255, 255, 255, 0.4); }
 
-/* Read by a screen reader, not drawn: the tile's only label is its date. */
+/*
+ * Read by a screen reader, not drawn. A tile's picture is an alt-less image and
+ * its clip has no track, so this is the one word that says what kind of media
+ * the square holds; the date beside it is a real element and needs no copy here.
+ */
 .sr {
   position: absolute;
   width: 1px; height: 1px;
