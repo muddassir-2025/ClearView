@@ -1,9 +1,11 @@
 package com.muddassir.clearview.goodpost
 
 import com.muddassir.clearview.goodpost.data.GoodPostDownloads
+import com.muddassir.clearview.goodpost.data.isUndrawableMediaType
 import com.muddassir.clearview.goodpost.ui.aspectOf
 import com.muddassir.clearview.goodpost.ui.clockOf
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -94,5 +96,32 @@ class GoodPostMediaTest {
         assertNull(aspectOf(500, null))
         assertNull(aspectOf(0, 500))
         assertNull(aspectOf(500, 0))
+    }
+
+    // ── What the image loader will accept (§24) ─────────────────────────
+
+    @Test
+    fun `a clip's bytes are refused before they are downloaded`() {
+        // The bug this pins: a gallery tile and a channel's media strip asked the
+        // IMAGE loader for a video's URL, and the loader reads a response into a
+        // ByteArray — so every clip on screen was downloaded in full, failed to
+        // decode, and was thrown away, having spent the bandwidth the video the
+        // reader was trying to open needed. One header makes it free.
+        assertTrue(isUndrawableMediaType("video/mp4"))
+        assertTrue(isUndrawableMediaType("video/quicktime"))
+        assertTrue(isUndrawableMediaType("video/webm; codecs=vp9"))
+        assertTrue(isUndrawableMediaType("AUDIO/MPEG"))
+    }
+
+    @Test
+    fun `a picture is never refused, whatever the bucket calls it`() {
+        // Refusing only the two kinds the decoder cannot draw is what keeps this
+        // from becoming the opposite bug: an object served as
+        // `application/octet-stream` is a photograph the bucket did not label.
+        assertFalse(isUndrawableMediaType("image/jpeg"))
+        assertFalse(isUndrawableMediaType("image/png; charset=binary"))
+        assertFalse(isUndrawableMediaType("application/octet-stream"))
+        assertFalse(isUndrawableMediaType(null))
+        assertFalse(isUndrawableMediaType(""))
     }
 }

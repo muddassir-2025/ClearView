@@ -63,6 +63,7 @@ import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
 import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 
 /**
@@ -530,10 +531,23 @@ private fun MediaAndLinks(
 /** One square thumbnail in the strip. */
 @Composable
 private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
-    var bitmap by remember(item.url) { mutableStateOf(GoodPostImages.peek(item.url)) }
+    // Same rule as the gallery's cells: a clip's bytes are not a picture, and
+    // asking the image loader for one downloads the entire file to fail
+    // decoding it (§24). The strip below a channel's header is mostly clips, and
+    // each one draws its own still so the row is recognisable (§22).
+    var bitmap by remember(item.url) {
+        mutableStateOf(
+            if (item.isVideo) GoodPostVideoPoster.peek(item.url) else GoodPostImages.peek(item.url)
+        )
+    }
 
-    LaunchedEffect(item.url) {
-        if (bitmap == null) bitmap = GoodPostImages.load(item.url, maxWidthPx = 240)
+    LaunchedEffect(item.url, item.isVideo) {
+        if (bitmap != null) return@LaunchedEffect
+        bitmap = if (item.isVideo) {
+            GoodPostVideoPoster.load(item.url, widthPx = 300)
+        } else {
+            GoodPostImages.load(item.url, maxWidthPx = 240)
+        }
     }
 
     Box(

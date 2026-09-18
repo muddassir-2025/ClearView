@@ -27,6 +27,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostStarred
 import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 import android.app.Activity
 import com.muddassir.clearview.goodpost.data.CreatorSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostRepository
@@ -1444,6 +1445,9 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             val urls = items.mapNotNull { it.url }
             GoodPostImages.forget(urls)
+            // A clip's still is part of what this device holds for it: leaving it
+            // behind would keep drawing the deleted video's frame in the grid.
+            GoodPostVideoPoster.forget(urls)
             urls.forEach { GoodPostVideoCache.evict(it) }
             uiState = uiState.copy(messageCode = "deleted_from_device")
         }
@@ -1476,6 +1480,7 @@ class GoodPostViewModel : ViewModel() {
             // bytes as well as the row.
             val urls = posts.flatMap { post -> post.media.mapNotNull { it.url } }
             GoodPostImages.forget(urls)
+            GoodPostVideoPoster.forget(urls)
             urls.forEach { GoodPostVideoCache.evict(it) }
         }
 

@@ -54,6 +54,7 @@ import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 
 /**
  * Everything a channel has posted as media (§13).
@@ -244,6 +245,11 @@ internal fun GoodPostMediaGallery(
                 url = viewingItem.url.orEmpty(),
                 contentType = null,
                 aspect = aspectOf(viewingItem.width, viewingItem.height),
+                // Known before the tap: the server measured the clip when it was
+                // uploaded, so the transport can show its length from the first
+                // frame instead of an ellipsis while the player reads the file's
+                // index off the network (§9).
+                knownDurationMs = viewingItem.durationMs ?: 0L,
                 onClose = { viewing = null },
                 // A gallery item knows the post it came from, so the same
                 // re-read the feed does is available here.
@@ -298,10 +304,24 @@ private fun MediaCell(
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    var bitmap by remember(item.url) { mutableStateOf(GoodPostImages.peek(item.url)) }
+    // A clip is never asked of the IMAGE loader: its bytes are not a picture, so
+    // the decode could only fail — after the whole file had been downloaded into
+    // memory, which is what made a grid of clips slow to scroll and slow to open
+    // one (§24). A clip gets its own still instead (§22), so a tile says which
+    // video it is rather than wearing a camera icon.
+    var bitmap by remember(item.url) {
+        mutableStateOf(
+            if (item.isVideo) GoodPostVideoPoster.peek(item.url) else GoodPostImages.peek(item.url)
+        )
+    }
 
-    LaunchedEffect(item.url) {
-        if (bitmap == null) bitmap = GoodPostImages.load(item.url, maxWidthPx = 360)
+    LaunchedEffect(item.url, item.isVideo) {
+        if (bitmap != null) return@LaunchedEffect
+        bitmap = if (item.isVideo) {
+            GoodPostVideoPoster.load(item.url, widthPx = 360)
+        } else {
+            GoodPostImages.load(item.url, maxWidthPx = 360)
+        }
     }
 
     val current = bitmap
@@ -323,7 +343,8 @@ private fun MediaCell(
         contentAlignment = Alignment.Center
     ) {
         // Drawn underneath the picture for the length of the fade, so the tile is
-        // never briefly empty.
+        // never briefly empty — and it stays as the whole of the tile for a clip
+        // whose still cannot be read, which is the honest placeholder for one.
         Icon(
             imageVector = if (item.isVideo) Icons.Filled.Videocam else Icons.Filled.PlayArrow,
             contentDescription = stringResource(R.string.goodpost_media_unavailable),

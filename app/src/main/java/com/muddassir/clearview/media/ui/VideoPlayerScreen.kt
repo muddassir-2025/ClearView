@@ -1981,19 +1981,23 @@ private fun VideoTransportControls(
                 onClick = onSeekBack10,
                 tint = iconTint
             )
-            // Play / pause — or a buffering spinner in the same slot, so the
-            // state is obvious without an extra row of chrome.
-            if (state.isBuffering) {
-                Box(
-                    modifier = Modifier.size(48.dp),
-                    contentAlignment = Alignment.Center
-                ) {
+            // Play / pause, ALWAYS present — with the wait drawn as a ring around
+            // it rather than in its place.
+            //
+            // This slot used to BE the loading indicator while a stream buffered,
+            // which meant the one control a reader reaches for vanished for
+            // exactly as long as the wait lasted: the bar read as "the controls
+            // are still loading" over a video that was merely fetching, and a
+            // pause was impossible for the same stretch. A ring says the same
+            // thing without taking the control away.
+            Box(contentAlignment = Alignment.Center) {
+                if (state.isBuffering) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
+                        modifier = Modifier.size(46.dp),
+                        strokeWidth = 2.dp,
+                        color = iconTint.copy(alpha = 0.5f)
                     )
                 }
-            } else {
                 TransportIconButton(
                     icon = if (state.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                     label = if (state.isPlaying) "Pause" else "Play",
@@ -2387,9 +2391,13 @@ private fun InstagramPlayer(
         // Bounded end-to-end: the HTTP attempt has its own timeouts and the
         // WebView render has its own 12 s budget; this is the outer guarantee
         // that the UI can never sit in "Loading…" forever.
+        // `fresh` on every retry (resolveToken is bumped by the Retry button): the
+        // remembered URL is the one that just failed, so answering from the cache
+        // would make Retry a dead end — the bug the cache would otherwise
+        // reintroduce (§18's lesson, one layer down).
         val resolved = withTimeoutOrNull(RESOLVE_TIMEOUT_MS) {
             com.muddassir.clearview.media.data.InstagramStreamResolver
-                .resolvePlayableStream(context, shortcode)
+                .resolvePlayableStream(context, shortcode, fresh = resolveToken > 0)
         }
         resolved?.let {
             posterUrl = it.posterUrl

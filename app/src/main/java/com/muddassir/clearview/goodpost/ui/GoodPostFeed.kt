@@ -167,6 +167,10 @@ internal fun GoodPostFeed(
     // viewer because the position belongs to the CARD that was playing, and the
     // viewer is told about it once, on the way in.
     var viewerFromMs by remember { mutableStateOf(0L) }
+    // How long that clip is, so the viewer's transport can show a real total from
+    // its first frame. The server measured every upload, so this is known before
+    // anybody opens anything — it just was not being handed over (§9).
+    var viewerDurationMs by remember { mutableStateOf(0L) }
 
     val viewing = state.posts
         .firstOrNull { it.id == viewerPostId }
@@ -400,6 +404,7 @@ internal fun GoodPostFeed(
                                         viewerPostId = entry.post.id
                                         viewerMediaId = asset.id
                                         viewerFromMs = 0L
+                                        viewerDurationMs = asset.durationMs ?: 0L
                                     }
                                 },
                                 onOpenMediaAt = { asset, from ->
@@ -408,6 +413,7 @@ internal fun GoodPostFeed(
                                         viewerMediaId = asset.id
                                         // Resume where the card had got to.
                                         viewerFromMs = from
+                                        viewerDurationMs = asset.durationMs ?: 0L
                                     }
                                 },
                                 onRefreshMedia = { viewModel.refreshPost(entry.post.id) }
@@ -451,10 +457,12 @@ internal fun GoodPostFeed(
                     viewerPostId = null
                     viewerMediaId = null
                     viewerFromMs = 0L
+                    viewerDurationMs = 0L
                 },
                 // A fresh signature, through the one row this viewer is showing.
                 onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } },
                 startAtMs = viewerFromMs,
+                knownDurationMs = viewerDurationMs,
                 // A clip opened from a PLAYING card hands the playhead back on the
                 // way out, so the feed does not jump backwards to wherever the card
                 // was paused. A picture, or a card that was not playing, names no
@@ -475,6 +483,7 @@ internal fun GoodPostFeed(
                     viewerPostId = null
                     viewerMediaId = null
                     viewerFromMs = 0L
+                    viewerDurationMs = 0L
                 }
             )
         }

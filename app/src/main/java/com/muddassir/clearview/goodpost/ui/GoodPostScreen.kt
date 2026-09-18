@@ -39,6 +39,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.data.GoodPostImages
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
@@ -107,6 +108,11 @@ fun GoodPostTab(
     // trim of what is already on disk happens once per process, off the main
     // thread.
     LaunchedEffect(Unit) { GoodPostImages.attach(context) }
+
+    // The video stills' own directory, attached for the same reason: a clip's
+    // tile draws a frame from the file, and that frame is worth keeping across
+    // sessions rather than re-reading a clip's header on every open (§22).
+    LaunchedEffect(Unit) { GoodPostVideoPoster.attach(context) }
 
     LaunchedEffect(openChannelSlug) {
         val slug = openChannelSlug ?: return@LaunchedEffect

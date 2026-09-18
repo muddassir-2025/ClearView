@@ -125,6 +125,20 @@ internal fun MediaViewer(
      */
     startAtMs: Long = 0L,
     /**
+     * How long the clip is, when the caller already knows.
+     *
+     * The feed's card has been playing it and the gallery's tile was measured at
+     * upload, so both know the length before the player does — and the transport
+     * used to show a loading ellipsis for the total until the player had read the
+     * file's index off the network, which is exactly the "the controls are still
+     * loading" a reader sees over a video that has not started yet. The elapsed
+     * side was already seeded this way (see [startAtMs]); this is the other half.
+     *
+     * Zero means unknown, which is still drawn honestly: the total is blank until
+     * the player can answer.
+     */
+    knownDurationMs: Long = 0L,
+    /**
      * The cache key of the card this was opened from, when there WAS one.
      *
      * Set by the feed, null from the gallery. On the way out, the position is
@@ -164,6 +178,7 @@ internal fun MediaViewer(
                 kind = kind,
                 aspect = aspect,
                 startAtMs = startAtMs,
+                knownDurationMs = knownDurationMs,
                 resumeKey = resumeKey,
                 onExpired = onExpired
             )
@@ -255,6 +270,7 @@ private fun VideoStage(
     kind: String,
     aspect: Float?,
     startAtMs: Long,
+    knownDurationMs: Long,
     resumeKey: String?,
     onExpired: () -> Unit
 ) {
@@ -289,7 +305,9 @@ private fun VideoStage(
     var playing by remember(player) { mutableStateOf(false) }
     var muted by remember(player) { mutableStateOf(false) }
     var buffering by remember(player) { mutableStateOf(true) }
-    var duration by remember(player) { mutableStateOf(0L) }
+    // Seeded from what the caller knows, so the transport shows a real total from
+    // the first frame rather than an ellipsis until the player has parsed one.
+    var duration by remember(player) { mutableStateOf(knownDurationMs.coerceAtLeast(0L)) }
     // Drawn from the first frame, so the transport never shows `0:00` over a
     // clip that is already seven seconds in.
     var position by remember(player) { mutableStateOf(startAtMs) }
@@ -305,7 +323,10 @@ private fun VideoStage(
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == Player.STATE_BUFFERING
                 if (state == Player.STATE_READY) {
-                    duration = player.duration.coerceAtLeast(0L)
+                    // The player's own answer wins once it has one: a converted
+                    // file, a seek, anything the caller's hint cannot know.
+                    val measured = player.duration.coerceAtLeast(0L)
+                    if (measured > 0L) duration = measured
                 }
             }
 
@@ -430,7 +451,6 @@ private fun VideoStage(
         if (controlsVisible && !failed) {
             Transport(
                 playing = playing,
-                buffering = buffering,
                 position = position,
                 duration = duration,
                 muted = muted,
@@ -463,7 +483,6 @@ private fun VideoStage(
 @Composable
 private fun Transport(
     playing: Boolean,
-    buffering: Boolean,
     position: Long,
     duration: Long,
     muted: Boolean,
@@ -526,8 +545,13 @@ private fun Transport(
                     .weight(1f)
                     .padding(horizontal = 8.dp)
             )
+            // The real length the moment anything knows it, and an ellipsis only
+            // while nothing does. It used to say "…" whenever the player was
+            // buffering, which is the whole of the time a reader is waiting — so
+            // the one control they look at said "still loading" about a clip whose
+            // length the card behind it had known all along.
             Text(
-                text = if (buffering) "…" else clockOf(duration),
+                text = if (duration > 0L) clockOf(duration) else "…",
                 color = Wa.Text,
                 fontSize = 12.sp,
                 maxLines = 1

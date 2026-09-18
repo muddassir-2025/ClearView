@@ -97,11 +97,21 @@ object InstagramEmbedResolver {
      * progressive mp4 URL, or null when the post exposes none (private,
      * deleted, still image, or the render took too long).
      */
-    suspend fun resolve(context: Context, shortcodeOrUrl: String): EmbeddedMedia? {
+    suspend fun resolve(
+        context: Context,
+        shortcodeOrUrl: String,
+        /**
+         * Bypass this cache and this cache only — the Retry path, where the
+         * remembered URL is the thing that failed. The render still runs.
+         */
+        fresh: Boolean = false
+    ): EmbeddedMedia? {
         val shortcode = InstagramStreamResolver.extractShortcode(shortcodeOrUrl)
         if (shortcode.isBlank()) return null
-        synchronized(cache) { cache.get(shortcode) }?.let { hit ->
-            if (System.currentTimeMillis() - hit.at < CACHE_TTL_MS) return hit.media
+        if (!fresh) {
+            synchronized(cache) { cache.get(shortcode) }?.let { hit ->
+                if (System.currentTimeMillis() - hit.at < CACHE_TTL_MS) return hit.media
+            }
         }
         val media = withTimeoutOrNull(TIMEOUT_MS) { render(context.applicationContext, shortcode) }
         // Only cache a POSITIVE result (a transient failure must be retryable).

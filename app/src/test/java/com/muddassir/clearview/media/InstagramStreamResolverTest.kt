@@ -2,7 +2,9 @@ package com.muddassir.clearview.media
 
 import com.muddassir.clearview.media.data.InstagramStreamResolver
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -95,5 +97,52 @@ class InstagramStreamResolverTest {
         )
         // A stored id already carries the `ig_` prefix — the shortcode drops it.
         assertEquals("CxYz123", InstagramStreamResolver.extractShortcode("ig_CxYz123"))
+    }
+
+    // ── The remembered resolution (§24) ─────────────────────────────────
+
+    @Test
+    fun `a URL's own expiry is read from its oe parameter`() {
+        // Meta states the expiry in the query string as hex seconds, which is the
+        // only exact signal there is about when a signed URL stops working.
+        assertEquals(
+            0x68CD1F00L * 1000L,
+            InstagramStreamResolver.expiresAtMillis(
+                "https://scontent.cdninstagram.com/v/t16/reel.mp4?oe=68CD1F00&oh=abc"
+            )
+        )
+        // No `oe` at all is not an error: the plain age limit decides instead.
+        assertNull(InstagramStreamResolver.expiresAtMillis("https://example.com/reel.mp4"))
+        assertNull(
+            InstagramStreamResolver.expiresAtMillis("https://example.com/reel.mp4?oe=zzz")
+        )
+    }
+
+    @Test
+    fun `a remembered stream is reused only while it is still good`() {
+        val now = 1_700_000_000_000L
+        val farFuture = 1_800_000_000_000L
+        val url = "https://cdn.example/reel.mp4?oe=${(farFuture / 1000L).toString(16)}"
+
+        // Fresh, and signed well past now: the answer that makes the second open
+        // of a Reel instant.
+        assertTrue(InstagramStreamResolver.isStreamUsable(url, now, now))
+
+        // The URL's own expiry has passed (or is about to), so it must not be
+        // handed to a player: it would buffer and then fail, which is worse than
+        // resolving again.
+        val expired = "https://cdn.example/reel.mp4?oe=${((now / 1000L) - 60L).toString(16)}"
+        assertFalse(InstagramStreamResolver.isStreamUsable(expired, now, now))
+
+        // No expiry stated: age decides, and past the limit the resolution is
+        // retaken rather than trusted forever.
+        val undated = "https://cdn.example/reel.mp4"
+        assertTrue(InstagramStreamResolver.isStreamUsable(undated, now, now))
+        assertFalse(
+            InstagramStreamResolver.isStreamUsable(undated, now, now + 7 * 60 * 60 * 1000L)
+        )
+
+        // A blank URL is never usable, whatever the clocks say.
+        assertFalse(InstagramStreamResolver.isStreamUsable("", now, now))
     }
 }

@@ -7,7 +7,39 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: three of each, and every card dated (§7, §11, §12)
+## Latest pass: a still for every clip (§22, §24)
+
+* **A video tile now shows a frame of the video.** A channel's media strip and
+  the *Media and links* grid drew a grey square with a camera icon for every
+  clip — twelve of them told a reader nothing, not which clip they were looking
+  for and not which they had already watched. `GoodPostVideoPoster` reads one
+  frame a second in (frame zero of a clip that opens on a fade is black, and
+  twelve black tiles is the same problem again), at the nearest sync frame rather
+  than an exact one, because decoding forward to an exact time can mean reading
+  most of the file. `MediaMetadataRetriever` reads the presigned URL directly, so
+  this is the first and smallest read of a clip that has not been downloaded.
+* **Two caches, and a limit on the burst.** The still is kept in an LRU (24
+  frames) for scrolling back up, and on disk for the next visit — otherwise a
+  strip of twelve clips cost twelve metadata reads per open, which is a screen
+  that spins every time. The reads are capped at two in flight: a grid of twelve
+  clips asking together is twelve connections to the bucket on one screen, which
+  is the burst that makes the whole grid look slow. Every failure is silent and
+  leaves the tile exactly as it was before the still existed.
+* **A clip is never handed to the image loader.** It used to be, in those same
+  two places, and the cost was the whole file: that loader reads a response into
+  a `ByteArray`, so a 40 MB clip became a 40 MB allocation that failed to decode,
+  was thrown away, and had already spent the bandwidth every other tile on the
+  screen was waiting for. It refuses `video/*` and `audio/*` on the response's
+  own content type now (`isUndrawableMediaType`, pinned by a test) — before the
+  body, so a call site that gets it wrong costs one header instead of a file. A
+  picture served as `application/octet-stream` is still a picture and is still
+  read: the rule names the two kinds the decoder has no answer for at all.
+* **Deleting from this device takes the stills with it.** Both paths that call
+  `GoodPostImages.forget` — a media selection and "delete for me" on posts — also
+  call `GoodPostVideoPoster.forget`, so a removed clip does not leave its frame
+  drawing in the grid.
+
+## Previous pass: three of each, and every card dated (§7, §11, §12)
 
 * **Three of words, three of media.** The split is explicit — `PREVIEW_ROWS` and
   `PREVIEW_TILES` — rather than "the newest six, split up". Splitting six would

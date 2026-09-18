@@ -31,6 +31,8 @@ object InstagramStreamResolver {
     /**
      * The COMPLETE, self-healing resolution path used by the player:
      *
+     *  0. what this device already resolved for this shortcode, if the URL it
+     *     found is still good ([isStreamUsable]) — see [ResolvedStreamStore],
      *  1. the fast server-rendered HTTP scrape below (still the cheapest when
      *     Meta happens to serve a static embed page), and
      *  2. when that yields nothing — which is now the norm, because the embed
@@ -38,16 +40,116 @@ object InstagramStreamResolver {
      *     RENDERS the public embed in a WebView and reads the real `<video>`
      *     src from the resulting DOM.
      *
+     * Step zero is why opening a Reel is instant the second time. Steps 1 and 2
+     * are seconds of waiting for a FACT that does not change between two taps:
+     * a progressive `.mp4` on Meta's CDN, valid for hours and named in its own
+     * `oe` parameter. Every resolved answer is written down, so the lookup
+     * happens once per Reel per device rather than once per open.
+     *
+     * [fresh] skips the cache and overwrites it — the Retry path, where the
+     * whole point is that the remembered URL is what failed.
+     *
      * Returns null only when the post genuinely exposes no playable video
      * (private, deleted, or a still image), so the caller can show a real error
      * state instead of waiting forever.
      */
-    suspend fun resolvePlayableStream(context: android.content.Context, shortcodeOrUrl: String): ResolvedStream? {
+    suspend fun resolvePlayableStream(
+        context: android.content.Context,
+        shortcodeOrUrl: String,
+        fresh: Boolean = false
+    ): ResolvedStream? {
+        val shortcode = extractShortcode(shortcodeOrUrl)
+        val store = store(context)
+        val now = System.currentTimeMillis()
+
+        if (fresh) {
+            store.forget(shortcode)
+        } else {
+            store.get(shortcode)?.let { cached ->
+                if (isStreamUsable(cached.stream.videoUrl, cached.atMillis, now)) {
+                    Log.d(TAG, "Reusing the stream resolved for $shortcode")
+                    return cached.stream
+                }
+            }
+        }
+
         val httpUrl = resolveStreamUrl(shortcodeOrUrl)
-        if (httpUrl != null) return ResolvedStream(httpUrl, null)
-        val embedded = InstagramEmbedResolver.resolve(context, shortcodeOrUrl)
-            ?: return null
-        return ResolvedStream(embedded.videoUrl, embedded.posterUrl)
+        val resolved = if (httpUrl != null) {
+            ResolvedStream(httpUrl, null)
+        } else {
+            val embedded = InstagramEmbedResolver.resolve(context, shortcodeOrUrl, fresh = fresh)
+                ?: return null
+            ResolvedStream(embedded.videoUrl, embedded.posterUrl)
+        }
+        store.put(shortcode, resolved, System.currentTimeMillis())
+        return resolved
+    }
+
+    /**
+     * How long a remembered resolution may be trusted when its URL says nothing
+     * about its own expiry.
+     *
+     * Six hours: Meta signs these URLs for hours, and the two things that can go
+     * wrong are both recoverable — the URL's own `oe` parameter is checked first
+     * ([isStreamUsable]), and a URL that is dead anyway fails as a playback error
+     * whose Retry re-resolves without the cache.
+     */
+    private const val CACHE_TTL_MS = 6 * 60 * 60 * 1000L
+
+    /**
+     * How long before a URL's stated expiry it stops being worth handing over.
+     *
+     * A player handed a URL that is about to lapse buffers for a while and then
+     * fails, which is the worst of both: the wait AND the error. Two minutes is
+     * longer than a Reel and shorter than a signature's usual life.
+     */
+    private const val EXPIRY_MARGIN_MS = 2 * 60 * 1000L
+
+    /**
+     * The instant a signed CDN URL stops working, from its own `oe` parameter.
+     *
+     * Meta puts the expiry in the query string as hexadecimal seconds —
+     * `…?oe=68CD1F00&oh=…` — so a URL that carries one can be judged on its own
+     * evidence rather than on a guess about how long it usually lasts. Null when
+     * there is no `oe`, which is not an error: the plain TTL then decides.
+     */
+    internal fun expiresAtMillis(url: String): Long? {
+        val raw = Regex("[?&]oe=([0-9A-Fa-f]+)").find(url)?.groupValues?.get(1) ?: return null
+        val seconds = raw.toLongOrNull(16) ?: return null
+        return seconds * 1000L
+    }
+
+    /**
+     * Whether a remembered resolution is still worth playing.
+     *
+     * Two rules, because the URLs arrive two ways: one that states its expiry is
+     * judged on that, and one that does not is judged on how long ago it was
+     * resolved. Both are needed — the `oe` in a resolved URL is the only exact
+     * signal there is, and a URL from a provider that omits it must not be
+     * treated as eternal.
+     */
+    internal fun isStreamUsable(url: String, resolvedAtMillis: Long, nowMillis: Long): Boolean {
+        if (url.isBlank()) return false
+        if (nowMillis - resolvedAtMillis > CACHE_TTL_MS) return false
+        val expiry = expiresAtMillis(url) ?: return true
+        return expiry - nowMillis > EXPIRY_MARGIN_MS
+    }
+
+    /**
+     * The one store for this process.
+     *
+     * Built from an application context taken here rather than held as a field
+     * of an object that outlives an Activity: this object is a singleton and a
+     * Context stored on it is a leak waiting for the first rotation.
+     */
+    @Volatile
+    private var cachedStore: ResolvedStreamStore? = null
+
+    private fun store(context: android.content.Context): ResolvedStreamStore {
+        cachedStore?.let { return it }
+        return synchronized(this) {
+            cachedStore ?: ResolvedStreamStore(context.applicationContext).also { cachedStore = it }
+        }
     }
 
     /**

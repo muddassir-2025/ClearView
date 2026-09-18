@@ -50,6 +50,23 @@ import java.util.concurrent.ConcurrentHashMap
  * first minute and a directory full of the same photo written forty times. The
  * path is the object key, which is the identity of the bytes.
  */
+/**
+ * True when a response of this content type could never become a picture.
+ *
+ * Only `video` and `audio` are refused, rather than "only `image` is accepted":
+ * a bucket that serves a photograph as `application/octet-stream` is serving a
+ * photograph, and refusing it would be the same bug in the other direction. The
+ * types named here are the ones the decoder has no answer for at all, and the
+ * cost of asking is the whole file — see [GoodPostImages.download].
+ *
+ * A missing or parameterised type is not a refusal: `image/jpeg; charset=x` and
+ * a null header both mean "try it", which is what this did before it could tell.
+ */
+internal fun isUndrawableMediaType(contentType: String?): Boolean {
+    val type = contentType?.substringBefore(';')?.substringBefore('/')?.trim()?.lowercase()
+    return type == "video" || type == "audio"
+}
+
 internal object GoodPostImages {
 
     /** A fraction of the heap, which is what a bitmap cache may safely use. */
@@ -339,6 +356,22 @@ internal object GoodPostImages {
                 setRequestProperty("User-Agent", "ClearView-Android")
             }
             if (connection.responseCode !in 200..299) return null
+
+            // ── The response's own type, before its body ──
+            //
+            // This loader reads a response into a ByteArray, so a video URL
+            // reaching it costs the WHOLE FILE: a 40 MB clip became a 40 MB
+            // allocation that failed to decode, was thrown away, and — the part
+            // a reader notices — had already spent the bandwidth every other
+            // tile on the screen was waiting for. A grid of clips was downloading
+            // every one of them as though it were a photo.
+            //
+            // One header turns that into nothing — see [isUndrawableMediaType].
+            if (isUndrawableMediaType(connection.contentType)) {
+                Log.w(TAG, "refused a response nothing here can draw")
+                return null
+            }
+
             connection.inputStream.use { it.readBytes() }
         } catch (e: Exception) {
             null
