@@ -238,6 +238,30 @@ class QuranStore(context: Context) {
         }
     }
 
+    // ── Where the reader left off ────────────────────────────────────
+
+    /**
+     * One "surah:ayah" per surah: the ayah that was at the top of the page.
+     *
+     * The same shape the bookmarks use, and one set rather than a key per surah,
+     * because a position is a single fact about a surah — writing a new one
+     * replaces the old, so prefs holds at most 114 entries however long the app
+     * is used, and [setReadingPosition] can clear by surah without enumerating
+     * anything.
+     */
+    fun getReadingPositions(): Set<String> =
+        prefs.getStringSet(KEY_READING_POSITIONS, emptySet()) ?: emptySet()
+
+    /** The ayah last left at the top of [surahNumber], or null. */
+    fun getReadingPosition(surahNumber: Int): Int? =
+        readingPositionOf(getReadingPositions(), surahNumber)
+
+    /** Remembers the ayah at the top of [surahNumber]. */
+    fun setReadingPosition(surahNumber: Int, ayahNumber: Int) {
+        val updated = withReadingPosition(getReadingPositions(), surahNumber, ayahNumber)
+        prefs.edit().putStringSet(KEY_READING_POSITIONS, updated).apply()
+    }
+
     private companion object {
         const val PREFS_NAME = "quran_reminder_prefs"
         // The Clear Quran (Mustafa Khattab) English translation.
@@ -268,7 +292,54 @@ class QuranStore(context: Context) {
         const val KEY_QURAN_NOTIFICATIONS_ENABLED = "quran_notifications_enabled"
         const val KEY_BOOKMARKS = "bookmarked_verses"
         const val KEY_SURAH_BOOKMARKS = "bookmarked_surahs"
+        // Deliberately NOT cleared by the old-edition migration above: where a
+        // reader stopped is about the reader, not about which translation was on
+        // disk when they stopped.
+        const val KEY_READING_POSITIONS = "reading_positions"
         const val DEFAULT_REFRESH_INTERVAL_HOURS = 6
         const val DEFAULT_QURAN_NOTIFICATIONS_ENABLED = true
     }
+}
+
+/**
+ * The ayah recorded for [surahNumber] in a reading-position set, or null.
+ *
+ * Top-level and pure so the rule can be tested without a Context, the way
+ * [DhikrCodec] is: anything in this store that is a RULE rather than a prefs call
+ * belongs outside the prefs call.
+ *
+ * The colon is what keeps surah 1 from reading surah 11's entry — "11:5" does not
+ * start with "1:" — so the separator is load-bearing, not decorative.
+ */
+internal fun readingPositionOf(positions: Set<String>, surahNumber: Int): Int? {
+    val prefix = "$surahNumber:"
+    return positions.firstOrNull { it.startsWith(prefix) }
+        ?.removePrefix(prefix)
+        ?.toIntOrNull()
+}
+
+/**
+ * [positions] with [surahNumber]'s entry REPLACED by [ayahNumber] — or removed
+ * entirely when that ayah is the first one.
+ *
+ * Ayah 1 clears rather than stores. The first ayah is the top of the surah, so
+ * reopening there needs no scroll; keeping an entry for it would spell "the
+ * beginning" the same way as "never opened", and the reader would have to scroll
+ * to the top on every open to find out which it was. It is also the only reason
+ * this set stays as small as it is — otherwise every reader who scrolled back up
+ * would leave an entry behind.
+ *
+ * Returning a NEW set rather than editing one: [QuranStore.getReadingPositions]
+ * hands back the set SharedPreferences is holding, so mutating it in place would
+ * be writing to the prefs' own instance behind their back.
+ */
+internal fun withReadingPosition(
+    positions: Set<String>,
+    surahNumber: Int,
+    ayahNumber: Int
+): Set<String> {
+    val prefix = "$surahNumber:"
+    val updated = positions.filterNotTo(mutableSetOf()) { it.startsWith(prefix) }
+    if (ayahNumber > 1) updated.add("$prefix$ayahNumber")
+    return updated
 }

@@ -899,6 +899,23 @@ class ContentHubState(appContext: Context) {
     }
 
     /**
+     * The ayah the reader left at the top of [surahNumber] (§2), or null when it
+     * has never been opened.
+     *
+     * A plain read and a plain write rather than observable state beside
+     * [bookmarkKeys]: nothing else on screen shows a reading position, so there is
+     * no second reader to keep in step — and no reason to hold one in memory for
+     * the whole session.
+     */
+    fun readingPosition(surahNumber: Int): Int? =
+        quranRepository.getReadingPosition(surahNumber)
+
+    /** Remembers the top of the page in [surahNumber], so it reopens there. */
+    fun saveReadingPosition(surahNumber: Int, ayahNumber: Int) {
+        quranRepository.setReadingPosition(surahNumber, ayahNumber)
+    }
+
+    /**
      * Bookmark or unbookmark one verse, from anywhere (§2, §3).
      *
      * The single write path: the surah reader's rows, the bookmarks tab and the

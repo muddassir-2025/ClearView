@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -53,6 +54,8 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.UnfoldLess
+import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Notifications
@@ -78,6 +81,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,9 +91,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -125,6 +135,8 @@ import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -469,6 +481,12 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // state, or the check mark and the page can disagree.
     var readerSpeed by remember { mutableStateOf(QuranScrollSpeed.OFF) }
     var readerSpeedMenu by remember { mutableStateOf(false) }
+    // §2: the surah's identity block and the Arabic|English switch are PINNED
+    // above the text, so they spend their height on every screenful of a read
+    // that may be a hundred of them. This folds them away. The surah's name stays
+    // in the top bar above, so folding gives up height, not the sense of where
+    // you are.
+    var readerHeaderOpen by remember { mutableStateOf(true) }
     val tab = state.quranSheetTab
     val openSurah = state.openSurahNumber
     val keyboard = LocalSoftwareKeyboardController.current
@@ -521,6 +539,10 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
         // LAST surah would move text they have not read a word of yet.
         readerSpeed = QuranScrollSpeed.OFF
         readerSpeedMenu = false
+        // And it starts expanded: opening a surah you have not opened before with
+        // its name and translation already folded away is being dropped into the
+        // middle of something.
+        readerHeaderOpen = true
         // And the term itself goes with it. Leaving it behind meant the NEXT time
         // the field was opened it came back pre-filled, narrowing a surah the
         // reader had not typed anything into.
@@ -619,6 +641,26 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f).padding(start = 8.dp)
                         )
+                        // §2: fold the block above the text away. Before the
+                        // search icon because it is the FIRST thing a reader wants
+                        // in a long surah — a larger page — and search is what they
+                        // want in a specific one.
+                        IconButton(onClick = { readerHeaderOpen = !readerHeaderOpen }) {
+                            Icon(
+                                if (readerHeaderOpen) Icons.Filled.UnfoldLess
+                                else Icons.Filled.UnfoldMore,
+                                contentDescription = stringResource(
+                                    if (readerHeaderOpen) R.string.quran_reader_header_hide
+                                    else R.string.quran_reader_header_show
+                                ),
+                                tint = if (readerHeaderOpen) {
+                                    LocalContentColor.current
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                        }
+
                         // §10: searching INSIDE the surah, kept — as an icon that
                         // opens the field over the text rather than a field that
                         // holds a line of the screen open the whole time.
@@ -753,7 +795,8 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                         surahNumber = openSurah,
                         query = query,
                         speed = readerSpeed,
-                        onSpeedChange = { readerSpeed = it }
+                        onSpeedChange = { readerSpeed = it },
+                        headerOpen = readerHeaderOpen
                     )
                     return@Column
                 }
@@ -962,12 +1005,57 @@ private enum class QuranReadMode { ARABIC, ENGLISH }
  * are ONE control: the icon opens a list, the list is where "stop" lives, and
  * there is no second button to explain.
  */
-private enum class QuranScrollSpeed(val dpPerSecond: Float, @StringRes val label: Int) {
+private enum class QuranScrollSpeed(val dpPerSecond: Float, @param:StringRes val label: Int) {
     OFF(0f, R.string.quran_scroll_off),
     SLOW(15f, R.string.quran_scroll_slow),
     NORMAL(28f, R.string.quran_scroll_normal),
     FAST(48f, R.string.quran_scroll_fast),
 }
+
+/**
+ * Rows the reader's list emits before the first verse.
+ *
+ * One — the basmala. Named rather than written as a literal in two places because
+ * the restore and the save both convert between a verse's place in the surah and
+ * its index in the list, and two `1`s are how those two would come to disagree.
+ */
+private const val SURAH_HEADER_ITEMS = 1
+
+/**
+ * How long the list must sit still before the reading position is written.
+ *
+ * Long enough that a fling through forty verses is one position and one prefs
+ * commit; short enough that a reader who stops and puts the phone down has
+ * already had it saved.
+ */
+private const val POSITION_SETTLE_MS = 700L
+
+/**
+ * The row a saved reading position sits at, or null when there is nothing to
+ * restore (§2).
+ *
+ * Resolved by AYAH, not by counting: the saved value is a verse number, the list
+ * is addressed by row index, and the two differ by the basmala above the first
+ * ayah. An ayah the surah does not have — a position saved against a different
+ * edition, or a cache that has since been replaced — returns null rather than
+ * landing somewhere arbitrary.
+ */
+internal fun readingPositionIndex(verses: List<QuranVerse>, savedAyah: Int?): Int? {
+    val ayah = savedAyah ?: return null
+    val index = verses.indexOfFirst { it.ayahNumber == ayah }
+    if (index < 0) return null
+    return index + SURAH_HEADER_ITEMS
+}
+
+/**
+ * The ayah at the top of the page when the list is scrolled to [listIndex].
+ *
+ * Null for the rows above the first verse — the basmala is not an ayah of this
+ * surah, so having scrolled it off is not having read verse 1 — and for an index
+ * past the end, which a list that has just been emptied reports.
+ */
+internal fun readingPositionAyah(verses: List<QuranVerse>, listIndex: Int): Int? =
+    verses.getOrNull(listIndex - SURAH_HEADER_ITEMS)?.ayahNumber
 
 /**
  * The surah reader (§1–§10): one continuous scroll of scripture.
@@ -993,6 +1081,8 @@ private fun SurahReader(
     state: ContentHubState,
     surahNumber: Int,
     query: String,
+    /** §2: whether the banner above the text is showing. Owned by the top bar. */
+    headerOpen: Boolean,
     /**
      * How fast the text should scroll itself, owned by the top bar's speed menu
      * above this reader rather than here — the control and the state belong to
@@ -1016,6 +1106,26 @@ private fun SurahReader(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val density = LocalDensity.current
+
+    // §1: how far through the surah the reader has scrolled. Derived, and read in
+    // the DRAW pass below, so that a value which changes on every frame of a
+    // scroll invalidates three pixels of bar rather than the screenful of text it
+    // is measuring.
+    val progress = remember(listState) { derivedStateOf { listState.readFraction() } }
+    val railAccent = MaterialTheme.colorScheme.primary
+    val railTrack = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.14f)
+
+    // ── Where the reader left off (§2) ──
+    //
+    // Three steps rather than one, because two things have to be true before the
+    // page can be moved: the position must be off disk, and the surah must be
+    // parsed. [positionLoaded] is the first, [all] the second. [restored] is the
+    // third and the reason the save below waits for it — writing the position back
+    // before the restore has moved the list would save the top of the surah over
+    // the very position being resumed at.
+    var savedAyah by remember(surahNumber) { mutableStateOf<Int?>(null) }
+    var positionLoaded by remember(surahNumber) { mutableStateOf(false) }
+    var restored by remember(surahNumber) { mutableStateOf(false) }
 
     // Parsed once per surah per process (the state caches it), off the main
     // thread — a 286-verse surah is a real parse.
@@ -1050,6 +1160,13 @@ private fun SurahReader(
     // A new term starts the count over, so "next" means the first match of what is
     // in the box rather than a position left over from the previous word.
     LaunchedEffect(q, all) { matchCursor = 0 }
+
+    // A prefs read, so off the composition thread: a synchronous read here would
+    // make opening a surah wait on the disk for one integer.
+    LaunchedEffect(surahNumber) {
+        savedAyah = withContext(Dispatchers.IO) { state.readingPosition(surahNumber) }
+        positionLoaded = true
+    }
 
     // ── Hands-free reading (§1) ──
     //
@@ -1089,63 +1206,56 @@ private fun SurahReader(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // ── What is open ──
-        //
-        // Centred and plain, in the same visual language as the Quran dashboard
-        // (§9): the name, its translation, and the surah's own numbers. Not in a
-        // card — a card here would be the very thing this screen is removing.
-        Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = QuranJsonParser.surahName(surahNumber),
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold,
-                textAlign = TextAlign.Center
-            )
-            val meaning = QuranJsonParser.surahTranslation(surahNumber)
-            if (meaning.isNotBlank()) {
-                Text(
-                    text = meaning,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
-            Spacer(Modifier.height(6.dp))
-            Text(
-                text = stringResource(
-                    R.string.quran_reader_meta,
-                    surahNumber,
-                    all?.size ?: 0
-                ),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
+    // ── Resume where it was left (§2) ──
+    //
+    // Before anything is written back: the jump is to the saved ayah's ROW, and
+    // the row index is the verse's place in the surah plus the basmala above it.
+    LaunchedEffect(all, positionLoaded) {
+        val list = all ?: return@LaunchedEffect
+        if (!positionLoaded || restored) return@LaunchedEffect
+        readingPositionIndex(list, savedAyah)?.let { listState.scrollToItem(it) }
+        restored = true
+    }
 
-        // ── Arabic | English, one at a time (§3) ──
+    // ── Remember where it was left (§2) ──
+    //
+    // Keyed to the top VISIBLE row rather than to the bottom, because the top of
+    // the page is what a reader recognises as "where I was". Written only after
+    // the list sits still, so a fling through forty verses is one position and one
+    // prefs commit rather than forty — and written one last time on the way out,
+    // because closing the reader mid-fling is exactly when the position matters.
+    LaunchedEffect(all, restored) {
+        val list = all ?: return@LaunchedEffect
+        if (!restored) return@LaunchedEffect
+        try {
+            snapshotFlow { listState.firstVisibleItemIndex }
+                .distinctUntilChanged()
+                .collectLatest { index ->
+                    delay(POSITION_SETTLE_MS)
+                    readingPositionAyah(list, index)
+                        ?.let { state.saveReadingPosition(surahNumber, it) }
+                }
+        } finally {
+            // Deliberately not a suspend write, and the store's is not one: a
+            // coroutine that has been cancelled cannot be suspended again, so a
+            // suspend save here would be the one write that never happens.
+            readingPositionAyah(list, listState.firstVisibleItemIndex)
+                ?.let { state.saveReadingPosition(surahNumber, it) }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // ── What is open (§2) ──
         //
-        // Never side by side: two columns of two scripts on a phone is a
-        // comparison table, and what a reader wants is one text they can read.
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            QuranSegment(
-                selected = mode == QuranReadMode.ARABIC,
-                label = stringResource(R.string.quran_reader_arabic),
-                modifier = Modifier.weight(1f),
-                onClick = { mode = QuranReadMode.ARABIC }
-            )
-            QuranSegment(
-                selected = mode == QuranReadMode.ENGLISH,
-                label = stringResource(R.string.quran_reader_english),
-                modifier = Modifier.weight(1f),
-                onClick = { mode = QuranReadMode.ENGLISH }
+        // Pinned above the text rather than part of it, which is exactly why it
+        // costs its height on every screenful of a read that may be a hundred of
+        // them — and why the fold icon in the top bar exists.
+        if (headerOpen) {
+            SurahBanner(
+                surahNumber = surahNumber,
+                verseCount = all?.size ?: 0,
+                mode = mode,
+                onModeChange = { mode = it }
             )
         }
 
@@ -1227,6 +1337,29 @@ private fun SurahReader(
                                 }
                             }
                         }
+                    }
+                    // §1: the read position, as a hairline down the right edge.
+                    //
+                    // Drawn rather than composed: this is the one thing on screen
+                    // that changes every frame while the text moves, and a composed
+                    // bar would recompose a screenful of scripture sixty times a
+                    // second to move three pixels.
+                    //
+                    // Draws after the text, because it is on the list's own node —
+                    // and sits inside the list's 22dp content padding, so no word
+                    // ever passes under it.
+                    .drawWithContent {
+                        drawContent()
+                        // Hidden when there is nowhere to scroll: a track with no
+                        // fill beside a surah that already fits reads as something
+                        // broken, not as progress.
+                        if (listState.canScrollForward || listState.canScrollBackward) {
+                            drawScrollRail(
+                                fraction = progress.value,
+                                accent = railAccent,
+                                track = railTrack
+                            )
+                        }
                     },
                 contentPadding = PaddingValues(horizontal = 22.dp, vertical = 10.dp),
                 // Wider than the gaps between the cards it replaced: with no
@@ -1307,6 +1440,145 @@ private fun SurahReader(
                 }
             }
         }
+    }
+}
+
+/**
+ * The read position (§1): a hairline down the right edge, filled in proportion.
+ *
+ * [fraction] is measured in pixels against the list's viewport rather than as a
+ * count of verses, because a surah mixes three-word ayahs with thirty-word ones
+ * — a fraction of the ITEM COUNT stalls the bar across a long passage and jumps
+ * it across a short one. A lazy list has never measured a row it has not come
+ * near, so the visible rows' average height stands in for the ones it has not;
+ * beside a mushaf page of near-even rows that is very close, and the only way it
+ * can be wrong is by how much text is still to come, which is not something a
+ * bar can know either.
+ *
+ * A [DrawScope] extension rather than a composable because it is called from the
+ * list's own draw pass — see the caller for why.
+ */
+private fun DrawScope.drawScrollRail(fraction: Float, accent: Color, track: Color) {
+    val width = 3.dp.toPx()
+    val top = 16.dp.toPx()
+    val bottom = size.height - 16.dp.toPx()
+    if (bottom <= top) return
+
+    val left = size.width - width - 6.dp.toPx()
+    val radius = CornerRadius(width / 2f)
+    val span = bottom - top
+
+    drawRoundRect(
+        color = track,
+        topLeft = Offset(left, top),
+        size = Size(width, span),
+        cornerRadius = radius
+    )
+
+    val filled = span * fraction
+    if (filled > 0f) {
+        drawRoundRect(
+            color = accent,
+            topLeft = Offset(left, top),
+            size = Size(width, filled.coerceIn(0f, span)),
+            cornerRadius = radius
+        )
+    }
+}
+
+/**
+ * How far the reader has scrolled through the open surah, 0..1.
+ *
+ * The state read here is [LazyListState.layoutInfo], which is why the caller
+ * wraps this in `derivedStateOf` and reads it from a draw pass: unfiltered, a
+ * snapshot read of the layout is a subscription to every scroll frame there is.
+ */
+private fun LazyListState.readFraction(): Float {
+    val info = layoutInfo
+    val visible = info.visibleItemsInfo
+    if (info.totalItemsCount <= 0 || visible.isEmpty()) return 0f
+
+    val average = visible.sumOf { it.size }.toFloat() / visible.size
+    if (average <= 0f) return 0f
+
+    val viewport = (info.viewportEndOffset - info.viewportStartOffset).toFloat()
+    val content = average * info.totalItemsCount
+    // Everything already fits: there is no position to be part-way through.
+    if (content <= viewport) return 0f
+
+    val scrolled = firstVisibleItemIndex * average + firstVisibleItemScrollOffset
+    return (scrolled / (content - viewport)).coerceIn(0f, 1f)
+}
+
+/**
+ * The surah's identity and the way it is being read (§2, §3): the name, its
+ * translation, the surah's own numbers, and the Arabic|English switch.
+ *
+ * Centred and plain, in the same visual language as the Quran dashboard (§9),
+ * and not in a card — a card here would be the very thing this reader is
+ * removing. It is a composable of its own because it is the one thing on the
+ * screen that can be folded away while the text cannot, and a condition in the
+ * middle of the reader would have made that a diff to read rather than a branch.
+ */
+@Composable
+private fun SurahBanner(
+    surahNumber: Int,
+    verseCount: Int,
+    mode: QuranReadMode,
+    onModeChange: (QuranReadMode) -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(
+            text = QuranJsonParser.surahName(surahNumber),
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center
+        )
+        val meaning = QuranJsonParser.surahTranslation(surahNumber)
+        if (meaning.isNotBlank()) {
+            Text(
+                text = meaning,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = stringResource(R.string.quran_reader_meta, surahNumber, verseCount),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
+    }
+
+    // ── Arabic | English, one at a time (§3) ──
+    //
+    // Never side by side: two columns of two scripts on a phone is a comparison
+    // table, and what a reader wants is one text they can read.
+    //
+    // Inside the fold, which makes the switch something you reach for and then
+    // put away. That is the right cost: a reader switches mode a handful of times
+    // in a surah and reads for the other hundred screenfuls.
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        QuranSegment(
+            selected = mode == QuranReadMode.ARABIC,
+            label = stringResource(R.string.quran_reader_arabic),
+            modifier = Modifier.weight(1f),
+            onClick = { onModeChange(QuranReadMode.ARABIC) }
+        )
+        QuranSegment(
+            selected = mode == QuranReadMode.ENGLISH,
+            label = stringResource(R.string.quran_reader_english),
+            modifier = Modifier.weight(1f),
+            onClick = { onModeChange(QuranReadMode.ENGLISH) }
+        )
     }
 }
 

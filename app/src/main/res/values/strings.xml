@@ -161,6 +161,10 @@
          The icon opens a menu of paces; "Off" is one of them, so stopping is the
          same gesture as choosing, and nothing needs a second control. -->
     <string name="quran_reader_auto_scroll">Auto scroll</string>
+    <!-- The fold above the first ayah: the surah's name, its meaning, its numbers
+         and the Arabic|English switch. Named for what it does to the page. -->
+    <string name="quran_reader_header_hide">Hide surah details</string>
+    <string name="quran_reader_header_show">Show surah details</string>
     <string name="quran_scroll_speed">Scroll speed</string>
     <string name="quran_scroll_off">Off</string>
     <string name="quran_scroll_slow">Slow</string>

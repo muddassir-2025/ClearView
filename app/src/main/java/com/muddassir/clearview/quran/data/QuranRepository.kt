@@ -302,6 +302,18 @@ class QuranRepository(context: Context) {
         }.sortedWith(compareBy<QuranVerse> { it.surahNumber }.thenBy { it.ayahNumber })
     }
 
+    // ── Reading position ─────────────────────────────────────────────
+
+    /**
+     * The ayah left at the top of [surahNumber], or null when it has never been
+     * opened. One number, so a surah reader can reopen where it was left (§2).
+     */
+    fun getReadingPosition(surahNumber: Int): Int? = store.getReadingPosition(surahNumber)
+
+    /** Remembers where the reader left off in one surah. */
+    fun setReadingPosition(surahNumber: Int, ayahNumber: Int) =
+        store.setReadingPosition(surahNumber, ayahNumber)
+
     // ── Starred surahs ───────────────────────────────────────────────
 
     /** Set of surah numbers ("2") the user has starred. */

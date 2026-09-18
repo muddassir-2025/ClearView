@@ -2,6 +2,7 @@ package com.muddassir.clearview.ui
 
 import com.muddassir.clearview.quran.model.QuranVerse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
@@ -61,5 +62,57 @@ class QuranSurahReaderTest {
     fun `an empty field matches nothing, so the surah stays whole`() {
         val verses = listOf(verse(16, 1, "a"), verse(16, 2, "b"))
         assertEquals(emptyList<Int>(), matchingVerseIndices(verses, ""))
+    }
+
+    // ── Where the reader left off (§2) ──
+    //
+    // The saved position is an AYAH; the list is addressed by ROW INDEX, and the
+    // basmala sits above the first verse. Getting that wrong by one opens a surah
+    // a verse past where it was left — small enough to look like the reader's own
+    // misremembering, which is exactly why it is pinned here.
+
+    @Test
+    fun `a saved ayah is restored to its row, not to its number`() {
+        val verses = listOf(verse(16, 1, "a"), verse(16, 2, "b"), verse(16, 128, "c"))
+
+        assertEquals(2, readingPositionIndex(verses, 2))
+        assertEquals(3, readingPositionIndex(verses, 128))
+        // Ayah 1 is the top of the surah, so the row is 1 — the basmala scrolled
+        // just off. The store never saves this (ayah 1 clears the entry instead),
+        // which is what keeps reopening at the beginning free of a jump.
+        assertEquals(1, readingPositionIndex(verses, 1))
+    }
+
+    @Test
+    fun `nothing to restore is nothing to scroll`() {
+        val verses = listOf(verse(16, 1, "a"), verse(16, 2, "b"))
+
+        // Never opened before.
+        assertNull(readingPositionIndex(verses, null))
+        // A surah that does not have that ayah — a position saved against another
+        // edition, or against a verse count that has since changed.
+        assertNull(readingPositionIndex(verses, 7))
+    }
+
+    @Test
+    fun `a position is read back in the same terms it was saved`() {
+        val verses = listOf(verse(16, 1, "a"), verse(16, 2, "b"))
+
+        assertEquals(2, readingPositionAyah(verses, 2))
+        // Row 0 is the basmala, which is not an ayah of this surah: having scrolled
+        // it off is not having read verse 1, and must not be saved as such.
+        assertNull(readingPositionAyah(verses, 0))
+        // Past the end, which a list that has just been emptied reports.
+        assertNull(readingPositionAyah(verses, 9))
+    }
+
+    @Test
+    fun `the two conversions are inverses`() {
+        val verses = listOf(verse(16, 1, "a"), verse(16, 2, "b"), verse(16, 3, "c"))
+
+        for (saved in listOf(1, 2, 3)) {
+            val row = readingPositionIndex(verses, saved)
+            assertEquals(saved, readingPositionAyah(verses, row!!))
+        }
     }
 }
