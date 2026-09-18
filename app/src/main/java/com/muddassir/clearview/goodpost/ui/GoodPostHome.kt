@@ -1,5 +1,9 @@
 package com.muddassir.clearview.goodpost.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,17 +21,26 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DonutLarge
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,8 +84,14 @@ import com.muddassir.clearview.goodpost.data.parseIsoMillis
 @Composable
 internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var homeMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    val homeMediaPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) homeMediaUris = uris
+    }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
         Column(modifier = Modifier.fillMaxSize()) {
             if (state.channelSelectionActive) {
                 ChannelsSelectionBar(
@@ -82,7 +101,7 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                 )
             } else {
                 WaTopBar(
-                    title = stringResource(R.string.goodpost_tab),
+                    title = stringResource(R.string.goodpost_nav_updates),
                     actions = {
                         WaIconAction(
                             icon = Icons.Filled.Search,
@@ -91,9 +110,6 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                         )
                         WaOverflowMenu(
                             items = buildList {
-                                // Only a reader, or a super administrator, has any
-                                // use for the way in: a channel administrator's
-                                // channel is already on this list (§15, §17).
                                 if (state.canCreateChannel) {
                                     add(
                                         WaMenuItem(
@@ -102,17 +118,6 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                         )
                                     )
                                 }
-                                // §15: the short way to the account's own
-                                // channel. Its row is on this list like any
-                                // other, so this is not the only route — it is
-                                // the one that opens the PROFILE, for an account
-                                // that runs a single channel and wants to see how
-                                // it looks rather than to write in it.
-                                //
-                                // Absent for a super administrator who runs
-                                // several: there is no one channel for the label
-                                // to name, and the list below already holds every
-                                // one of them.
                                 state.ownChannel?.let {
                                     add(
                                         WaMenuItem(
@@ -143,9 +148,21 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
             }
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 24.dp)
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+                contentPadding = PaddingValues(bottom = 80.dp)
             ) {
+                item(key = "status") {
+                    StatusSection(
+                        onAddStatus = {
+                            homeMediaPicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                            )
+                        }
+                    )
+                }
+
                 item(key = "header") {
                     ChannelsHeader(onExplore = { viewModel.openExplore() })
                 }
@@ -163,16 +180,10 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                 }
 
                 items(state.tabChannels, key = { it.id }) { channel ->
-                    // Only a channel this account may manage says so; every other
-                    // row is the reader's view of it.
                     val manageable = state.canManage(channel.id)
 
                     ChannelRow(
                         channel = channel,
-                        // §12, §22: the list is refreshed in place while the
-                        // reader watches it, so a channel that starts following,
-                        // or one whose account was just deleted, moves the rows
-                        // around it instead of making them jump.
                         modifier = Modifier.animateItem(),
                         selected = state.selectedChannelIds.contains(channel.id),
                         selectionActive = state.channelSelectionActive,
@@ -184,9 +195,6 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                 viewModel.openChannel(channel.id)
                             }
                         },
-                        // Long press is offered only where there is something to
-                        // do with it (§5): a reader has no action to take on a
-                        // channel, so their list is simply a list of links.
                         onLongClick = if (manageable) {
                             { viewModel.toggleChannelSelected(channel.id) }
                         } else {
@@ -207,14 +215,83 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     }
                 }
 
-                // §15: a small utility row at the very bottom, never above the
-                // list, and only where there is a channel to create.
                 if (state.canCreateChannel) {
                     item(key = "create") {
                         CreateChannelFooter(onClick = viewModel::openAdmin)
                     }
                 }
             }
+
+            WhatsAppBottomNav(selectedTab = "updates")
+        }
+
+        // Double Floating Action Buttons (pencil + camera) above Bottom Navigation Bar
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 80.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Wa.Bar)
+                    .clickable {
+                        if (state.canCreateChannel) {
+                            viewModel.openAdmin()
+                        } else {
+                            viewModel.openExplore()
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = "Create channel update",
+                    tint = Wa.Text,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(CircleShape)
+                    .background(Wa.Accent)
+                    .clickable {
+                        homeMediaPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.PhotoCamera,
+                    contentDescription = "Camera",
+                    tint = Wa.OnAccent,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+        }
+
+        if (homeMediaUris.isNotEmpty()) {
+            GoodPostMediaEditor(
+                mediaUris = homeMediaUris,
+                onDismiss = { homeMediaUris = emptyList() },
+                onSend = { attachments, caption ->
+                    homeMediaUris = emptyList()
+                    if (state.ownChannel != null) {
+                        viewModel.openChannel(state.ownChannel.id)
+                        attachments.forEach { viewModel.attachMedia(it) }
+                        if (caption.isNotBlank()) viewModel.onComposerBodyChange(caption)
+                        viewModel.publish()
+                    } else if (state.canCreateChannel) {
+                        viewModel.openAdmin()
+                    }
+                }
+            )
         }
     }
 
@@ -513,5 +590,179 @@ private fun CreateChannelFooter(onClick: () -> Unit) {
                 fontWeight = FontWeight.Medium
             )
         }
+    }
+}
+
+/**
+ * Status section matching WhatsApp Updates tab (Screenshot 1: 4ece930a-b3f8-46bd-9d7b-5325eb600bea.jpg).
+ */
+@Composable
+private fun StatusSection(onAddStatus: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Status",
+                color = Wa.Text,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                Icons.Filled.MoreVert,
+                contentDescription = null,
+                tint = Wa.TextDim,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onAddStatus)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(modifier = Modifier.size(50.dp)) {
+                Box(
+                    modifier = Modifier
+                        .size(50.dp)
+                        .clip(CircleShape)
+                        .background(Wa.Bar),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.PhotoCamera,
+                        contentDescription = null,
+                        tint = Wa.TextDim,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(Wa.Accent),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "Add status",
+                        tint = Wa.OnAccent,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+
+            Spacer(Modifier.width(14.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "My status",
+                    color = Wa.Text,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "Tap to add status update",
+                    color = Wa.TextDim,
+                    fontSize = 13.5.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * WhatsApp Bottom Navigation Bar matching Screenshot 1 (Chats, Updates, Communities, Calls).
+ */
+@Composable
+private fun WhatsAppBottomNav(
+    selectedTab: String = "updates",
+    onTabSelected: (String) -> Unit = {}
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Wa.Canvas)
+            .padding(vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceAround,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        BottomNavItem(
+            icon = Icons.Filled.ChatBubble,
+            label = stringResource(R.string.goodpost_nav_chats),
+            selected = selectedTab == "chats",
+            onClick = { onTabSelected("chats") }
+        )
+        BottomNavItem(
+            icon = Icons.Filled.DonutLarge,
+            label = stringResource(R.string.goodpost_nav_updates),
+            selected = selectedTab == "updates",
+            onClick = { onTabSelected("updates") }
+        )
+        BottomNavItem(
+            icon = Icons.Filled.Groups,
+            label = stringResource(R.string.goodpost_nav_communities),
+            selected = selectedTab == "communities",
+            onClick = { onTabSelected("communities") }
+        )
+        BottomNavItem(
+            icon = Icons.Filled.Call,
+            label = stringResource(R.string.goodpost_nav_calls),
+            selected = selectedTab == "calls",
+            onClick = { onTabSelected("calls") }
+        )
+    }
+}
+
+@Composable
+private fun BottomNavItem(
+    icon: ImageVector,
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .then(
+                    if (selected) Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Wa.Accent.copy(alpha = 0.2f))
+                        .padding(horizontal = 18.dp, vertical = 4.dp)
+                    else Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = if (selected) Wa.Accent else Wa.TextDim,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = label,
+            color = if (selected) Wa.Text else Wa.TextDim,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
+        )
     }
 }

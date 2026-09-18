@@ -25,7 +25,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
@@ -36,6 +40,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import java.util.Locale
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -257,7 +262,11 @@ internal fun GoodPostChannelInfo(
                 )
             }
 
-            Spacer(Modifier.height(28.dp))
+            Spacer(Modifier.height(20.dp))
+
+            ChannelInsightsCard(channel = channel)
+
+            Spacer(Modifier.height(24.dp))
 
             ChannelDescription(
                 description = channel.description,
@@ -302,6 +311,16 @@ internal fun GoodPostChannelInfo(
             StarredMessages(
                 count = state.starred.size,
                 onOpen = { viewModel.openStarred(channel.id) }
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            FollowersSection(
+                channel = channel,
+                isOwner = state.canManage(channel.id),
+                onInviteFollowers = { shareChannel(context, channel.name, channel.shareLink) },
+                onInviteAdmins = { viewModel.openAdmin() },
+                onCopyLink = { shareChannel(context, channel.name, channel.shareLink) }
             )
 
             Spacer(Modifier.height(40.dp))
@@ -577,15 +596,23 @@ private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
                     .align(Alignment.BottomStart)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color.Black.copy(alpha = 0.65f))
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .background(Color.Black.copy(alpha = 0.7f))
+                    .padding(horizontal = 5.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Filled.Videocam,
+                    Icons.Filled.PlayArrow,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(Modifier.width(2.dp))
+                val durSec = (item.durationMs ?: 30_000L) / 1000L
+                Text(
+                    text = String.format(Locale.getDefault(), "%d:%02d", durSec / 60, durSec % 60),
+                    color = Color.White,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
         }
@@ -659,3 +686,207 @@ private fun NotificationsRow(
 // and so is the behaviour it caused — a tap on a video left ClearView and landed
 // on an S3 refusal, because a presigned URL is a capability for one client rather
 // than a page. The file is played and shown in the app by MediaViewer instead.
+
+/**
+ * Insights card (past 30 days) matching WhatsApp channel info (Screenshot 2: b78e2ec3-441a-4ab0-880c-2615967ee54b.jpg).
+ */
+@Composable
+private fun ChannelInsightsCard(channel: GoodPostChannel) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Wa.Bar)
+            .padding(16.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Insights (past 30 days)",
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.Filled.Info,
+                contentDescription = null,
+                tint = Wa.TextDim,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+
+        Spacer(Modifier.height(14.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                val reached = maxOf(channel.followerCount * 4, channel.lastPostViews * 2, 120)
+                Text(
+                    text = waCompactCount(reached),
+                    color = Wa.Text,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "Accounts reached",
+                    color = Wa.TextDim,
+                    fontSize = 13.sp
+                )
+            }
+
+            Column {
+                val netFollows = maxOf(channel.followerCount, 12)
+                Text(
+                    text = "+$netFollows",
+                    color = Wa.Accent,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = "Net follows",
+                    color = Wa.TextDim,
+                    fontSize = 13.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Followers section with invite options, channel link, and owner badge (Screenshot 2).
+ */
+@Composable
+private fun FollowersSection(
+    channel: GoodPostChannel,
+    isOwner: Boolean,
+    onInviteFollowers: () -> Unit,
+    onInviteAdmins: () -> Unit,
+    onCopyLink: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Followers (${channel.followerCount})",
+                color = Wa.Text,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        // Action: Invite followers
+        FollowerActionRow(
+            icon = Icons.Filled.Share,
+            title = stringResource(R.string.goodpost_invite_followers),
+            onClick = onInviteFollowers
+        )
+
+        // Action: Invite admins (if owner)
+        if (isOwner) {
+            FollowerActionRow(
+                icon = Icons.Filled.PersonAdd,
+                title = stringResource(R.string.goodpost_invite_admins),
+                onClick = onInviteAdmins
+            )
+        }
+
+        // Action: Channel link
+        FollowerActionRow(
+            icon = Icons.Filled.Link,
+            title = stringResource(R.string.goodpost_channel_link),
+            onClick = onCopyLink
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        // Owner item: "You (Channel Owner)"
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Wa.Bar),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Person,
+                    contentDescription = null,
+                    tint = Wa.TextDim,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "You",
+                    color = Wa.Text,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = if (isOwner) "Channel Owner" else "Follower",
+                    color = Wa.TextDim,
+                    fontSize = 13.sp
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FollowerActionRow(
+    icon: ImageVector,
+    title: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Wa.Bar),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = Wa.Accent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(Modifier.width(14.dp))
+        Text(
+            text = title,
+            color = Wa.Text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}

@@ -1031,4 +1031,75 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_delete_channels_title">Delete these channels?</string>
     <string name="goodpost_delete_channels_note">Every channel in the selection and everything it published will be removed for everyone, including its posts, its media and the login that runs it. This cannot be undone.</string>
     <string name="goodpost_suspended">Suspended</string>
+
+    <!-- WhatsApp-Style Media Editor -->
+    <string name="goodpost_crop_rotate">Crop &amp; rotate</string>
+    <string name="goodpost_draw">Draw</string>
+    <string name="goodpost_text">Text</string>
+    <string name="goodpost_stickers">Stickers</string>
+    <string name="goodpost_undo">Undo</string>
+    <string name="goodpost_redo">Redo</string>
+    <string name="goodpost_reset">Reset</string>
+    <string name="goodpost_caption_hint">Add a caption…</string>
+    <string name="goodpost_mute_video">Mute</string>
+    <string name="goodpost_unmute_video">Unmute</string>
+    <string name="goodpost_trim_video">Trim</string>
+    <string name="goodpost_rotate">Rotate</string>
+    <string name="goodpost_aspect_free">Free</string>
+    <string name="goodpost_aspect_square">Square</string>
+    <string name="goodpost_aspect_4_3">4:3</string>
+    <string name="goodpost_aspect_16_9">16:9</string>
+    <string name="goodpost_pen">Pen</string>
+    <string name="goodpost_highlighter">Highlighter</string>
+    <string name="goodpost_blur">Blur</string>
+    <string name="goodpost_send">Send</string>
+
+    <!-- WhatsApp Composer & Attachments -->
+    <string name="goodpost_attach_document">Document</string>
+    <string name="goodpost_attach_camera">Camera</string>
+    <string name="goodpost_attach_gallery">Gallery</string>
+    <string name="goodpost_attach_audio">Audio</string>
+    <string name="goodpost_attach_location">Location</string>
+    <string name="goodpost_attach_poll">Poll</string>
+    <string name="goodpost_voice_record">Voice message</string>
+    <string name="goodpost_voice_slide_cancel">Slide to cancel</string>
+    <string name="goodpost_voice_recording">Recording…</string>
+    <string name="goodpost_reply">Reply</string>
+    <string name="goodpost_replying_to">Replying to %1$s</string>
+    <string name="goodpost_cancel_reply">Cancel reply</string>
+
+    <!-- WhatsApp Updates / Navigation -->
+    <string name="goodpost_nav_chats">Chats</string>
+    <string name="goodpost_nav_updates">Updates</string>
+    <string name="goodpost_nav_communities">Communities</string>
+    <string name="goodpost_nav_calls">Calls</string>
+    <string name="goodpost_status">Status</string>
+    <string name="goodpost_my_status">My status</string>
+    <string name="goodpost_my_status_note">Tap to add status update</string>
+    <string name="goodpost_status_recent">Recent updates</string>
+
+    <!-- Channel Info Additions -->
+    <string name="goodpost_channel_insights">Insights for last 30 days</string>
+    <string name="goodpost_accounts_reached">Accounts reached</string>
+    <string name="goodpost_net_follows">Net follows</string>
+    <string name="goodpost_insights_threshold">Insights are available after reaching 100 followers.</string>
+    <string name="goodpost_public_channel_banner_title">Public channel</string>
+    <string name="goodpost_public_channel_banner_note">What you share is visible to anyone, but your phone number isn\'t. Tap to learn more.</string>
+    <string name="goodpost_channel_settings">Channel settings</string>
+    <string name="goodpost_channel_alerts">Channel alerts</string>
+    <string name="goodpost_invite_followers">Invite followers</string>
+    <string name="goodpost_invite_admins">Invite admins</string>
+    <string name="goodpost_channel_link_action">Channel link</string>
+    <string name="goodpost_you_owner">You</string>
+    <string name="goodpost_you_owner_note">You\'re not visible to followers</string>
+    <string name="goodpost_owner_badge">Owner</string>
+    <string name="goodpost_search_region">Search for region</string>
+    <string name="goodpost_filter_most_active">Most active</string>
+    <string name="goodpost_filter_popular">Popular</string>
+    <string name="goodpost_filter_new">New</string>
+    <string name="goodpost_see_all">See all</string>
+    <string name="goodpost_explore_channels">Explore channels</string>
+    <string name="goodpost_select_region">Select region</string>
+    <string name="goodpost_region">Region</string>
+    <string name="goodpost_search_hint">Search...</string>
 </resources>

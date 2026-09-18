@@ -1,7 +1,6 @@
 # ClearView — Google Play Store Listing Texts
 
-Everything below is copy-paste ready. Placeholders to replace: none (only the
-accessibility/device-admin sections are declaration answers — paste as-is).
+Everything below is copy-paste ready.
 
 ---
 
@@ -12,49 +11,59 @@ Privacy-first parental controls: block adult content, keywords & incognito.
 ```
 (75 chars ✓)
 
-Alternative (if you prefer mentioning the content hub):
+Alternative (mentioning productivity and content hub):
 ```
-Parental controls + Quran, Media & Live. Private, no accounts, no data.
+Parental controls, clean Media, Quran, Todo reminders & Phone Limit.
 ```
-(72 chars ✓)
+(69 chars ✓)
 
 ---
 
 ## 2. Full description (max 4,000 characters)
 
 ```
-ClearView — Privacy-first parental controls, plus Quran, Media & Live.
+ClearView — Privacy-first parental controls, clean Media, Quran, Todo reminders & Phone Limit.
 
-Protect your family's browsing while enjoying a clean Islamic content hub — all in one private, ad-free app with no accounts and no data collection.
+Protect your family's browsing while maintaining focus and discipline — all in one private, ad-free app with no accounts, no cloud sync, and on-device processing.
 
 🛡️ Blocks what should be blocked
-• Adult and explicit content across Chrome, the Google app and YouTube — searches, pages, video titles and thumbnails
-• Your own blocked keywords and blocked websites
-• Incognito mode, so private browsing can't hide inappropriate content
-• Optional Strict Modes for even tighter filtering
+• Adult and explicit content across Chrome, the Google app, YouTube, and in-app browsers
+• Custom blocked keywords and user-defined website blocklists
+• Incognito mode in Chrome, preventing private browsing from bypassing protection
+• Strict Modes for tighter safety filtering
+• Community-updated channel and keyword blocklists
 
 🔍 How it works — on your device, not on a server
-• Real-time text screening via the Android Accessibility Service, used only for content blocking and nothing else
-• On-device AI checks video thumbnails for adult imagery — images are never uploaded
-• Everything is processed locally. No accounts, no ads, no analytics, and no personal data ever leaves your phone
+• Real-time on-device text and URL screening via the Android Accessibility Service, used solely for content blocking
+• Screen content is analyzed in volatile memory and is never logged, saved, or uploaded
+• No accounts, no sign-ups, and no personal data ever leaves your phone
 
-📖 Quran, Media and Live — built in
-• Quran: a daily verse in Arabic and English, Previous/Next navigation, bookmarks, copy & share, automatic refresh, and a home-screen widget that stays perfectly in sync with the app
-• Media: follow your favorite YouTube channels, watch Shorts and long videos inside the app, track watch progress, and get notified when channels upload new videos
-• Live: watch Makkah and Madinah live broadcasts in the app
+📖 Media & Islamic Content Hub
+• Media: Follow your favorite YouTube channels and Instagram creators in a clean, distraction-free feed. Watch Shorts, Reels, and videos, or download audio for offline listening with background playback and lock-screen controls.
+• Quran: Daily verses in IndoPak Arabic script and Dr. Mustafa Khattab's English translation ("The Clear Quran"), bookmarks, and a home-screen widget.
+• Worship & Mindfulness: Dhikr counter with haptic feedback, Umm al-Qura Islamic Hijri calendar, and live Makkah & Madinah broadcasts.
+
+⏱️ Productivity & Phone Limit
+• Todo & Task Manager: Organize tasks with Normal, Attempted, and Duration-based task tracking, exact alarm alerts, full-screen notifications, and permanent revision history.
+• Phone Limit: Monitor daily screen time locally and set daily countdown limits that automatically lock the screen when expired to encourage healthy digital habits.
 
 🔒 Made for families
-• Protect the Block tab with a password of your choice
-• Full transparency: ClearView collects no personal data. Your settings, keywords and blocked-content records never leave your device. Uninstalling the app deletes everything.
+• Protect the Block settings with a password of your choice (secured with SHA-256 cryptographic hashing)
+• Device Admin uninstall protection to prevent unauthorized removal
+• Full transparency: Your settings, tasks, and media stay strictly in your device's private storage. Uninstalling the app deletes everything.
 
 Permissions used:
-• Accessibility service — required for content blocking (on-device only)
-• Notifications — optional, for channel-update alerts
-• Internet — for content you request (Quran text, YouTube videos)
-• Device admin — optional, for uninstall protection
+• Accessibility service — for real-time on-device content blocking
+• Usage access (optional) — reads today's screen time locally for the Phone Limit countdown
+• Notifications — for channel-upload alerts, Quran reminders, and task alerts
+• Exact alarms & Full-screen intent — for on-time Todo reminders and lock-screen alarms
+• Foreground services — for background offline audio playback and phone limit timer
+• Internet — to fetch user-requested media, Quran texts, and community blocking rules
+• Device admin (optional) — for uninstall protection and screen locking on timer expiry
+• Vibrate — for Dhikr counter haptic feedback and alarm ringing
 ```
 
-(~1,950 chars ✓)
+(~2,450 chars ✓)
 
 ---
 
@@ -67,24 +76,37 @@ Answer: **Yes**
 Declaration (paste into the provided field):
 
 ```
-ClearView uses the Android AccessibilityService solely for its core content-blocking feature. When the user enables protection, the service reads the text currently shown on screen inside the Chrome browser and the Google app in real time to detect and block: (1) adult and explicit content via built-in and user-defined keywords, (2) user-blocked websites, (3) inappropriate search results and video content on YouTube, and (4) incognito browsing. All analysis happens locally on the device: screen content is processed in memory, is never stored, logged or transmitted, and is used for no other purpose. The service remains disabled until the user explicitly enables protection and can be turned off at any time from the app or system settings. Thumbnail screening uses a local on-device machine-learning model; images are never uploaded. ClearView does not use the accessibility API to access data outside this blocking function, does not modify other apps or their interfaces, and complies with the Google Play Accessibility API policy.
+ClearView uses the Android AccessibilityService solely for its core content-blocking feature. When the user enables protection, the service inspects on-screen text, URLs, search queries, and window states within Chrome, the Google app, and embedded WebViews in real time to detect and block: (1) adult and explicit content via built-in and user-defined keywords, (2) user-blocked websites and domains, (3) inappropriate search results and video content on YouTube, and (4) incognito browsing sessions. All analysis happens locally on the device in volatile memory: screen content is never recorded, stored on disk, logged, or transmitted to any server, and is used for no other purpose. The service remains disabled until explicitly enabled by the user in system settings and can be turned off at any time. ClearView does not use the accessibility API to access data outside this blocking function, does not modify other apps or their interfaces, and complies fully with Google Play Accessibility API policy.
 ```
 
 Then tick the checkbox confirming the app complies with the policy.
 
 ---
 
-## 4. Device admin declaration (bonus — if Play Console asks)
+## 4. Usage Access declaration (Play Console → App content → Usage Access / Sensitive Permissions)
+
+If Play Console prompts regarding `PACKAGE_USAGE_STATS`:
 
 ```
-ClearView includes an optional Device Administrator component used only to add uninstall protection when the user activates it. It performs no other device-administration functions and can be removed at any time by the user in device settings.
+ClearView uses the PACKAGE_USAGE_STATS permission solely for the optional "Phone Limit" feature. With explicit user consent in system Usage Access settings, the app reads the device's daily screen-on time via UsageStatsManager to calculate remaining allowance against a user-configured daily limit. All usage event calculations occur strictly on-device in real time. ClearView does not track individual app usage, does not store application history, and never transmits any usage data off the device.
 ```
 
 ---
 
-## 5. Category & contact suggestions
+## 5. Device admin declaration (Play Console → App content → Device Admin)
 
-- App category: **Parenting** (fits parental-control purpose) or **Tools**
-- Content rating: complete the questionnaire honestly; expect a mature rating for the blocking nature
-- Data safety: answer **"No data collected"** (matches the privacy policy)
-- Privacy policy URL: paste your hosted page from docs/privacy-policy.html
+```
+ClearView includes an optional Device Administrator component used only to provide uninstall protection (preventing unauthorized deactivation of parental protection) and to lock the screen (lockNow) when the user's daily Phone Limit timer expires. It performs no other device-administration functions and can be deactivated by the user at any time in device settings.
+```
+
+---
+
+## 6. Category, Data Safety & Privacy Policy URL
+
+- App category: **Parenting** or **Tools** / **Productivity**
+- Content rating: complete the questionnaire honestly; expect a mature/parental guidance rating for the blocking nature
+- Data safety:
+  - **App info and performance / Crash logs / Diagnostics**: Disclose Firebase Analytics diagnostics if bundled in the build.
+  - **Device or other IDs**: Pseudonymous app instance ID (collected automatically by Firebase Analytics for app stability).
+  - **Personal data**: **No** personal data (no name, email, phone, location, or browsing history is collected or shared).
+- Privacy policy URL: Paste your hosted GitHub Pages or public URL pointing to `docs/privacy-policy.html` (or `github.html`).

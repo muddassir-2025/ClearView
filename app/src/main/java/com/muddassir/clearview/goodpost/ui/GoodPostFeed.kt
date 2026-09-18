@@ -40,6 +40,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Forward
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AddReaction
 import androidx.compose.material.icons.filled.ArrowBack
@@ -224,6 +226,49 @@ internal fun GoodPostFeed(
         }
     }
 
+    val scope = rememberCoroutineScope()
+    val canManageChannel = editable || (channelId.isNotBlank() && state.canManage(channelId))
+    var editorMediaUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var replyingPost by remember { mutableStateOf<GoodPostPost?>(null) }
+
+    val forwardPost: (GoodPostPost) -> Unit = { post ->
+        val text = post.copyText()
+        val files = post.media.mapNotNull { asset ->
+            asset.url?.let { Shareable(it, asset.kind, asset.contentType) }
+        }.take(SHARE_FILE_LIMIT)
+        val link = channel?.shareLink.orEmpty()
+        val channelName = channel?.name.orEmpty()
+
+        if (files.isEmpty()) {
+            shareChannel(context, channelName, link, text)
+        } else {
+            scope.launch {
+                val uris = files.mapNotNull { file ->
+                    GoodPostDownloads.shareFile(
+                        context = context,
+                        url = file.url,
+                        kind = file.kind,
+                        contentType = file.contentType
+                    )
+                }
+                if (uris.isEmpty()) {
+                    if (link.isNotBlank()) {
+                        shareChannel(context, channelName, link, text)
+                    } else {
+                        showToast(context, R.string.goodpost_save_failed)
+                    }
+                } else {
+                    shareFiles(
+                        context = context,
+                        uris = uris,
+                        type = mimeTypeForAll(files.map { it.kind to it.contentType }),
+                        text = sharedPostText(text, link)
+                    )
+                }
+            }
+        }
+    }
+
     // §19 Bug 1: the composer is the bottom row of this screen, and the screen is
     // hosted inside the app's Scaffold, which reserves room for the navigation bar
     // but knows nothing about the keyboard. `imePadding()` is what makes the IME's
@@ -245,8 +290,9 @@ internal fun GoodPostFeed(
             if (state.postSelectionActive) {
                 PostSelectionBar(
                     state = state,
-                    editable = editable,
-                    viewModel = viewModel
+                    editable = canManageChannel,
+                    viewModel = viewModel,
+                    onReply = { post -> replyingPost = post }
                 )
             } else {
             WaTopBar(
@@ -327,8 +373,8 @@ internal fun GoodPostFeed(
                         start = 10.dp,
                         end = 10.dp,
                         top = 6.dp,
-                        // Room for the compose button if editable
-                        bottom = if (editable) 96.dp else 24.dp
+                        // Room for the compose button if manageable
+                        bottom = if (canManageChannel) 96.dp else 24.dp
                     ),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -380,12 +426,15 @@ internal fun GoodPostFeed(
                                 modifier = Modifier.animateItem(),
                                 selected = state.selectedPostIds.contains(entry.post.id),
                                 starred = entry.post.id in state.starredPostIds,
-                                // §9: tapping a chip on the card does what the
-                                // picker does for one post — sets this reader's
-                                // emoji on it, or takes it off when it is
-                                // already theirs.
                                 onReact = { emoji -> viewModel.react(entry.post, emoji) },
                                 reacting = entry.post.id in state.reactionBusyIds,
+                                onForward = forwardPost,
+                                onReply = if (canManageChannel) { { replyingPost = entry.post } } else null,
+                                onPickMoreReactions = {
+                                    if (!state.postSelectionActive) {
+                                        viewModel.togglePostSelected(entry.post.id)
+                                    }
+                                },
                                 onClick = {
                                     // In selection mode a tap adds to the
                                     // selection; otherwise a post has no tap
@@ -442,8 +491,46 @@ internal fun GoodPostFeed(
 
             }
 
-            if (editable) {
-                ChannelInputBar(state = state, channelId = channelId, viewModel = viewModel)
+            if (canManageChannel) {
+                WhatsAppComposer(
+                    text = state.composerBody,
+                    onTextChange = viewModel::onComposerBodyChange,
+                    attachments = state.composerAttachments,
+                    onRemoveAttachment = viewModel::removeMedia,
+                    replyingTo = replyingPost,
+                    onDismissReply = { replyingPost = null },
+                    editing = state.editingPostId != null,
+                    onCancelEdit = viewModel::cancelCompose,
+                    busy = state.composerBusy,
+                    canAttachMedia = state.composerMediaAvailable,
+                    onPickMedia = { uris ->
+                        editorMediaUris = uris
+                    },
+                    onCapturePhoto = { uri ->
+                        editorMediaUris = listOf(uri)
+                    },
+                    onRecordAudio = { audioUri ->
+                        val attachment = readGoodPostAttachment(context, audioUri)
+                        if (attachment != null) {
+                            viewModel.attachMedia(attachment)
+                        } else {
+                            viewModel.reportUnsupportedMedia()
+                        }
+                    },
+                    onSend = {
+                        if (replyingPost != null) {
+                            val quote = replyingPost?.body?.take(80)?.replace("\n", " ") ?: ""
+                            viewModel.onComposerBodyChange("> $quote\n\n${state.composerBody}")
+                            replyingPost = null
+                        }
+                        viewModel.publish()
+                    },
+                    onFormatText = { format ->
+                        val text = state.composerBody
+                        val edit = applyGoodPostFormat(text, 0, text.length, format)
+                        viewModel.onComposerBodyChange(edit.text)
+                    }
+                )
             }
         }
 
@@ -490,6 +577,24 @@ internal fun GoodPostFeed(
                 }
             )
         }
+
+        if (editorMediaUris.isNotEmpty()) {
+            GoodPostMediaEditor(
+                mediaUris = editorMediaUris,
+                initialCaption = state.composerBody,
+                onDismiss = { editorMediaUris = emptyList() },
+                onSend = { editedAttachments, caption ->
+                    editorMediaUris = emptyList()
+                    if (caption.isNotBlank()) {
+                        viewModel.onComposerBodyChange(caption)
+                    }
+                    editedAttachments.forEach { attachment ->
+                        viewModel.attachMedia(attachment)
+                    }
+                    viewModel.publish()
+                }
+            )
+        }
     }
 }
 
@@ -506,7 +611,8 @@ internal fun GoodPostFeed(
 private fun PostSelectionBar(
     state: GoodPostUiState,
     editable: Boolean,
-    viewModel: GoodPostViewModel
+    viewModel: GoodPostViewModel,
+    onReply: ((GoodPostPost) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -547,6 +653,16 @@ private fun PostSelectionBar(
                 )
             }
             if (editable && selected.size == 1) {
+                if (onReply != null) {
+                    WaIconAction(
+                        icon = Icons.AutoMirrored.Filled.Reply,
+                        description = stringResource(R.string.goodpost_reply),
+                        onClick = {
+                            onReply(selected.first())
+                            viewModel.clearPostSelection()
+                        }
+                    )
+                }
                 WaIconAction(
                     icon = Icons.Filled.Edit,
                     description = stringResource(R.string.goodpost_edit),
@@ -898,65 +1014,22 @@ private fun GoodPostPost.copyText(): String = buildString {
 @Composable
 internal fun PostItem(
     post: GoodPostPost,
-    /**
-     * Where this card sits in its list (§22).
-     *
-     * The feed passes `Modifier.animateItem()`, which is what makes a post that
-     * arrives while the screen is open — the one thing a channel does without the
-     * reader asking (§12) — slide in and settle rather than appear mid-scroll
-     * under a thumb that is still moving. Defaulted so a preview of a post, which
-     * is not in a list, has nothing to pass.
-     */
     modifier: Modifier = Modifier,
     selected: Boolean,
-    /**
-     * Whether this reader has starred the post (§9).
-     *
-     * Drawn on the card rather than only in the bar that acts on a selection: a
-     * star is a bookmark, and a bookmark that cannot be seen from the list it
-     * was made in is one the reader has to remember. Defaulted so a screen with
-     * no reader context — an administrator's own feed — draws nothing new.
-     */
     starred: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
-    /**
-     * Reacts to this post with one emoji (§9).
-     *
-     * Null on a screen with no reader to attribute a reaction to — the starred
-     * list, an administrator's own preview — where the chips are drawn as plain
-     * counts instead of as controls that could only fail when tapped.
-     */
     onReact: ((String) -> Unit)? = null,
-    /** True while a reaction for this post is on its way to the server (§9). */
     reacting: Boolean = false,
-    /** Opens one of this post's attachments in the app (§9). */
+    onForward: ((GoodPostPost) -> Unit)? = null,
+    onReply: ((GoodPostPost) -> Unit)? = null,
+    onPickMoreReactions: () -> Unit = {},
     onOpenMedia: (GoodPostMedia) -> Unit,
-    /**
-     * The same, for a video that was already playing in the card, with the
-     * playhead it had reached.
-     *
-     * Defaulted to [onOpenMedia] so a screen with no inline player — a search
-     * result — does not have to know this exists.
-     */
     onOpenMediaAt: (GoodPostMedia, Long) -> Unit = { asset, _ -> onOpenMedia(asset) },
-    /**
-     * Re-reads this post, for a media URL whose signature has run out (§24).
-     *
-     * A feed can sit open past a URL's lifetime, and a video that was fine when
-     * the page loaded will refuse to play later. Asking for the post again is
-     * the only retry that can succeed, so the card asks rather than failing.
-     */
     onRefreshMedia: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
-    // §22: the selection states are animated rather than switched. A long press
-    // is a deliberate gesture, and a card that jumps to a different colour makes
-    // the press feel like it landed on something else; a fifth of a second makes
-    // it read as the card answering. Both values are driven from `selected`, so
-    // the tint and the layer always arrive together — a half-applied selection is
-    // the one look that would be worse than no animation at all.
     val selectionFill by animateColorAsState(
         targetValue = if (selected) Wa.Selected else Color.Transparent,
         animationSpec = tween(durationMillis = WaMotion.SELECT_MS),
@@ -968,11 +1041,6 @@ internal fun PostItem(
         label = "wa-selected-layer"
     )
 
-    // The selection fill is on this wrapper rather than inside the bubble: the
-    // bubble paints its own background over whatever it is given, so a highlight
-    // passed inwards would be covered by the very container it is meant to mark.
-    // That is also why the selection LAYER is painted in `drawWithContent` below
-    // instead of being a tint behind the content — behind it is invisible.
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -981,188 +1049,206 @@ internal fun PostItem(
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .drawWithContent {
                 drawContent()
-                // §5: the layer a selected post gets, like a selected message in
-                // a chat. Over the whole card — bubble, photo, video poster — so
-                // "this one is picked" is visible from the picture alone.
                 if (scrim > 0f) drawRect(color = Wa.Accent.copy(alpha = scrim))
             }
     ) {
-        WaPostContainer {
+        if (selected) {
+            Row(
+                modifier = Modifier
+                    .padding(bottom = 6.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Color(0xFF202C33))
+                    .border(0.5.dp, Color(0xFF2A3942), RoundedCornerShape(24.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                val quickEmoji = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+                quickEmoji.forEach { emoji ->
+                    Text(
+                        text = emoji,
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { onReact?.invoke(emoji) }
+                            .padding(4.dp)
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(28.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF2A3942))
+                        .clickable { onPickMoreReactions() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.Add,
+                        contentDescription = "More reactions",
+                        tint = Wa.TextDim,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+
+        WaPostContainer(hasMedia = post.media.isNotEmpty()) {
             post.media.forEach { asset ->
                 if (asset.isImage) {
                     RemoteImage(
                         url = asset.url,
-                        // A fixed box, not the file's own proportions (§18). Every
-                        // post that carries a picture is then the same height, so
-                        // the feed does not step up and down it as the reader
-                        // scrolls, and one post's photo can never push the next
-                        // post's text off the screen. Cropped to fill, like the
-                        // preview in a chat; the full frame is one tap away.
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(POST_PHOTO_ASPECT)
-                            // One radius for every attachment in the tab — the
-                            // same shape the video card and the link chip wear.
-                            // A photo used to round itself at 8dp, its own loader
-                            // clipped again at 11dp, and a clip beside it was
-                            // 10dp: three corners, one kind of thing (§6).
-                            .clip(WaMediaShape)
-                            // A photo opens full size in the app, and can be kept
-                            // from there (§15). It used to do nothing at all,
-                            // which read as a broken image rather than a picture
-                            // that simply is not interactive.
-                            //
-                            // Holding it selects the post, because the picture is
-                            // the biggest part of it to aim at: a tap it answers
-                            // itself, a hold it passes back up to the bubble.
+                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
                             .combinedClickable(
                                 enabled = !asset.url.isNullOrBlank(),
                                 onClick = { onOpenMedia(asset) },
                                 onLongClick = onLongClick
                             )
                     )
-                    Spacer(Modifier.height(4.dp))
                 } else {
                     InlineVideoCard(
                         url = asset.url.orEmpty(),
-                        // Fixed as well, and letterboxed rather than cropped when
-                        // the file disagrees: cropping a portrait clip hides the
-                        // half of it the channel shot.
                         aspect = POST_VIDEO_ASPECT,
                         onOpen = { from -> onOpenMediaAt(asset, from) },
                         onRefreshUrl = onRefreshMedia,
-                        // §5: the card paints its own selection layer — see
-                        // the sheets inside [InlineVideoCard].
                         selected = selected,
                         onLongPress = onLongClick
                     )
-                    Spacer(Modifier.height(4.dp))
                 }
             }
 
-            val bodyText = post.body
-            if (!bodyText.isNullOrBlank()) {
-                // §5: holding the bubble is the app's own gesture, and this is
-                // what keeps Android's select/copy menu from answering it too.
-                WaNoTextSelection {
-                    Text(
-                        // §17: the stored markers become spans here, and only
-                        // here. The body itself is plain text the server never
-                        // parsed; nothing is rendered as markup, so a post that
-                        // contains `<b>` simply says `<b>`.
-                        text = parseGoodPostText(bodyText),
-                        color = Wa.BubbleText,
-                        fontSize = 15.sp,
-                        // Looser than the default on purpose: a channel's update is
-                        // a paragraph, and a paragraph set solid is the difference
-                        // between a message and a block of text.
-                        lineHeight = 21.sp,
-                        // No inset of its own — the bubble owns the padding now, so
-                        // the first line starts where the picture above it starts.
-                        // A media caption gets one small gap instead.
-                        modifier = if (post.media.isNotEmpty()) {
-                            Modifier.padding(top = 3.dp)
-                        } else {
-                            Modifier
-                        }
-                    )
+            Column(
+                modifier = if (post.media.isNotEmpty()) {
+                    Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                } else {
+                    Modifier
                 }
-            }
-
-            if (post.isLink) {
-                if (!post.body.isNullOrBlank()) Spacer(Modifier.height(4.dp))
-                LinkChip(
-                    label = post.linkTitle?.takeIf { it.isNotBlank() } ?: post.linkUrl.orEmpty(),
-                    url = post.linkUrl.orEmpty(),
-                    // A LINK is the one thing here that does belong to the
-                    // browser: it is a page, unlike a signed URL to a file.
-                    onOpen = { openLink(context, post.linkUrl) }
-                )
-            }
-
-            // §9: what readers have put on this update. Inside the bubble and
-            // above the timestamp, which is where a chat shows a reaction — it
-            // belongs to the post it is on, not to the list around it.
-            if (post.reactions.isNotEmpty()) {
-                ReactionRow(
-                    reactions = post.reactions,
-                    mine = post.myReaction,
-                    enabled = onReact != null && !reacting,
-                    onReact = onReact
-                )
-            }
-
-            Spacer(Modifier.height(2.dp))
-
-            Row(
-                // No horizontal inset of its own: the bubble owns the padding, so
-                // the time and the view count line up with the last line of the
-                // text above them rather than floating 6dp further in (§6).
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
             ) {
-                // A post that has been edited says so, because a reader who saw
-                // it before should not have to wonder whether they misremembered
-                // it. There is no other furniture in this row: what a post can do
-                // is reached by holding it (§5).
-                if (starred) {
-                    Icon(
-                        Icons.Filled.Star,
-                        contentDescription = stringResource(R.string.goodpost_starred),
-                        tint = Wa.BubbleTime,
-                        modifier = Modifier.size(12.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
+                val bodyText = post.body
+                if (!bodyText.isNullOrBlank()) {
+                    WaNoTextSelection {
+                        Text(
+                            text = parseGoodPostText(bodyText),
+                            color = Wa.BubbleText,
+                            fontSize = 15.sp,
+                            lineHeight = 21.sp,
+                            modifier = if (post.media.isNotEmpty()) {
+                                Modifier.padding(top = 3.dp)
+                            } else {
+                                Modifier
+                            }
+                        )
+                    }
                 }
-                if (post.editedAt != null) {
-                    Text(
-                        text = stringResource(R.string.goodpost_edited),
-                        color = Wa.BubbleTime,
-                        fontSize = 11.sp
-                    )
-                }
-                if (selected) {
-                    // The tick sits in the meta row, where a reader looks for
-                    // "what happened to this message" — the same place a chat
-                    // puts read receipts. The layer above already says it is
-                    // picked; this says it without relying on colour alone.
-                    Icon(
-                        Icons.Filled.CheckCircle,
-                        contentDescription = stringResource(R.string.goodpost_selected),
-                        tint = Wa.Accent,
-                        modifier = Modifier.size(13.dp)
-                    )
-                    Spacer(Modifier.width(5.dp))
-                }
-                Spacer(Modifier.weight(1f))
 
-                // §9: how many readers have opened THIS update, inside the
-                // update it belongs to, next to its own timestamp. On the card
-                // in the channel list the number described a different post on
-                // every row; here it is unambiguous, and it is where a channel
-                // owner looks for it.
-                if (post.views > 0) {
-                    Icon(
-                        Icons.Filled.Visibility,
-                        contentDescription = stringResource(R.string.goodpost_views_of_latest),
-                        tint = Wa.BubbleTime,
-                        modifier = Modifier.size(12.dp)
+                if (post.isLink) {
+                    if (!post.body.isNullOrBlank()) Spacer(Modifier.height(4.dp))
+                    LinkChip(
+                        label = post.linkTitle?.takeIf { it.isNotBlank() } ?: post.linkUrl.orEmpty(),
+                        url = post.linkUrl.orEmpty(),
+                        onOpen = { openLink(context, post.linkUrl) }
+                    )
+                }
+
+                if (post.reactions.isNotEmpty()) {
+                    ReactionRow(
+                        reactions = post.reactions,
+                        mine = post.myReaction,
+                        enabled = onReact != null && !reacting,
+                        onReact = onReact
+                    )
+                }
+
+                Spacer(Modifier.height(2.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (starred) {
+                        Icon(
+                            Icons.Filled.Star,
+                            contentDescription = stringResource(R.string.goodpost_starred),
+                            tint = Wa.BubbleTime,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    if (post.editedAt != null) {
+                        Text(
+                            text = stringResource(R.string.goodpost_edited),
+                            color = Wa.BubbleTime,
+                            fontSize = 11.sp
+                        )
+                        Spacer(Modifier.width(4.dp))
+                    }
+                    if (selected) {
+                        Icon(
+                            Icons.Filled.CheckCircle,
+                            contentDescription = stringResource(R.string.goodpost_selected),
+                            tint = Wa.Accent,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(Modifier.width(5.dp))
+                    }
+                    Spacer(Modifier.weight(1f))
+
+                    if (post.views > 0) {
+                        Icon(
+                            Icons.Filled.Visibility,
+                            contentDescription = stringResource(R.string.goodpost_views_of_latest),
+                            tint = Wa.BubbleTime,
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            text = waCompactCount(post.views),
+                            color = Wa.BubbleTime,
+                            fontSize = 11.sp,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = " • ",
+                            color = Wa.BubbleTime,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    WaTimeLabel(
+                        text = waClock(parseIsoMillis(post.createdAt)),
+                        color = Wa.BubbleTime
                     )
                     Spacer(Modifier.width(3.dp))
-                    Text(
-                        text = waCompactCount(post.views),
-                        color = Wa.BubbleTime,
-                        fontSize = 11.sp,
-                        maxLines = 1
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = Wa.BubbleTime,
+                        modifier = Modifier.size(13.dp)
                     )
-                    Spacer(Modifier.width(8.dp))
                 }
+            }
+        }
 
-                WaTimeLabel(
-                    text = waClock(parseIsoMillis(post.createdAt)),
-                    color = Wa.BubbleTime
+        if (onForward != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.End)
+                    .padding(top = 4.dp, end = 2.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Wa.ForwardBg)
+                    .clickable { onForward(post) },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Forward,
+                    contentDescription = stringResource(R.string.goodpost_share),
+                    tint = Wa.TextDim,
+                    modifier = Modifier.size(17.dp)
                 )
             }
         }

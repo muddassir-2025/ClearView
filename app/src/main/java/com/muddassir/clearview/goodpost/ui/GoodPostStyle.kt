@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -1154,10 +1155,10 @@ internal fun WaFollowAction(
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(18.dp))
-            .background(if (following) Wa.Pressed else Color.Transparent)
+            .background(if (following) Wa.Bar else Wa.Accent)
             .border(
                 width = 1.dp,
-                color = if (following) Wa.Divider else Wa.Accent,
+                color = if (following) Wa.Divider else Color.Transparent,
                 shape = RoundedCornerShape(18.dp)
             )
             .clickable(enabled = !busy, onClick = onClick)
@@ -1168,14 +1169,14 @@ internal fun WaFollowAction(
             CircularProgressIndicator(
                 modifier = Modifier.size(14.dp),
                 strokeWidth = 1.5.dp,
-                color = Wa.Accent
+                color = if (following) Wa.Accent else Wa.OnAccent
             )
         } else {
             Text(
                 text = label,
-                color = if (following) Wa.TextDim else Wa.Accent,
+                color = if (following) Wa.TextDim else Wa.OnAccent,
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )
         }
@@ -1204,9 +1205,11 @@ internal fun WaUnreadBadge(count: Int) {
     WaAppear(enter = WaMotion.badgeEnter()) {
         Box(
             modifier = Modifier
-                .size(20.dp)
+                .height(20.dp)
+                .widthIn(min = 20.dp)
                 .clip(CircleShape)
-                .background(Wa.Accent),
+                .background(Wa.Accent)
+                .padding(horizontal = 5.dp),
             contentAlignment = Alignment.Center
         ) {
             Text(
@@ -1435,21 +1438,23 @@ internal fun WaFilterPill(
 @Composable
 internal fun WaPostContainer(
     modifier: Modifier = Modifier,
+    hasMedia: Boolean = false,
     content: @Composable ColumnScope.() -> Unit
 ) {
     // One bubble, one padding.
     //
-    // It used to be 4dp with every child adding its own, so the left edge of a
-    // line of text did not line up with the left edge of the picture above it and
-    // the time sat a couple of pixels off both — the kind of thing that reads as
-    // "these cards look wrong" without anybody being able to say why. Everything
-    // inside a bubble is now laid out against this one inset.
+    // For posts with media, the media is full-bleed to the edges with 12dp top corners,
+    // and subsequent content (caption, footer) applies the horizontal padding.
+    // For text-only posts, the entire container is padded.
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Wa.Bubble)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .then(
+                if (hasMedia) Modifier.padding(bottom = 6.dp)
+                else Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+            ),
         content = content
     )
 }
