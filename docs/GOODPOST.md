@@ -7,16 +7,41 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: the shared page, My Channel, and a channel picture that saves
+## Latest pass: the shared page as a preview grid (§12)
 
-* **The shared page is a page.** A channel link now opens a real channel page —
+* **The shared page is a preview, not the channel.** The newest **six** posts and
+  nothing else — no paging, no "load older", no complete history. The limit is in
+  the QUERY (`listPublicChannelPosts(…, { limit: PREVIEW_POSTS })`, one constant at
+  the top of `public/share.ts`), not a filter over a full read, so the media of
+  post seven is never signed, transferred or billed. A test seeds eight posts and
+  asserts the seventh is absent from the HTML.
+* **A profile header, then a grid.** Round channel picture, name, `@handle`,
+  follower count and the description in one raised card, stacked and centred under
+  420px; the two buttons beside and below it; then *Latest posts* and a grid of
+  square tiles — `repeat(auto-fill, minmax(104px, 1fr))`, so three columns on a
+  phone and never a column too thin for a word. Photos and clips are shown
+  `object-fit: cover` (the one place the page crops on purpose, since mixed shapes
+  at true sizes leave the rows ragged); a clip gets a play badge, asks for
+  `preload="metadata"` and seeks `#t=0.1` so the first frame paints — **no
+  autoplay**, because six clips starting at once is bandwidth nobody asked for.
+  Text posts are text tiles with the app's own inline formatting, cut to 140
+  characters at a word boundary with a *Read more →* footer rather than the whole
+  post squeezed into a square; a link post is its own tile with the title and
+  domain. Below the grid: *See more from this channel*, naming the count ("A
+  preview of the newest 6 posts") so the page says what it is, then About
+  ClearView. Every *Open in ClearView* on the page — both buttons and every text
+  or link tile — goes through the app-or-store script, which now wires **every**
+  `a[data-store]` link rather than only the first.
+* **Tap target per tile kind.** A media tile opens the media itself (it is
+  cropped to a square here, so there must be a way to see all of it); a text or
+  link tile opens the channel in the app, since it has nowhere else to go on the
+  web.
+* **The shared page is a page.** A channel link opens a real channel page —
   the channel's own picture (through `/c/:slug/icon`, which signs a URL when it is
   fetched rather than when the page was built), its name, handle, category and
-  follower count, and its recent posts rendered by type: text with the app's own
-  inline formatting, images at their real proportions, video with controls, link
-  posts as cards. Two buttons, **Open in ClearView** and **Get ClearView**, and a
-  short About section at the bottom. A crawler gets `og:title`, `og:description`,
-  `og:image` and a canonical URL.
+  follower count, and its posts rendered by type with the app's own inline
+  formatting. A crawler gets `og:title`, `og:description`, `og:image` and a
+  canonical URL.
 * **The page was also broken, not just plain.** Helmet's default CSP is
   `img-src 'self' data:`, and every image on this page is a presigned URL on the
   bucket's own domain — so the browser loaded none of them and the avatar area sat
@@ -261,7 +286,7 @@ request body.
 
 | Method | Path | Returns |
 |---|---|---|
-| `GET` | `/c/:slug` | The public channel page: identity, recent posts, both ways into the app, About ClearView |
+| `GET` | `/c/:slug` | The public channel page: identity, the newest six posts as a preview grid, both ways into the app, About ClearView |
 | `GET` | `/c/:slug/icon` | A redirect to the channel's picture, signed at fetch time (or a transparent SVG when it has none) |
 | `GET` | `/c/app.js` | The page's one script: try the app, fall back to the store |
 | `GET` | `/api/v1/readers/reactions` | §9: the emoji this deployment offers. No token — it is the same six for everybody, and a client that is about to sign in still has to draw them |

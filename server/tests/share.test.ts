@@ -256,7 +256,7 @@ describe('the shared-channel page (§6)', () => {
     expect(response.text).not.toContain('<strong>');
   });
 
-  it('shows a post\'s image through a signed URL, in its own proportions', async () => {
+  it('shows a post\'s image as a tile of the preview grid, through a signed URL', async () => {
     const slug = unique('photo');
     const channelId = await seedChannel(slug);
     const postId = await seedPost(channelId, 'Look at this');
@@ -264,23 +264,97 @@ describe('the shared-channel page (§6)', () => {
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text).toContain('<img class="media" loading="lazy"');
+    // A tile rather than a full-width picture: the grid is what makes six mixed
+    // posts a preview instead of a feed.
+    expect(response.text).toContain('<div class="grid">');
+    expect(response.text).toContain('<img class="tile-media" loading="lazy"');
     expect(response.text).toContain('https://fake-bucket.test/goodpost/channels/photo/');
-    // 1200x800, from the media row: the layout reserves the right box instead of
-    // cropping the picture into whatever shape the CSS felt like.
-    expect(response.text).toContain('aspect-ratio:1200/800');
+    // Cropped to the square the grid is made of — the one place this page crops
+    // on purpose, since mixed shapes at their true sizes leave the rows ragged.
+    expect(response.text).toContain('object-fit: cover');
+    // And the tile opens the picture itself, full size, because the square it is
+    // shown in is a crop of it.
+    expect(response.text).toMatch(/<a class="tile" href="https:\/\/fake-bucket\.test\//);
   });
 
-  it('renders a link post as a card with its domain, not as a bare URL', async () => {
+  it('marks a video tile with a play badge and does not autoplay it', async () => {
+    // Six clips starting by themselves is bandwidth the brief rules out (§15), so
+    // the tile asks for metadata and a first frame and nothing more.
+    const slug = unique('clip');
+    const channelId = await seedChannel(slug);
+    const rows = await pglite.query<{ id: string }>(
+      `INSERT INTO posts (channel_id, author_id, type, created_at)
+       VALUES ($1, NULL, 'video'::post_type, now())
+       RETURNING id`,
+      [channelId]
+    );
+    const postId = one(rows.rows).id;
+    await pglite.query(
+      `INSERT INTO post_media
+         (owner_id, post_id, kind, object_key, content_type, byte_size, width, height, status, position)
+       VALUES (NULL, $1, 'video'::media_kind, $2, 'video/mp4', 8192, 640, 360,
+               'ready'::media_status, 0)`,
+      [postId, `goodpost/channels/clip/${postId}.mp4`]
+    );
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('class="play"');
+    expect(response.text).toContain('preload="metadata"');
+    expect(response.text).toContain('#t=0.1');
+    expect(response.text).not.toContain('autoplay');
+    expect(response.text).not.toContain('<video controls');
+  });
+
+  it('renders a link post as its own tile with the domain, not as a bare URL', async () => {
     const slug = unique('linkcard');
     const channelId = await seedChannel(slug);
     await seedLinkPost(channelId, 'https://example.com/a-post', 'A post worth reading');
 
     const response = await request(app).get(`/c/${slug}`);
 
-    expect(response.text).toContain('class="link-card"');
+    expect(response.text).toContain('tile tile-text tile-link');
     expect(response.text).toContain('A post worth reading');
     expect(response.text).toContain('example.com');
+    // A link tile is a preview with nothing behind it here, so it opens the
+    // channel in the app rather than the URL it is about.
+    expect(response.text).not.toContain('href="https://example.com/a-post"');
+  });
+
+  it('shows the newest six posts and nothing older (§12)', async () => {
+    // The rule the whole page is built around: a shared link is a preview, not
+    // the channel's archive. Six posts, and the seventh is not on the page at all
+    // — not fetched and hidden, absent, because the page size goes to the query.
+    const slug = unique('preview');
+    const channelId = await seedChannel(slug);
+    for (let i = 0; i < 8; i += 1) {
+      await seedPost(channelId, `Update number ${i}`, i);
+    }
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text.match(/class="tile tile-text"/g)).toHaveLength(6);
+    expect(response.text).toContain('Update number 0');
+    expect(response.text).toContain('Update number 5');
+    expect(response.text).not.toContain('Update number 6');
+    expect(response.text).not.toContain('Update number 7');
+    // And the page says what it is rather than pretending to be the whole channel.
+    expect(response.text).toContain('A preview of the newest 6 posts.');
+  });
+
+  it('shows a long post as a preview with a way into the rest of it', async () => {
+    const slug = unique('longpost');
+    const channelId = await seedChannel(slug);
+    const long = `${'The channel keeps posting and the words keep coming. '.repeat(8)}END OF POST`;
+    await seedPost(channelId, long);
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('Read more →');
+    // Cut at a word, and cut short: a tile that contains the whole post is not a
+    // preview and does not fit in a grid.
+    expect(response.text).not.toContain('END OF POST');
+    expect(response.text).not.toMatch(/coming\.\w/);
   });
 
   it('lets the page load media from the bucket rather than only from its own origin', async () => {
@@ -363,7 +437,7 @@ describe('the shared-channel page (§6)', () => {
 
     const response = await request(app).get(`/c/${slug}`);
     expect(response.status).toBe(200);
-    expect(response.text).toContain('No updates yet');
+    expect(response.text).toContain('No posts yet');
   });
 });
 

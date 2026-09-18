@@ -25,6 +25,17 @@ import { ApiError } from '../http/errors.js';
  * reader API: it takes no token, and it must not, because the whole point is
  * that it works for someone who has never heard of ClearView.
  *
+ * ## A preview, not an archive (§12)
+ *
+ * The page shows the newest [PREVIEW_POSTS] posts and nothing else — no paging,
+ * no "load older", no complete history — and the limit is in the QUERY rather
+ * than applied to a full result here (see [PREVIEW_POSTS]). It draws them as a
+ * grid of mixed tiles rather than as a feed of cards, because a column of posts
+ * that keeps going is a reader's experience and six squares are a profile: the
+ * page answers "what is this channel" and then hands the visitor to the app for
+ * everything else. The one thing it must never do is look like the place where
+ * the channel lives.
+ *
  * ## Why it looks like a product page and not like JSON
  *
  * The first version rendered the channel's name and a list of paragraphs, which
@@ -200,6 +211,45 @@ function playStoreUrl(): string {
   return env.PLAY_STORE_URL ?? `https://play.google.com/store/apps/details?id=${env.ANDROID_PACKAGE_NAME}`;
 }
 
+/**
+ * How many posts a shared link shows.
+ *
+ * The page is a PREVIEW, not the channel (§12): a visitor follows a link to see
+ * what the channel is, and the app is where its history lives. Six is about one
+ * screen of a grid, and — the part that matters — it is the number the DATABASE
+ * is asked for, not a number this file hides after loading a hundred. The public
+ * posts endpoint takes a page size, so the query is `LIMIT 6` and the media
+ * beyond it is never signed, never transferred and never billed.
+ */
+const PREVIEW_POSTS = '6';
+
+/**
+ * The most characters of a post's text a tile shows before it stops.
+ *
+ * A grid tile is roughly 110px wide on a phone: three lines is already all that
+ * fits, and a 400-character post rendered into one would either overflow the
+ * square or shrink to unreadable. The rest is in the app, which the tile says.
+ */
+const PREVIEW_CHARS = 140;
+
+/**
+ * A post's text cut to what a tile can show, and whether it was cut.
+ *
+ * Cut at a word boundary rather than mid-word, then stripped of trailing
+ * punctuation and of a trailing formatting marker: a cut that lands inside
+ * `*bold*` leaves the opening asterisk in the text, and a lone asterisk in a
+ * preview reads as a typo rather than as formatting.
+ */
+function previewOf(raw: string, limit = PREVIEW_CHARS): { text: string; truncated: boolean } {
+  const trimmed = raw.trim();
+  if (trimmed.length <= limit) return { text: trimmed, truncated: false };
+
+  const cut = trimmed.slice(0, limit);
+  const boundary = Math.max(cut.lastIndexOf(' '), cut.lastIndexOf('\n'));
+  const head = boundary > limit / 2 ? cut.slice(0, boundary) : cut;
+  return { text: head.replace(/[\s,;:.!?-]+$/, '').replace(/[*_~`]+$/, ''), truncated: true };
+}
+
 /** One attachment, rendered as itself. */
 function renderMedia(media: {
   readonly kind: string;
@@ -208,76 +258,111 @@ function renderMedia(media: {
   readonly height: number | null;
 }): string {
   const url = media.url === null ? null : safeAttributeUrl(media.url);
-  if (url === null) {
-    return '<p class="dim">An attachment on this update cannot be shown here.</p>';
-  }
-
-  // The file's own proportions, so nothing is cropped or stretched. A photo
-  // whose dimensions the server did not record still gets a sane box rather than
-  // a zero-height one.
-  const ratio =
-    media.width !== null && media.height !== null && media.width > 0 && media.height > 0
-      ? ` style="aspect-ratio:${media.width}/${media.height}"`
-      : '';
+  if (url === null) return '';
 
   if (media.kind === 'video') {
-    return `<video class="media" controls preload="metadata" playsinline${ratio} src="${url}"></video>`;
+    return `<video class="tile-media" preload="metadata" muted playsinline src="${url}#t=0.1"></video>`;
   }
 
-  return `<a class="media-link" href="${url}" rel="noopener"><img class="media" loading="lazy" alt=""${ratio} src="${url}"></a>`;
+  return `<img class="tile-media" loading="lazy" alt="" src="${url}">`;
 }
 
-/** One post, as a card. */
-function postCard(post: {
-  readonly type: string;
-  readonly body: string | null;
-  readonly linkUrl: string | null;
-  readonly linkTitle: string | null;
-  readonly media: readonly {
-    readonly id: string;
-    readonly kind: string;
-    readonly url: string | null;
-    readonly width: number | null;
-    readonly height: number | null;
-  }[];
-  readonly createdAt: string;
-  readonly editedAt: string | null;
-  readonly reactions: readonly { readonly emoji: string; readonly count: number }[];
-}): string {
-  const media = post.media.map(renderMedia).join('\n');
-  const body = post.body === null || post.body.trim() === '' ? '' : renderBody(post.body);
+/**
+ * One post, as a tile of the preview grid (§5–§9).
+ *
+ * ## The three kinds, and why the choice is made here
+ *
+ * A GoodPost post is words, media or a link, and the three do not want the same
+ * tile: a photo shown as a square of text is not a photo, and text shown as a
+ * square of cover-cropped nothing is not text. Media wins when a post carries
+ * both, because the picture is what a grid is FOR — the caption is one tap away
+ * in the app, and printing it over the picture would be the caption covering the
+ * thing it describes.
+ *
+ * ## What a tap does
+ *
+ * A media tile opens the media — the signed URL, full size, in the browser.
+ * The tile crops it to a square, so a tap that did nothing would leave a visitor
+ * no way to see the whole of it, and this is the one kind of tile with somewhere
+ * else to go on the web. A text or link tile is a preview with nothing behind it
+ * here, so it opens the channel in the app, which is the page's whole purpose.
+ * Both are real `<a>` elements; nothing depends on the script.
+ *
+ * ## Why the video is asked for a tenth of a second
+ *
+ * A tile cannot autoplay — six clips starting at once is a page nobody asked for
+ * and a bill nobody wants — and a `<video>` that has not played paints an empty
+ * black box. `preload="metadata"` plus the media fragment gets the first frame
+ * on screen, so the tile shows the clip it stands for. `muted` and `playsinline`
+ * are what make some browsers willing to paint it at all.
+ */
+function postTile(
+  post: {
+    readonly type: string;
+    readonly body: string | null;
+    readonly linkUrl: string | null;
+    readonly linkTitle: string | null;
+    readonly media: readonly {
+      readonly id: string;
+      readonly kind: string;
+      readonly url: string | null;
+      readonly width: number | null;
+      readonly height: number | null;
+    }[];
+    readonly createdAt: string;
+  },
+  deepLink: string
+): string {
   const when = escapeHtml(readableDate(post.createdAt));
+  // The exact instant, for anything that reads the page rather than looks at it.
+  // A tile shows no date of its own — six dates in a grid is six lines of noise —
+  // so this is where the machine-readable one lives, and the human one rides in
+  // the element's tooltip.
   const stamp = `<time datetime="${escapeHtml(machineDate(post.createdAt))}">${when}</time>`;
 
-  // A post's picture or clip, then its words, then its link — the order the app
-  // draws them in, so a shared update and the app's own update read as one thing.
-  const edited = post.editedAt === null ? '' : '<span class="sep">·</span><span>edited</span>';
-
-  const link =
-    post.linkUrl === null
-      ? ''
-      : (() => {
-          const href = safeAttributeUrl(post.linkUrl);
-          if (href === null) return '';
-          const title = post.linkTitle?.trim();
-          const label = title && title !== '' ? escapeHtml(title) : escapeHtml(domainOf(post.linkUrl));
-          return `<a class="link-card" href="${href}" rel="noopener noreferrer">
-  <span class="link-title">${label}</span>
-  <span class="link-domain">${escapeHtml(domainOf(post.linkUrl))}</span>
+  // ── A picture or a clip ──
+  const first = post.media[0];
+  const href = first === undefined || first.url === null ? null : safeAttributeUrl(first.url);
+  if (first !== undefined && href !== null) {
+    const clip = first.kind === 'video';
+    return `<a class="tile" href="${href}" rel="noopener" title="${when}">
+  ${renderMedia(first)}${
+    clip ? '\n  <span class="play" aria-hidden="true">\u25b6</span>' : ''
+  }
+  <span class="sr">${clip ? 'Video' : 'Image'} posted ${stamp}</span>
 </a>`;
-        })();
+  }
 
-  const reactions = post.reactions
-    .filter((reaction) => reaction.count > 0)
-    .map(
-      (reaction) =>
-        `<span class="reaction">${escapeHtml(reaction.emoji)}<span class="reaction-count">${reaction.count}</span></span>`
-    )
-    .join('');
+  // ── A link ──
+  // Drawn as the app draws it — a title and a domain — with the title cut to
+  // what one line of a tile holds, because a headline is not a tile.
+  if (post.linkUrl !== null) {
+    const href = safeAttributeUrl(post.linkUrl);
+    if (href !== null) {
+      const title = post.linkTitle?.trim();
+      const heading = previewOf(title && title !== '' ? title : domainOf(post.linkUrl), 44);
+      return `<a class="tile tile-text tile-link" href="${escapeHtml(deepLink)}" rel="noopener" title="${when}">
+  <span class="tile-link-title">${escapeHtml(heading.text)}${heading.truncated ? '\u2026' : ''}</span>
+  <span class="tile-link-domain">${escapeHtml(domainOf(post.linkUrl))}</span>
+  <span class="tile-foot">Open \u2192</span>
+  <span class="sr">Link posted ${stamp}</span>
+</a>`;
+    }
+  }
 
-  return `<article class="post">
-  <header class="post-meta">${stamp}${edited}</header>
-${media === '' ? '' : `  <div class="post-media">${media}</div>\n`}${body === '' ? '' : `  <p class="post-body">${body}</p>\n`}${link === '' ? '' : `  ${link}\n`}${reactions === '' ? '' : `  <div class="post-reactions">${reactions}</div>\n`}</article>`;
+  // ── Words ──
+  const cut = post.body === null || post.body.trim() === '' ? null : previewOf(post.body);
+  const shown =
+    cut === null
+      ? '<span class="dim">This update has no text.</span>'
+      : renderBody(cut.text);
+  const foot = cut !== null && cut.truncated ? 'Read more \u2192' : 'Open \u2192';
+
+  return `<a class="tile tile-text" href="${escapeHtml(deepLink)}" rel="noopener" title="${when}">
+  <span class="tile-body">${shown}</span>
+  <span class="tile-foot">${foot}</span>
+  <span class="sr">Post from ${stamp}</span>
+</a>`;
 }
 
 export function buildShareRouter(database: Queryable, store: ObjectStore): Router {
@@ -359,7 +444,7 @@ export function buildShareRouter(database: Queryable, store: ObjectStore): Route
       // the channel, and the app is where the rest of them live. Older posts are
       // not paginated here on purpose — a channel is not an archive (§14), and a
       // crawler walking an unbounded list is a load nobody asked for.
-      const page = await listPublicChannelPosts(database, store, slug, { limit: '6' });
+      const page = await listPublicChannelPosts(database, store, slug, { limit: PREVIEW_POSTS });
       posts = page.items;
     } catch (err) {
       const type = err instanceof ApiError ? err.type : 'internal_error';
@@ -400,28 +485,35 @@ const BLANK_ICON =
  * It is also deliberately tiny: one listener, one timer, nothing to fail.
  */
 const APP_JS = `(function () {
-  var link = document.getElementById('open');
-  if (!link) return;
+  // Every link that promises the app, not just the one at the top: the page has
+  // a second pair at the bottom and every text tile carries the same promise, and
+  // a script that wired up only the first would leave three of them dead for a
+  // visitor with a browser and no app.
+  var links = document.querySelectorAll('a[data-store]');
 
-  link.addEventListener('click', function (event) {
-    var store = link.getAttribute('data-store');
-    if (!store) return;
+  var wire = function (link) {
+    link.addEventListener('click', function (event) {
+      var store = link.getAttribute('data-store');
+      if (!store) return;
 
-    // Held, not navigated to yet: if the app answers, this page goes to the
-    // background and the timer is dropped before it fires.
-    var timer = setTimeout(function () {
-      window.location.href = store;
-    }, 1200);
+      // Held, not navigated to yet: if the app answers, this page goes to the
+      // background and the timer is dropped before it fires.
+      var timer = setTimeout(function () {
+        window.location.href = store;
+      }, 1200);
 
-    var settled = function () {
-      if (document.hidden) clearTimeout(timer);
-    };
-    document.addEventListener('visibilitychange', settled);
-    window.addEventListener('pagehide', settled);
+      var settled = function () {
+        if (document.hidden) clearTimeout(timer);
+      };
+      document.addEventListener('visibilitychange', settled);
+      window.addEventListener('pagehide', settled);
 
-    event.preventDefault();
-    window.location.href = link.getAttribute('href');
-  });
+      event.preventDefault();
+      window.location.href = link.getAttribute('href');
+    });
+  };
+
+  for (var i = 0; i < links.length; i++) wire(links[i]);
 })();
 `;
 
@@ -434,7 +526,10 @@ function channelPage(
   const slug = escapeHtml(channel.slug);
   const description = channel.description ?? `Updates from ${channel.name}`;
   const handle = `@${slug}`;
-  const deepLink = escapeHtml(channelDeepLink(channel.slug));
+  // Kept unescaped for the tile builder, which escapes what it interpolates;
+  // escaped once here for the buttons.
+  const rawDeepLink = channelDeepLink(channel.slug);
+  const deepLink = escapeHtml(rawDeepLink);
   const shareUrl = escapeHtml(new URL(`/c/${channel.slug}`, env.PUBLIC_BASE_URL).toString());
   // Same-origin and signed at fetch time, so a crawler that reads this page
   // tomorrow still gets a picture (§6). The page and the deep link both use it.
@@ -449,7 +544,19 @@ function channelPage(
     .filter((item): item is string => item !== null)
     .join('<span class="sep">·</span>');
 
-  const cards = posts.map(postCard).join('\n');
+  const tiles = posts.map((post) => postTile(post, rawDeepLink)).join('\n');
+
+  // The bottom section says what this page is (§11, §12). Naming the count is
+  // the honest version of "this is a preview": a visitor can see that the page
+  // is complete in itself and that the channel is bigger than what they were
+  // sent, without the page ever claiming how much bigger. With no posts at all
+  // it says that instead, because "the latest 0 updates" is not a sentence.
+  const previewHeading =
+    posts.length === 0 ? 'This channel is on ClearView' : 'See more from this channel';
+  const previewNote =
+    posts.length === 0
+      ? 'Follow it in the app to see what gets posted.'
+      : `A preview of the newest ${posts.length === 1 ? 'post' : `${posts.length} posts`}. Everything before them, and everything this channel posts next, is in ClearView.`;
 
   return `<!doctype html>
 <html lang="en">
@@ -472,12 +579,14 @@ function channelPage(
 </head>
 <body>
 <main>
-  <header class="channel">
+  <p class="brand">ClearView \u00b7 Good Post</p>
+
+  <header class="profile">
     <div class="avatar">
       <span class="avatar-initial">${initial}</span>
       <img src="${iconPath}" alt="">
     </div>
-    <div class="channel-text">
+    <div class="identity">
       <h1>${name}</h1>
       <p class="handle">${handle}</p>
       <p class="facts">${facts}</p>
@@ -487,13 +596,24 @@ function channelPage(
   <p class="description">${escapeHtml(description)}</p>
 
   <div class="cta">
-    <a class="button primary" href="${deepLink}" id="open" data-store="${store}">Open in ClearView</a>
+    <a class="button primary" href="${deepLink}" data-store="${store}">Open in ClearView</a>
     <a class="button" href="${store}" rel="noopener">Get ClearView</a>
   </div>
   <p class="cta-note">Reading a channel never needs an account.</p>
 
-  <section class="posts">
-    ${cards === '' ? '<p class="dim empty">No updates yet. This channel has not posted anything.</p>' : cards}
+  ${
+    tiles === ''
+      ? '<p class="dim empty">No posts yet. This channel has not posted anything — check back later.</p>'
+      : `<h2 class="section-heading">Latest posts</h2>\n  <div class="grid">\n${tiles}\n  </div>`
+  }
+
+  <section class="more">
+    <h2>${previewHeading}</h2>
+    <p class="dim">${escapeHtml(previewNote)}</p>
+    <div class="cta">
+      <a class="button primary" href="${deepLink}" data-store="${store}">Open in ClearView</a>
+      <a class="button" href="${store}" rel="noopener">Get ClearView</a>
+    </div>
   </section>
 
   <section class="about">
@@ -503,12 +623,12 @@ function channelPage(
       space, channel updates like this one, content controls, and simple
       productivity tools — in one app, without a feed built to keep you scrolling.
     </p>
-    <p class="about-cta"><a href="${store}" rel="noopener">Explore ClearView on Google Play →</a></p>
+    <p class="about-cta"><a href="${store}" rel="noopener">Explore ClearView on Google Play \u2192</a></p>
   </section>
 
   <footer>
     <span>Shared from ClearView</span>
-    <span class="sep">·</span>
+    <span class="sep">\u00b7</span>
     <a href="${shareUrl}">${name}</a>
   </footer>
 </main>
@@ -606,31 +726,81 @@ h1, h2 { line-height: 1.25; }
 h1 { font-size: 21px; margin: 0 0 2px; }
 h2 { font-size: 16px; margin: 0 0 8px; }
 
-.channel { display: flex; align-items: center; gap: 14px; }
+/* The masthead: whose page this is, in the app's own product voice. */
+.brand {
+  margin: 0 0 20px;
+  color: var(--dim);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+/*
+ * The channel, as a profile rather than a byline (§3).
+ *
+ * Avatar and identity side by side on anything with room, and stacked and
+ * centred on a phone, which is what the page is mostly read on: a 76px circle
+ * beside two lines of text squeezes the name into a column on a 360px screen,
+ * and the name is the first thing a visitor is looking for.
+ */
+.profile {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+}
 .avatar {
   position: relative;
-  width: 68px; height: 68px; flex: 0 0 auto;
+  width: 76px; height: 76px; flex: 0 0 auto;
   border-radius: 50%;
   background: var(--raised);
   overflow: hidden;
   display: flex; align-items: center; justify-content: center;
 }
 .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.avatar-initial { color: var(--accent); font-size: 27px; font-weight: 700; }
-.channel-text { min-width: 0; }
+.avatar-initial { color: var(--accent); font-size: 30px; font-weight: 700; }
+.identity { min-width: 0; }
 .handle { margin: 0; color: var(--dim); font-size: 14px; }
-.facts { margin: 3px 0 0; color: var(--dim); font-size: 13px; }
+.facts { margin: 4px 0 0; color: var(--dim); font-size: 13px; }
 .sep { margin: 0 6px; color: var(--divider); }
 @media (prefers-color-scheme: light) { .sep { color: var(--dim); } }
 
-.description { margin: 16px 0 0; color: var(--text); font-size: 15px; white-space: pre-wrap; }
-.description:empty { display: none; }
+/*
+ * Stacked and centred on a narrow screen. Centring the avatar is the one place
+ * this page is laid out like a profile rather than a document, and the header is
+ * where a shared link is judged — the picture is most of what a visitor will
+ * remember of the channel.
+ */
+@media (max-width: 420px) {
+  .profile { flex-direction: column; text-align: center; gap: 12px; padding: 22px 18px; }
+  .identity { width: 100%; }
+}
 
+.description {
+  margin: 16px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  text-align: center;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.description:empty { display: none; }
+@media (min-width: 421px) { .description { text-align: left; } }
+
+/*
+ * Two buttons, side by side while they fit and stacked when they do not (§4).
+ * The primary takes the room it needs rather than half the row: on a phone it is
+ * the action, and the store link beside it is the consolation.
+ */
 .cta { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 0; }
 .button {
   display: inline-block;
-  padding: 11px 18px;
-  border-radius: 22px;
+  padding: 12px 20px;
+  border-radius: 24px;
   background: var(--raised);
   color: var(--text);
   font-size: 14.5px;
@@ -641,57 +811,116 @@ h2 { font-size: 16px; margin: 0 0 8px; }
 .button.primary { background: var(--accent); color: var(--on-accent); }
 .button:active { opacity: 0.85; }
 .cta-note { margin: 10px 0 0; color: var(--dim); font-size: 12.5px; }
+@media (max-width: 420px) {
+  .cta { justify-content: center; }
+  .button { flex: 1 1 auto; text-align: center; }
+  .cta-note { text-align: center; }
+}
 
-.posts { margin: 26px 0 0; display: flex; flex-direction: column; gap: 12px; }
-.post {
+/*
+ * The preview grid (§5–§8).
+ *
+ * auto-fill with a 104px floor rather than a flat three columns: three on any
+ * phone worth the name, two on a very narrow one, four on a tablet — and never a
+ * column so thin that a word of a text post cannot fit in it. A square tile is
+ * what makes the rows line up whatever the media's own shape,
+ * which is the one place this page crops on purpose: a grid of mixed portrait
+ * and landscape pictures at their true sizes is a mosaic with no rows in it.
+ */
+.section-heading {
+  margin: 30px 0 10px;
+  color: var(--dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 7px;
+}
+.tile {
+  position: relative;
+  display: block;
+  aspect-ratio: 1 / 1;
+  border-radius: 12px;
+  overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--divider);
-  border-radius: var(--radius);
-  padding: 14px 15px;
-}
-.post-meta { display: flex; align-items: center; color: var(--dim); font-size: 12.5px; margin-bottom: 8px; }
-.post-meta time { font-variant-numeric: tabular-nums; }
-.post-body { margin: 0; font-size: 15.5px; line-height: 1.55; overflow-wrap: anywhere; }
-.post-body code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13.5px;
-  background: var(--raised);
-  padding: 1px 5px;
-  border-radius: 6px;
-}
-.post-media { display: flex; flex-direction: column; gap: 8px; margin: 0 0 10px; }
-.media { width: 100%; display: block; border-radius: 10px; background: var(--raised); }
-.media-link { display: block; }
-video.media { max-height: 70vh; }
-
-.link-card {
-  display: block;
-  margin: 10px 0 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--raised);
-  text-decoration: none;
   color: var(--text);
+  text-decoration: none;
 }
-.link-title { display: block; font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
-.link-domain { display: block; color: var(--dim); font-size: 12.5px; margin-top: 2px; }
-
-.post-reactions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
-.reaction {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  background: var(--raised);
-  border: 1px solid var(--divider);
+.tile:active { opacity: 0.9; }
+.tile-media { width: 100%; height: 100%; display: block; object-fit: cover; background: var(--raised); }
+.tile-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 11px;
+}
+.tile-body {
   font-size: 13px;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
-.reaction-count { color: var(--dim); font-size: 12.5px; }
+.tile-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: var(--raised);
+  padding: 1px 4px;
+  border-radius: 5px;
+}
+.tile-link { justify-content: space-between; }
+.tile-link-title { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.tile-link-domain { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+.tile-foot { color: var(--accent); font-size: 11.5px; font-weight: 600; }
+.play {
+  position: absolute;
+  right: 7px; top: 7px;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  font-size: 10px;
+  display: flex; align-items: center; justify-content: center;
+}
+/* Read by a screen reader, not drawn: the tile's only label is its date. */
+.sr {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .empty { margin: 4px 0; }
 .dim { color: var(--dim); font-size: 14px; }
 
-.about {
+/*
+ * "See more" (§11): the page's own end, and the only place it asks for
+ * something. Raised rather than the About card's flat surface, because it is the
+ * page's second chance at the app and the About section is a footnote.
+ */
+.more {
   margin: 34px 0 0;
+  padding: 20px 18px;
+  background: var(--raised);
+  border: 1px solid var(--divider);
+  border-radius: 18px;
+}
+.more p { margin: 0; }
+
+.about {
+  margin: 22px 0 0;
   padding: 16px 17px;
   background: var(--surface);
   border: 1px solid var(--divider);
