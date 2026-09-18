@@ -135,7 +135,11 @@ internal object GoodPostVideoPoster {
                 cache.get(key)?.let { return it }
                 val width = widthPx.coerceIn(96, MAX_WIDTH_PX)
                 withContext(Dispatchers.IO) {
-                    readFile(key, width) ?: grab(url, width)?.also { store(key, width, it) }
+                    // A stored still costs nothing and does not touch the gate: the
+                    // limit exists for the reads that go to the bucket.
+                    val stored = readFile(key, width)
+                    if (stored != null) return@withContext stored
+                    gate.withPermit { grab(url, width)?.also { store(key, width, it) } }
                 }?.also { cache.put(key, it) }
             }
         } finally {
