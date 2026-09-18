@@ -46,6 +46,9 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -56,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -88,15 +92,18 @@ import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
+import com.muddassir.clearview.goodpost.data.GoodPostDownloads
 import com.muddassir.clearview.goodpost.data.GoodPostFormat
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostPost
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
+import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import com.muddassir.clearview.goodpost.data.applyGoodPostFormat
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 import com.muddassir.clearview.goodpost.withDateSeparators
+import kotlinx.coroutines.launch
 
 /**
  * A channel's feed (§8, §9, §10).
@@ -141,6 +148,42 @@ internal fun GoodPostFeed(
     // heading is that day".
     val entries = remember(state.posts) { withDateSeparators(state.posts.reversed()) }
     val listState = rememberLazyListState()
+
+    // Which attachment the viewer is showing, by id — not by URL. A signed URL
+    // expires, and a post re-read for a fresh one has to reach the player; an id
+    // looked up in state on every recomposition does that, a copied URL does not.
+    var viewerPostId by remember { mutableStateOf<String?>(null) }
+    var viewerMediaId by remember { mutableStateOf<String?>(null) }
+    // Where the viewer's playback starts. Carried here rather than inside the
+    // viewer because the position belongs to the CARD that was playing, and the
+    // viewer is told about it once, on the way in.
+    var viewerFromMs by remember { mutableStateOf(0L) }
+
+    val viewing = state.posts
+        .firstOrNull { it.id == viewerPostId }
+        ?.media
+        ?.firstOrNull { it.id == viewerMediaId }
+
+    // The id pair survives a configuration change; the resolved media does not
+    // have to, because it is derived from state that also survives.
+    LaunchedEffect(state.posts.size, viewing) {
+        if (viewerMediaId != null && viewing == null && !state.postsLoading) {
+            viewerPostId = null
+            viewerMediaId = null
+        }
+    }
+
+    // §24: warm what is about to be scrolled to. Only pictures — a video is
+    // streamed on demand and cached by the player, so fetching one here would be
+    // a download the reader did not ask for.
+    LaunchedEffect(state.posts) {
+        GoodPostImages.prefetch(
+            urls = state.posts.takeLast(PREFETCH_POSTS)
+                .flatMap { post -> post.media.filter { it.isImage }.mapNotNull { it.url } },
+            maxWidthPx = 720,
+            limit = PREFETCH_LIMIT
+        )
+    }
 
     // Open at the newest update rather than at the top of the history, and
     // follow a published update to the bottom while the reader is already there.
@@ -321,7 +364,26 @@ internal fun GoodPostFeed(
                                         viewModel.togglePostSelected(entry.post.id)
                                     }
                                 },
-                                onLongClick = { viewModel.togglePostSelected(entry.post.id) }
+                                onLongClick = { viewModel.togglePostSelected(entry.post.id) },
+                                onOpenMedia = { asset ->
+                                    // In selection mode the tap belongs to the
+                                    // selection: opening a video while picking
+                                    // posts to delete would lose the picks.
+                                    if (!state.postSelectionActive) {
+                                        viewerPostId = entry.post.id
+                                        viewerMediaId = asset.id
+                                        viewerFromMs = 0L
+                                    }
+                                },
+                                onOpenMediaAt = { asset, from ->
+                                    if (!state.postSelectionActive) {
+                                        viewerPostId = entry.post.id
+                                        viewerMediaId = asset.id
+                                        // Resume where the card had got to.
+                                        viewerFromMs = from
+                                    }
+                                },
+                                onRefreshMedia = { viewModel.refreshPost(entry.post.id) }
                             )
                         }
                     }
@@ -351,6 +413,44 @@ internal fun GoodPostFeed(
                 ChannelInputBar(state = state, channelId = channelId, viewModel = viewModel)
             }
         }
+
+        if (viewing != null) {
+            MediaViewer(
+                kind = viewing.kind,
+                url = viewing.url.orEmpty(),
+                contentType = viewing.contentType,
+                aspect = aspectOf(viewing.width, viewing.height),
+                onClose = {
+                    viewerPostId = null
+                    viewerMediaId = null
+                    viewerFromMs = 0L
+                },
+                // A fresh signature, through the one row this viewer is showing.
+                onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } },
+                startAtMs = viewerFromMs,
+                // A clip opened from a PLAYING card hands the playhead back on the
+                // way out, so the feed does not jump backwards to wherever the card
+                // was paused. A picture, or a card that was not playing, names no
+                // key and nothing behind the viewer moves.
+                resumeKey = viewing.url
+                    ?.takeIf { viewing.isVideo }
+                    ?.let { GoodPostVideoCache.cacheKeyFor(it) },
+                // The star follows the POST into the viewer, so the same bookmark
+                // can be set from the picture rather than only from the list it
+                // was found in.
+                starred = viewerPostId in state.starredPostIds,
+                onToggleStar = {
+                    state.posts.firstOrNull { it.id == viewerPostId }?.let(viewModel::toggleStar)
+                },
+                // Deleting the file from the viewer closes the viewer: the thing
+                // it was showing is no longer on this device.
+                onDeleted = {
+                    viewerPostId = null
+                    viewerMediaId = null
+                    viewerFromMs = 0L
+                }
+            )
+        }
     }
 }
 
@@ -371,8 +471,17 @@ private fun PostSelectionBar(
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     val selected = state.posts.filter { state.selectedPostIds.contains(it.id) }
+    // "Star" or "remove star" for the SELECTION, which of course can be mixed.
+    // Every one of them starred is the only state that reads as "remove".
+    val allStarred = selected.isNotEmpty() &&
+        selected.all { it.id in state.starredPostIds }
 
+    // Deleting is not a thing that happens on a tap any more (§5, §17).
+    var confirmingDelete by remember { mutableStateOf(false) }
+
+    Box {
     WaSelectionBar(
         count = state.selectedPostIds.size,
         onClose = viewModel::clearPostSelection,
@@ -384,6 +493,77 @@ private fun PostSelectionBar(
                     onClick = {
                         viewModel.startEditPost(selected.first())
                         viewModel.clearPostSelection()
+                    }
+                )
+            }
+            // A star belongs to the READER, so it is offered to everyone —
+            // including an account that may publish nothing. It is a bookmark
+            // kept on this device (§9), and the list it writes to is the one the
+            // channel's information page shows.
+            WaIconAction(
+                icon = if (allStarred) Icons.Filled.Star else Icons.Filled.StarBorder,
+                description = stringResource(
+                    if (allStarred) R.string.goodpost_unstar else R.string.goodpost_star
+                ),
+                onClick = viewModel::starSelectedPosts
+            )
+            // Share hands over the POST — its picture or clip when it has one,
+            // and its words either way (§15). The channel's link is the fallback
+            // rather than the default: a share of a photograph that arrives as a
+            // web page is not the share the reader asked for.
+            val link = state.channel?.shareLink.orEmpty()
+            val channelName = state.channel?.name.orEmpty()
+            if (link.isNotBlank() || selected.any { it.media.isNotEmpty() }) {
+                WaIconAction(
+                    icon = Icons.Filled.Share,
+                    // "Share", not "Share link": what leaves depends on the post.
+                    // A picture or a clip goes as the file, a text-only update goes
+                    // as its words and the channel's link — and a label promising
+                    // one of those over an action that does the other is how a
+                    // reader ends up forwarding a URL and expecting a photo.
+                    description = stringResource(R.string.goodpost_share_file),
+                    onClick = {
+                        val text = selected.joinToString("\n\n") { it.copyText() }
+                        val files = selected
+                            .flatMap { it.media }
+                            .mapNotNull { asset ->
+                                asset.url?.let { Shareable(it, asset.kind, asset.contentType) }
+                            }
+                            .take(SHARE_FILE_LIMIT)
+
+                        if (files.isEmpty()) {
+                            shareChannel(context, channelName, link, text)
+                        } else {
+                            scope.launch {
+                                val uris = files.mapNotNull { file ->
+                                    GoodPostDownloads.shareFile(
+                                        context = context,
+                                        url = file.url,
+                                        kind = file.kind,
+                                        contentType = file.contentType
+                                    )
+                                }
+                                // A file that would not materialise is not a
+                                // failure worth a sentence: the signature may have
+                                // expired or the network may be gone, and the
+                                // channel's link still shares the post. Saying
+                                // nothing at all would be the only wrong answer.
+                                if (uris.isEmpty()) {
+                                    if (link.isNotBlank()) {
+                                        shareChannel(context, channelName, link, text)
+                                    } else {
+                                        showToast(context, R.string.goodpost_save_failed)
+                                    }
+                                } else {
+                                    shareFiles(
+                                        context = context,
+                                        uris = uris,
+                                        type = mimeTypeForAll(files.map { it.kind to it.contentType }),
+                                        text = text
+                                    )
+                                }
+                            }
+                        }
                     }
                 )
             }
@@ -400,12 +580,63 @@ private fun PostSelectionBar(
                     icon = Icons.Filled.Delete,
                     description = stringResource(R.string.goodpost_delete),
                     tint = Wa.Danger,
-                    onClick = viewModel::deleteSelectedPosts
+                    onClick = { confirmingDelete = true }
                 )
             }
         }
     )
+
+        if (confirmingDelete) {
+            val count = state.selectedPostIds.size
+            WaDeleteDialog(
+                title = if (count == 1) {
+                    stringResource(R.string.goodpost_delete_post_title)
+                } else {
+                    stringResource(R.string.goodpost_delete_posts_title, count)
+                },
+                message = stringResource(
+                    if (editable) {
+                        R.string.goodpost_delete_post_note_admin
+                    } else {
+                        R.string.goodpost_delete_post_note
+                    }
+                ),
+                // A reader gets one answer and an administrator two, and it is the
+                // SESSION that decides which — not a button that happens to be on
+                // screen. The server re-checks it either way.
+                canDeleteForEveryone = editable,
+                onDismiss = { confirmingDelete = false },
+                onDeleteForMe = {
+                    confirmingDelete = false
+                    viewModel.hideSelectedPosts()
+                },
+                onDeleteForEveryone = {
+                    confirmingDelete = false
+                    viewModel.deleteSelectedPosts()
+                }
+            )
+        }
+    }
 }
+
+/**
+ * One file to hand over: where it is, and what it is.
+ *
+ * A `Triple` would say the same thing with three fields named `first`, `second`
+ * and `third`, which is how a share ends up sending a wildcard content type for a
+ * video.
+ */
+private data class Shareable(val url: String, val kind: String, val contentType: String?)
+
+/**
+ * How many files one share may carry.
+ *
+ * Not a technical limit — the intent can hold more — but past a handful the
+ * chooser's own previews stop being readable and the receiving app starts writing
+ * a folder rather than a message. Ten posts' worth of media is already more than
+ * anybody shares in one gesture.
+ */
+private const val SHARE_FILE_LIMIT = 10
 
 /**
  * A post's text, as something worth copying.
@@ -442,7 +673,25 @@ internal fun PostItem(
     post: GoodPostPost,
     selected: Boolean,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    /** Opens one of this post's attachments in the app (§9). */
+    onOpenMedia: (GoodPostMedia) -> Unit,
+    /**
+     * The same, for a video that was already playing in the card, with the
+     * playhead it had reached.
+     *
+     * Defaulted to [onOpenMedia] so a screen with no inline player — a search
+     * result — does not have to know this exists.
+     */
+    onOpenMediaAt: (GoodPostMedia, Long) -> Unit = { asset, _ -> onOpenMedia(asset) },
+    /**
+     * Re-reads this post, for a media URL whose signature has run out (§24).
+     *
+     * A feed can sit open past a URL's lifetime, and a video that was fine when
+     * the page loaded will refuse to play later. Asking for the post again is
+     * the only retry that can succeed, so the card asks rather than failing.
+     */
+    onRefreshMedia: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -464,10 +713,23 @@ internal fun PostItem(
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 180.dp, max = 420.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            // A photo opens full size in the app, and can be kept
+                            // from there (§15). It used to do nothing at all,
+                            // which read as a broken image rather than a picture
+                            // that simply is not interactive.
+                            .clickable(enabled = !asset.url.isNullOrBlank()) {
+                                onOpenMedia(asset)
+                            }
                     )
                     Spacer(Modifier.height(4.dp))
-                } else if (asset.isVideo) {
-                    VideoTile(asset = asset, onOpen = { openMedia(context, asset.url) })
+                } else {
+                    InlineVideoCard(
+                        url = asset.url.orEmpty(),
+                        aspect = aspectOf(asset.width, asset.height),
+                        onOpen = { from -> onOpenMediaAt(asset, from) },
+                        onRefreshUrl = onRefreshMedia
+                    )
                     Spacer(Modifier.height(4.dp))
                 }
             }
@@ -484,12 +746,19 @@ internal fun PostItem(
                         // contains `<b>` simply says `<b>`.
                         text = parseGoodPostText(bodyText),
                         color = Wa.BubbleText,
-                        fontSize = 14.5.sp,
-                        lineHeight = 20.sp,
-                        modifier = Modifier.padding(
-                            horizontal = 6.dp,
-                            vertical = if (post.media.isNotEmpty()) 4.dp else 2.dp
-                        )
+                        fontSize = 15.sp,
+                        // Looser than the default on purpose: a channel's update is
+                        // a paragraph, and a paragraph set solid is the difference
+                        // between a message and a block of text.
+                        lineHeight = 21.sp,
+                        // No inset of its own — the bubble owns the padding now, so
+                        // the first line starts where the picture above it starts.
+                        // A media caption gets one small gap instead.
+                        modifier = if (post.media.isNotEmpty()) {
+                            Modifier.padding(top = 3.dp)
+                        } else {
+                            Modifier
+                        }
                     )
                 }
             }
@@ -499,7 +768,9 @@ internal fun PostItem(
                 LinkChip(
                     label = post.linkTitle?.takeIf { it.isNotBlank() } ?: post.linkUrl.orEmpty(),
                     url = post.linkUrl.orEmpty(),
-                    onOpen = { openMedia(context, post.linkUrl) }
+                    // A LINK is the one thing here that does belong to the
+                    // browser: it is a page, unlike a signed URL to a file.
+                    onOpen = { openLink(context, post.linkUrl) }
                 )
             }
 
@@ -591,45 +862,6 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
     }
 }
 
-/**
- * A video's preview (§9).
- *
- * A play button over the placeholder rather than an embedded player: the app has
- * one player already, it belongs to the Media tab, and wiring a second one into
- * a channel feed would be a player with its own bugs and its own controls to
- * keep in step. Tapping hands the URL to whatever the device already plays video
- * with, which is what "minimal and native" means here.
- */
-@Composable
-private fun VideoTile(asset: GoodPostMedia, onOpen: () -> Unit) {
-    WaMediaPlaceholder(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(220.dp)
-            .clip(WaMediaShape)
-            .clickable(enabled = !asset.url.isNullOrBlank(), onClick = onOpen),
-        content = {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(Wa.Canvas),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.PlayArrow,
-                    contentDescription = stringResource(R.string.goodpost_play_video),
-                    tint = Wa.Text,
-                    modifier = Modifier.size(30.dp)
-                )
-            }
-        }
-    )
-
-    Spacer(Modifier.height(6.dp))
-    WaChip(text = waDescribeBytes(stringResource(R.string.goodpost_video), asset.byteSize))
-}
-
 /** A link post's tappable row (§9). */
 @Composable
 private fun LinkChip(label: String, url: String, onOpen: () -> Unit) {
@@ -661,6 +893,18 @@ private fun LinkChip(label: String, url: String, onOpen: () -> Unit) {
  * `too_many_media`, which the composer words. Setting it here is what keeps the
  * picker from offering a selection that would be rejected at the end.
  */
+/**
+ * How much of a freshly-loaded page is fetched in advance (§24).
+ *
+ * The newest [PREFETCH_POSTS] updates are the ones a reader is about to scroll
+ * into — the feed opens at the bottom — so their pictures are worth fetching
+ * before they are needed. Bounded twice, by post and by image, because a page of
+ * thirty updates with four attachments each would otherwise be a hundred and
+ * twenty requests fired at the bucket the moment a channel opened.
+ */
+private const val PREFETCH_POSTS = 8
+private const val PREFETCH_LIMIT = 8
+
 private const val COMPOSER_MAX_ATTACHMENTS = 4
 
 /**
@@ -1013,18 +1257,42 @@ internal fun ChannelInputBar(
 }
 
 /** Hand a channel's link to whatever the device shares with (§11). */
-internal fun shareChannel(context: Context, name: String, link: String) {
+internal fun shareChannel(
+    context: Context,
+    name: String,
+    link: String,
+    /**
+     * The update being shared, when there is one.
+     *
+     * WhatsApp shares what was SAID together with where it came from, and the
+     * difference is not cosmetic: a bare URL in a chat is a link somebody has to
+     * decide whether to tap, while the text beside it is the thing they came for.
+     * The link still travels, because the link is what makes the share real — see
+     * the channel's own `shareLink`, which is the page a recipient without the
+     * app lands on.
+     */
+    message: String? = null
+) {
     if (link.isBlank()) return
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
-        putExtra(Intent.EXTRA_TEXT, link)
+        putExtra(
+            Intent.EXTRA_TEXT,
+            if (message.isNullOrBlank()) link else "$message\n\n$link"
+        )
         putExtra(Intent.EXTRA_SUBJECT, name)
     }
     context.startActivity(Intent.createChooser(send, null))
 }
 
-/** Hand a URL to whatever the device opens it with. */
-private fun openMedia(context: Context, url: String?) {
+/**
+ * Hand a LINK to whatever the device opens it with.
+ *
+ * Links only. Media used to come through here too, which is how a tap on a video
+ * ended up in a browser looking at an S3 denial: the URL it was given is signed
+ * for this app, not for a page.
+ */
+private fun openLink(context: Context, url: String?) {
     if (url.isNullOrBlank()) return
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))

@@ -7,6 +7,28 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
+## Latest pass: video, device deletes, stars, notifications, tab list
+
+* **Video plays inline.** Feed cards autoplay muted, only while mostly on screen
+  and only while the app is in front, and only one card can have sound. Tapping
+  opens the app's full-screen player, which has its own mute. The cache key is
+  the object key, so a second open reads the disk rather than the bucket.
+* **Delete means this device.** The media gallery's selection bar now offers
+  "Delete from this device" to EVERY reader (memory + disk, keyed on the object
+  key); the administrator's "Delete posts" sits beside it and is a separate act.
+* **Stars.** `GoodPostStarred` keeps whole rows on the device, so a bookmark is
+  readable after the server's retention window. Shown on the channel's
+  information page, set from the post selection bar and from the media menu.
+* **Notifications.** `GoodPostUpdateWorker` (WorkManager, 15 min, network
+  constrained) asks only for the reader's follows, adopts timestamps on first
+  sight without announcing the past, and posts one notification per update
+  unless the channel is muted. Master switch lives in the Quran tab's
+  notifications sheet; a per-channel switch lives on the channel's information
+  page and writes to the server (it is a property of the follow).
+* **The tab is the reader's list, even signed in.** A creator sees their own
+  channel first and the channels they follow after it. It used to be only the
+  former, which made a follow made from Explore invisible.
+
 See also [`WHATSAPP_CHANNELS_UX.md`](WHATSAPP_CHANNELS_UX.md): the interaction
 model this follows, where the code stands against it area by area, and the
 design that keeps a "live" channel list cheap (§22, §24).

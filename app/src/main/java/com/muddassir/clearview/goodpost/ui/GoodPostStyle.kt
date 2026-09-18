@@ -1308,12 +1308,19 @@ internal fun WaPostContainer(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // One bubble, one padding.
+    //
+    // It used to be 4dp with every child adding its own, so the left edge of a
+    // line of text did not line up with the left edge of the picture above it and
+    // the time sat a couple of pixels off both — the kind of thing that reads as
+    // "these cards look wrong" without anybody being able to say why. Everything
+    // inside a bubble is now laid out against this one inset.
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .background(Wa.Bubble)
-            .padding(horizontal = 4.dp, vertical = 4.dp),
+            .padding(horizontal = 10.dp, vertical = 9.dp),
         content = content
     )
 }
@@ -1325,7 +1332,7 @@ internal fun WaTimeLabel(
     modifier: Modifier = Modifier,
     color: Color = Wa.BubbleTime
 ) {
-    Text(text = text, modifier = modifier, color = color, fontSize = 11.sp)
+    Text(text = text, modifier = modifier, color = color, fontSize = 11.5.sp)
 }
 
 /** A centred dark pill for a date separator (§10, Screenshot 4). */
@@ -1456,6 +1463,16 @@ internal fun WaEmptyState(
  */
 @Composable
 internal fun goodPostErrorText(code: String): String {
+    // Three codes that are not failures at all. They travel in the same field
+    // because the field means "what this app has to say to you", not "what went
+    // wrong" — and a confirmation that the app has to invent a second mechanism
+    // for is a confirmation the app will show inconsistently.
+    when (code) {
+        "starred" -> return stringResource(R.string.goodpost_starred_added)
+        "unstarred" -> return stringResource(R.string.goodpost_starred_removed)
+        "deleted_from_device" -> return stringResource(R.string.goodpost_deleted_from_device)
+    }
+
     val error = goodPostErrorFor(code)
     return when (error) {
         // The one message that has to say HOW long, because "too short" without

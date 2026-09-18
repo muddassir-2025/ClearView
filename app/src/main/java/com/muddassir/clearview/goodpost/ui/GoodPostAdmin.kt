@@ -552,6 +552,34 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                     minHeight = 90.dp
                 )
 
+                if (state.categories.isNotEmpty()) {
+                    Spacer(Modifier.height(18.dp))
+
+                    Text(
+                        text = stringResource(R.string.goodpost_channel_category),
+                        color = Wa.TextDim,
+                        fontSize = 13.sp,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(Modifier.height(8.dp))
+
+                    WaFilterRow {
+                        WaFilterPill(
+                            label = stringResource(R.string.goodpost_channel_category_none),
+                            selected = state.channelFormCategory == null,
+                            onClick = { viewModel.onChannelFormCategoryChange(null) }
+                        )
+                        state.categories.forEach { category ->
+                            WaFilterPill(
+                                label = category.label,
+                                selected = state.channelFormCategory == category.slug,
+                                onClick = { viewModel.onChannelFormCategoryChange(category.slug) }
+                            )
+                        }
+                    }
+                }
+
                 if (mintsAdmin || editsPassword) {
                     Spacer(Modifier.height(20.dp))
 

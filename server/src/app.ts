@@ -10,6 +10,7 @@ import { buildReadersRouter } from './readers/routes.js';
 import { buildAdminRouter } from './admin/routes.js';
 import { createFirebaseVerifier, type IdentityVerifier } from './identity/verifier.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
+import { createPushSender, type PushSender } from './notifications/fcm.js';
 import {
   FixedWindowRateLimiter,
   rateLimit,
@@ -164,6 +165,13 @@ export interface AppDeps {
    * verification is unavailable.
    */
   readonly verifier?: IdentityVerifier;
+  /**
+   * How a publish reaches a reader's phone (§8). Overridable so the fan-out is
+   * testable without a Firebase service account — the rules that matter are
+   * ours (who is notified, who is muted, what happens to a retired token), and
+   * requiring a Google credential to test them would mean they were not tested.
+   */
+  readonly pushSender?: PushSender;
 }
 
 export function buildApp(deps: AppDeps = {}): express.Express {
@@ -175,6 +183,9 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // deployment that has not set the project id refuses reader-scoped routes
   // with `auth_unavailable` rather than trusting anything a client says.
   const verifier = deps.verifier ?? createFirebaseVerifier(env.FIREBASE_PROJECT_ID);
+  // Defaults to the unconfigured sender when no service account is set, so a
+  // deployment without push boots and publishes exactly as it did before.
+  const pushSender = deps.pushSender ?? createPushSender();
 
   // One limiter for every rule: buckets are namespaced by rule name, so a
   // shared instance keeps one bounded structure instead of several.
@@ -248,7 +259,10 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // every route under it requires a verified Firebase token while the reads
   // above require nothing. Mounted after the public router so a static public
   // path can never be shadowed by a reader path of the same shape.
-  app.use('/api/v1/readers', buildReadersRouter(database, store, verifier, limiter, rateLimits));
+  app.use(
+    '/api/v1/readers',
+    buildReadersRouter(database, store, verifier, limiter, rateLimits)
+  );
 
   // Mounted even when verification is unavailable, and the routes answer for
   // themselves: an unconfigured deployment returns a described 503 from each
@@ -287,7 +301,21 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // limiting — and `/admin/api/auth/login` additionally takes the tighter auth
   // rule inside the router.
   app.use('/admin/api', rateLimit(limiter, rateLimits.global));
-  app.use('/admin/api', buildAdminRouter(database, store, limiter, rateLimits, verifier));
+  app.use(
+    '/admin/api',
+    buildAdminRouter(database, store, limiter, rateLimits, verifier, pushSender)
+  );
+
+  // Said out loud once at build time, like the verifier's own note above: an
+  // operator who has turned push on wants to know that it is on, and one who
+  // has not should be able to see that the app will fall back to its periodic
+  // check rather than silently never notifying anybody.
+  if (!pushSender.configured) {
+    console.warn(
+      '[push] FIREBASE_SERVICE_ACCOUNT_JSON is not set: new posts are not pushed. ' +
+        'Readers still receive them through the app\'s own 15-minute check.'
+    );
+  }
 
   app.use(notFound);
   app.use(errorHandler);

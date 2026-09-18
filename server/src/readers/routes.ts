@@ -15,6 +15,7 @@ import {
   unfollowChannel,
   type ReaderRef,
 } from './service.js';
+import { registerDevice, unregisterDevice } from '../notifications/service.js';
 
 /**
  * A reader's own routes (§3–§6), mounted at `/api/v1/readers`.
@@ -74,6 +75,23 @@ async function requireReader(
 }
 
 const MuteSchema = z.object({ muted: z.boolean() });
+
+/**
+ * A device registration (§8).
+ *
+ * The token is length-bounded rather than pattern-matched: FCM mints it, its
+ * shape is Firebase's business, and a regex here would be a rule this server
+ * invented about somebody else's format. The bounds keep a body from being a
+ * megabyte of nothing.
+ *
+ * `platform` is an enum with one member because a second client would be the
+ * reason the column exists — and a free-text value would silently become two
+ * spellings of "android".
+ */
+const DeviceSchema = z.object({
+  token: z.string().min(16).max(4096),
+  platform: z.enum(['android']).default('android'),
+});
 const PageQuerySchema = z.object({
   limit: z.string().max(10).optional(),
   cursor: z.string().max(512).optional(),
@@ -163,6 +181,46 @@ export function buildReadersRouter(
     res.status(200).json({
       follow: await setChannelMuted(database, reader.id, idOrSlug, body.muted),
     });
+  });
+
+  /**
+   * Where to reach this reader's phone (§8).
+   *
+   * The token is the DEVICE's, not the reader's, and it is registered by the
+   * device that holds it: the reader id comes from the verified token, so a
+   * request cannot put somebody else's phone on somebody else's account. That is
+   * also why this lives on the reader surface rather than the admin one — a
+   * creator who follows two channels is a reader of them, and hears about their
+   * updates like anybody else.
+   *
+   * The answer echoes the token back and nothing else. A JSON body rather than
+   * an empty 204 for a practical reason: every other route on this surface
+   * answers JSON, and one route that sometimes answers nothing is one more
+   * shape for a client to get wrong for no gain.
+   */
+  router.post('/me/devices', write, async (req, res) => {
+    const { reader } = await requireReader(req, database, verifier);
+    const body = parseBody(DeviceSchema, req.body);
+    await registerDevice(database, reader.id, { token: body.token, platform: body.platform });
+    res.status(200).json({ device: { token: body.token, platform: body.platform } });
+  });
+
+  /**
+   * Stop reaching this device (§8): notifications were turned off, or the app
+   * was reinstalled.
+   *
+   * Scoped to the caller in SQL, so naming another reader's token deletes
+   * nothing. Answers the same thing whether or not a row was there — "that token
+   * was not registered to you" is a statement about another account's device,
+   * and no client behaviour could differ on it.
+   */
+  router.delete('/me/devices/:token', write, async (req, res) => {
+    const { reader } = await requireReader(req, database, verifier);
+    const token = pathParam(req, 'token');
+    if (token.length >= 16 && token.length <= 4096) {
+      await unregisterDevice(database, reader.id, token);
+    }
+    res.status(200).json({ device: { token, platform: 'android', registered: false } });
   });
 
   /**

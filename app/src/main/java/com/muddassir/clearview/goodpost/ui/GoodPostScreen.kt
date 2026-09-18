@@ -32,6 +32,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
@@ -95,6 +96,12 @@ fun GoodPostTab(
 
     LaunchedEffect(Unit) { viewModel.initialize(context) }
 
+    // The image cache needs a directory, and this project has no Application
+    // subclass to put one in. Idempotent and cheap after the first call; the
+    // trim of what is already on disk happens once per process, off the main
+    // thread.
+    LaunchedEffect(Unit) { GoodPostImages.attach(context) }
+
     LaunchedEffect(openChannelSlug) {
         val slug = openChannelSlug ?: return@LaunchedEffect
         viewModel.requestOpenChannel(slug)
@@ -129,6 +136,12 @@ fun GoodPostTab(
             )
 
             is GoodPostScreen.ChannelInfo -> GoodPostChannelInfo(
+                state = state,
+                channelId = screen.channelId,
+                viewModel = viewModel
+            )
+
+            is GoodPostScreen.ChannelMedia -> GoodPostMediaGallery(
                 state = state,
                 channelId = screen.channelId,
                 viewModel = viewModel

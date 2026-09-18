@@ -18,6 +18,21 @@ newpipeExtractor = "v0.26.4"
 # offline-audio foreground service (background playback with lock-screen and
 # notification media controls).
 media = "1.8.0"
+# androidx.media3 / ExoPlayer — the GOOD POST video player (§9).
+#
+# A SECOND player in this app, deliberately. The Media tab's player
+# (media/ui/VideoPlayerScreen.kt) is a bespoke android.media.MediaPlayer +
+# SurfaceView implementation whose entry point takes a `MediaVideo` — a model
+# carrying YouTube/Instagram stream resolution, offline audio and a Shorts queue.
+# It cannot play an arbitrary URL without fabricating one of those, and doing that
+# would drag the Media tab's stream resolution into a channel feed.
+#
+# ExoPlayer is the supported player instead: precise buffering and error states (a
+# presigned URL that has expired is a 403 the player reports as a source error,
+# which is what lets the viewer ask for a fresh one), range requests against the
+# bucket, and a documented lifecycle. Its data source is HttpURLConnection, which
+# is the same transport the rest of Good Post uses — no second HTTP stack.
+media3 = "1.11.1"
 # Core library desugaring — backports java.time (incl. HijrahDate / Umm al-Qura
 # Islamic calendar) to API 24/25 devices. Compile-time only, no runtime dependency.
 desugarJdkLibs = "2.1.5"
@@ -32,6 +47,8 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-media = { group = "androidx.media", name = "media", version.ref = "media" }
+androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
+androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugarJdkLibs" }
 androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeKtx" }

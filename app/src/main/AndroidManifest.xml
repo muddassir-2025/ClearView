@@ -204,6 +204,22 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- Good Post updates arriving instantly (§8). The server sends a
+             DATA-ONLY message, so nothing is drawn by the system: the app builds
+             the notification itself, which is what lets the reader's master
+             switch, the channel's mute and the already-announced watermark all be
+             honoured before anything appears. Exported=false — only Firebase
+             delivers here. The same updates are still found by the 15-minute
+             background check, so a device that never registers a token still
+             gets told, just later. -->
+        <service
+            android:name=".goodpost.data.GoodPostMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
         <!-- Todo reminders: alarm fire + Complete/Snooze actions + boot
              rescheduling. Exported=false is fine — the alarms and actions are
              the app's own explicit intents, and BOOT_COMPLETED is a system

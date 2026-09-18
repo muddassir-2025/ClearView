@@ -41,6 +41,8 @@ import {
   type VerifiedIdentity,
 } from '../identity/verifier.js';
 import { createCreatorChannel, signInCreator } from './creator.js';
+import { createPushSender, type PushSender } from '../notifications/fcm.js';
+import { announcePost } from '../notifications/service.js';
 import { can, type AdminAction, type AdminRole } from './permissions.js';
 import {
   capabilitiesOf,
@@ -360,7 +362,14 @@ export function buildAdminRouter(
   store: ObjectStore,
   limiter: FixedWindowRateLimiter,
   rateLimits: RateLimitConfig,
-  verifier: IdentityVerifier = createFirebaseVerifier(env.FIREBASE_PROJECT_ID)
+  verifier: IdentityVerifier = createFirebaseVerifier(env.FIREBASE_PROJECT_ID),
+  /**
+   * How a publish reaches a reader's phone (§8). Injected so the whole "who is
+   * notified" rule is testable without a Firebase credential — and defaulted to
+   * the unconfigured sender so a deployment without push behaves exactly as it
+   * did before this existed.
+   */
+  push: PushSender = createPushSender()
 ): Router {
   const router = Router();
   const loginLimit = rateLimit(limiter, rateLimits.auth);
@@ -798,6 +807,23 @@ export function buildAdminRouter(
     });
 
     res.status(201).json({ post });
+
+    // The readers who follow this channel, told about it (§8).
+    //
+    // Deliberately AFTER the response and deliberately not awaited. The post is
+    // committed and the publisher has been answered — a notification that cannot
+    // reach a phone must never turn a successful publish into a failed request,
+    // and a fan-out of a few hundred sends is not something a creator should
+    // watch a spinner for. Nothing is swallowed silently: a failure is logged and
+    // the app's own periodic check is the fallback.
+    void announcePost(database, push, {
+      channelId,
+      postId: post.id,
+      body: post.body,
+      publishedAt: post.createdAt,
+    }).catch((err: unknown) => {
+      console.error('[push] announce failed:', (err as Error).message);
+    });
   });
 
   /**

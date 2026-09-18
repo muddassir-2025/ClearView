@@ -704,14 +704,89 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_read_more">Read more</string>
     <string name="goodpost_created_on">Created on %1$s</string>
     <string name="goodpost_media_and_links">Media and links</string>
+    <string name="goodpost_view_all">See all media</string>
     <string name="goodpost_media_unavailable">Media unavailable</string>
 
     <!-- Following (§1, §2). The tab lists the channels this phone follows, so
          following IS the channel's primary action rather than a preference:
          it is what puts a channel in the list and what takes it out. -->
     <string name="goodpost_notifications">Notifications</string>
-    <string name="goodpost_notifications_note">Channel updates are not delivered to this device yet.</string>
+    <!-- The per-channel bell (§8). The channel page's row used to say that
+         delivery did not exist yet; it exists now, so the row is a switch whose
+         state is a real follow row on the server. -->
+    <string name="goodpost_notifications_on">Updates from this channel are announced</string>
+    <string name="goodpost_notifications_follow_first">Follow this channel to set its notifications</string>
+    <string name="goodpost_notifications_off">Updates from this channel are muted</string>
+    <string name="goodpost_notification_channel">Good Post updates</string>
+    <string name="goodpost_notification_channel_desc">New posts from the channels you follow</string>
+
+    <!-- The master switch, in the Quran tab's settings sheet (§17). -->
+    <string name="goodpost_notifications_master_title">Good Post</string>
+    <string name="goodpost_notifications_master_note">Get a notification when a channel you follow posts. One check every 15 minutes.</string>
+
+    <!-- Starred messages (§9), on a channel's information page. -->
+    <string name="goodpost_starred">Starred messages</string>
+    <string name="goodpost_starred_none">Hold a post and choose Star to keep it here.</string>
+    <string name="goodpost_star">Star</string>
+    <string name="goodpost_unstar">Remove star</string>
+    <string name="goodpost_starred_added">Starred</string>
+    <string name="goodpost_starred_removed">Star removed</string>
+
+    <!-- Managing what is on this device (§6, §15). -->
+    <string name="goodpost_delete_from_device">Delete from this device</string>
+    <string name="goodpost_delete_posts">Delete posts</string>
+    <string name="goodpost_channel_category">Category</string>
+    <string name="goodpost_channel_category_none">None</string>
+    <string name="goodpost_mute">Mute</string>
+    <string name="goodpost_unmute">Unmute</string>
+    <string name="goodpost_deleted_from_device">Removed from this device</string>
+
+    <!-- The confirmation every delete goes through (§5, §9, §17). Two different
+         deletions live behind one gesture and one of them cannot be undone, so
+         the choice is made in words rather than inferred from the icon nearest a
+         thumb. "Delete for me" is the reader's own copy and is offered to
+         everyone; "Delete for everyone" is the server's and only appears for an
+         account that may publish to the channel. -->
+    <string name="goodpost_delete_for_me">Delete for me</string>
+    <string name="goodpost_delete_for_everyone">Delete for everyone</string>
+    <string name="goodpost_delete_post_title">Delete this message?</string>
+    <string name="goodpost_delete_posts_title">Delete %1$d messages?</string>
+    <string name="goodpost_delete_post_note">It will be removed from this device and stop appearing here. The channel\'s copy stays where it is.</string>
+    <string name="goodpost_delete_post_note_admin">Deleting for everyone removes it from the channel for all readers. Deleting for me leaves it published and removes it from this device only.</string>
+    <string name="goodpost_delete_media_title">Delete this media?</string>
+    <string name="goodpost_delete_media_title_many">Delete %1$d items?</string>
+    <string name="goodpost_delete_media_note">The copies on this device will be removed and they will stop appearing here. The channel\'s copy is untouched.</string>
+    <string name="goodpost_delete_media_note_admin">Deleting for everyone removes the updates that carry this media from the channel. Deleting for me removes the copies on this device only.</string>
+    <string name="goodpost_storage">Downloaded media</string>
+    <string name="goodpost_storage_note">%1$s kept on this device</string>
+    <string name="goodpost_share_file">Share</string>
     <string name="goodpost_play_video">Play video</string>
+    <string name="goodpost_pause_video">Pause</string>
+
+    <!-- The in-app media viewer (§9, §15). "Save" is the post action; this is
+         the file, so it says where it goes. -->
+    <string name="goodpost_save_to_device">Save to device</string>
+    <string name="goodpost_saved">Saved to your device</string>
+    <string name="goodpost_save_failed">Could not save that file</string>
+    <string name="goodpost_close">Close</string>
+    <string name="goodpost_selected">Selected</string>
+
+    <!-- A video the player could not open. The second line is the honest
+         cause: the link to a file is a capability with an expiry. -->
+    <string name="goodpost_media_failed">This video could not be played</string>
+    <string name="goodpost_media_failed_note">The link to it may have expired.</string>
+
+    <!-- The media gallery (§13). It holds pictures AND video, but "media" is
+         the word the rest of the app already uses for that. -->
+    <string name="goodpost_no_media_title">No media yet</string>
+    <string name="goodpost_no_media_note">Photos and videos posted to this channel will appear here.</string>
+    <plurals name="goodpost_media_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <!-- Appended to the count for an account that may delete, so the screen
+         says what it can do before anything is selected. -->
+    <string name="goodpost_media_count_manageable">%1$s · tap and hold to select</string>
 
     <!-- What a row says when the newest post carries no text (§5). -->
     <string name="goodpost_posted_photo">Photo</string>

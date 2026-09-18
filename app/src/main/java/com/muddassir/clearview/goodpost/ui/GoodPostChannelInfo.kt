@@ -22,15 +22,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,10 +57,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.GoodPostScreen
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
+import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 
 /**
@@ -84,6 +90,23 @@ internal fun GoodPostChannelInfo(
 
     LaunchedEffect(channelId) { viewModel.loadMedia(channelId) }
 
+    // The strip is a preview of the gallery, and tapping anything in it opens
+    // the item in the app rather than handing a signed URL to the browser — a
+    // capability is not a page, and S3 answers a bare GET from a browser with a
+    // refusal. The id is held and the item is looked up from state on each
+    // recomposition so a re-read passes the viewer a FRESH url.
+    var viewing by remember(channelId) { mutableStateOf<String?>(null) }
+    val viewingItem = state.media.firstOrNull { it.id == viewing }
+
+    LaunchedEffect(state.media) {
+        GoodPostImages.prefetch(
+            urls = state.media.filter { !it.isVideo }.mapNotNull { it.url },
+            maxWidthPx = 240,
+            limit = 6
+        )
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
         WaTopBar(
             title = "",
@@ -258,16 +281,134 @@ internal fun GoodPostChannelInfo(
             MediaAndLinks(
                 items = state.media,
                 loading = state.mediaLoading,
-                onOpen = { item -> openMediaUrl(context, item.url) }
+                onOpenItem = { item -> viewing = item.id },
+                onOpenAll = { viewModel.open(GoodPostScreen.ChannelMedia(channelId)) }
             )
 
             Spacer(Modifier.height(24.dp))
 
-            NotificationsRow()
+            NotificationsRow(
+                enabled = channel.id !in state.mutedChannelIds,
+                // A mute is a property of a FOLLOW, so there is nothing to switch
+                // until there is one (§6). The row says which it is instead of
+                // showing a control that would answer `not_following`.
+                following = channel.id in state.followedIds,
+                onToggle = { wanted -> viewModel.setChannelNotifications(channel.id, wanted) }
+            )
+
+            Spacer(Modifier.height(24.dp))
+
+            StarredMessages(
+                entries = state.starred,
+                onOpenChannel = { viewModel.openChannel(channel.id) }
+            )
 
             Spacer(Modifier.height(40.dp))
         }
     }
+
+        if (viewingItem != null) {
+            MediaViewer(
+                kind = viewingItem.kind,
+                url = viewingItem.url.orEmpty(),
+                contentType = null,
+                aspect = aspectOf(viewingItem.width, viewingItem.height),
+                onClose = { viewing = null },
+                onExpired = { viewModel.refreshPost(viewingItem.postId) },
+                starred = state.starredPostIds.contains(viewingItem.postId),
+                onToggleStar = {
+                    state.posts.firstOrNull { it.id == viewingItem.postId }
+                        ?.let(viewModel::toggleStar)
+                }
+            )
+        }
+    }
+}
+
+/**
+ * The reader's own bookmarks for this channel (§9, §11).
+ *
+ * Local, and built from the copy the star kept rather than from the post: the
+ * rows stay readable after the server's thirty-day window has passed (§14) and
+ * they cost no request to draw, which is what makes them belong on a page that
+ * is otherwise a channel's public face.
+ *
+ * Tapping one opens the channel. The post itself may be past retention, so a
+ * deep link to a row that no longer exists would be the less honest of the two.
+ */
+@Composable
+private fun StarredMessages(
+    entries: List<GoodPostStarredEntry>,
+    onOpenChannel: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Star,
+            contentDescription = null,
+            tint = Wa.Accent,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = stringResource(R.string.goodpost_starred),
+            color = Wa.Text,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f)
+        )
+        if (entries.isNotEmpty()) {
+            Text(text = "${entries.size}", color = Wa.TextDim, fontSize = 14.sp)
+        }
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    if (entries.isEmpty()) {
+        Text(
+            text = stringResource(R.string.goodpost_starred_none),
+            modifier = Modifier.padding(horizontal = 20.dp),
+            color = Wa.TextDim,
+            fontSize = 13.sp
+        )
+        return
+    }
+
+    entries.forEach { entry ->
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpenChannel)
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = entry.body?.takeIf { it.isNotBlank() }
+                        ?: stringResource(mediaEntryLabel(entry.kind)),
+                    color = Wa.Text,
+                    fontSize = 14.sp,
+                    maxLines = 2
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = waListStamp(parseIsoMillis(entry.createdAt)),
+                    color = Wa.TextDim,
+                    fontSize = 12.sp
+                )
+            }
+        }
+    }
+}
+
+/** The word a media-only starred row is described by. */
+private fun mediaEntryLabel(kind: String): Int = when (kind) {
+    "image" -> R.string.goodpost_posted_photo
+    "video" -> R.string.goodpost_posted_video
+    "link" -> R.string.goodpost_posted_link
+    else -> R.string.goodpost_posted_something
 }
 
 /**
@@ -363,7 +504,8 @@ private fun ChannelDescription(description: String?, expanded: Boolean, onToggle
 private fun MediaAndLinks(
     items: List<GoodPostMediaItem>,
     loading: Boolean,
-    onOpen: (GoodPostMediaItem) -> Unit
+    onOpenItem: (GoodPostMediaItem) -> Unit,
+    onOpenAll: () -> Unit
 ) {
     if (items.isEmpty() && !loading) return
 
@@ -371,7 +513,12 @@ private fun MediaAndLinks(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp),
+                // This row is the way into the gallery, and it used to be nothing
+                // but a heading with a count beside it: the count said "there are
+                // twelve of these" and the row did not react to a tap at all,
+                // which reads as a screen that has stopped working.
+                .clickable(enabled = items.isNotEmpty(), onClick = onOpenAll)
+                .padding(horizontal = 20.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -383,9 +530,16 @@ private fun MediaAndLinks(
             )
             if (items.isNotEmpty()) {
                 Text(
-                    text = "${items.size} >",
+                    text = "${items.size}",
                     color = Wa.TextDim,
                     fontSize = 14.sp
+                )
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = stringResource(R.string.goodpost_view_all),
+                    tint = Wa.TextDim,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
@@ -397,7 +551,7 @@ private fun MediaAndLinks(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(items, key = { it.id }) { item ->
-                MediaThumbnail(item = item, onClick = { onOpen(item) })
+                MediaThumbnail(item = item, onClick = { onOpenItem(item) })
             }
         }
     }
@@ -454,12 +608,21 @@ private fun MediaThumbnail(item: GoodPostMediaItem, onClick: () -> Unit) {
 /**
  * Where a channel's notification setting belongs (§14).
  *
- * A statement rather than a switch: this app has no push infrastructure, so a
- * toggle would record a preference nothing can act on. Saying so is the honest
- * version of the same section, and it becomes the switch when delivery exists.
+ * A real switch, and it writes to the SERVER (§6): the flag lives on the follow
+ * row, so a reader who reinstalls keeps their mutes, and the background check
+ * that decides whether to announce an update reads it from there rather than
+ * trusting a value the phone could have lost.
+ *
+ * It used to be a statement — "notifications are not available yet" — which was
+ * honest while there was no delivery. There is one now, so the sentence became a
+ * control.
  */
 @Composable
-private fun NotificationsRow() {
+private fun NotificationsRow(
+    enabled: Boolean,
+    following: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -471,7 +634,7 @@ private fun NotificationsRow() {
             modifier = Modifier.size(20.dp)
         )
         Spacer(Modifier.width(12.dp))
-        Column {
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = stringResource(R.string.goodpost_notifications),
                 color = Wa.Text,
@@ -479,26 +642,33 @@ private fun NotificationsRow() {
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = stringResource(R.string.goodpost_notifications_note),
+                text = when {
+                    !following -> stringResource(R.string.goodpost_notifications_follow_first)
+                    enabled -> stringResource(R.string.goodpost_notifications_on)
+                    else -> stringResource(R.string.goodpost_notifications_off)
+                },
                 color = Wa.TextDim,
                 fontSize = 13.sp
+            )
+        }
+
+        if (following) {
+            Spacer(Modifier.width(12.dp))
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Wa.OnAccent,
+                    checkedTrackColor = Wa.Accent,
+                    uncheckedThumbColor = Wa.TextDim,
+                    uncheckedTrackColor = Wa.Pressed
+                )
             )
         }
     }
 }
 
-/** Hand a URL to whatever the device opens it with. */
-private fun openMediaUrl(context: android.content.Context, url: String?) {
-    if (url.isNullOrBlank()) return
-    try {
-        context.startActivity(
-            android.content.Intent(
-                android.content.Intent.ACTION_VIEW,
-                android.net.Uri.parse(url)
-            )
-        )
-    } catch (e: Exception) {
-        // Nothing on the device can open it. Silent on purpose: the tap simply
-        // has no handler, which is not worth an interruption.
-    }
-}
+// `openMediaUrl` used to live here: `ACTION_VIEW` on a signed URL. It is gone,
+// and so is the behaviour it caused — a tap on a video left ClearView and landed
+// on an S3 refusal, because a presigned URL is a capability for one client rather
+// than a page. The file is played and shown in the app by MediaViewer instead.

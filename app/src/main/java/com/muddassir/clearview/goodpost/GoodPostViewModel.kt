@@ -14,11 +14,18 @@ import com.muddassir.clearview.goodpost.data.CachedPosts
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
+import com.muddassir.clearview.goodpost.data.GoodPostHidden
 import com.muddassir.clearview.goodpost.data.GoodPostCodec
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
+import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostPage
 import com.muddassir.clearview.goodpost.data.GoodPostPost
+import com.muddassir.clearview.goodpost.data.GoodPostPush
+import com.muddassir.clearview.goodpost.data.GoodPostStarred
+import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
+import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
+import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import android.app.Activity
 import com.muddassir.clearview.goodpost.data.CreatorSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostRepository
@@ -81,6 +88,16 @@ sealed interface GoodPostScreen {
      * Back returns to the channel exactly where it was.
      */
     data class ChannelSearch(val channelId: String) : GoodPostScreen
+
+    /**
+     * Everything a channel has posted as media (§13).
+     *
+     * A screen rather than an expansion of the strip on the information page:
+     * the strip is a preview, and the things a reader does to a collection —
+     * select several, delete them, walk back through a channel's history — need
+     * the whole screen and a selection bar.
+     */
+    data class ChannelMedia(val channelId: String) : GoodPostScreen
 
     /** The administrator way in (§16). */
     data object AdminLogin : GoodPostScreen
@@ -171,7 +188,49 @@ data class GoodPostUiState(
     // ── The information page (§11–§14) ───────────────────────────────────
     val media: List<GoodPostMediaItem> = emptyList(),
     val mediaLoading: Boolean = false,
+    val mediaCursor: String? = null,
+    val mediaLoadingMore: Boolean = false,
+    val mediaError: String? = null,
+    /**
+     * The media rows picked in the gallery (§13).
+     *
+     * Kept apart from [selectedPostIds] because a selection is only meaningful
+     * against the list it was made in: the two screens can both be in the back
+     * stack, and one set would let a selection made in the feed arm the
+     * gallery's Delete.
+     */
+    val selectedMediaIds: Set<String> = emptySet(),
     val descriptionExpanded: Boolean = false,
+
+    /**
+     * The posts this DEVICE has starred (§9).
+     *
+     * Ids, for the same reason the followed set is ids: the star is drawn on
+     * rows that come from anywhere — the feed, a search result, the media
+     * viewer — and each of those has to answer "is this mine?" without a scan.
+     * The rows themselves are in [starred].
+     */
+    val starredPostIds: Set<String> = emptySet(),
+    /** The starred rows belonging to the channel whose information page is open. */
+    val starred: List<GoodPostStarredEntry> = emptyList(),
+
+    /**
+     * Whether this device wants a notification when a followed channel posts (§8).
+     *
+     * Off until asked for, and stored on the device rather than on the account:
+     * a reader who has never chosen should not be buzzed, and a permission prompt
+     * on first launch is how that choice gets made for them.
+     */
+    val notificationsEnabled: Boolean = false,
+
+    /**
+     * The followed channels whose notifications are muted, by id (§6).
+     *
+     * The server's own `notifications_muted` on the follow row, mirrored here so
+     * the switch on a channel's information page draws in the right state without
+     * a request of its own.
+     */
+    val mutedChannelIds: Set<String> = emptySet(),
 
     // ── Explore (§7) ─────────────────────────────────────────────────────
     val query: String = "",
@@ -313,7 +372,20 @@ data class GoodPostUiState(
      */
     val tabChannels: List<GoodPostChannel>
         get() = if (admin != null) {
-            adminChannels
+            // Signed in, the tab is the reader's channels AND the one(s) they run.
+            //
+            // It used to be only the latter, and that was wrong in a way only a
+            // creator notices: following a channel from Explore while signed in
+            // put it nowhere at all — the follow succeeded, the tab was showing
+            // the account's channels, and the channel the reader had just chosen
+            // was invisible. Running a channel does not stop you being a reader;
+            // WhatsApp does not hide your follows when you own one either. The
+            // account's own channels come first because those are the rows with
+            // something to do on them, and the followed ones follow, deduped by
+            // id so a channel that is both is listed once.
+            val own = adminChannels
+            val ownIds = own.mapTo(mutableSetOf()) { it.id }
+            own + channels.filterNot { it.id in ownIds }
         } else {
             channels
         }
@@ -408,6 +480,28 @@ class GoodPostViewModel : ViewModel() {
     private var repository: GoodPostRepository? = null
 
     /**
+     * The stars on this device (§9), and the context the notification switch
+     * lives in. Both are per-process state rather than per-screen, because both
+     * outlive any one screen — a star made in a feed is shown on a channel's
+     * information page days later.
+     */
+    private var starredStore: GoodPostStarred? = null
+
+    /**
+     * The updates this reader deleted FOR THEMSELVES (§5, §9).
+     *
+     * "Delete for me" on a post has no server half — a reader has no account and
+     * a post is one row everybody reads — so its honest meaning is the one
+     * WhatsApp gives it: it goes out of MY view, which is a fact about this
+     * device. It is read when a list is APPLIED rather than when it is drawn, so
+     * a hidden post cannot come back through the feed cache on the next cold
+     * start, and it is read for media too: an item whose post is hidden is not in
+     * the gallery either.
+     */
+    private var hiddenStore: GoodPostHidden? = null
+    private var appContext: Context? = null
+
+    /**
      * A channel slug from a share link, held until the repository exists.
      *
      * The link can arrive before [initialize] has run — MainActivity hands it to
@@ -430,6 +524,10 @@ class GoodPostViewModel : ViewModel() {
         if (repository != null) return
         val repo = GoodPostRepository(context.applicationContext)
         repository = repo
+        appContext = context.applicationContext
+        val stars = GoodPostStarred(context.applicationContext)
+        starredStore = stars
+        hiddenStore = GoodPostHidden(context.applicationContext)
 
         val cached = repo.cachedChannels()
         if (cached != null) showCachedChannels(cached)
@@ -437,11 +535,30 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             configured = repo.isConfigured,
             categories = repo.cachedCategories(),
-            admin = repo.adminSession()
+            admin = repo.adminSession(),
+            // Both of these are the DEVICE's, read before any request goes out:
+            // a reader who asked for notifications keeps them across a cold start
+            // even with no network, and their stars are visible in the same tab
+            // without one.
+            notificationsEnabled = GoodPostNotifications.isEnabled(context),
+            starredPostIds = stars.all().map { it.postId }.toSet()
         )
 
         refreshChannels()
         if (uiState.categories.isEmpty()) loadCategories()
+
+        // The background check is enqueued unconditionally and reads the switch
+        // itself, so a reader who turned notifications on in a previous install
+        // keeps them without the tab having to be opened, and one who never did
+        // pays for a worker that returns immediately.
+        GoodPostUpdateScheduler.ensureScheduled(context)
+
+        // …and the push registration is made to agree with the switch, once per
+        // app start. A token can rotate while the app is closed and the server has
+        // no way to notice, so a device that only ever registered once would stop
+        // receiving silently — which is the failure nobody can see and nobody
+        // reports.
+        viewModelScope.launch { GoodPostPush.sync(context) }
 
         // A stored session decides what the tab lists, so its channels are
         // fetched with everything else. Without this the list came up empty with
@@ -542,6 +659,13 @@ class GoodPostViewModel : ViewModel() {
                     uiState = uiState.copy(
                         channels = follows.value.items,
                         followedIds = follows.value.items.map { it.id }.toSet(),
+                        // The channel switches on the information page draw from
+                        // the server's own answer, so they are right on a device
+                        // that has never touched them.
+                        mutedChannelIds = follows.value.items
+                            .filter { it.notificationsMuted }
+                            .map { it.id }
+                            .toSet(),
                         channelsLoading = false,
                         channelsStale = false,
                         channelsError = null
@@ -793,6 +917,30 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
+    /**
+     * The posts of a page that this reader has not deleted on their own device.
+     *
+     * One filter, applied where a list ENTERS the state rather than where it is
+     * drawn, so there is exactly one answer to "is this post hidden" and no
+     * screen can disagree with another.
+     */
+    private fun List<GoodPostPost>.visibleToMe(): List<GoodPostPost> {
+        val hidden = hiddenStore ?: return this
+        return filterNot { hidden.isHidden(it.id) }
+    }
+
+    /**
+     * The same rule for media: a file belongs to the post that carried it.
+     *
+     * A separate name rather than an overload, because the two erase to the same
+     * JVM signature and an overload that only differs in the element type is not
+     * one Kotlin will compile.
+     */
+    private fun List<GoodPostMediaItem>.visibleMediaToMe(): List<GoodPostMediaItem> {
+        val hidden = hiddenStore ?: return this
+        return filterNot { hidden.isHidden(it.postId) }
+    }
+
     fun loadPosts(channelId: String) {
         val repo = repository ?: return
 
@@ -805,14 +953,18 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = repo.channelPosts(channelId)) {
                 is ApiResult.Ok -> {
+                    val items = result.value.items.visibleToMe()
                     uiState = uiState.copy(
-                        posts = result.value.items,
+                        posts = items,
                         postsCursor = result.value.nextCursor,
                         postsLoading = false,
                         postsStale = false,
                         postsError = null
                     )
-                    reportViews(channelId, result.value.items)
+                    // Only what is on screen is a view. A hidden post is not on
+                    // screen, so reporting it would count the reader as having
+                    // read something they deleted.
+                    reportViews(channelId, items)
                 }
 
                 is ApiResult.Failed -> uiState = uiState.copy(
@@ -832,7 +984,7 @@ class GoodPostViewModel : ViewModel() {
 
     private fun showCachedPosts(cached: CachedPosts) {
         uiState = uiState.copy(
-            posts = cached.posts,
+            posts = cached.posts.visibleToMe(),
             postsLoading = false,
             postsStale = true
         )
@@ -849,12 +1001,13 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             when (val result = repo.channelPosts(channelId, cursor)) {
                 is ApiResult.Ok -> {
+                    val items = result.value.items.visibleToMe()
                     uiState = uiState.copy(
-                        posts = GoodPostCodec.merge(uiState.posts, result.value.items) { it.id },
+                        posts = GoodPostCodec.merge(uiState.posts, items) { it.id },
                         postsCursor = result.value.nextCursor,
                         postsLoadingMore = false
                     )
-                    reportViews(channelId, result.value.items)
+                    reportViews(channelId, items)
                 }
 
                 else -> uiState = uiState.copy(postsLoadingMore = false)
@@ -905,17 +1058,240 @@ class GoodPostViewModel : ViewModel() {
 
     /** The channel information page's gallery (§13). */
     fun loadMedia(channelId: String) {
+        // The stars on the information page come from this device, so they are
+        // read here rather than fetched: opening the page must not cost a request
+        // for something the phone already knows (§26).
+        refreshStars(channelId)
+
         val repo = repository ?: return
-        uiState = uiState.copy(mediaLoading = true)
+        uiState = uiState.copy(mediaLoading = true, mediaError = null)
 
         viewModelScope.launch {
-            val result = repo.channelMedia(channelId)
-            uiState = uiState.copy(
-                media = if (result is ApiResult.Ok) result.value.items else uiState.media,
-                mediaLoading = false
-            )
+            when (val result = repo.channelMedia(channelId)) {
+                is ApiResult.Ok -> uiState = uiState.copy(
+                    media = result.value.items.visibleMediaToMe(),
+                    mediaCursor = result.value.nextCursor,
+                    mediaLoading = false,
+                    mediaError = null
+                )
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    mediaLoading = false,
+                    mediaError = result.code
+                )
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    mediaLoading = false,
+                    mediaError = "unreachable"
+                )
+            }
         }
     }
+
+    /** The next page of a channel's media (§13: the same cursor walk as the feed). */
+    fun loadMoreMedia() {
+        val repo = repository ?: return
+        val cursor = uiState.mediaCursor ?: return
+        val channelId = (uiState.screen as? GoodPostScreen.ChannelMedia)?.channelId ?: return
+        if (uiState.mediaLoadingMore) return
+
+        uiState = uiState.copy(mediaLoadingMore = true)
+        viewModelScope.launch {
+            when (val result = repo.channelMedia(channelId, cursor)) {
+                is ApiResult.Ok -> uiState = uiState.copy(
+                    media = GoodPostCodec.merge(uiState.media, result.value.items.visibleMediaToMe()) {
+                        it.id
+                    },
+                    mediaCursor = result.value.nextCursor,
+                    mediaLoadingMore = false
+                )
+
+                else -> uiState = uiState.copy(mediaLoadingMore = false)
+            }
+        }
+    }
+
+    /**
+     * Re-read ONE post, to replace the row that is on screen (§9).
+     *
+     * Used by the media viewer when a signature has expired: the answer is the
+     * same post with a new URL, and the URL is what re-keys the player. A failure
+     * is silent because the viewer has already said the video could not be played
+     * and is showing its own Retry — two messages about one problem is noise.
+     */
+    fun refreshPost(postId: String) {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val result = repo.post(postId)
+            if (result is ApiResult.Ok) {
+                uiState = uiState.copy(
+                    posts = uiState.posts.map { if (it.id == postId) result.value else it }
+                )
+            }
+        }
+    }
+
+    // ── The gallery's own selection (§13) ─────────────────────────────
+
+    /**
+     * Long press in the media grid: select the item, or drop it again.
+     *
+     * A separate set from [selectedPostIds] on purpose. The two screens cannot
+     * be on screen at once, but they can both be in the back stack, and a
+     * selection is only meaningful against the list it was made in — sharing one
+     * set would let a selection made in the feed arm the gallery's Delete.
+     */
+    fun toggleMediaSelected(mediaId: String) {
+        val next = uiState.selectedMediaIds.toMutableSet()
+        if (!next.add(mediaId)) next.remove(mediaId)
+        uiState = uiState.copy(selectedMediaIds = next, messageCode = null)
+    }
+
+    fun clearMediaSelection() {
+        uiState = uiState.copy(selectedMediaIds = emptySet(), messageCode = null)
+    }
+
+    /**
+     * Drop the selected media from THIS DEVICE (§6, §13).
+     *
+     * The other half of [deleteSelectedMedia], and the one a reader can always
+     * reach. It used to be the only option that existed and it was offered only
+     * to an administrator — so a reader who selected photos in "Media and links"
+     * and pressed Delete got nothing at all, which is precisely the complaint
+     * that produced this function.
+     *
+     * Nothing here talks to the server, because nothing here is the server's:
+     * the bytes on this phone are the reader's copy, and the channel's copy is
+     * untouched. Both caches are keyed on the object key rather than the URL, so
+     * a deletion found the files even though every page load hands out a new
+     * signed URL (§26) — and a re-open simply streams them again rather than
+     * being told they are gone.
+     */
+    fun deleteSelectedMediaFromDevice() {
+        val selected = uiState.selectedMediaIds
+        if (selected.isEmpty()) return
+
+        val items = uiState.media.filter { selected.contains(it.id) }
+        // The post is what "deleted" means to a reader: a grid item whose post is
+        // still in the feed has not gone anywhere, it has just stopped drawing a
+        // thumbnail. Hiding the post is what makes the deletion visible in both
+        // places, and it is the same set the feed reads.
+        val postIds = items.map { it.postId }
+        hiddenStore?.hide(postIds)
+
+        uiState = uiState.copy(
+            media = uiState.media.filterNot { selected.contains(it.id) },
+            posts = uiState.posts.filterNot { postIds.contains(it.id) },
+            starred = uiState.starred.filterNot { postIds.contains(it.postId) },
+            selectedMediaIds = emptySet(),
+            messageCode = null
+        )
+
+        viewModelScope.launch {
+            val urls = items.mapNotNull { it.url }
+            GoodPostImages.forget(urls)
+            urls.forEach { GoodPostVideoCache.evict(it) }
+            uiState = uiState.copy(messageCode = "deleted_from_device")
+        }
+    }
+
+    /**
+     * "Delete for me" on a selection of posts (§9).
+     *
+     * The reader's answer, and the only deletion a reader can perform: the posts
+     * leave THIS device's view and stay on the server for everybody else. Nothing
+     * is sent anywhere — there is no per-reader copy to remove, so the request
+     * that would carry it does not exist and is not invented.
+     *
+     * The files behind them go too. A hidden post that has left its cached bytes
+     * on the phone has not been deleted in any sense a reader would recognise, and
+     * "delete" here is a promise about their own storage as much as about the
+     * list.
+     */
+    fun hideSelectedPosts() {
+        val selected = uiState.selectedPostIds
+        if (selected.isEmpty()) return
+
+        val posts = uiState.posts.filter { selected.contains(it.id) }
+        if (posts.isEmpty()) return
+
+        hiddenStore?.hide(posts.map { it.id })
+
+        viewModelScope.launch {
+            // Every media URL of every hidden post, so the phone stops holding the
+            // bytes as well as the row.
+            val urls = posts.flatMap { post -> post.media.mapNotNull { it.url } }
+            GoodPostImages.forget(urls)
+            urls.forEach { GoodPostVideoCache.evict(it) }
+        }
+
+        uiState = uiState.copy(
+            posts = uiState.posts.filterNot { selected.contains(it.id) },
+            media = uiState.media.filterNot { selected.contains(it.postId) },
+            starred = uiState.starred.filterNot { selected.contains(it.postId) },
+            selectedPostIds = emptySet(),
+            messageCode = "deleted_from_device"
+        )
+    }
+
+    /**
+     * Delete the posts that carry the selected media (§17).
+     *
+     * The media is not a thing that can be deleted on its own: a file belongs to
+     * the update that posted it, and an update is what the server can remove. So
+     * the selection is resolved to its posts, and the bulk delete does the rest.
+     * The object itself is removed by the server's own sweep, which is why a
+     * reader gets the same confirmation either way.
+     */
+    fun deleteSelectedMedia() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        val selected = uiState.selectedMediaIds
+        if (selected.isEmpty()) return
+
+        val postIds = uiState.media
+            .filter { selected.contains(it.id) }
+            .map { it.postId }
+            .distinct()
+        if (postIds.isEmpty()) return
+
+        viewModelScope.launch {
+            when (val result = repo.adminDeletePosts(postIds)) {
+                is ApiResult.Ok -> {
+                    uiState = uiState.copy(
+                        media = uiState.media.filterNot { selected.contains(it.id) },
+                        posts = uiState.posts.filterNot { postIds.contains(it.id) },
+                        selectedMediaIds = emptySet()
+                    )
+                    // Reloaded rather than trusted: the gallery's page boundary
+                    // moves when rows in the middle of it disappear, exactly as
+                    // the feed's does.
+                    currentMediaChannelId()?.let { loadMedia(it) }
+                    currentChannelId()?.let { loadPosts(it) }
+                    // And the LIST is told too. A delete moves the channel's
+                    // preview and its timestamp — the newest post may be the one
+                    // that just went — so a list left alone would keep advertising
+                    // something the reader had removed.
+                    refreshLists()
+                }
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    selectedMediaIds = emptySet(),
+                    messageCode = adminFailureCode(result)
+                )
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    selectedMediaIds = emptySet(),
+                    messageCode = "unreachable"
+                )
+            }
+        }
+    }
+
+    private fun currentMediaChannelId(): String? =
+        (uiState.screen as? GoodPostScreen.ChannelMedia)?.channelId
+            ?: (uiState.backStack.lastOrNull { it is GoodPostScreen.ChannelMedia }
+                as? GoodPostScreen.ChannelMedia)?.channelId
 
     fun toggleDescription() {
         uiState = uiState.copy(descriptionExpanded = !uiState.descriptionExpanded)
@@ -994,6 +1370,124 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
+     * Star or unstar one post (§9).
+     *
+     * A star is a private bookmark, so it is written to this device and nowhere
+     * else — see [GoodPostStarred] for why the row is kept whole rather than as an
+     * id. The channel and its name travel with it so the bookmark can still be
+     * read from the information page after the post has aged out of the server's
+     * retention window (§14).
+     */
+    fun toggleStar(post: GoodPostPost) {
+        val store = starredStore ?: return
+        val channel = uiState.channel
+        val starred = store.toggle(
+            GoodPostStarredEntry(
+                postId = post.id,
+                channelId = channel?.id ?: "",
+                channelName = channel?.name ?: "",
+                body = post.body,
+                kind = when {
+                    post.media.any { it.isVideo } -> "video"
+                    post.media.any { it.isImage } -> "image"
+                    post.isLink -> "link"
+                    else -> "text"
+                },
+                createdAt = post.createdAt,
+                starredAt = System.currentTimeMillis()
+            )
+        )
+        uiState = uiState.copy(
+            starredPostIds = store.all().map { it.postId }.toSet(),
+            starred = store.forChannel(channel?.id.orEmpty()),
+            messageCode = if (starred) "starred" else "unstarred"
+        )
+    }
+
+    /** Star every selected post, from the feed's action bar (§5, §9). */
+    fun starSelectedPosts() {
+        val selected = uiState.posts.filter { uiState.selectedPostIds.contains(it.id) }
+        if (selected.isEmpty()) return
+        selected.forEach { post ->
+            if (post.id !in uiState.starredPostIds) toggleStar(post)
+        }
+        clearPostSelection()
+    }
+
+    /** The stars belonging to one channel, for its information page (§11). */
+    fun refreshStars(channelId: String) {
+        val store = starredStore ?: return
+        uiState = uiState.copy(
+            starredPostIds = store.all().map { it.postId }.toSet(),
+            starred = store.forChannel(channelId)
+        )
+    }
+
+    /**
+     * Turn Good Post notifications on or off for this device (§8).
+     *
+     * Asking for a notification permission is part of the answer rather than a
+     * separate step: the switch is the only place a reader's intent is known, and
+     * a permission prompt at launch — before there is any reason to want one —
+     * is the way that permission gets refused forever.
+     */
+    fun setNotificationsEnabled(enabled: Boolean) {
+        val context = appContext ?: return
+        if (enabled) requestNotificationPermission?.invoke()
+        GoodPostNotifications.setEnabled(context, enabled)
+        // The schedule always exists and the worker reads the switch; turning it
+        // on also runs one check, which adopts the current timestamps so the
+        // first real notification is about a post that arrives after now.
+        GoodPostUpdateScheduler.ensureScheduled(context)
+        if (enabled) GoodPostUpdateScheduler.checkNow(context)
+        // The same switch, on the server's side of it: on, this device's token is
+        // registered so the next publish arrives in seconds; off, it is removed so
+        // the fan-out stops paying for a phone that no longer listens.
+        viewModelScope.launch { GoodPostPush.sync(context) }
+        uiState = uiState.copy(notificationsEnabled = enabled)
+    }
+
+    /**
+     * The Android 13+ permission request, supplied by the screen.
+     *
+     * A `var` holding a lambda rather than a call into the activity, because the
+     * ViewModel must not hold one — and because this is the only moment the app
+     * can ask with any hope of being answered yes.
+     */
+    var requestNotificationPermission: (() -> Unit)? = null
+
+    /**
+     * Mute or unmute ONE channel's notifications (§6).
+     *
+     * The server owns this flag: it lives on the follow row, so it survives a
+     * reinstall the way the follow does, and the follower's phone is not the
+     * place to keep a subscription's state. Optimistic, like every other toggle
+     * in the tab, and put back if the server disagrees.
+     */
+    fun setChannelNotifications(channelId: String, enabled: Boolean) {
+        val repo = repository ?: return
+        val muted = !enabled
+        val previous = uiState.mutedChannelIds
+        uiState = uiState.copy(
+            mutedChannelIds = if (muted) previous + channelId else previous - channelId
+        )
+        viewModelScope.launch {
+            when (val result = repo.setChannelMuted(channelId, muted)) {
+                is ApiResult.Ok -> Unit
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    mutedChannelIds = previous,
+                    messageCode = result.code
+                )
+
+                ApiResult.Unreachable -> uiState = uiState.copy(
+                    mutedChannelIds = previous,
+                    messageCode = "unreachable"
+                )
+            }
+        }
+    }
+
+    /**
      * Remove every selected post in one request (§17).
      *
      * One call rather than one per post: the server applies the selection
@@ -1011,11 +1505,18 @@ class GoodPostViewModel : ViewModel() {
                 is ApiResult.Ok -> {
                     uiState = uiState.copy(
                         posts = uiState.posts.filterNot { selected.contains(it.id) },
+                        // A deleted post takes its media and its bookmark with it:
+                        // a starred row for something that no longer exists is a
+                        // row that opens onto nothing.
+                        media = uiState.media.filterNot { selected.contains(it.postId) },
+                        starred = uiState.starred.filterNot { selected.contains(it.postId) },
                         selectedPostIds = emptySet()
                     )
                     // Reloaded rather than trusted: a page boundary can shift when
                     // rows in the middle of the list disappear.
                     currentChannelId()?.let { loadPosts(it) }
+                    // The channel's preview and timestamp moved with the delete.
+                    refreshLists()
                 }
 
                 is ApiResult.Failed -> uiState = uiState.copy(
@@ -1067,6 +1568,10 @@ class GoodPostViewModel : ViewModel() {
         selectedPostIds = emptySet(),
         media = emptyList(),
         mediaLoading = false,
+        mediaCursor = null,
+        mediaLoadingMore = false,
+        mediaError = null,
+        selectedMediaIds = emptySet(),
         descriptionExpanded = false,
         // §19 Bug 2/3: the composer is closed AND emptied, so neither an editing
         // strip nor a half-typed body can appear over another channel.

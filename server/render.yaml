@@ -171,6 +171,31 @@ services:
       - key: FIREBASE_PROJECT_ID
         sync: false
 
+      # ── Push notifications (§8, §12) ──
+      #
+      # The service account that signs this server's messages to Firebase Cloud
+      # Messaging: Firebase console → Project settings → Service accounts →
+      # "Generate new private key". Paste the downloaded file's WHOLE JSON as this
+      # value (Render accepts newlines), or its base64 encoding if the paste is
+      # mangled.
+      #
+      # This is the ONE Firebase secret in the deployment. Everything else — the
+      # project id above, the app's google-services.json — is public, and reader
+      # ID tokens are verified against Google's published certificates rather
+      # than against anything we store.
+      #
+      # Leave it EMPTY and the service still starts and behaves exactly as it did
+      # before push existed: publishing is unchanged, and readers receive updates
+      # through the app's own fifteen-minute check instead of instantly.
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false
+
+      # How many devices ONE publish may notify. The rest still receive the
+      # update through the app's catch-up check; this is a bound on how long a
+      # publish may hold a small instance, not a correctness rule.
+      - key: PUSH_FANOUT_MAX
+        value: 500
+
       # ── Non-secret tuning, safe in git ────────────────────────────────
       # How long a post's copy stays on the server (§14): long enough for someone
       # who is not following a channel to read back and judge it, short enough to
@@ -253,10 +278,15 @@ services:
       #   never arrives and media would fail with a much worse error than
       #   `media_unavailable`.
       #
-      # PHONE_VERIFY_MODE / FIREBASE_* / EMAIL_* / OTP_* — gone with the modules
-      #   they configured. Good Post has no viewer accounts, so there is no phone
-      #   verification, no email sign-in code and no push token to register. The
-      #   only credential in the product is an administrator's.
+      # PHONE_VERIFY_MODE / EMAIL_* / OTP_* — gone with the modules they
+      #   configured. Good Post has no viewer accounts, so there is no phone
+      #   verification and no email sign-in code. The only credential a person
+      #   types is an administrator's.
+      #
+      #   (A reader does have a DEVICE row — `reader_devices`, migration 005 — but
+      #   that is an FCM token keyed on their anonymous Firebase uid, not an
+      #   account: nothing is typed, nothing is stored but the routing address,
+      #   and the row is deleted the moment the reader turns notifications off.)
       #
       # RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX — left to their code defaults on
       #   purpose rather than duplicated here, so there is one source of truth.

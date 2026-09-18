@@ -134,11 +134,40 @@ internal class GoodPostRepository(
         return api.setChannelMuted(token, idOrSlug, muted)
     }
 
+    /**
+     * Where to reach this device (§8), or a refusal that says why.
+     *
+     * Resolves the reader's identity first, like every other reader-scoped call:
+     * a push token is registered against a reader, and there is nobody to
+     * register it for until the app has one.
+     */
+    suspend fun registerDevice(deviceToken: String): ApiResult<Unit> {
+        val token = identity.token() ?: return unverified()
+        return api.registerDevice(token, deviceToken)
+    }
+
+    /** Stop sending to this device (§8). */
+    suspend fun unregisterDevice(deviceToken: String): ApiResult<Unit> {
+        val token = identity.token() ?: return unverified()
+        return api.unregisterDevice(token, deviceToken)
+    }
+
     /** Clear a channel's unread badge (§5). */
     suspend fun markChannelRead(idOrSlug: String): ApiResult<GoodPostFollow> {
         val token = identity.token() ?: return unverified()
         return api.markChannelRead(token, idOrSlug)
     }
+
+    /**
+     * One post, re-read (§9).
+     *
+     * The media viewer's retry: a signed URL is a short-lived capability, so a
+     * video that has been open long enough to outlive its signature fails with
+     * the server's own 403 and the only way forward is a new URL. This asks for
+     * exactly the one row that is on screen rather than re-reading the page — a
+     * reader looking at one video should not cost thirty rows.
+     */
+    suspend fun post(postId: String): ApiResult<GoodPostPost> = api.post(postId)
 
     /**
      * A reader-scoped call with nobody to make it as (§3).

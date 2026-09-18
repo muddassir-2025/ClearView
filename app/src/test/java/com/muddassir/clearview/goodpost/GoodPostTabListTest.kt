@@ -94,14 +94,33 @@ class GoodPostTabListTest {
     }
 
     @Test
-    fun `a channel administrator sees the channel they run, not the catalogue`() {
+    fun `a channel administrator sees the channel they run first, then their follows`() {
         val state = GoodPostUiState(
             channels = listOf(channel("a"), channel("b")),
             admin = session("channel_admin", "b"),
             adminChannels = listOf(channel("b"))
         )
 
-        // §3: an account created for one channel gets that channel.
+        // §3, §4: the account's own channel leads — it is the row with something
+        // to do on it — and the channels this reader follows come after it.
+        //
+        // The follows used to be dropped entirely while signed in, which meant a
+        // creator who followed a channel from Explore saw it appear NOWHERE: the
+        // follow succeeded, the tab was drawing the account's channels, and the
+        // channel they had just chosen was invisible.
+        //
+        // `b` is deduped rather than listed twice, which is the case that makes
+        // running a channel you also follow one row.
+        assertEquals(listOf("b", "a"), ids(state))
+    }
+
+    @Test
+    fun `a channel administrator who follows nothing still sees only their own channel`() {
+        val state = GoodPostUiState(
+            admin = session("channel_admin", "b"),
+            adminChannels = listOf(channel("b"))
+        )
+
         assertEquals(listOf("b"), ids(state))
     }
 

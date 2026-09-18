@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Timer
+import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -90,6 +92,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.muddassir.clearview.R
+import com.muddassir.clearview.goodpost.data.GoodPostNotifications
+import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.model.MediaChannelUpdate
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
@@ -463,6 +467,51 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
                         permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                     } else {
                         state.setQuranNotifications(enabled)
+                    }
+                }
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            // ── Good Post notifications toggle ──
+            //
+            // This sheet is where the app keeps every "tell me when there is
+            // something new" decision, so a reader should not have to open Good
+            // Post to make this one. Its state is read from Good Post's own store
+            // rather than through this tab's ViewModel: the value belongs to that
+            // feature, and a second copy here is how the two end up disagreeing.
+            var goodPostNotifications by remember {
+                mutableStateOf(GoodPostNotifications.isEnabled(context))
+            }
+            SettingsToggleRow(
+                icon = {
+                    Icon(
+                        imageVector = if (goodPostNotifications) Icons.Filled.Campaign
+                        else Icons.Outlined.Campaign,
+                        contentDescription = null,
+                        tint = if (goodPostNotifications) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(26.dp)
+                    )
+                },
+                title = stringResource(R.string.goodpost_notification_channel),
+                note = stringResource(R.string.goodpost_notifications_master_note),
+                checked = goodPostNotifications,
+                onCheckedChange = { enabled ->
+                    val apply = { granted: Boolean ->
+                        goodPostNotifications = granted
+                        GoodPostNotifications.setEnabled(context, granted)
+                        // The schedule always exists and the worker reads the
+                        // switch; turning it on also checks once, so the first
+                        // notification is about a post that arrives after now.
+                        GoodPostUpdateScheduler.ensureScheduled(context)
+                        if (granted) GoodPostUpdateScheduler.checkNow(context)
+                    }
+                    if (enabled && needsNotificationPermission(context)) {
+                        pendingPermissionApply = apply
+                        permissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    } else {
+                        apply(enabled)
                     }
                 }
             )

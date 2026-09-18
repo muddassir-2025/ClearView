@@ -223,6 +223,14 @@ dependencies {
     // foreground service: background playback with lock-screen / notification
     // media controls.
     implementation(libs.androidx.media)
+    // ExoPlayer, for the Good Post video player (§9). This app's other player is a
+    // bespoke android.media.MediaPlayer implementation bound to the Media tab's
+    // own `MediaVideo` model, so it can't play a channel's presigned bucket URL
+    // without dragging that model — and YouTube/Instagram resolution — into a feed.
+    // `media3-ui` supplies the surface (PlayerView); the controls are Good Post's
+    // own, in Compose.
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
 
     testImplementation(libs.junit)
     // org.json is stubbed in the Android SDK; provide the real JVM impl for unit tests
@@ -266,6 +274,13 @@ dependencies {
     // §8 as a system to build rather than a library to add — adding the SDK now
     // would ship a service nothing sends to.
     implementation("com.google.firebase:firebase-auth")
+
+    // Push (§8). The channel notifications arrive from the backend through FCM
+    // instead of waiting for the fifteen-minute check — see
+    // `goodpost/data/GoodPostPush.kt`. It rides the same Firebase project the
+    // reader's anonymous identity already signs in to, so there is no second
+    // project, no second google-services.json and no sender id to configure.
+    implementation("com.google.firebase:firebase-messaging")
 
     // ── Google sign-in (§16) ──
     //

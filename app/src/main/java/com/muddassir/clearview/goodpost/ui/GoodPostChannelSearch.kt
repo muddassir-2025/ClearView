@@ -19,6 +19,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -27,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.GoodPostMedia
 
 /**
  * Search inside ONE channel (§9).
@@ -63,6 +68,24 @@ internal fun GoodPostChannelSearch(
         if (state.channel?.id != channelId) viewModel.loadChannel(channelId)
     }
 
+    // A result carries its own attachments, and a reader who searched for a photo
+    // should be able to open it here rather than hunting for the post in the
+    // feed. Same id-based lookup as the feed, for the same reason: a re-read has
+    // to be able to hand the player a fresh signature.
+    var viewerPostId by remember { mutableStateOf<String?>(null) }
+    var viewerMediaId by remember { mutableStateOf<String?>(null) }
+    val viewing = state.channelSearchResults
+        .firstOrNull { it.id == viewerPostId }
+        ?.media
+        ?.firstOrNull { it.id == viewerMediaId }
+    val openMedia: (GoodPostMedia) -> Unit = { asset ->
+        viewerPostId = state.channelSearchResults
+            .firstOrNull { post -> post.media.any { it.id == asset.id } }
+            ?.id
+        viewerMediaId = asset.id
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().background(Wa.Canvas)) {
         WaTopBar(
             title = channel?.name ?: stringResource(R.string.goodpost_channel),
@@ -114,7 +137,8 @@ internal fun GoodPostChannelSearch(
                             // secretly navigating: a tap that lands somewhere
                             // else would lose the search the reader just ran.
                             onClick = {},
-                            onLongClick = {}
+                            onLongClick = {},
+                            onOpenMedia = openMedia
                         )
                     }
 
@@ -167,6 +191,21 @@ internal fun GoodPostChannelSearch(
                     }
                 }
             }
+        }
+    }
+
+        if (viewing != null) {
+            MediaViewer(
+                kind = viewing.kind,
+                url = viewing.url.orEmpty(),
+                contentType = viewing.contentType,
+                aspect = aspectOf(viewing.width, viewing.height),
+                onClose = {
+                    viewerPostId = null
+                    viewerMediaId = null
+                },
+                onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } }
+            )
         }
     }
 }

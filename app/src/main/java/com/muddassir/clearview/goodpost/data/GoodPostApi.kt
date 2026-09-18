@@ -204,6 +204,48 @@ class GoodPostApi(
         )
 
     /**
+     * Register this install for push (§8).
+     *
+     * The token is the DEVICE's and the reader is the token's owner, resolved
+     * server-side from the bearer token — so this call cannot subscribe anybody
+     * else's phone to anything. There is no field for a reader id here for the
+     * same reason there is none on the follow routes.
+     *
+     * Idempotent by design: it is called on every app start (a token can rotate
+     * while the app is not running), and registering twice must cost one row and
+     * not two.
+     */
+    suspend fun registerDevice(
+        token: String,
+        deviceToken: String,
+        platform: String = "android"
+    ): ApiResult<Unit> =
+        parsedCall(
+            method = "POST",
+            path = "$READER_PATH/me/devices",
+            body = JSONObject().put("token", deviceToken).put("platform", platform),
+            bearer = token,
+            parse = { }
+        )
+
+    /**
+     * Stop sending this install anything (§8).
+     *
+     * Called when the reader turns notifications off. Best effort on the client:
+     * if it fails, the push still arrives and the device's own switch drops it —
+     * the alternative (refusing to turn the switch off because a request failed)
+     * would be a switch that lies about what it did.
+     */
+    suspend fun unregisterDevice(token: String, deviceToken: String): ApiResult<Unit> =
+        parsedCall(
+            method = "DELETE",
+            path = "$READER_PATH/me/devices/${encode(deviceToken)}",
+            body = null,
+            bearer = token,
+            parse = { }
+        )
+
+    /**
      * Clear a channel's unread badge (§5): the reader has opened it.
      *
      * No timestamp is sent — the server's clock decides whether a post came

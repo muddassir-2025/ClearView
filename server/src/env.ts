@@ -85,6 +85,30 @@ const schema = z.object({
   // let anyone mint a uid.
   FIREBASE_PROJECT_ID: z.string().optional(),
 
+  // Push notifications (§8, §12).
+  //
+  // The service account whose key signs this server's messages to Firebase Cloud
+  // Messaging: the JSON file Firebase hands you (Project settings -> Service
+  // accounts -> Generate new private key). Accepted as the file's own JSON, or
+  // base64-encoded, because both survive different dashboards' whitespace
+  // handling and only one of them survives some of them.
+  //
+  // OPTIONAL, and its absence is a supported state: with no service account the
+  // server publishes exactly as before and the app falls back to its periodic
+  // check. This is the only Firebase SECRET in this deployment — FIREBASE_PROJECT_ID
+  // above is public, and reader ID tokens are verified against Google's published
+  // certificates — so a deployment that wants instant notifications is the only
+  // one that needs a credential at all.
+  FIREBASE_SERVICE_ACCOUNT_JSON: z.string().optional(),
+
+  // How many devices ONE publish may notify.
+  //
+  // A bound rather than a target: a channel with a hundred thousand followers
+  // would otherwise hold a small instance for minutes, and the readers past this
+  // number still receive the update through the app's own catch-up check. Raise
+  // it when the delivery path has been measured at that size, not before.
+  PUSH_FANOUT_MAX: z.coerce.number().int().positive().default(500),
+
   SUPER_ADMIN_EMAIL: z.string().optional(),
   SUPER_ADMIN_PASSWORD_HASH: z.string().optional(),
   SUPER_ADMIN_PASSWORD: z.string().optional(),
