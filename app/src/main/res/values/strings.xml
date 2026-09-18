@@ -643,6 +643,9 @@ This video cannot be played inside the app.</string>
          Both are read from real rows — a follow somebody chose, and a read a
          client reported — and neither is a pass at a social metric. -->
     <string name="goodpost_refresh">Refresh</string>
+    <!-- The tab's menu entry for the account's own channel (§15). Shown only when
+         the account runs exactly one, so it never has to name which. -->
+    <string name="goodpost_my_channel">My Channel</string>
     <string name="goodpost_more">Load more</string>
     <!-- The top of a channel's feed (§10). The list reads oldest-to-newest, so
          history is ABOVE the newest update and this is the word for it. -->

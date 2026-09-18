@@ -7,7 +7,45 @@ code actually does today. It replaces an earlier milestone plan (M0–M9) whose
 architecture — Firebase phone auth, email sign-in, SMS OTP, an admin dashboard —
 was removed rather than patched.
 
-## Latest pass: reactions, and a video card that answers the bubble
+## Latest pass: the shared page, My Channel, and a channel picture that saves
+
+* **The shared page is a page.** A channel link now opens a real channel page —
+  the channel's own picture (through `/c/:slug/icon`, which signs a URL when it is
+  fetched rather than when the page was built), its name, handle, category and
+  follower count, and its recent posts rendered by type: text with the app's own
+  inline formatting, images at their real proportions, video with controls, link
+  posts as cards. Two buttons, **Open in ClearView** and **Get ClearView**, and a
+  short About section at the bottom. A crawler gets `og:title`, `og:description`,
+  `og:image` and a canonical URL.
+* **The page was also broken, not just plain.** Helmet's default CSP is
+  `img-src 'self' data:`, and every image on this page is a presigned URL on the
+  bucket's own domain — so the browser loaded none of them and the avatar area sat
+  empty with nothing but a console violation to show for it. The policy now allows
+  `https:` images and media (never `*`) and scripts from this origin only, which is
+  why the page's one script is a file (`/c/app.js`) rather than an inline handler:
+  it tries the deep link and falls back to the store when nothing claims it.
+* **My Channel** is in the tab's menu. It opens the account's own channel as a
+  PROFILE — the same page a reader sees for any channel, with the edit entry the
+  owner gets on it. Offered only when the account runs exactly one channel: a
+  super admin who runs five has no one channel for that label to name.
+* **A new channel picture now actually appears.** Three separate faults, all of
+  them fixed at the cause rather than with a delay: the picked image was never
+  previewed (the form drew the initial letter and said "Uploading…" beside it), a
+  second pick could have the FIRST upload's answer applied to it, and the screen
+  behind the form kept the old signed URL because a save updated the lists but not
+  the open channel. The form now decodes the local file for an instant preview,
+  tags each upload to its own pick, and merges the saved channel back into the tab
+  — dropping the replaced picture from this device's cache, since the server
+  deletes the object it replaced.
+* **One radius for every attachment, and a meta row that lines up.** A photo
+  rounded itself at 8dp, its loader clipped again at 11dp and a clip beside it was
+  10dp; the timestamp row was inset 6dp further than the text above it. `§6`'s
+  "these cards look wrong without anybody being able to say why" is exactly these
+  two things.
+* Removed `ChannelIconField`, a fully-written channel-image component that no
+  screen called — the form had grown its own copy of it.
+
+## Previous pass: reactions, and a video card that answers the bubble
 
 * **Reactions are real rows.** `post_reactions` (migration 006) holds one emoji
   per reader per post, so reacting again is an UPDATE and not a second row. The
@@ -218,6 +256,14 @@ request body.
 | `POST` | `/api/v1/me/following/:idOrSlug` | Follow a channel |
 | `DELETE` | `/api/v1/me/following/:idOrSlug` | Unfollow it |
 | `POST` | `/api/v1/me/following/:idOrSlug/read` | Mark it read, which clears its badge |
+
+### The shared page (§6) — served on their own paths
+
+| Method | Path | Returns |
+|---|---|---|
+| `GET` | `/c/:slug` | The public channel page: identity, recent posts, both ways into the app, About ClearView |
+| `GET` | `/c/:slug/icon` | A redirect to the channel's picture, signed at fetch time (or a transparent SVG when it has none) |
+| `GET` | `/c/app.js` | The page's one script: try the app, fall back to the store |
 | `GET` | `/api/v1/readers/reactions` | §9: the emoji this deployment offers. No token — it is the same six for everybody, and a client that is about to sign in still has to draw them |
 | `GET` | `/api/v1/me/reactions/:idOrSlug` | §9: the caller's own reactions in one channel, as post → emoji |
 | `PUT` | `/api/v1/me/reactions/:postId` | §9: set or change the caller's reaction on one post |

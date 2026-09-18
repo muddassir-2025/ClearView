@@ -72,6 +72,45 @@ async function seedPost(channelId: string, body: string, minutesAgo = 0): Promis
   return one(rows.rows).id;
 }
 
+/** A post that carries a link, which the page renders as a card. */
+async function seedLinkPost(
+  channelId: string,
+  url: string,
+  title: string | null
+): Promise<string> {
+  const rows = await pglite.query<{ id: string }>(
+    `INSERT INTO posts (channel_id, author_id, type, body, link_url, link_title)
+     VALUES ($1, NULL, 'link'::post_type, NULL, $2, $3)
+     RETURNING id`,
+    [channelId, url, title]
+  );
+  return one(rows.rows).id;
+}
+
+/** An image on a post, ready to be signed. */
+async function seedImage(postId: string): Promise<string> {
+  const rows = await pglite.query<{ id: string }>(
+    `INSERT INTO post_media
+       (owner_id, post_id, kind, object_key, content_type, byte_size, width, height, status, position)
+     VALUES (NULL, $1, 'image'::media_kind, $2, 'image/jpeg', 4096, 1200, 800,
+             'ready'::media_status, 0)
+     RETURNING id`,
+    [postId, `goodpost/channels/photo/${postId}.jpg`]
+  );
+  return one(rows.rows).id;
+}
+
+/** A channel with a profile picture, which the page shows through its own route. */
+async function seedIcon(channelId: string, key: string): Promise<void> {
+  await pglite.query(
+    `INSERT INTO post_media
+       (owner_id, channel_id, post_id, kind, object_key, content_type, byte_size, status, position)
+     VALUES (NULL, $1, NULL, 'image'::media_kind, $2, 'image/png', 1024, 'ready'::media_status, 0)`,
+    [channelId, key]
+  );
+  await pglite.query(`UPDATE channels SET icon_object_key = $2 WHERE id = $1`, [channelId, key]);
+}
+
 describe('the shared-channel page (§6)', () => {
   it('renders the channel, its posts and a preview card', async () => {
     const slug = unique('shared');
@@ -91,8 +130,13 @@ describe('the shared-channel page (§6)', () => {
     // tags a messaging app reads to build its card. Asserting both is the point
     // — a page that renders but previews as a bare URL is the bug this fixes.
     expect(response.text).toContain('<h1>Dev Updates</h1>')
-    expect(response.text).toContain('<meta property="og:title" content="Dev Updates">');
+    expect(response.text).toContain('<meta property="og:title" content="Dev Updates · ClearView">');
     expect(response.text).toContain('Notes on shipping software.');
+
+    // The handle, the follower count and the picture's own stable URL.
+    expect(response.text).toContain(`>@${slug}<`);
+    expect(response.text).toContain('0 followers');
+    expect(response.text).toContain(`/c/${slug}/icon`);
 
     // The posts, newest first.
     expect(response.text).toContain('First post');
@@ -164,7 +208,7 @@ describe('the shared-channel page (§6)', () => {
     const missing = await request(app).get('/c/no-such-channel-at-all');
     expect(missing.status).toBe(404);
     expect(missing.headers['content-type']).toContain('text/html');
-    expect(missing.text).toContain('Channel not available');
+    expect(missing.text).toContain('Channel unavailable');
     expect(missing.text).not.toContain('"error"');
 
     // A suspended channel is a 404 here for the same reason it is one in the API.
@@ -175,7 +219,142 @@ describe('the shared-channel page (§6)', () => {
     );
     const takenDown = await request(app).get(`/c/${suspended}`);
     expect(takenDown.status).toBe(404);
-    expect(takenDown.text).toContain('Channel not available');
+    expect(takenDown.text).toContain('Channel unavailable');
+  });
+
+  it('renders a post the way the app renders it, not as its markers (§17)', async () => {
+    // The body is stored with WhatsApp's markers left in it, and the app turns
+    // them into bold text. A page that printed the asterisks instead would be the
+    // same post seen two ways — which is the one thing a shared link cannot do.
+    const slug = unique('format');
+    const channelId = await seedChannel(slug, { name: 'Formatting' });
+    await seedPost(
+      channelId,
+      'This is *important* and _quiet_ and ~gone~ and ```code```.'
+    );
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('<strong>important</strong>');
+    expect(response.text).toContain('<em>quiet</em>');
+    expect(response.text).toContain('<s>gone</s>');
+    expect(response.text).toContain('<code>code</code>');
+    expect(response.text).not.toContain('*important*');
+    expect(response.text).not.toContain('```code```');
+  });
+
+  it('leaves arithmetic alone rather than reading it as formatting (§17)', async () => {
+    // The guard the app uses: a delimiter cannot be part of a word. A page that
+    // bolded `2*3*4` would bold the one thing nobody meant.
+    const slug = unique('maths');
+    const channelId = await seedChannel(slug);
+    await seedPost(channelId, 'Total is 2*3*4 items');
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('2*3*4');
+    expect(response.text).not.toContain('<strong>');
+  });
+
+  it('shows a post\'s image through a signed URL, in its own proportions', async () => {
+    const slug = unique('photo');
+    const channelId = await seedChannel(slug);
+    const postId = await seedPost(channelId, 'Look at this');
+    await seedImage(postId);
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('<img class="media" loading="lazy"');
+    expect(response.text).toContain('https://fake-bucket.test/goodpost/channels/photo/');
+    // 1200x800, from the media row: the layout reserves the right box instead of
+    // cropping the picture into whatever shape the CSS felt like.
+    expect(response.text).toContain('aspect-ratio:1200/800');
+  });
+
+  it('renders a link post as a card with its domain, not as a bare URL', async () => {
+    const slug = unique('linkcard');
+    const channelId = await seedChannel(slug);
+    await seedLinkPost(channelId, 'https://example.com/a-post', 'A post worth reading');
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('class="link-card"');
+    expect(response.text).toContain('A post worth reading');
+    expect(response.text).toContain('example.com');
+  });
+
+  it('lets the page load media from the bucket rather than only from its own origin', async () => {
+    // Pinned because the failure is invisible: Helmet's default `img-src 'self'
+    // refuses every cross-origin image, so the page rendered with an empty avatar
+    // and no media at all while the network tab showed nothing but a console-only
+    // CSP violation. The page's whole job is showing a channel, most of which is
+    // pictures.
+    const slug = unique('csp');
+    await seedChannel(slug);
+
+    const response = await request(app).get(`/c/${slug}`);
+    const csp = String(response.headers['content-security-policy'] ?? '');
+
+    expect(csp).toContain("img-src 'self' data: https:");
+    expect(csp).toContain("media-src 'self' https:");
+    // Still no wildcard, and scripts still only from this origin.
+    expect(csp).not.toContain('img-src *');
+    expect(csp).toContain("script-src 'self'");
+  });
+
+  it('serves the channel picture through a URL that is signed when it is fetched', async () => {
+    // Not the signed URL itself: that expires in minutes, and the consumers that
+    // matter — a crawler building a preview card, a browser left open — arrive
+    // later than that. This route signs on each request instead.
+    const slug = unique('avatar');
+    const channelId = await seedChannel(slug, { name: 'With A Picture' });
+    await seedIcon(channelId, `goodpost/channels/icon/${slug}.png`);
+
+    const icon = await request(app).get(`/c/${slug}/icon`);
+    expect(icon.status).toBe(302);
+    expect(icon.headers['location']).toContain(`goodpost/channels/icon/${slug}.png`);
+
+    // A channel with no picture answers with a transparent image rather than a
+    // 404: the page draws the channel's initial behind it, and a failed request
+    // would put a broken-image glyph on top of that.
+    const bare = unique('no-avatar');
+    await seedChannel(bare, { name: 'No Picture' });
+    const blank = await request(app).get(`/c/${bare}/icon`);
+    expect(blank.status).toBe(200);
+    expect(blank.headers['content-type']).toContain('image/svg+xml');
+  });
+
+  it('offers both ways into the app, including a store listing (§6)', async () => {
+    const slug = unique('cta');
+    await seedChannel(slug, { name: 'Call To Action' });
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('Open in ClearView');
+    expect(response.text).toContain('Get ClearView');
+    // The listing for this repository's own package, because PLAY_STORE_URL is
+    // unset in tests — the default has to point at a real app, not a placeholder.
+    expect(response.text).toContain(
+      'https://play.google.com/store/apps/details?id=com.muddassir.clearview'
+    );
+    // The page's script is a file, because the CSP this service sends refuses
+    // inline handlers — see `buildApp`.
+    expect(response.text).toContain('<script src="/c/app.js" defer></script>');
+    const script = await request(app).get('/c/app.js');
+    expect(script.status).toBe(200);
+    expect(script.headers['content-type']).toContain('javascript');
+  });
+
+  it('introduces ClearView rather than stopping at the channel (§6)', async () => {
+    const slug = unique('about');
+    await seedChannel(slug, { name: 'About Test' });
+
+    const response = await request(app).get(`/c/${slug}`);
+
+    expect(response.text).toContain('<h2>ClearView</h2>');
+    expect(response.text).toContain('Explore ClearView on Google Play');
+    // Concise: one paragraph, not a marketing page.
+    expect(response.text.match(/<h2>ClearView<\/h2>/g)).toHaveLength(1);
   });
 
   it('says a channel with no posts is empty rather than rendering nothing', async () => {

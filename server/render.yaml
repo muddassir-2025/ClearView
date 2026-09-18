@@ -122,6 +122,22 @@ services:
       - key: PUBLIC_BASE_URL
         sync: false
 
+      # ── The shared channel page (§6) ─────────────────────────────────
+      #
+      # Where "Get ClearView" sends a visitor who does not have the app.
+      #
+      # NOT set here, because it does not need to be: the app's own package name
+      # IS its store link, so the page builds
+      # https://play.google.com/store/apps/details?id=com.muddassir.clearview by
+      # itself and a listing that moves does not need a redeploy. Set it only if
+      # the app is published under another package, or to point at a closed
+      # testing track instead of the public listing.
+      #
+      #   - key: PLAY_STORE_URL
+      #     sync: false
+      - key: ANDROID_PACKAGE_NAME
+        value: com.muddassir.clearview
+
       # The one account that can publish at all (§17).
       #
       # There is no route that creates the first administrator — an

@@ -26,6 +26,16 @@ const schema = z.object({
   PUBLIC_BASE_URL: z.string().default('http://localhost:8080'),
   CORS_ORIGINS: csv,
 
+  // ── The shared page (§6) ──
+  //
+  // Where "Get ClearView" sends a visitor who does not have the app. A default
+  // rather than a required value, because the package name IS the store link: an
+  // unset variable still points at the listing for the app this repository
+  // builds, and a deployment that ships under another package — or wants a
+  // closed testing track — overrides it without a code change.
+  ANDROID_PACKAGE_NAME: z.string().default('com.muddassir.clearview'),
+  PLAY_STORE_URL: z.string().optional(),
+
   // ── Neon ──
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   DATABASE_URL_DIRECT: z.string().optional(),

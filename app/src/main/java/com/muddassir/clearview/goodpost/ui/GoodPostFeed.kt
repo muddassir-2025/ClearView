@@ -936,7 +936,12 @@ internal fun PostItem(
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(POST_PHOTO_ASPECT)
-                            .clip(RoundedCornerShape(8.dp))
+                            // One radius for every attachment in the tab — the
+                            // same shape the video card and the link chip wear.
+                            // A photo used to round itself at 8dp, its own loader
+                            // clipped again at 11dp, and a clip beside it was
+                            // 10dp: three corners, one kind of thing (§6).
+                            .clip(WaMediaShape)
                             // A photo opens full size in the app, and can be kept
                             // from there (§15). It used to do nothing at all,
                             // which read as a broken image rather than a picture
@@ -1025,9 +1030,12 @@ internal fun PostItem(
             Spacer(Modifier.height(2.dp))
 
             Row(
+                // No horizontal inset of its own: the bubble owns the padding, so
+                // the time and the view count line up with the last line of the
+                // text above them rather than floating 6dp further in (§6).
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 6.dp, end = 6.dp, bottom = 2.dp),
+                    .padding(bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 // A post that has been edited says so, because a reader who saw
@@ -1119,7 +1127,9 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
             bitmap = current.asImageBitmap(),
             contentDescription = null,
             contentScale = ContentScale.Crop,
-            modifier = modifier.clip(RoundedCornerShape(11.dp))
+            // No clip of its own: the caller decides the shape, because the
+            // caller is the one that knows what it is drawing (§6).
+            modifier = modifier
         )
     } else {
         // The same box the picture will occupy, so the load is a fade rather

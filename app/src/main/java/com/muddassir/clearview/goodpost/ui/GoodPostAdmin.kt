@@ -1,6 +1,7 @@
 package com.muddassir.clearview.goodpost.ui
 
 import android.app.Activity
+import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -32,9 +33,15 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.autofill.ContentType
@@ -45,6 +52,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -53,6 +61,7 @@ import com.muddassir.clearview.BuildConfig
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 
@@ -302,109 +311,31 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
 }
 
 /**
- * A channel's profile image, on the form that creates or edits it (§21).
+ * Decode the image just picked, for the form's own preview (§19).
  *
- * Four states, and each is drawn from the real one rather than guessed:
- *
- *   no image, nothing picked   → the picker
- *   an upload in flight        → the avatar with "Uploading…"
- *   a new image ready to save  → the avatar with "Ready", and a Remove
- *   the channel's existing one → the avatar, with a Remove that will clear it
- *
- * The preview is the SAME [WaAvatar] every other screen uses, so the form shows
- * what the list row will show: a chosen image uploaded and then rendered at
- * 64dp, or the channel's initial while it is still on its way.
+ * Keyed on the uri, so choosing a second picture replaces the preview rather
+ * than leaving the first one on screen, and nulls out when the pick is dropped.
+ * The decode is [GoodPostImages.loadLocal] — the same downsampling the rest of
+ * the tab uses — run off the main thread, because a 12-megapixel photograph is
+ * a decode of tens of milliseconds and a form must not stutter while one runs.
  */
 @Composable
-private fun ChannelIconField(
-    state: GoodPostUiState,
-    busy: Boolean,
-    onPick: () -> Unit,
-    onRemove: () -> Unit,
-    onKeep: () -> Unit
-) {
-    val picked = state.channelFormIcon
-    val removed = state.channelFormIconRemoved
+private fun rememberLocalPreview(uri: String?): Bitmap? {
+    val context = LocalContext.current
+    var bitmap by remember(uri) { mutableStateOf<Bitmap?>(null) }
 
-    // The image being saved wins over the saved one, so the preview is what the
-    // POST will leave behind rather than what the server still holds.
-    val existingUrl = if (removed) null else state.channelFormExistingIconUrl
-    val showingPicked = picked != null && picked.mediaId != null
-
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        WaAvatar(
-            name = state.channelFormName.ifBlank { "?" },
-            size = 64.dp,
-            // A picked file is not previewed from its local URI: that would be a
-            // second image pipeline, and the upload is short. The initial stands
-            // in and the state is spelled out beside it.
-            url = if (showingPicked) null else existingUrl
-        )
-
-        Spacer(Modifier.width(14.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = stringResource(R.string.goodpost_channel_image),
-                color = Wa.Text,
-                fontSize = 14.sp
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = when {
-                    !state.composerMediaAvailable ->
-                        stringResource(R.string.goodpost_error_media_unavailable)
-                    picked?.state is GoodPostUploadState.Uploading ->
-                        stringResource(R.string.goodpost_attachment_uploading)
-                    picked?.state is GoodPostUploadState.Failed ->
-                        stringResource(R.string.goodpost_attachment_failed)
-                    showingPicked -> stringResource(R.string.goodpost_attachment_ready)
-                    removed -> stringResource(R.string.goodpost_channel_image_removing)
-                    existingUrl != null -> stringResource(R.string.goodpost_channel_image_current)
-                    else -> stringResource(R.string.goodpost_channel_image_none)
-                },
-                color = Wa.TextDim,
-                fontSize = 12.sp
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (removed) {
-                    // Reversible until Save: a removal that could not be undone
-                    // would send someone back out of the form to recover.
-                    WaTextAction(
-                        text = stringResource(R.string.goodpost_channel_image_keep),
-                        enabled = !busy,
-                        onClick = onKeep
-                    )
-                } else {
-                    WaTextAction(
-                        text = stringResource(
-                            if (picked != null || existingUrl != null) {
-                                R.string.goodpost_channel_image_change
-                            } else {
-                                R.string.goodpost_channel_image_add
-                            }
-                        ),
-                        enabled = !busy && state.composerMediaAvailable,
-                        onClick = onPick
-                    )
-                }
-
-                if (picked != null || existingUrl != null) {
-                    Spacer(Modifier.width(16.dp))
-                    WaTextAction(
-                        text = stringResource(R.string.goodpost_channel_image_remove),
-                        enabled = !busy,
-                        onClick = onRemove,
-                        destructive = true
-                    )
-                }
-            }
-        }
+    LaunchedEffect(uri) {
+        bitmap = if (uri == null) null else GoodPostImages.loadLocal(context, uri, PREVIEW_PX)
     }
+
+    return bitmap
 }
+
+/**
+ * How wide a preview is decoded. A 100dp circle is 300px on the densest phone
+ * this app runs on, and asking for more is memory spent on pixels nobody sees.
+ */
+private const val PREVIEW_PX = 320
 
 /**
  * Create or edit a channel as a clean full screen (§19, §20).
@@ -440,6 +371,15 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
     val removed = state.channelFormIconRemoved
     val existingUrl = if (removed) null else state.channelFormExistingIconUrl
     val showingPicked = picked != null && picked.mediaId != null
+    val uploading = picked?.state is GoodPostUploadState.Uploading
+    val failed = (picked?.state as? GoodPostUploadState.Failed)?.code
+
+    // The picture just chosen, decoded from the file on this phone (§19).
+    //
+    // Shown the moment it is picked rather than when the upload answers: the
+    // bytes are already here, and a form that replaces the photograph somebody
+    // chose with a letter while it works reads as though the choice was lost.
+    val preview = rememberLocalPreview(picked?.uri)
 
     WaBackdrop {
         // §19 Bug 1: Create/Save is at the bottom of a scrolling form, so without
@@ -473,7 +413,12 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                         .clip(CircleShape)
                         .background(Wa.Bar)
                         .clickable(
-                            enabled = !state.adminBusy && state.composerMediaAvailable,
+                            // Not while one is in flight: a second pick would start
+                            // a second upload against the same field, and the whole
+                            // point of the answer below is that one picture is
+                            // being saved (§19). Change is a tap away again the
+                            // moment the first answer arrives.
+                            enabled = !state.adminBusy && state.composerMediaAvailable && !uploading,
                             onClick = {
                                 iconPicker.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -485,8 +430,21 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                     WaAvatar(
                         name = state.channelFormName.ifBlank { "?" },
                         size = 100.dp,
-                        url = if (showingPicked) null else existingUrl
+                        url = if (preview != null || removed) null else existingUrl,
+                        local = preview
                     )
+
+                    // An upload in flight says so where the picture is, not only
+                    // in the button below it: the ring is over the thing that is
+                    // changing, and it disappears when the answer arrives rather
+                    // than after a wait.
+                    if (uploading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(100.dp),
+                            strokeWidth = 3.dp,
+                            color = Wa.Accent
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -510,7 +468,7 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                                     R.string.goodpost_channel_image_add
                                 }
                             ),
-                            enabled = !state.adminBusy && state.composerMediaAvailable,
+                            enabled = !state.adminBusy && state.composerMediaAvailable && !uploading,
                             onClick = {
                                 iconPicker.launch(
                                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -523,11 +481,28 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                         Spacer(Modifier.width(16.dp))
                         WaTextAction(
                             text = stringResource(R.string.goodpost_channel_image_remove),
+                            // Still offered while an upload is in flight: dropping
+                            // the pick is what the reader means by it, and the
+                            // upload that is already travelling is ignored when it
+                            // answers (§19).
                             enabled = !state.adminBusy,
                             onClick = viewModel::removeChannelIcon,
                             destructive = true
                         )
                     }
+                }
+
+                // A failed upload says so HERE, not only when Save refuses it: the
+                // picture is already on screen, so this is where the reader is
+                // looking for the answer about it.
+                if (failed != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = goodPostErrorText(failed),
+                        color = Wa.Danger,
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
+                    )
                 }
 
                 Spacer(Modifier.height(24.dp))

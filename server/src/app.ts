@@ -199,7 +199,29 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   app.set('trust proxy', 1);
   app.disable('x-powered-by');
 
-  app.use(helmet());
+  // Helmet's defaults, with ONE widening — and it is not a convenience.
+  //
+  // The shared channel page (§6) shows the channel's own picture and the images
+  // and clips its posts carry, and every one of those is a presigned URL on the
+  // bucket's own domain. Helmet's default `img-src 'self' data:` refuses every
+  // cross-origin image, so the page rendered with an empty avatar and no media at
+  // all: the picture was there, the browser was told not to load it, and nothing
+  // anywhere reported an error. `https:` (never `*`) is the narrowest rule that
+  // lets a signed bucket URL through, and it changes nothing for the API's own
+  // JSON responses.
+  //
+  // The rest is left as Helmet sets it: scripts from this origin only, so the
+  // page's one script is a file rather than an inline handler.
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          imgSrc: ["'self'", 'data:', 'https:'],
+          mediaSrc: ["'self'", 'https:'],
+        },
+      },
+    })
+  );
 
   // The Android client sends no Origin header, so an empty allow-list is the
   // correct default: browsers are refused and the native app is unaffected.

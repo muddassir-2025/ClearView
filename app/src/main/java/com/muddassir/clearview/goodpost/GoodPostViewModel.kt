@@ -437,6 +437,18 @@ data class GoodPostUiState(
     val canCreateChannel: Boolean get() = admin == null || admin.isSuperAdmin
 
     /**
+     * The one channel this account runs, when it runs exactly one.
+     *
+     * What the tab's menu offers as "My Channel" (§15). `singleOrNull` rather
+     * than `firstOrNull` on purpose: a super administrator who runs five channels
+     * has no "my channel" for a menu item to open — the tab already lists every
+     * one of them — and a label that silently picked the first would be a
+     * different channel on a different day.
+     */
+    val ownChannel: GoodPostChannel?
+        get() = if (admin == null) null else adminChannels.singleOrNull()
+
+    /**
      * True while the tab's list is still on its way.
      *
      * Which list that is depends on who is asking, and the two are fetched
@@ -2517,6 +2529,36 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Open the account's own channel, from the tab's menu (§15).
+     *
+     * The PROFILE page rather than the feed: it is the same screen a reader gets
+     * for any channel — avatar, name, handle, description, followers, views, the
+     * media strip — with the one addition an owner sees on it, which is the way to
+     * the edit form (§11). Nothing about it is a second layout for one account.
+     */
+    fun openMyChannel() {
+        val own = uiState.ownChannel ?: return
+        openChannelInfo(own.id)
+    }
+
+    /**
+     * A channel's information page (§11).
+     *
+     * The channel is re-read on the way in, because this page is where a change to
+     * a channel's own profile — a new name, a new avatar — has to be visible: the
+     * row it was reached from may have been loaded before that change, and a
+     * profile page showing the previous picture is the bug this exists to fix
+     * (§19).
+     */
+    fun openChannelInfo(channelId: String) {
+        val known = uiState.adminChannels.firstOrNull { it.id == channelId }
+            ?: uiState.channels.firstOrNull { it.id == channelId }
+        if (known != null) uiState = uiState.forChannel(known)
+        open(GoodPostScreen.ChannelInfo(channelId))
+        loadChannel(channelId)
+    }
+
     fun openAdminChannel(channelId: String) {
         uiState = uiState.forChannel(
             uiState.adminChannels.firstOrNull { it.id == channelId }
@@ -2579,6 +2621,19 @@ class GoodPostViewModel : ViewModel() {
      * image — the kind check refuses a video here, because the avatar is drawn
      * into a circle and a video has no meaning in one.
      */
+    /**
+     * Which pick the in-flight avatar upload belongs to — the picked file's uri.
+     *
+     * The form holds ONE image field, and two picks can be in the air at once: a
+     * reader who chooses a picture, sees it is the wrong one and chooses again has
+     * two uploads travelling and one field. Without this, the FIRST upload's answer
+     * arrives second and writes its media id onto the SECOND pick — so the channel
+     * is saved with an image nobody chose, which is exactly the "it does not
+     * reliably change" this field exists to stop. An answer is applied only while
+     * its own pick is still the one in the form.
+     */
+    private var channelIconPick: String? = null
+
     fun onChannelIconPicked(attachment: GoodPostAttachment) {
         val repo = repository ?: return
         // Signed in is the only precondition a caller can check. The token itself
@@ -2591,6 +2646,7 @@ class GoodPostViewModel : ViewModel() {
             return
         }
 
+        channelIconPick = attachment.uri
         uiState = uiState.copy(
             channelFormIcon = attachment,
             // Choosing a new image supersedes a pending removal: the last
@@ -2600,32 +2656,50 @@ class GoodPostViewModel : ViewModel() {
         )
 
         viewModelScope.launch {
-            when (val result = repo.adminUploadMedia(attachment)) {
-                is ApiResult.Ok -> uiState = uiState.copy(
-                    channelFormIcon = uiState.channelFormIcon?.copy(
-                        state = GoodPostUploadState.Ready(result.value.id)
-                    )
-                )
-                is ApiResult.Failed -> {
+            val result = repo.adminUploadMedia(attachment)
+            // Only the pick still in the form may be moved by this answer — see
+            // [channelIconPick].
+            val stillChosen = channelIconPick == attachment.uri
+
+            when (result) {
+                is ApiResult.Ok -> if (stillChosen) {
                     uiState = uiState.copy(
                         channelFormIcon = uiState.channelFormIcon?.copy(
-                            state = GoodPostUploadState.Failed(result.code)
-                        ),
-                        composerMediaAvailable = uiState.composerMediaAvailable &&
-                            result.code != "media_unavailable"
+                            state = GoodPostUploadState.Ready(result.value.id)
+                        )
                     )
                 }
-                ApiResult.Unreachable -> uiState = uiState.copy(
-                    channelFormIcon = uiState.channelFormIcon?.copy(
-                        state = GoodPostUploadState.Failed("unreachable")
-                    )
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    // The refusal is about STORAGE, so it counts even when this pick
+                    // has been replaced: the next pick would be refused the same way.
+                    composerMediaAvailable = uiState.composerMediaAvailable &&
+                        result.code != "media_unavailable",
+                    channelFormIcon = if (stillChosen) {
+                        uiState.channelFormIcon?.copy(
+                            state = GoodPostUploadState.Failed(result.code)
+                        )
+                    } else {
+                        uiState.channelFormIcon
+                    }
                 )
+
+                ApiResult.Unreachable -> if (stillChosen) {
+                    uiState = uiState.copy(
+                        channelFormIcon = uiState.channelFormIcon?.copy(
+                            state = GoodPostUploadState.Failed("unreachable")
+                        )
+                    )
+                }
             }
         }
     }
 
     /** Drop the image chosen for this channel, and ask for any existing one to go. */
     fun removeChannelIcon() {
+        // The pick is gone, so an upload still travelling for it must not put a
+        // media id back into a form that no longer holds that image.
+        channelIconPick = null
         uiState = uiState.copy(
             channelFormIcon = null,
             // Only a saved channel has an image to remove. On the create form
@@ -2706,6 +2780,11 @@ class GoodPostViewModel : ViewModel() {
         // blocks it — the alternative is a channel saved with the picture the
         // administrator chose silently missing.
         val icon = uiState.channelFormIcon
+        // Captured before the save, because the answer below runs against a state
+        // that has already been cleaned up: what this save CHANGED is a fact about
+        // the form as it was submitted, not about the form afterwards.
+        val iconChanged = icon != null || uiState.channelFormIconRemoved
+        val previousIconUrl = uiState.channelFormExistingIconUrl
         if (icon != null && icon.mediaId == null) {
             uiState = uiState.copy(
                 messageCode = if (icon.state is GoodPostUploadState.Failed) {
@@ -2748,12 +2827,25 @@ class GoodPostViewModel : ViewModel() {
             }
 
             uiState = when (result) {
-                is ApiResult.Ok -> uiState.copy(
-                    adminBusy = false,
-                    channelFormOpen = false,
-                    channelFormIcon = null,
-                    channelFormIconRemoved = false
-                )
+                is ApiResult.Ok -> uiState
+                    // The channel the server just saved, taken as the tab's own
+                    // copy of it.
+                    //
+                    // This is what makes a new avatar appear the moment the save
+                    // lands (§19). Reloading the two lists is not enough: the
+                    // screen BEHIND the form — the feed, or the profile page —
+                    // draws `state.channel`, which was read when it was opened and
+                    // is not part of either list. It kept the old signed URL until
+                    // the channel was closed and reopened, which reads as "my new
+                    // picture did not save".
+                    .withUpdatedChannel(result.value)
+                    .copy(
+                        adminBusy = false,
+                        channelFormOpen = false,
+                        channelFormIcon = null,
+                        channelFormIconRemoved = false,
+                        channelFormExistingIconUrl = result.value.iconUrl
+                    )
                 is ApiResult.Failed -> uiState.copy(
                     adminBusy = false,
                     messageCode = adminFailureCode(result)
@@ -2761,12 +2853,48 @@ class GoodPostViewModel : ViewModel() {
                 ApiResult.Unreachable -> uiState.copy(adminBusy = false, messageCode = "unreachable")
             }
             if (result is ApiResult.Ok) {
+                channelIconPick = null
+
+                // The replaced picture is dropped from this device's cache.
+                //
+                // Not a guess about what changed: replacing a channel's icon
+                // DELETES the object it replaced on the server, so the cached copy
+                // under that key is a file that no longer exists anywhere — leaving
+                // it would be kilobytes kept for an image nothing can point at. It
+                // also cannot cause a stale avatar on its own (the new image is a
+                // new object key, and therefore a new cache entry), which is why
+                // the fix above is the state and not this.
+                val replaced = if (iconChanged) previousIconUrl else null
+                if (replaced != null) {
+                    viewModelScope.launch { GoodPostImages.forget(listOf(replaced)) }
+                }
+
                 loadAdminChannels()
                 // The public list is refetched too, so a channel an administrator
                 // has just created is visible in the same session (§20).
                 refreshChannels()
             }
         }
+    }
+
+    /**
+     * This state with [channel] as the current copy of the row it identifies.
+     *
+     * One channel appears in up to three places in the tab — the account's own
+     * list, the reader's followed list, and the open screen — and an edit that
+     * updated some of them would leave the tab disagreeing with itself about a
+     * name or an avatar. Rows that are not there stay absent: this replaces a
+     * channel, it does not add one.
+     */
+    private fun GoodPostUiState.withUpdatedChannel(channel: GoodPostChannel): GoodPostUiState {
+        fun List<GoodPostChannel>.replaced(): List<GoodPostChannel> =
+            map { row -> if (row.id == channel.id) channel else row }
+
+        return copy(
+            channel = if (this.channel?.id == channel.id) channel else this.channel,
+            adminChannels = adminChannels.replaced(),
+            channels = channels.replaced()
+        )
     }
 
     // ── The composer (§21) ───────────────────────────────────────────────

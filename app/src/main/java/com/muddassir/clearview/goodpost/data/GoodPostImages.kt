@@ -3,6 +3,7 @@ package com.muddassir.clearview.goodpost.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
 import android.util.LruCache
 import kotlinx.coroutines.Dispatchers
@@ -128,6 +129,47 @@ internal object GoodPostImages {
             inFlight.remove(url, lock)
         }
     }
+
+    /**
+     * Decode a picture the reader has just picked, for a preview before anything
+     * is uploaded (§19).
+     *
+     * A different job from [load], and deliberately not a special case of it: [load]
+     * fetches from a network, and this opens a file the picker has already handed
+     * over. Nothing is cached — a picked file is a local `content://` handle that
+     * the resolver reads in a few milliseconds, and putting one in the same LRU as
+     * signed URLs would let a temporary pick evict an image the feed is drawing.
+     *
+     * Downsampled to [maxWidthPx] like everything else, because an avatar preview
+     * on a 100dp circle has no use for a 12-megapixel decode.
+     *
+     * Null is a normal outcome (a revoked grant, a trashed file) and the caller
+     * draws the initial letter instead — the picture it chose is simply not
+     * previewable, and the upload it is waiting on still is.
+     */
+    suspend fun loadLocal(context: Context, uri: String, maxWidthPx: Int): Bitmap? =
+        withContext(Dispatchers.IO) {
+            if (uri.isBlank() || maxWidthPx <= 0) return@withContext null
+            val parsed = try {
+                Uri.parse(uri)
+            } catch (e: Exception) {
+                return@withContext null
+            }
+
+            try {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                context.contentResolver.openInputStream(parsed)
+                    ?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                val options = BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize(bounds.outWidth, maxWidthPx)
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                context.contentResolver.openInputStream(parsed)
+                    ?.use { BitmapFactory.decodeStream(it, null, options) }
+            } catch (e: Exception) {
+                null
+            }
+        }
 
     /**
      * Warm the cache for images that are about to be on screen (§24).

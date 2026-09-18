@@ -1,5 +1,7 @@
 package com.muddassir.clearview.goodpost.ui
 
+import android.graphics.Bitmap
+
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.BasicTextField
@@ -322,7 +324,18 @@ internal fun WaAvatar(
     size: Dp = 49.dp,
     modifier: Modifier = Modifier,
     /** A signed URL for the channel's image, or null to draw the initial. */
-    url: String? = null
+    url: String? = null,
+    /**
+     * A picture the caller already holds — the image just picked for a channel,
+     * before its upload has finished (§19).
+     *
+     * Passed in rather than fetched because the file on the device IS the image:
+     * the bytes the reader chose are already decoded, and showing them must not
+     * wait for a signed URL to come back from a server that is still receiving
+     * them. It takes precedence over [url] whenever it is present, so a form that
+     * has one shows what is about to be saved and nothing else.
+     */
+    local: Bitmap? = null
 ) {
     val density = LocalDensity.current
     val widthPx = with(density) { size.roundToPx() }
@@ -343,7 +356,7 @@ internal fun WaAvatar(
             .background(Wa.avatarFill(name)),
         contentAlignment = Alignment.Center
     ) {
-        val bitmap = image
+        val bitmap = local ?: image
         if (bitmap != null) {
             Image(
                 bitmap = bitmap.asImageBitmap(),

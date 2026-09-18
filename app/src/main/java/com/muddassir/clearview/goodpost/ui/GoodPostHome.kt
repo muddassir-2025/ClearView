@@ -102,6 +102,25 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                         )
                                     )
                                 }
+                                // §15: the short way to the account's own
+                                // channel. Its row is on this list like any
+                                // other, so this is not the only route — it is
+                                // the one that opens the PROFILE, for an account
+                                // that runs a single channel and wants to see how
+                                // it looks rather than to write in it.
+                                //
+                                // Absent for a super administrator who runs
+                                // several: there is no one channel for the label
+                                // to name, and the list below already holds every
+                                // one of them.
+                                state.ownChannel?.let {
+                                    add(
+                                        WaMenuItem(
+                                            label = stringResource(R.string.goodpost_my_channel),
+                                            onClick = viewModel::openMyChannel
+                                        )
+                                    )
+                                }
                                 add(
                                     WaMenuItem(
                                         label = stringResource(R.string.goodpost_refresh),
