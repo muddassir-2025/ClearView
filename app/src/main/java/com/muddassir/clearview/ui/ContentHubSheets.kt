@@ -47,9 +47,11 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.Notifications
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -437,6 +439,9 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // Verse awaiting removal confirmation (null = no dialog). Removing a bookmark
     // is destructive, so the list always asks Remove / Cancel first.
     var pendingRemove by remember { mutableStateOf<QuranVerse?>(null) }
+    // Surah awaiting removal confirmation, from either its star or the bookmarks
+    // tab's Surah list (null = no dialog).
+    var pendingSurahRemove by remember { mutableStateOf<Int?>(null) }
     var searching by remember { mutableStateOf(false) }
     // The reader's field is behind its search icon, and starts closed (§2).
     //
@@ -666,7 +671,8 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                             state.goToVerse(it)
                             onDismiss()
                         },
-                        onRemove = { pendingRemove = it }
+                        onRemove = { pendingRemove = it },
+                        onRemoveSurah = { pendingSurahRemove = it }
                     )
 
                     QuranSheetTab.SEARCH -> {
@@ -779,6 +785,41 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { pendingRemove = null }) {
+                    Text(stringResource(R.string.quran_cancel))
+                }
+            }
+        )
+    }
+
+    // The same question for a starred surah, and the same two answers. Only the
+    // bookmarks list asks it: the star on a browse card is a toggle the reader
+    // just pressed on purpose, and asking there would put a dialog between a tap
+    // and the thing it did.
+    pendingSurahRemove?.let { number ->
+        AlertDialog(
+            onDismissRequest = { pendingSurahRemove = null },
+            title = { Text(stringResource(R.string.quran_surah_bookmarks_remove_confirm_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.quran_surah_bookmarks_remove_confirm_text,
+                        QuranJsonParser.surahName(number)
+                    )
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    state.removeSurahBookmark(number)
+                    pendingSurahRemove = null
+                }) {
+                    Text(
+                        text = stringResource(R.string.quran_bookmarks_remove_confirm),
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingSurahRemove = null }) {
                     Text(stringResource(R.string.quran_cancel))
                 }
             }
@@ -1241,17 +1282,92 @@ internal fun arabicDigits(value: Int): String =
         if (character in '0'..'9') ('\u0660' + (character - '0')) else character
     }.joinToString("")
 
+/** The two kinds of thing a reader can save: a passage, or a whole surah. */
+private enum class QuranBookmarkTab { VERSE, SURAH }
+
 /**
- * The Bookmarks tab (§3, §10): every saved verse, filtered by the same field the
- * other two tabs use.
+ * The Bookmarks tab (§3, §10): everything saved, in the two kinds it can be.
  *
- * The list is passed in already loaded (the screen owns that, so switching tabs
- * does not re-read the store) and removal is reported up to the screen's own
- * confirmation dialog.
+ * ## Why the two are split rather than one list with two row shapes
+ *
+ * A saved verse and a starred surah are not two flavours of the same row: one is
+ * a line of text to read again, the other is a place to go back to. Interleaved,
+ * the shorter list steals the top of the screen from the longer one and the count
+ * stops meaning anything — "6 bookmarks" that are five verses and a surah answers
+ * neither question. Split, each count is a count of the thing on the tab.
+ *
+ * Both tabs filter on the screen's one field ([query]) — a reader who types "cow"
+ * and taps Bookmarks is looking for what they saved about it, whichever kind that
+ * is — and both remove through the screen's own confirmation: this is the one list
+ * the reader built by hand, so nothing should leave it on a single tap.
+ *
+ * The verses arrive already loaded (the screen owns that, so switching tabs does
+ * not re-read the store). The surahs need no loading at all: they are numbers in
+ * prefs, and their names come from the bundled parser.
  */
 @Composable
 private fun BookmarksTab(
     state: ContentHubState,
+    query: String,
+    bookmarks: List<QuranVerse>?,
+    onOpenVerse: (QuranVerse) -> Unit,
+    onRemove: (QuranVerse) -> Unit,
+    onRemoveSurah: (Int) -> Unit
+) {
+    var tab by remember { mutableStateOf(QuranBookmarkTab.VERSE) }
+    val starred = remember(state.surahBookmarkKeys) { state.starredSurahs }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            QuranSegment(
+                selected = tab == QuranBookmarkTab.VERSE,
+                // The count belongs ON the tab: it is the answer to "did I save
+                // anything", and under the segments it took a line of height to
+                // say what the label could say for free.
+                label = pluralStringResource(
+                    R.plurals.quran_bookmarks_count,
+                    bookmarks?.size ?: 0,
+                    bookmarks?.size ?: 0
+                ),
+                modifier = Modifier.weight(1f),
+                onClick = { tab = QuranBookmarkTab.VERSE }
+            )
+            QuranSegment(
+                selected = tab == QuranBookmarkTab.SURAH,
+                label = pluralStringResource(
+                    R.plurals.quran_surah_bookmarks_count,
+                    starred.size,
+                    starred.size
+                ),
+                modifier = Modifier.weight(1f),
+                onClick = { tab = QuranBookmarkTab.SURAH }
+            )
+        }
+
+        when (tab) {
+            QuranBookmarkTab.VERSE -> BookmarkedVerses(
+                query = query,
+                bookmarks = bookmarks,
+                onOpenVerse = onOpenVerse,
+                onRemove = onRemove
+            )
+
+            QuranBookmarkTab.SURAH -> BookmarkedSurahs(
+                query = query,
+                starred = starred,
+                onOpen = { state.openSurah(it) },
+                onRemove = onRemoveSurah
+            )
+        }
+    }
+}
+
+/** The saved verses: loading, nothing saved, nothing matching the filter, or the list. */
+@Composable
+private fun BookmarkedVerses(
     query: String,
     bookmarks: List<QuranVerse>?,
     onOpenVerse: (QuranVerse) -> Unit,
@@ -1296,31 +1412,140 @@ private fun BookmarksTab(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
         )
-        else -> Column(modifier = Modifier.fillMaxSize()) {
-            Text(
-                text = pluralStringResource(
-                    R.plurals.quran_bookmarks_count,
-                    bookmarks.size,
-                    bookmarks.size
-                ),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 20.dp)
-            )
-            Spacer(Modifier.height(8.dp))
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+        else -> LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(filtered, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
+                VerseSearchRow(
+                    verse = verse,
+                    highlight = query,
+                    onClick = { onOpenVerse(verse) },
+                    onRemove = { onRemove(verse) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The starred surahs, drawn with the same card as the browse list so a surah looks
+ * like itself wherever it appears, and filtered by the same rule.
+ */
+@Composable
+private fun BookmarkedSurahs(
+    query: String,
+    starred: List<Int>,
+    onOpen: (Int) -> Unit,
+    onRemove: (Int) -> Unit
+) {
+    val filtered = remember(starred, query) { filterSurahs(starred, query) }
+
+    when {
+        starred.isEmpty() -> Text(
+            text = stringResource(R.string.quran_surah_bookmarks_empty),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+        )
+        filtered.isEmpty() -> Text(
+            text = stringResource(R.string.quran_bookmarks_no_match),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 24.dp)
+        )
+        else -> LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+            items(filtered, key = { it }) { number ->
+                SurahCard(
+                    number = number,
+                    starred = true,
+                    onOpen = { onOpen(number) },
+                    onStar = { onRemove(number) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One surah, as a row of a list: number badge, name, translation, and the star.
+ *
+ * The star is the card's only control, because it is the only thing the card
+ * cannot already say by being tapped: the tap opens the surah, so the arrow that
+ * used to sit there pointed at what the reader was already doing. It fills in
+ * place the moment it is pressed — [starred] comes from the hub's one set of
+ * starred surahs, so the card, the bookmarks tab and the next launch agree.
+ */
+@Composable
+private fun SurahCard(
+    number: Int,
+    starred: Boolean,
+    onOpen: () -> Unit,
+    onStar: () -> Unit
+) {
+    val name = QuranJsonParser.surahName(number)
+    val translation = QuranJsonParser.surahTranslation(number)
+
+    Card(
+        // Opens the whole surah, not its first verse (§2): the reader scrolls
+        // from here, and the surah's own text is what it needs — nothing to look
+        // up first, so the tap is instant and cannot fail.
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Two-digit number badge.
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.primaryContainer
             ) {
-                items(filtered, key = { "${it.surahNumber}:${it.ayahNumber}" }) { verse ->
-                    VerseSearchRow(
-                        verse = verse,
-                        highlight = query,
-                        onClick = { onOpenVerse(verse) },
-                        onRemove = { onRemove(verse) }
+                Text(
+                    text = number.toString().padStart(2, '0'),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.width(14.dp))
+            // titleMedium / bodyMedium rather than the smaller pair this list
+            // used: the surah names are the thing the reader came for, not a
+            // dense index they are skimming past.
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                if (translation.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = translation,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+            IconButton(onClick = onStar) {
+                Icon(
+                    imageVector = if (starred) Icons.Filled.Star else Icons.Outlined.StarBorder,
+                    contentDescription = stringResource(
+                        if (starred) R.string.quran_surah_unstar else R.string.quran_surah_star
+                    ),
+                    tint = if (starred) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }
@@ -1337,26 +1562,11 @@ private fun SurahBrowseList(
     state: ContentHubState,
     query: String
 ) {
-    // Filter the 114 surahs by the shared search field: a blank query shows
-    // all of them; a pure number matches the surah number exactly ("2" →
-    // Surah 2); anything else is a case-insensitive substring match on the
-    // transliterated name or the English translation (e.g. "baqara", "cow",
-    // "ya"). All from [QuranJsonParser] — pure local data, so filtering is
-    // instant with no I/O.
-    val q = query.trim()
-    val surahs = remember(q) {
-        if (q.isEmpty()) {
-            (1..114).toList()
-        } else {
-            val lower = q.lowercase()
-            val numeric = q.all { it.isDigit() }
-            (1..114).filter { number ->
-                (numeric && number.toString() == q) ||
-                    QuranJsonParser.surahName(number).lowercase().contains(lower) ||
-                    QuranJsonParser.surahTranslation(number).lowercase().contains(lower)
-            }
-        }
-    }
+    // Filter the 114 surahs by the shared search field ([filterSurahs]): a blank
+    // query shows all of them, a pure number is the surah number exactly, and
+    // anything else is a substring of the name or the translation. All from
+    // [QuranJsonParser] — bundled data, so filtering is instant with no I/O.
+    val surahs = remember(query) { filterSurahs((1..114).toList(), query) }
 
     if (surahs.isEmpty()) {
         Text(
@@ -1373,63 +1583,37 @@ private fun SurahBrowseList(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
     ) {
         items(surahs, key = { it }) { number ->
-            val name = QuranJsonParser.surahName(number)
-            val translation = QuranJsonParser.surahTranslation(number)
-            Card(
-                // Opens the whole surah, not its first verse (§2): the reader
-                // scrolls from here, and the surah's own text is what it needs —
-                // nothing to look up first, so the tap is instant and cannot fail.
-                onClick = { state.openSurah(number) },
-                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Two-digit number badge.
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer
-                    ) {
-                        Text(
-                            text = number.toString().padStart(2, '0'),
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer
-                        )
-                    }
-                    Spacer(Modifier.width(14.dp))
-                    // titleMedium / bodyMedium rather than the smaller pair this
-                    // list used: the surah names are 114 rows of the thing the
-                    // reader came for, not a dense index they are skimming past.
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        if (translation.isNotBlank()) {
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                text = translation,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            SurahCard(
+                number = number,
+                starred = state.isSurahStarred(number),
+                onOpen = { state.openSurah(number) },
+                onStar = { state.toggleSurahBookmarkAt(number) }
+            )
         }
+    }
+}
+
+/**
+ * [available] surahs narrowed by the sheet's shared field (§2): a blank term is
+ * all of them, a pure number is the surah number exactly ("2" → Surah 2, not
+ * every surah containing a 2), and anything else is a case-insensitive substring
+ * of the transliterated name or its English translation ("cow", "baqara", "ya").
+ *
+ * All of it from [QuranJsonParser] — bundled data, no I/O — so the browse list
+ * and the bookmarks screen's Surah tab filter the same way and neither waits for
+ * anything. Shared rather than written twice because the two lists must agree:
+ * a term that finds a surah in one and not the other reads as a lost bookmark.
+ */
+internal fun filterSurahs(available: List<Int>, query: String): List<Int> {
+    val q = query.trim()
+    if (q.isEmpty()) return available
+
+    val lower = q.lowercase()
+    val numeric = q.all { it.isDigit() }
+    return available.filter { number ->
+        (numeric && number.toString() == q) ||
+            QuranJsonParser.surahName(number).lowercase().contains(lower) ||
+            QuranJsonParser.surahTranslation(number).lowercase().contains(lower)
     }
 }
 

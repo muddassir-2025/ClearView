@@ -302,6 +302,31 @@ class QuranRepository(context: Context) {
         }.sortedWith(compareBy<QuranVerse> { it.surahNumber }.thenBy { it.ayahNumber })
     }
 
+    // ── Starred surahs ───────────────────────────────────────────────
+
+    /** Set of surah numbers ("2") the user has starred. */
+    fun getSurahBookmarks(): Set<String> = store.getSurahBookmarks()
+
+    fun isSurahBookmarked(surahNumber: Int): Boolean = store.isSurahBookmarked(surahNumber)
+
+    /** Toggles the star for a surah. Returns true when it is now starred. */
+    fun toggleSurahBookmark(surahNumber: Int): Boolean = store.toggleSurahBookmark(surahNumber)
+
+    /** Removes the star for a surah. */
+    fun removeSurahBookmark(surahNumber: Int) = store.removeSurahBookmark(surahNumber)
+
+    /**
+     * Every starred surah, in Quran order.
+     *
+     * Numbers only, and read straight from prefs: a surah's name and its
+     * translation come from [QuranJsonParser], which is bundled, so there is
+     * nothing here to wait for and nothing that can fail. The alternative —
+     * resolving each marked surah to its verses to prove it exists — would be
+     * 114 lookups to answer a question the number already answers.
+     */
+    fun getBookmarkedSurahs(): List<Int> =
+        store.getSurahBookmarks().mapNotNull { it.toIntOrNull() }.sorted()
+
     /** Enriches [v] with Arabic text and the surah ayah count when cached. */
     private fun enrich(v: QuranVerse): QuranVerse {
         val arabic = if (v.arabicText.isBlank()) {

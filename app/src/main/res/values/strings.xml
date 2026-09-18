@@ -164,6 +164,18 @@
     <string name="quran_bookmarks_empty">No bookmarks yet. Tap the bookmark icon on a verse to save it here.</string>
     <string name="quran_bookmarks_no_match">No bookmarks match your filter</string>
     <string name="quran_bookmarks_remove">Remove bookmark</string>
+    <!-- Saved surahs: the second kind of bookmark, and the star that makes one.
+         A line of scripture and a whole surah are two different keepers, so the
+         two lists are two tabs and the counts name what they count. -->
+    <plurals name="quran_surah_bookmarks_count">
+        <item quantity="one">%1$d surah</item>
+        <item quantity="other">%1$d surahs</item>
+    </plurals>
+    <string name="quran_surah_star">Save surah</string>
+    <string name="quran_surah_unstar">Remove saved surah</string>
+    <string name="quran_surah_bookmarks_empty">No saved surahs yet. Tap the star on a surah to keep it here.</string>
+    <string name="quran_surah_bookmarks_remove_confirm_title">Remove saved surah?</string>
+    <string name="quran_surah_bookmarks_remove_confirm_text">%1$s will be removed from your bookmarks. The verses you saved from it stay.</string>
     <string name="quran_bookmarks_remove_confirm_title">Remove bookmark?</string>
     <string name="quran_bookmarks_remove_confirm_text">This verse will be removed from your bookmarks.</string>
     <string name="quran_bookmarks_remove_confirm">Remove</string>

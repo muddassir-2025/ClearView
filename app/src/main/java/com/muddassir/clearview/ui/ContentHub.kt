@@ -158,6 +158,17 @@ class ContentHubState(appContext: Context) {
      */
     var bookmarkKeys by mutableStateOf<Set<String>>(emptySet())
 
+    /**
+     * Every surah this device has starred, keyed by number.
+     *
+     * A separate value from [bookmarkKeys] because they answer different
+     * questions: that one is "is this verse saved", asked once per row of a
+     * surah, this one is "is this whole surah saved", asked once per card of the
+     * browse list and by the bookmarks screen's second tab. Both are read from
+     * the same store the star writes to, so a card and the tab cannot disagree.
+     */
+    var surahBookmarkKeys by mutableStateOf<Set<String>>(emptySet())
+
     // ── Media notifications (channel updates) ──────────────────────
     var mediaNotificationsEnabled by mutableStateOf(true)
     var mediaUpdates by mutableStateOf<List<MediaChannelUpdate>>(emptyList())
@@ -260,6 +271,7 @@ class ContentHubState(appContext: Context) {
         todoNotificationsEnabled = todoStore.getTodoNotificationsEnabled()
         islamicDateAdjustment = islamicDateStore.adjustmentDays()
         bookmarkKeys = quranRepository.getBookmarks()
+        surahBookmarkKeys = quranRepository.getSurahBookmarks()
         verseLoading = true
     }
 
@@ -907,9 +919,34 @@ class ContentHubState(appContext: Context) {
         return added
     }
 
-    /** Number of saved bookmarks (instant prefs read, for the settings card). */
-    val bookmarkCount: Int
-        get() = quranRepository.getBookmarks().size
+    /**
+     * Star or unstar one surah (§2).
+     *
+     * The single write path for a surah star: the browse list's cards and the
+     * bookmarks screen's surah tab both come through here and both read
+     * [surahBookmarkKeys] afterwards, so the card the reader just tapped fills in
+     * the same frame the list behind it changes. Returns the new state, which is
+     * what the card needs to draw itself.
+     */
+    fun toggleSurahBookmarkAt(surahNumber: Int): Boolean {
+        val added = quranRepository.toggleSurahBookmark(surahNumber)
+        surahBookmarkKeys = quranRepository.getSurahBookmarks()
+        return added
+    }
+
+    /** Removes a surah star (no-op when not starred). */
+    fun removeSurahBookmark(surahNumber: Int) {
+        quranRepository.removeSurahBookmark(surahNumber)
+        surahBookmarkKeys = quranRepository.getSurahBookmarks()
+    }
+
+    /** Whether one surah is starred, by the same key the store uses. */
+    fun isSurahStarred(surahNumber: Int): Boolean =
+        surahNumber.toString() in surahBookmarkKeys
+
+    /** Every starred surah, in Quran order. */
+    val starredSurahs: List<Int>
+        get() = surahBookmarkKeys.mapNotNull { it.toIntOrNull() }.sorted()
 
     /** Removes a bookmark (no-op when not bookmarked); updates the top-bar icon. */
     fun removeBookmark(surahNumber: Int, ayahNumber: Int) {

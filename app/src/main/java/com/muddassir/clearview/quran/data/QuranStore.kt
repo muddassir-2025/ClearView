@@ -198,6 +198,46 @@ class QuranStore(context: Context) {
         }
     }
 
+    // ── Starred surahs ───────────────────────────────────────────────
+
+    /**
+     * Starred surahs, stored as the surah number alone.
+     *
+     * A second set rather than a flag on the verse keys: "2:255" and "2" are
+     * two different intents — a passage to come back to, and a whole surah to
+     * come back to — and one collection holding both would make starring a surah
+     * turn up in the verse list as a row for a verse nobody starred.
+     */
+    fun getSurahBookmarks(): Set<String> =
+        prefs.getStringSet(KEY_SURAH_BOOKMARKS, emptySet()) ?: emptySet()
+
+    fun isSurahBookmarked(surahNumber: Int): Boolean =
+        surahNumber.toString() in getSurahBookmarks()
+
+    /** Toggles a surah star. Returns true when it is now starred. */
+    fun toggleSurahBookmark(surahNumber: Int): Boolean {
+        val key = surahNumber.toString()
+        val current = getSurahBookmarks().toMutableSet()
+        val added = if (key in current) {
+            current.remove(key)
+            false
+        } else {
+            current.add(key)
+            true
+        }
+        prefs.edit().putStringSet(KEY_SURAH_BOOKMARKS, current).apply()
+        return added
+    }
+
+    /** Removes a surah star (no-op when not starred). */
+    fun removeSurahBookmark(surahNumber: Int) {
+        val key = surahNumber.toString()
+        val current = getSurahBookmarks().toMutableSet()
+        if (current.remove(key)) {
+            prefs.edit().putStringSet(KEY_SURAH_BOOKMARKS, current).apply()
+        }
+    }
+
     private companion object {
         const val PREFS_NAME = "quran_reminder_prefs"
         // The Clear Quran (Mustafa Khattab) English translation.
@@ -227,6 +267,7 @@ class QuranStore(context: Context) {
         const val KEY_REFRESH_INTERVAL_HOURS = "refresh_interval_hours"
         const val KEY_QURAN_NOTIFICATIONS_ENABLED = "quran_notifications_enabled"
         const val KEY_BOOKMARKS = "bookmarked_verses"
+        const val KEY_SURAH_BOOKMARKS = "bookmarked_surahs"
         const val DEFAULT_REFRESH_INTERVAL_HOURS = 6
         const val DEFAULT_QURAN_NOTIFICATIONS_ENABLED = true
     }
