@@ -26,24 +26,28 @@ import { serviceUnavailable, type ApiError } from '../http/errors.js';
  */
 
 /**
- * The kinds of media a post can carry (§8): an image or a video.
+ * The kinds of media a post can carry (§8): an image, a video or a document.
  *
- * The `media_kind` enum in 004 also has an `audio` label, and this union is
+ * The `media_kind` enum (004, 007) also has an `audio` label, and this union is
  * deliberately narrower than the column it mirrors — a label cannot be removed
  * from a PostgreSQL type without rebuilding it, but what this server ACCEPTS can
- * be narrowed to what the product has. §21 lists text, image, video and link
- * updates; an audio post would be a shape with no composer, no player in the
+ * be narrowed to what the product has. §21 lists text, image, video, document and
+ * link updates; an audio post would be a shape with no composer, no player in the
  * client and no case in `posts.type`'s constraint, so it is refused at upload
  * rather than stored and then failed at attach time.
+ *
+ * A document is the one kind whose reader-facing value is not the bytes: the card
+ * shows a name and a size and opens the file elsewhere, which is why `file_name`
+ * exists on the row and is required for this kind (008).
  */
-export type MediaKind = 'image' | 'video';
+export type MediaKind = 'image' | 'video' | 'document';
 
 /**
  * The prefix every key this service creates begins with.
  *
- * The layout — `goodpost/channels/{images,videos,avatars}` — is reproduced here
- * with the kind in the path so an operator can attach a lifecycle rule or a
- * budget alarm per kind without reading the database.
+ * The layout — `goodpost/channels/{images,videos,documents,avatars}` — is
+ * reproduced here with the kind in the path so an operator can attach a lifecycle
+ * rule or a budget alarm per kind without reading the database.
  */
 export const MEDIA_KEY_PREFIX = 'goodpost/channels';
 
@@ -62,6 +66,11 @@ export const ALLOWED_CONTENT_TYPES: Readonly<Record<string, string>> = {
   'video/mp4': 'mp4',
   'video/quicktime': 'mov',
   'video/webm': 'webm',
+  // The one document type, deliberately. A PDF is what every device already has
+  // something to open, and it cannot carry script the way `text/html` or an SVG
+  // served from our own domain could — which is the same reason those two are
+  // absent from this list rather than incidentally unbanned by it.
+  'application/pdf': 'pdf',
 };
 
 /**
@@ -86,6 +95,10 @@ export function kindFor(contentType: string): MediaKind | null {
   if (!ALLOWED_CONTENT_TYPES[base]) return null;
   if (base.startsWith('image/')) return 'image';
   if (base.startsWith('video/')) return 'video';
+  // Named explicitly rather than "anything else in the list": the list is a record
+  // of TYPES, and a type added to it for some future purpose must not silently
+  // become a third kind — `posts.type` is derived from this answer.
+  if (base === 'application/pdf') return 'document';
   return null;
 }
 

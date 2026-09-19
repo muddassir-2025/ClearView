@@ -113,7 +113,7 @@ async function confirm(session: Session, mediaId: string) {
     .post(`/admin/api/media/uploads/${mediaId}/confirm`)
     .set(authed(session.accessToken));
   expect(res.status, JSON.stringify(res.body)).toBe(200);
-  return res.body.media as { id: string; kind: string; url: string | null };
+  return res.body.media as { id: string; kind: string; fileName: string | null; url: string | null };
 }
 
 /** The whole handshake, for a test that is not about one of its steps. */
@@ -303,6 +303,123 @@ describe('publish a post with media, then read it back', () => {
     // rearranges itself between publishing and reading.
     expect(feed.body.items[0].media.map((m: { id: string }) => m.id)).toEqual([second, first]);
     expect(feed.body.items[0].media.map((m: { position: number }) => m.position)).toEqual([0, 1]);
+  });
+});
+
+describe('a PDF is the third kind a post can carry (§21)', () => {
+  /** The bytes of a document, all that is declared of it. */
+  const PDF_BYTES = 240_000;
+
+  /** Document uploads carry a name and no dimensions — see the assertions. */
+  async function uploadPdf(
+    session: Session,
+    fileName?: string
+  ): Promise<{ readonly status: number; readonly mediaId: string | null; readonly kind: string | null }> {
+    const presign = await request(app)
+      .post('/admin/api/media/uploads')
+      .set(authed(session.accessToken))
+      .send({
+        contentType: 'application/pdf',
+        byteSize: PDF_BYTES,
+        ...(fileName === undefined ? {} : { fileName }),
+      });
+
+    if (presign.status !== 201) return { status: presign.status, mediaId: null, kind: null };
+
+    const mediaId = presign.body.upload.mediaId as string;
+    store.put('application/pdf', PDF_BYTES);
+    return { status: presign.status, mediaId, kind: presign.body.upload.kind as string };
+  }
+
+  it('carries a PDF all the way to a reader, with the name it was sent under', async () => {
+    const { session, channel } = await setup();
+
+    const { mediaId, kind } = await uploadPdf(session, 'timetable-2026.pdf');
+    expect(kind).toBe('document');
+    expect(mediaId).toBeTruthy();
+
+    // The key is still derived from the row's own uuid — a document is stored
+    // exactly like an image, under its own kind's prefix so an operator can put
+    // a lifecycle rule on it without reading the database.
+    expect(store.lastIssuedKey()).toMatch(/^goodpost\/channels\/document\/[0-9a-f-]{36}\.pdf$/);
+
+    const confirmed = await confirm(session, mediaId as string);
+    expect(confirmed.kind).toBe('document');
+
+    const published = await request(app)
+      .post(`/admin/api/channels/${channel.id}/posts`)
+      .set(authed(session.accessToken))
+      .send({ mediaIds: [mediaId] });
+    expect(published.status, JSON.stringify(published.body)).toBe(201);
+
+    // The TYPE is derived from the file, so a document post is a document post
+    // without the client having said so.
+    expect(published.body.post.type).toBe('document');
+    expect(published.body.post.media[0].fileName).toBe('timetable-2026.pdf');
+
+    // And a reader sees the same thing, name included.
+    const reader = await request(app).get(`/api/v1/channels/${channel.slug}/posts`);
+    const post = reader.body.items.find((p: { id: string }) => p.id === published.body.post.id);
+    expect(post.type).toBe('document');
+    expect(post.media[0].fileName).toBe('timetable-2026.pdf');
+    expect(post.media[0].url).toContain('X-Amz-Signature=fake-read');
+  });
+
+  it('refuses a document with no name, because the name is what a reader sees', async () => {
+    const { session } = await setup();
+
+    const res = await request(app)
+      .post('/admin/api/media/uploads')
+      .set(authed(session.accessToken))
+      .send({ contentType: 'application/pdf', byteSize: PDF_BYTES });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('missing_file_name');
+    // Nothing was signed and nothing was stored: the refusal happens before the
+    // pending row that would otherwise have been left behind.
+    expect(store.issued).toHaveLength(0);
+  });
+
+  it('stores the file’s own name, not the path a provider handed back', async () => {
+    const { session } = await setup();
+
+    // Both shapes a picker really returns, and both are a client string that
+    // ends up on screen.
+    const path = await uploadPdf(session, '/storage/emulated/0/Download/notice.pdf');
+    const withNewline = await uploadPdf(session, 'notice\n.pdf');
+
+    for (const uploaded of [path, withNewline]) {
+      const confirmed = await confirm(session, uploaded.mediaId as string);
+      expect(confirmed.fileName).toBe('notice.pdf');
+    }
+  });
+
+  it('keeps a name that is only whitespace from becoming a nameless card', async () => {
+    const { session } = await setup();
+
+    const res = await request(app)
+      .post('/admin/api/media/uploads')
+      .set(authed(session.accessToken))
+      .send({ contentType: 'application/pdf', byteSize: PDF_BYTES, fileName: '   ' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('missing_file_name');
+  });
+
+  it('refuses a document beside a photo, because a post holds one kind', async () => {
+    const { session, channel } = await setup();
+
+    const image = await upload(session);
+    const { mediaId: pdf } = await uploadPdf(session, 'notice.pdf');
+    await confirm(session, pdf as string);
+
+    const res = await request(app)
+      .post(`/admin/api/channels/${channel.id}/posts`)
+      .set(authed(session.accessToken))
+      .send({ mediaIds: [image, pdf] });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('mixed_media');
   });
 });
 

@@ -58,7 +58,7 @@ export interface PublicChannelRef {
   readonly name: string;
 }
 
-export type PublicPostType = 'text' | 'image' | 'video' | 'link';
+export type PublicPostType = 'text' | 'image' | 'video' | 'link' | 'document';
 
 /**
  * A post as a reader sees it.
@@ -107,6 +107,8 @@ export interface PublicMediaItem {
   readonly width: number | null;
   readonly height: number | null;
   readonly durationMs: number | null;
+  /** The sender's file name, for a document. Null for the other kinds. */
+  readonly fileName: string | null;
   readonly createdAt: string;
   readonly url: string | null;
 }
@@ -389,10 +391,11 @@ export async function listPublicChannelMedia(
     width: number | null;
     height: number | null;
     duration_ms: number | null;
+    file_name: string | null;
     created_at: unknown;
   }>(
     `SELECT m.id, m.post_id, m.kind, m.object_key, m.content_type,
-            m.width, m.height, m.duration_ms, p.created_at
+            m.width, m.height, m.duration_ms, m.file_name, p.created_at
        FROM post_media m
        JOIN posts p ON p.id = m.post_id
       WHERE p.channel_id = $1
@@ -415,6 +418,7 @@ export async function listPublicChannelMedia(
       width: r.width,
       height: r.height,
       durationMs: r.duration_ms,
+      fileName: r.file_name,
       createdAt: isoOrNull(r.created_at) ?? '',
       url: await signObjectUrl(store, r.object_key),
     }))

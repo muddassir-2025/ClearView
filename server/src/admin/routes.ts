@@ -273,6 +273,11 @@ const UploadRequestSchema = z.object({
   width: z.number().int().positive().optional(),
   height: z.number().int().positive().optional(),
   durationMs: z.number().int().positive().optional(),
+  // What the sender's file was called, for a document to be shown by. Bounded
+  // loosely here and normalised server-side, which is where the decision about
+  // what a name may contain lives: this schema only says it is a string of some
+  // length, so a name with a separator in it is shortened rather than refused.
+  fileName: z.string().max(512).optional(),
 });
 
 const LoginSchema = z.object({
