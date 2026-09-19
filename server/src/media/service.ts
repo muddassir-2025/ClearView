@@ -60,6 +60,14 @@ export interface MediaSummary {
   readonly width: number | null;
   readonly height: number | null;
   readonly durationMs: number | null;
+  /**
+   * The name the sender's file had, for a document to be shown by.
+   *
+   * Null for an image or a clip, because a reader sees the picture rather than
+   * what it was called on disk. A document is the other way round: its name is
+   * the part of it a reader recognises, so the card is built from this.
+   */
+  readonly fileName: string | null;
   readonly position: number;
   /**
    * A presigned, expiring read URL — or null when this deployment has no bucket.
@@ -79,7 +87,7 @@ export interface MediaSummary {
  */
 const MEDIA_COLUMNS = `
   m.id, m.owner_id, m.post_id, m.channel_id, m.kind, m.object_key, m.content_type,
-  m.byte_size, m.width, m.height, m.duration_ms, m.status, m.position
+  m.byte_size, m.width, m.height, m.duration_ms, m.file_name, m.status, m.position
 `;
 
 export interface MediaRow {
@@ -101,6 +109,8 @@ export interface MediaRow {
   width: number | null;
   height: number | null;
   duration_ms: number | null;
+  /** Required for a document (008), unused for the other kinds. */
+  file_name: string | null;
   status: 'pending' | 'ready';
   position: number;
 }
@@ -111,6 +121,39 @@ export interface RequestUploadInput {
   readonly width?: number | undefined;
   readonly height?: number | undefined;
   readonly durationMs?: number | undefined;
+  /** What the sender's file was called. Ignored for an image or a clip. */
+  readonly fileName?: string | undefined;
+}
+
+/**
+ * A file name as it is safe to store and to show.
+ *
+ * Two jobs, and both matter more than they look:
+ *
+ *  * **It is a client string that ends up on screen.** Control characters are
+ *    stripped, because a name is drawn in a card and pasted into shares, and a
+ *    newline in the middle of it is a way to forge a second line of UI.
+ *  * **It is a client string that may name a path.** Everything up to the last
+ *    separator is dropped, so a provider that hands back
+ *    `/storage/emulated/0/Download/notice.pdf` stores `notice.pdf` rather than a
+ *    path — nothing here ever touches a filesystem, and this is what keeps that
+ *    true if something later does.
+ *
+ * A name that is only separators, only dots or only whitespace has nothing left to
+ * show, so it becomes null — and for a document that is a refusal (see
+ * [requestMediaUpload]) rather than a nameless card.
+ *
+ * Truncated rather than rejected at the far end: 255 characters is the ceiling the
+ * database enforces (008), and a sender with an absurdly long file name means the
+ * post should still go through with a shortened name rather than not at all.
+ */
+export function normalizeFileName(value: string | undefined): string | null {
+  if (value === undefined) return null;
+  // eslint-disable-next-line no-control-regex
+  const withoutControls = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  const base = withoutControls.split(/[\\/]/).pop() ?? '';
+  const safe = base.replace(/^\.+/, '').trim();
+  return safe === '' ? null : safe.slice(0, 255);
 }
 
 /** A presigned upload, plus the media id every later step refers to. */
@@ -149,8 +192,17 @@ export async function requestMediaUpload(
   if (!kind || !extension) {
     throw badRequest(
       'unsupported_media_type',
-      'That file type cannot be posted. Images and video only.'
+      'That file type cannot be posted. Images, video and PDF documents only.'
     );
+  }
+
+  // A document IS its name: the card a reader sees is that name, a byte size and
+  // an icon, so a nameless one would be a row nothing can draw. Refused here with
+  // a wordable code rather than left to the constraint in 008, which would be a
+  // 500 for something the client can fix.
+  const fileName = normalizeFileName(input.fileName);
+  if (kind === 'document' && fileName === null) {
+    throw badRequest('missing_file_name', 'A document needs a name to be shown with.');
   }
 
   if (input.byteSize > env.S3_MAX_UPLOAD_BYTES) {
@@ -165,8 +217,8 @@ export async function requestMediaUpload(
 
   await database.query(
     `INSERT INTO post_media
-       (id, owner_id, kind, object_key, content_type, byte_size, width, height, duration_ms, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
+       (id, owner_id, kind, object_key, content_type, byte_size, width, height, duration_ms, file_name, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')`,
     [
       mediaId,
       adminId,
@@ -177,6 +229,10 @@ export async function requestMediaUpload(
       input.width ?? null,
       input.height ?? null,
       input.durationMs ?? null,
+      // Stored only for a document: an image's original name is noise on a row
+      // nobody reads it from, and keeping it would be one more client string
+      // living in the database for no purpose.
+      kind === 'document' ? fileName : null,
     ]
   );
 
@@ -459,6 +515,13 @@ export async function claimChannelIcon(
   if (row.post_id !== null) {
     throw conflict('media_already_used', 'That file is already part of a post.');
   }
+  // A channel's image is drawn as a picture, in a circle, at every size the tab
+  // has — so the one kind that cannot be one is refused rather than stored. The
+  // upload allow-list is wider than this rule on purpose: a PDF is a fine post
+  // attachment and not an avatar.
+  if (row.kind !== 'image') {
+    throw badRequest('icon_must_be_image', 'A channel image has to be a picture.');
+  }
   if (row.channel_id !== null && row.channel_id !== channelId) {
     throw conflict('media_already_used', 'That file is already another channel’s image.');
   }
@@ -573,6 +636,7 @@ async function toSummary(store: ObjectStore, row: MediaRow): Promise<MediaSummar
     width: row.width,
     height: row.height,
     durationMs: row.duration_ms,
+    fileName: row.file_name,
     position: row.position,
     url,
   };
