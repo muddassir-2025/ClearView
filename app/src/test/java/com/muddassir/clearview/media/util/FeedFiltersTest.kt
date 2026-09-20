@@ -3,6 +3,7 @@ package com.muddassir.clearview.media.util
 import com.muddassir.clearview.media.model.FeedContentFilter
 import com.muddassir.clearview.media.model.FeedDateFilter
 import com.muddassir.clearview.media.model.FeedFilter
+import com.muddassir.clearview.media.model.FeedPlatformFilter
 import com.muddassir.clearview.media.model.FeedSortOrder
 import com.muddassir.clearview.media.model.FeedSourceFilter
 import com.muddassir.clearview.media.model.FeedWatchStatus
@@ -12,6 +13,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class FeedFiltersTest {
 
@@ -125,10 +129,14 @@ class FeedFiltersTest {
         assertTrue(FeedFilter(sort = FeedSortOrder.OLDEST_FIRST).isActive)
     }
 
+    // The feed header and the filter sheet describe a filter with ONE builder,
+    // so the same filter can never read two different ways. The header always
+    // names the window it is showing; both then name only what was narrowed.
+
     @Test
     fun `summary label includes date and count`() {
         val summary = feedFilterSummary(
-            FeedFilter(date = FeedDateFilter.LAST_7_DAYS, watchStatus = FeedWatchStatus.ALL),
+            FeedFilter(date = FeedDateFilter.LAST_7_DAYS),
             resultCount = 3
         )
         assertEquals("Last 7 days · 3 videos", summary)
@@ -137,23 +145,35 @@ class FeedFiltersTest {
     @Test
     fun `summary includes content type when not all`() {
         val summary = feedFilterSummary(
-            FeedFilter(
-                date = FeedDateFilter.TODAY,
-                content = FeedContentFilter.SHORTS,
-                watchStatus = FeedWatchStatus.ALL
-            ),
+            FeedFilter(date = FeedDateFilter.TODAY, content = FeedContentFilter.SHORTS),
             resultCount = 1
         )
         assertEquals("Today · Shorts · 1 video", summary)
     }
 
     @Test
-    fun `summary shows unwatched by default`() {
+    fun `summary drops the watch status at its default`() {
+        // Unwatched is the default, so naming it every time was noise: it is
+        // only worth a word once the reader changes it.
         val summary = feedFilterSummary(
             FeedFilter(date = FeedDateFilter.TODAY),
             resultCount = 2
         )
-        assertEquals("Today · Unwatched · 2 videos", summary)
+        assertEquals("Today · 2 videos", summary)
+    }
+
+    @Test
+    fun `summary names the platform and the sort too`() {
+        // Both used to be dropped from the header entirely: a feed filtered to
+        // Instagram, or sorted oldest-first, said nothing about it.
+        assertEquals(
+            "Last 3 days · Instagram · 2 videos",
+            feedFilterSummary(FeedFilter(platform = FeedPlatformFilter.INSTAGRAM), 2)
+        )
+        assertEquals(
+            "Last 3 days · Oldest first · 2 videos",
+            feedFilterSummary(FeedFilter(sort = FeedSortOrder.OLDEST_FIRST), 2)
+        )
     }
 
     @Test
@@ -282,11 +302,11 @@ class FeedFiltersTest {
         val summary = feedFilterSummary(
             FeedFilter(
                 date = FeedDateFilter.TODAY,
-                watchStatus = FeedWatchStatus.UNWATCHED
+                watchStatus = FeedWatchStatus.ALL
             ),
             resultCount = 2
         )
-        assertEquals("Today · Unwatched · 2 videos", summary)
+        assertEquals("Today · All · 2 videos", summary)
     }
 
     @Test
@@ -376,11 +396,25 @@ class FeedFiltersTest {
     @Test
     fun `summary includes source label when not all`() {
         val summary = feedFilterSummary(
-            FeedFilter(source = FeedSourceFilter.BY_URL, watchStatus = FeedWatchStatus.ALL),
+            FeedFilter(source = FeedSourceFilter.BY_URL),
             resultCount = 2
         )
         // The default date preset is Last 3 days.
         assertEquals("Last 3 days · By URL · 2 videos", summary)
+    }
+
+    @Test
+    fun `header and sheet agree on the same filter`() {
+        // The unification's whole point: one builder, two screens. Strip the
+        // header's own additions (its default date + the count) and what is
+        // left is exactly what the sheet shows.
+        val filter = FeedFilter(
+            date = FeedDateFilter.TODAY,
+            platform = FeedPlatformFilter.INSTAGRAM,
+            content = FeedContentFilter.REELS
+        )
+        assertEquals("Today · Instagram · Reels", filter.filterSummary())
+        assertEquals("Today · Instagram · Reels · 2 videos", feedFilterSummary(filter, 2))
     }
 
     @Test
@@ -435,5 +469,118 @@ class FeedFiltersTest {
             playlistType = PlaylistTypeFilter.VIDEO
         )
         assertEquals(filter, decodeFeedFilter(encodeFeedFilter(filter)))
+    }
+
+    // ── Filter sheet header ────────────────────────────────────────
+
+    @Test
+    fun `filter summary is empty at the defaults`() {
+        assertEquals("", FeedFilter().filterSummary())
+        assertEquals("", FeedFilter().filterSummary(playlistContext = true))
+    }
+
+    @Test
+    fun `filter summary names only the changed sections`() {
+        val filter = FeedFilter(
+            date = FeedDateFilter.LAST_7_DAYS,
+            platform = FeedPlatformFilter.YOUTUBE,
+            content = FeedContentFilter.SHORTS,
+            source = FeedSourceFilter.BY_URL,
+            watchStatus = FeedWatchStatus.ALL,
+            sort = FeedSortOrder.OLDEST_FIRST
+        )
+        assertEquals(
+            "Last 7 days · YouTube · Shorts · By URL · All · Oldest first",
+            filter.filterSummary()
+        )
+        // Nothing about this filter is a date change, so the date section is
+        // left out of the summary entirely.
+        assertEquals(
+            "YouTube · Shorts",
+            FeedFilter(
+                platform = FeedPlatformFilter.YOUTUBE,
+                content = FeedContentFilter.SHORTS
+            ).filterSummary()
+        )
+    }
+
+    @Test
+    fun `filter summary shows the custom range's real dates`() {
+        val fmt = SimpleDateFormat("d MMM yyyy", Locale.getDefault())
+        val filter = FeedFilter(
+            date = FeedDateFilter.CUSTOM,
+            customStartEpochMillis = now,
+            customEndEpochMillis = now + 6 * day
+        )
+        val label = filter.filterSummary()
+        // The range itself, not the words "Custom date range", so the header
+        // states which days the feed is actually showing.
+        assertEquals(
+            "${fmt.format(Date(now))} – ${fmt.format(Date(now + 6 * day))}",
+            label
+        )
+    }
+
+    @Test
+    fun `playlist summary covers just type and source`() {
+        val filter = FeedFilter(
+            // Set but irrelevant inside a playlist — not named there.
+            date = FeedDateFilter.TODAY,
+            platform = FeedPlatformFilter.X,
+            source = FeedSourceFilter.SYSTEM,
+            playlistType = PlaylistTypeFilter.AUDIO
+        )
+        assertEquals("Audio · From device", filter.filterSummary(playlistContext = true))
+        // The caller supplies the wording for device audio, so the model never
+        // hard-codes UI copy.
+        assertEquals(
+            "Audio · Device files",
+            filter.filterSummary(playlistContext = true, deviceSourceLabel = "Device files")
+        )
+    }
+
+    // ── Content types per platform ─────────────────────────────────
+
+    @Test
+    fun `content options follow the platform`() {
+        assertFalse(contentOptionsFor(FeedPlatformFilter.YOUTUBE).contains(FeedContentFilter.REELS))
+        assertTrue(contentOptionsFor(FeedPlatformFilter.YOUTUBE).contains(FeedContentFilter.SHORTS))
+        assertFalse(contentOptionsFor(FeedPlatformFilter.INSTAGRAM).contains(FeedContentFilter.VIDEOS))
+        assertTrue(contentOptionsFor(FeedPlatformFilter.INSTAGRAM).contains(FeedContentFilter.REELS))
+        assertEquals(listOf(FeedContentFilter.ALL), contentOptionsFor(FeedPlatformFilter.X))
+        // All platforms: everything except live (the Live tab owns live).
+        assertFalse(contentOptionsFor(FeedPlatformFilter.ALL).contains(FeedContentFilter.LIVE))
+    }
+
+    @Test
+    fun `switching platform drops a content type it does not offer`() {
+        val reels = FeedFilter(
+            platform = FeedPlatformFilter.INSTAGRAM,
+            content = FeedContentFilter.REELS
+        )
+        // Instagram keeps Reels...
+        assertEquals(FeedContentFilter.REELS, reels.normalizedForPlatform().content)
+        // ...YouTube doesn't offer them, so the filter falls back to All rather
+        // than staying on a selection with no chip and no results.
+        assertEquals(
+            FeedContentFilter.ALL,
+            reels.copy(platform = FeedPlatformFilter.YOUTUBE).normalizedForPlatform().content
+        )
+        val shorts = FeedFilter(
+            platform = FeedPlatformFilter.YOUTUBE,
+            content = FeedContentFilter.SHORTS
+        )
+        // Shorts survive a switch to a platform that still offers them...
+        assertEquals(
+            FeedContentFilter.SHORTS,
+            shorts.copy(platform = FeedPlatformFilter.ALL).normalizedForPlatform().content
+        )
+        // ...but not to X, which only offers All.
+        assertEquals(
+            FeedContentFilter.ALL,
+            shorts.copy(platform = FeedPlatformFilter.X).normalizedForPlatform().content
+        )
+        // An already-valid selection is left untouched.
+        assertEquals(shorts, shorts.normalizedForPlatform())
     }
 }

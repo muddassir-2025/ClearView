@@ -80,8 +80,8 @@ android {
         applicationId = "com.muddassir.clearview"
         minSdk = 24
         targetSdk = 37
-        versionCode = 31
-        versionName = "11.1"
+        versionCode = 32
+        versionName = "11.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -131,6 +131,7 @@ import com.muddassir.clearview.media.model.MediaPlatform
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.model.UserPlaylist
 import com.muddassir.clearview.media.playback.AudioPlayback
+import com.muddassir.clearview.media.util.continueWatchingResetMessage
 import com.muddassir.clearview.media.util.formatBytes
 import com.muddassir.clearview.media.util.formatEtaRemaining
 import java.util.Locale
@@ -431,6 +432,7 @@ fun VideoPlayerScreen(
     var pendingRemovePlaylist by remember(video.videoId) { mutableStateOf<UserPlaylist?>(null) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     var showHideConfirm by remember { mutableStateOf(false) }
+    var showResetContinueWatching by remember { mutableStateOf(false) }
     // The ⋮ menu's "Delete download" asks first (never deletes by accident).
     var confirmDeleteDownload by remember { mutableStateOf(false) }
 
@@ -1157,6 +1159,9 @@ fun VideoPlayerScreen(
                     progressRevision++
                     Toast.makeText(context, "Marked as watched", Toast.LENGTH_SHORT).show()
                 },
+                // Empty Continue Watching without leaving the video — the same
+                // action the feed's ⋮ menu offers, behind the same confirmation.
+                onResetContinueWatching = { showResetContinueWatching = true },
                 transport = TransportState(
                     positionSeconds = transportPosition,
                     durationSeconds = transportDuration,
@@ -1187,6 +1192,23 @@ fun VideoPlayerScreen(
                 scrollable = isInstagram
             )
         }
+    }
+
+    // ── Reset Continue Watching confirmation (⋮ menu) ───────────────
+    if (showResetContinueWatching) {
+        ResetContinueWatchingDialog(
+            onConfirm = {
+                showResetContinueWatching = false
+                val cleared = progressStore.clearContinueWatching()
+                progressRevision++
+                Toast.makeText(
+                    context,
+                    continueWatchingResetMessage(cleared),
+                    Toast.LENGTH_SHORT
+                ).show()
+            },
+            onDismiss = { showResetContinueWatching = false }
+        )
     }
 
     // ── Hide confirmation ───────────────────────────────────────────
@@ -1410,6 +1432,8 @@ private fun PlayerControlPanel(
     /** ⋮ menu → Remove (manually added). */
     onRemoveManual: () -> Unit,
     onMarkWatched: () -> Unit,
+    /** ⋮ menu → Reset Continue Watching (empties the whole row, not just this video). */
+    onResetContinueWatching: () -> Unit,
     /** The app-side transport bar (time, seek, play/pause, ±10 s, mute). */
     transport: TransportState,
     onTogglePlay: () -> Unit,
@@ -1653,6 +1677,13 @@ private fun PlayerControlPanel(
                             }
                         )
                     }
+                    DropdownMenuItem(
+                        text = { Text("Reset Continue Watching") },
+                        onClick = {
+                            showMoreMenu = false
+                            onResetContinueWatching()
+                        }
+                    )
                 }
             }
             PanelAction(

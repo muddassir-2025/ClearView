@@ -3,6 +3,7 @@ package com.muddassir.clearview.media.util
 import com.muddassir.clearview.media.model.FeedContentFilter
 import com.muddassir.clearview.media.model.FeedDateFilter
 import com.muddassir.clearview.media.model.FeedFilter
+import com.muddassir.clearview.media.model.FeedPlatformFilter
 import com.muddassir.clearview.media.model.FeedSortOrder
 import com.muddassir.clearview.media.model.FeedSourceFilter
 import com.muddassir.clearview.media.model.FeedWatchStatus
@@ -24,6 +25,12 @@ const val WATCHED_FRACTION_THRESHOLD = 0.9f
 
 /** The minimum fraction for a video to count as "meaningfully started". */
 const val STARTED_FRACTION_THRESHOLD = 0.02f
+
+/**
+ * How the UI words [FeedSourceFilter.SYSTEM] inside a user playlist: those videos
+ * are the audio files the user imported from the device, not a channel feed.
+ */
+const val DEVICE_SOURCE_LABEL = "From device"
 
 /**
  * Applies [filter] to [videos] purely locally (never refetches — only the
@@ -109,25 +116,13 @@ fun feedFilterSummary(
     filter: FeedFilter,
     resultCount: Int
 ): String {
-    val datePart = when (filter.date) {
-        FeedDateFilter.ALL_TIME -> "All time"
-        FeedDateFilter.TODAY -> "Today"
-        FeedDateFilter.LAST_3_DAYS -> "Last 3 days"
-        FeedDateFilter.LAST_7_DAYS -> "Last 7 days"
-        FeedDateFilter.LAST_30_DAYS -> "Last 30 days"
-        FeedDateFilter.CUSTOM -> customRangeLabel(filter)
-    }
-    val typePart = if (filter.content == FeedContentFilter.ALL) null else filter.content.label
-    val statusPart =
-        if (filter.watchStatus == FeedWatchStatus.ALL) null else filter.watchStatus.label
-    val sourcePart = if (filter.source == FeedSourceFilter.ALL) null else filter.source.label
-    return buildString {
-        append(datePart)
-        typePart?.let { append(" · ").append(it) }
-        statusPart?.let { append(" · ").append(it) }
-        sourcePart?.let { append(" · ").append(it) }
-        append(" · ").append(resultCount).append(if (resultCount == 1) " video" else " videos")
-    }
+    // One builder, two screens: this header states the window it is showing even
+    // at the default, then names whatever else was narrowed, then the count.
+    // (It used to drop the platform and the sort on the floor, so a feed
+    // filtered to Instagram or sorted oldest-first said nothing about it.)
+    val parts = filter.filterSummary(includeDefaultDate = true)
+    val count = if (resultCount == 1) "1 video" else "$resultCount videos"
+    return if (parts.isEmpty()) count else "$parts · $count"
 }
 
 /** Compact range label for a custom filter, e.g. "12 Jan – 18 Jan 2026". */
@@ -210,4 +205,73 @@ fun decodeFeedFilter(json: String?): FeedFilter? {
     } catch (e: Exception) {
         null
     }
+}
+
+/**
+ * The content types [platform] offers, in the order the filter sheet shows them
+ * (the sheet used to inline this decision).
+ */
+fun contentOptionsFor(platform: FeedPlatformFilter): List<FeedContentFilter> = when (platform) {
+    FeedPlatformFilter.YOUTUBE -> listOf(
+        FeedContentFilter.ALL,
+        FeedContentFilter.VIDEOS,
+        FeedContentFilter.SHORTS,
+        FeedContentFilter.DOWNLOADS
+    )
+    FeedPlatformFilter.INSTAGRAM -> listOf(
+        FeedContentFilter.ALL,
+        FeedContentFilter.REELS,
+        FeedContentFilter.IMAGE_POSTS
+    )
+    FeedPlatformFilter.X -> listOf(FeedContentFilter.ALL)
+    else -> FeedContentFilter.entries.filterNot { it == FeedContentFilter.LIVE }
+}
+
+/**
+ * [this] filter with any content type the current platform doesn't offer reset
+ * to [FeedContentFilter.ALL]. Switching platform (Instagram → YouTube) used to
+ * leave e.g. Reels selected: a selection with no chip to show it and a feed
+ * that matched nothing.
+ */
+fun FeedFilter.normalizedForPlatform(): FeedFilter =
+    if (content in contentOptionsFor(platform)) this else copy(content = FeedContentFilter.ALL)
+
+/** The date in words: the preset's label, or the picked range when custom. */
+fun FeedFilter.dateLabel(): String =
+    if (date == FeedDateFilter.CUSTOM) customRangeLabel(this) else date.label
+
+/**
+ * The filter's active settings, in the order the sheet lists them, as one line:
+ * only the sections that differ from the defaults are named. Empty at the
+ * defaults.
+ *
+ * [includeDefaultDate] forces the date in even when it is still the default. The
+ * feed header sets it (it always states the window it is showing, and that
+ * context is worth a word even at the default); the filter sheet does not, since
+ * it shows the date as a row of its own and only needs to name what changed.
+ *
+ * [playlistContext] names just the two sections that apply inside a user
+ * playlist (media type + source); [deviceSourceLabel] is the wording the UI uses
+ * for audio imported from the device.
+ */
+fun FeedFilter.filterSummary(
+    playlistContext: Boolean = false,
+    includeDefaultDate: Boolean = false,
+    deviceSourceLabel: String = DEVICE_SOURCE_LABEL
+): String {
+    val parts = mutableListOf<String>()
+    if (playlistContext) {
+        if (playlistType != PlaylistTypeFilter.ALL) parts += playlistType.label
+        if (source != FeedSourceFilter.ALL) {
+            parts += if (source == FeedSourceFilter.SYSTEM) deviceSourceLabel else source.label
+        }
+        return parts.joinToString(" · ")
+    }
+    if (includeDefaultDate || date != FeedDateFilter.LAST_3_DAYS) parts += dateLabel()
+    if (platform != FeedPlatformFilter.ALL) parts += platform.label
+    if (content != FeedContentFilter.ALL) parts += content.label
+    if (source != FeedSourceFilter.ALL) parts += source.label
+    if (watchStatus != FeedWatchStatus.UNWATCHED) parts += watchStatus.label
+    if (sort != FeedSortOrder.NEWEST_FIRST) parts += sort.label
+    return parts.joinToString(" · ")
 }

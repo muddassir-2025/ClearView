@@ -18,7 +18,6 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -91,7 +90,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -142,11 +140,8 @@ import com.muddassir.clearview.media.download.DownloadItem
 import com.muddassir.clearview.media.download.DownloadStatus
 import com.muddassir.clearview.media.model.DownloadSourceFilter
 import com.muddassir.clearview.media.model.FeedContentFilter
-import com.muddassir.clearview.media.model.FeedDateFilter
 import com.muddassir.clearview.media.model.FeedFilter
-import com.muddassir.clearview.media.model.FeedSortOrder
 import com.muddassir.clearview.media.model.FeedSourceFilter
-import com.muddassir.clearview.media.model.FeedWatchStatus
 import com.muddassir.clearview.media.model.MediaPlatform
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.model.PlaylistTypeFilter
@@ -154,9 +149,10 @@ import com.muddassir.clearview.media.model.SavedChannel
 import com.muddassir.clearview.media.worker.MediaNotifier
 import com.muddassir.clearview.media.model.SavedPlaylist
 import com.muddassir.clearview.media.model.UserPlaylist
-import com.muddassir.clearview.media.model.datePickerMillisToLocalStart
+import com.muddassir.clearview.media.util.DEVICE_SOURCE_LABEL
 import com.muddassir.clearview.media.util.MediaVideos
 import com.muddassir.clearview.media.util.applyFeedFilter
+import com.muddassir.clearview.media.util.continueWatchingResetMessage
 import com.muddassir.clearview.media.util.feedFilterSummary
 import com.muddassir.clearview.media.util.formatEtaRemaining
 import com.muddassir.clearview.media.util.matchesDownloadSource
@@ -167,8 +163,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /** Label for the device-import source shown in playlist contexts. */
-private const val DEVICE_SOURCE_LABEL = "From device"
-
 /**
  * Vertical gap between playlist editor rows. Shared by the LazyColumn's
  * arrangement and the drag-to-reorder maths, so one slot is exactly
@@ -769,12 +763,19 @@ fun MediaTab(
         }
     }
 
+    // The hub top bar's chevron (beside the "Media" title) hides the channel
+    // strip, so the feed gets its height. The feed's own actions — search, ⋮ and
+    // the filter button — stay put: they are how the feed is used, not just how
+    // it is navigated.
+    val channelStripHidden = hubState?.mediaChannelStripHidden == true
+
     Column(modifier = modifier.fillMaxSize()) {
 
         // ── Channel avatar strip (Subscriptions-style) ─────────────
         // Hidden inside a playlist — the playlist shows only its own videos
-        // (leave it via the ✕ in the header instead of the channel strip).
-        if (!inPlaylistContext) {
+        // (leave it via the ✕ in the header instead of the channel strip) — and
+        // foldable from the top bar when the feed needs the space.
+        if (!inPlaylistContext && !channelStripHidden) {
         // WhatsApp-Channels-style subscription header: the row is clearly a
         // channel surface, while View all remains the single directory entry.
         Row(
@@ -867,51 +868,6 @@ fun MediaTab(
         /* Imported playlist chips intentionally stay in the Playlists manager.
            They are not rendered in the All Feed: this keeps the feed header and
            bottom navigation compact while preserving imported playlists. */
-        /*
-        // ── Imported YouTube playlist strip (below the channels) ──
-        // A horizontal row of the user's imported playlists (tap to view its
-        // videos as a feed, tap again / ✕ to deselect) ending in an add chip.
-        // Hidden while inside a playlist (user or imported) — only its videos.
-        if (!inPlaylistContext && playlists.isNotEmpty()) {
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
-            ) {
-                items(playlists, key = { it.playlistId }) { playlist ->
-                    val count = remember(playlist.playlistId, selectedPlaylistId, playlistVideos.size) {
-                        if (selectedPlaylistId == playlist.playlistId) playlistVideos.size
-                        else repository.getCachedPlaylistVideos(playlist.playlistId)
-                            ?.first?.size ?: 0
-                    }
-                    PlaylistChip(
-                        playlist = playlist,
-                        selected = selectedPlaylistId == playlist.playlistId,
-                        videoCount = count,
-                        onClick = {
-                            if (selectedPlaylistId == playlist.playlistId) {
-                                selectedPlaylistId = null
-                            } else {
-                                // Only one feed context at a time. Clear any
-                                // previously loaded playlist videos so the new
-                                // playlist's feed never flashes the old one's
-                                // content under the new title.
-                                selectedPlaylistId = playlist.playlistId
-                                playlistVideos = emptyList()
-                                playlistError = null
-                                selectedUserPlaylistId = null
-                                filterChannelId = null
-                            }
-                        },
-                        onRemove = { pendingPlaylistRemove = playlist }
-                    )
-                }
-                item(key = "add-playlist") {
-                    AddPlaylistChip(onClick = { showAddPlaylistDialog = true })
-                }
-            }
-        }
-        */
-
         Spacer(Modifier.height(4.dp))
 
         // ── All Feed header: filter button (highlighted when active) + summary ──
@@ -1006,8 +962,18 @@ fun MediaTab(
                 onOpenFilter = { showFilterSheet = true },
                 onReset = { saveFilter(FeedFilter()) },
                 onOpenHidden = { showHiddenDialog = true },
-                onResetContinueWatching = { progressStore.clearContinueWatching() },
+                onResetContinueWatching = {
+                    // Say how much went: the row just disappears otherwise, and
+                    // "already empty" is worth knowing.
+                    val cleared = progressStore.clearContinueWatching()
+                    Toast.makeText(
+                        context,
+                        continueWatchingResetMessage(cleared),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                },
                 onOpenHiddenChannels = { showHiddenChannelsDialog = true },
+                onOpenChannels = { showAllChannelsSheet = true },
                 showHiddenChannelsManager = filterChannelId == null,
                 onAddVideo = { showAddVideoDialog = true },
                 onAddPlaylist = { showAddPlaylistDialog = true },
@@ -1435,10 +1401,6 @@ fun MediaTab(
             isPlaylistContext = feedIsUserPlaylist,
             onApply = { applied ->
                 saveFilter(applied)
-                showFilterSheet = false
-            },
-            onReset = {
-                saveFilter(FeedFilter())
                 showFilterSheet = false
             },
             onDismiss = { showFilterSheet = false }
@@ -3200,6 +3162,8 @@ private fun FeedHeader(
     /** Empties Continue Watching from the ⋮ menu (confirmed first). */
     onResetContinueWatching: () -> Unit = {},
     onOpenHiddenChannels: () -> Unit = {},
+    /** Opens the channel directory — the way into channels when the strip is folded away. */
+    onOpenChannels: () -> Unit = {},
     showHiddenChannelsManager: Boolean = true,
     onAddVideo: () -> Unit,
     onAddPlaylist: (() -> Unit)? = null,
@@ -3324,14 +3288,13 @@ private fun FeedHeader(
                                 }
                             )
                         }
+                        // The strip's own "View all", in the menu: folding the
+                        // strip away must never strand the channel directory.
                         DropdownMenuItem(
-                            text = { Text("Reset Continue Watching") },
+                            text = { Text("All channels") },
                             onClick = {
                                 showMenu = false
-                                // Confirm first: this throws away resume
-                                // positions, and a ⋮ menu is one tap away from
-                                // any card in the feed.
-                                showResetContinueWatching = true
+                                onOpenChannels()
                             }
                         )
                         DropdownMenuItem(
@@ -3351,6 +3314,18 @@ private fun FeedHeader(
                             }
                         )
                     }
+                    // Offered in every context — a playlist included. Continue
+                    // Watching is fed by whatever you watch anywhere, so the
+                    // menu item that empties it must not depend on where you
+                    // happen to be standing. It asks first: this throws away
+                    // resume positions, and a ⋮ menu is one tap from any card.
+                    DropdownMenuItem(
+                        text = { Text("Reset Continue Watching") },
+                        onClick = {
+                            showMenu = false
+                            showResetContinueWatching = true
+                        }
+                    )
                     DropdownMenuItem(
                         text = { Text("Add video by URL") },
                         enabled = canAddVideo,
@@ -3380,29 +3355,12 @@ private fun FeedHeader(
             // Reset Continue Watching asks first: a ⋮ menu is one careless tap
             // from any card, and this throws away resume positions.
             if (showResetContinueWatching) {
-                AlertDialog(
-                    onDismissRequest = { showResetContinueWatching = false },
-                    title = { Text("Reset Continue Watching?") },
-                    text = {
-                        Text(
-                            "This clears the resume position of every unfinished video, so " +
-                                "Continue Watching starts over. Videos you finished keep their " +
-                                "watched progress."
-                        )
+                ResetContinueWatchingDialog(
+                    onConfirm = {
+                        showResetContinueWatching = false
+                        onResetContinueWatching()
                     },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                showResetContinueWatching = false
-                                onResetContinueWatching()
-                            }
-                        ) { Text("Reset") }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showResetContinueWatching = false }) {
-                            Text("Cancel")
-                        }
-                    }
+                    onDismiss = { showResetContinueWatching = false }
                 )
             }
             if (filterEnabled) {
@@ -3517,350 +3475,6 @@ private fun FeedHeader(
     }
 }
 
-/**
- * Bottom sheet with the All Feed filter controls: Date presets (+ custom range
- * via date pickers), Content type, Sort, and Reset / Apply. Draft state is
- * only committed on Apply.
- */
-@OptIn(
-    ExperimentalMaterial3Api::class,
-    androidx.compose.foundation.layout.ExperimentalLayoutApi::class
-)
-@Composable
-private fun FilterSheet(
-    filter: FeedFilter,
-    /** Inside a user playlist only the Source (By URL / From device / By RSS) and Type
-     *  (Video / Audio) filters apply — playlists keep their hand-picked order,
-     *  so the sheet shows just those two sections there. */
-    isPlaylistContext: Boolean = false,
-    onApply: (FeedFilter) -> Unit,
-    onReset: (FeedFilter) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var draft by remember { mutableStateOf(filter) }
-    var showStartPicker by remember { mutableStateOf(false) }
-    var showEndPicker by remember { mutableStateOf(false) }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp)
-        ) {
-            Text(
-                text = "Filter",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            if (!isPlaylistContext) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Date",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(4.dp))
-                FeedDateFilter.entries.forEach { option ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { draft = draft.copy(date = option) },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = draft.date == option,
-                            onClick = { draft = draft.copy(date = option) }
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(option.label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-                if (draft.date == FeedDateFilter.CUSTOM) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = { showStartPicker = true },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(formatShortDate(draft.customStartEpochMillis, "Start")) }
-                        OutlinedButton(
-                            onClick = { showEndPicker = true },
-                            modifier = Modifier.weight(1f)
-                        ) { Text(formatShortDate(draft.customEndEpochMillis, "End")) }
-                    }
-                }
-
-                if (!isPlaylistContext) {
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        text = "Platform",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    androidx.compose.foundation.layout.FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        com.muddassir.clearview.media.model.FeedPlatformFilter.entries.forEach { option ->
-                            FilterChip(
-                                selected = draft.platform == option,
-                                onClick = { draft = draft.copy(platform = option) },
-                                label = { Text(option.label) }
-                            )
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Content",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(8.dp))
-                val contentOptions = when (draft.platform) {
-                    com.muddassir.clearview.media.model.FeedPlatformFilter.YOUTUBE ->
-                        listOf(FeedContentFilter.ALL, FeedContentFilter.VIDEOS, FeedContentFilter.SHORTS, FeedContentFilter.DOWNLOADS)
-                    com.muddassir.clearview.media.model.FeedPlatformFilter.INSTAGRAM ->
-                        listOf(FeedContentFilter.ALL, FeedContentFilter.REELS, FeedContentFilter.IMAGE_POSTS)
-                    com.muddassir.clearview.media.model.FeedPlatformFilter.X ->
-                        listOf(FeedContentFilter.ALL)
-                    else ->
-                        FeedContentFilter.entries.filterNot { it == FeedContentFilter.LIVE }
-                }
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    contentOptions.forEach { option ->
-                        FilterChip(
-                            selected = draft.content == option,
-                            onClick = { draft = draft.copy(content = option) },
-                            label = { Text(option.label) }
-                        )
-                    }
-                }
-            }
-
-            // Type — only meaningful inside a user playlist, which can hold
-            // both YouTube videos and audio imported from the device.
-            if (isPlaylistContext) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Type",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "Show everything, only the YouTube videos, or only the audio added from your device.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    PlaylistTypeFilter.entries.forEach { option ->
-                        FilterChip(
-                            selected = draft.playlistType == option,
-                            onClick = { draft = draft.copy(playlistType = option) },
-                            label = { Text(option.label) }
-                        )
-                    }
-                }
-            }
-
-            // Source — always available: it's the only feed filter that also
-            // applies inside a user playlist (playlists keep their own order).
-            Spacer(Modifier.height(16.dp))
-            Text(
-                text = "Source",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = if (isPlaylistContext) {
-                    "Where the audio in this playlist comes from: added by URL, pulled from your channels, or imported from your device."
-                } else {
-                    "Where the videos come from: added by URL, or pulled automatically from your channels."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(8.dp))
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // "By RSS" is a playlist-only option — the All Feed already
-                // covers channel-feed videos with "From channels". It stays
-                // visible when already selected (a filter picked inside a
-                // playlist can outlive the playlist), so an active filter is
-                // never left with a hidden chip.
-                val sourceOptions = FeedSourceFilter.entries.filterNot {
-                    it == FeedSourceFilter.BY_RSS && !isPlaylistContext &&
-                        draft.source != FeedSourceFilter.BY_RSS
-                }
-                sourceOptions.forEach { option ->
-                    FilterChip(
-                        selected = draft.source == option,
-                        onClick = {
-                            draft = draft.copy(
-                                source = option,
-                                // A source filter means "everything from here" —
-                                // the default Unwatched status would otherwise
-                                // hide already-watched videos and make the filter
-                                // look like it shows the wrong videos.
-                                watchStatus = if (option == FeedSourceFilter.ALL) {
-                                    draft.watchStatus
-                                } else {
-                                    FeedWatchStatus.ALL
-                                }
-                            )
-                        },
-                        label = {
-                            Text(
-                                if (option == FeedSourceFilter.SYSTEM && isPlaylistContext) DEVICE_SOURCE_LABEL
-                                else option.label
-                            )
-                        }
-                    )
-                }
-            }
-
-            if (!isPlaylistContext) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Sort",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(4.dp))
-                FeedSortOrder.entries.forEach { option ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { draft = draft.copy(sort = option) },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = draft.sort == option,
-                            onClick = { draft = draft.copy(sort = option) }
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(option.label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    text = "Watch Status",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(4.dp))
-                FeedWatchStatus.entries.forEach { option ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { draft = draft.copy(watchStatus = option) },
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(
-                            selected = draft.watchStatus == option,
-                            onClick = { draft = draft.copy(watchStatus = option) }
-                        )
-                        Spacer(Modifier.width(4.dp))
-                        Text(option.label, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(24.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { draft = FeedFilter() },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Reset") }
-                Button(
-                    onClick = { onApply(draft) },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Apply") }
-            }
-        }
-    }
-
-    // Custom range: start date picker.
-    if (showStartPicker) {
-        val startState = rememberDatePickerState(
-            initialSelectedDateMillis = draft.customStartEpochMillis
-        )
-        DatePickerDialog(
-            onDismissRequest = { showStartPicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    startState.selectedDateMillis?.let { picked ->
-                        draft = draft.copy(
-                            customStartEpochMillis = datePickerMillisToLocalStart(picked)
-                        )
-                    }
-                    showStartPicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showStartPicker = false }) { Text("Cancel") }
-            }
-        ) {
-            DatePicker(state = startState)
-        }
-    }
-
-    // Custom range: end date picker.
-    if (showEndPicker) {
-        val endState = rememberDatePickerState(
-            initialSelectedDateMillis = draft.customEndEpochMillis
-        )
-        DatePickerDialog(
-            onDismissRequest = { showEndPicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    endState.selectedDateMillis?.let { picked ->
-                        draft = draft.copy(
-                            customEndEpochMillis = datePickerMillisToLocalStart(picked)
-                        )
-                    }
-                    showEndPicker = false
-                }) { Text("OK") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showEndPicker = false }) { Text("Cancel") }
-            }
-        ) {
-            DatePicker(state = endState)
-        }
-    }
-}
-
-/** "12 Jan 2026", or the [fallback] placeholder when no date is picked yet. */
-private fun formatShortDate(millis: Long?, fallback: String): String {
-    if (millis == null) return fallback
-    return java.text.SimpleDateFormat("d MMM yyyy", java.util.Locale.getDefault())
-        .format(java.util.Date(millis))
-}
 
 /**
  * Continue Watching card for the horizontal row: thumbnail with a progress
@@ -4722,103 +4336,6 @@ private fun initials(name: String): String {
 // ══════════════════════════════════════════════════════════════════════
 //  Imported YouTube playlists (added by URL)
 // ══════════════════════════════════════════════════════════════════════
-
-/**
- * A pill-shaped chip for one imported YouTube playlist in the Media tab's
- * playlist strip: icon + title + video count, with a small ✕ to remove (the
- * ✕ consumes its own tap, so it never also opens the playlist).
- */
-@Composable
-private fun PlaylistChip(
-    playlist: SavedPlaylist,
-    selected: Boolean,
-    videoCount: Int,
-    onClick: () -> Unit,
-    onRemove: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = if (selected) MaterialTheme.colorScheme.primaryContainer
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-    ) {
-        Row(
-            modifier = Modifier.padding(start = 10.dp, top = 6.dp, bottom = 6.dp, end = 6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.PlaylistPlay,
-                contentDescription = null,
-                tint = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-                else MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(8.dp))
-            Column(modifier = Modifier.widthIn(max = 150.dp)) {
-                Text(
-                    text = playlist.title,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer
-                    else MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = if (videoCount > 0) "$videoCount videos" else "Loading…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-            }
-            Spacer(Modifier.width(6.dp))
-            Box(
-                modifier = Modifier
-                    .size(22.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.7f))
-                    .clickable(onClick = onRemove),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "Remove ${playlist.title}",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(12.dp)
-                )
-            }
-        }
-    }
-}
-
-/** The "+" entry at the end of the playlist strip — opens the add-by-URL dialog. */
-@Composable
-private fun AddPlaylistChip(onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = "Add playlist by URL",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                text = "Playlist",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
 
 /**
  * "Add playlist by URL": pastes a YouTube playlist link, resolves + fetches

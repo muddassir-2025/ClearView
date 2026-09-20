@@ -13,6 +13,8 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartDisplay
@@ -155,6 +157,13 @@ class ContentHubState(appContext: Context) {
     var mediaFilterChannelId by mutableStateOf<String?>(null)
     var mediaSelectedPlaylistId by mutableStateOf<String?>(null)
     var mediaSelectedUserPlaylistId by mutableStateOf<String?>(null)
+    /**
+     * Whether the Media tab's channel strip is hidden. It lives here because the
+     * toggle sits in the hub's top bar (the chevron beside the "Media" title)
+     * while the strip it hides is inside MediaTab. Only the strip goes: the feed's
+     * own actions (search, ⋮, filter) stay, since those are how the feed is used.
+     */
+    var mediaChannelStripHidden by mutableStateOf(false)
     // Previous/Next verse navigation availability (false at the very first /
     // last verse of the Quran, or before the cache is loaded).
     var canGoPrevious by mutableStateOf(false)
@@ -1201,9 +1210,9 @@ fun ContentHubTabContent(
 /**
  * The hub's top bar: while a video plays it shows the video title (plus the
  * optional back action); on the Quran tab it shows the verse header with
- * share / bookmark / copy actions; Media and Live get their titles. Pass
- * [onBack] to show a back arrow (the widget passes an activity-finish; the
- * main app passes player-exit).
+ * share / bookmark / copy actions; Media gets its title plus the chevron that
+ * folds the channel strip away. Pass [onBack] to show a back arrow (the widget
+ * passes an activity-finish; the main app passes player-exit).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1336,6 +1345,26 @@ fun ContentHubTopBar(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
+                }
+            },
+            actions = {
+                // Hides the channel strip so the feed gets its height. The arrow
+                // points the way the strip will move.
+                IconButton(
+                    onClick = { state.mediaChannelStripHidden = !state.mediaChannelStripHidden }
+                ) {
+                    Icon(
+                        imageVector = if (state.mediaChannelStripHidden) {
+                            Icons.Filled.KeyboardArrowUp
+                        } else {
+                            Icons.Filled.KeyboardArrowDown
+                        },
+                        contentDescription = if (state.mediaChannelStripHidden) {
+                            "Show channels"
+                        } else {
+                            "Hide channels"
+                        }
+                    )
                 }
             }
         )
