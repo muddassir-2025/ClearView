@@ -2,6 +2,7 @@ package com.muddassir.clearview.todo.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,6 +43,7 @@ import com.muddassir.clearview.todo.data.TodoCodec
 import com.muddassir.clearview.todo.data.TodoNotifier
 import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.todo.data.TodoStore
+import com.muddassir.clearview.todo.data.completionRefusalMessage
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.ui.theme.UrlblockerTheme
 import java.time.LocalDate
@@ -131,23 +133,37 @@ class TodoAlarmActivity : ComponentActivity() {
         }
     }
 
-    private fun complete(store: TodoStore, item: TodoItem, day: LocalDate) {
-        // Same date rule as everywhere: only a completion INSIDE an open
-        // window counts — a strict-interval todo whose window closed cannot
-        // be redone, so Complete degrades to a dismiss.
-        if (TodoCodec.canCompleteOn(item, day, System.currentTimeMillis())) {
-            val items = store.getItems()
+    private fun complete(store: TodoStore, item: TodoItem, occurrenceDay: LocalDate) {
+        // The reminder is answered for ITS occurrence: see
+        // TodoCodec.reminderCompletionRefusal for why the day is never rolled
+        // forward, and why a snoozed alarm is not locked out by a window that
+        // closed while it was ringing.
+        val day = occurrenceDay
+        val now = System.currentTimeMillis()
+        // Re-read: the guard below must judge the todo as it is now, not as the
+        // screen saw it when it opened.
+        val fresh = store.getItems().firstOrNull { it.id == item.id } ?: item
+        val refusal = TodoCodec.reminderCompletionRefusal(fresh, day)
+        if (refusal == null) {
             store.saveItems(
-                TodoCodec.completed(items, item.id, day, System.currentTimeMillis())
+                TodoCodec.completed(store.getItems(), item.id, day, now)
             )
             // Persist FIRST, then cancel every reminder for THIS occurrence
             // (all index offsets), then re-schedule the remaining future ones
             // — so no further alarm can ring for a day that is completed.
             TodoScheduler.cancelAllRemindersForTodo(this, item.id, day.toEpochDay())
             TodoScheduler.rescheduleAll(this)
+        } else {
+            // SAY SO. Degrading to a silent dismiss is what made this look like
+            // a broken button.
+            Toast.makeText(
+                this,
+                completionRefusalMessage(this, refusal),
+                Toast.LENGTH_LONG
+            ).show()
         }
         // Stop the ringing notification either way.
-        TodoNotifier.cancelDayNotification(this, todoId, epochDay)
+        TodoNotifier.cancelDayNotification(this, todoId, occurrenceDay.toEpochDay())
     }
 }
 

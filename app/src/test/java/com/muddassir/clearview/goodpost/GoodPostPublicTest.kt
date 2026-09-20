@@ -192,6 +192,7 @@ class GoodPostPublicTest {
                     width = 800,
                     height = 600,
                     durationMs = null,
+                    fileName = null,
                     position = 0,
                     url = "https://bucket.test/signed?signature=expiring"
                 )
@@ -435,6 +436,12 @@ class GoodPostPublicTest {
         assertEquals("video", goodPostKindFor("video/mp4"))
         assertEquals("video", goodPostKindFor("video/quicktime"))
 
+        // The one document type, and its own kind: the server derives a post's
+        // shape from this answer, so a PDF has to arrive as a document rather
+        // than as something the feed would try to draw a preview of.
+        assertEquals("document", goodPostKindFor("application/pdf"))
+        assertEquals("document", goodPostKindFor("APPLICATION/PDF; charset=binary"))
+
         // An audio file is no longer a post this product can carry: the server
         // refuses to store one, so accepting it here would mean a pick that
         // fails an upload later instead of a pick that is refused now.
@@ -451,7 +458,6 @@ class GoodPostPublicTest {
         // An SVG is the one that matters: stored under a URL anyone can fetch, it
         // is a script the browser runs from our own domain.
         assertNull(goodPostKindFor("image/svg+xml"))
-        assertNull(goodPostKindFor("application/pdf"))
         assertNull(goodPostKindFor("application/zip"))
         assertNull(goodPostKindFor("text/html"))
         assertNull(goodPostKindFor(null))

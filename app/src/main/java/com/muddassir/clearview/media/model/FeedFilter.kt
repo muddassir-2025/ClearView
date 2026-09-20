@@ -31,7 +31,9 @@ enum class FeedContentFilter(val label: String) {
     REELS("Reels"),
     IMAGE_POSTS("Image Posts")
 }
-enum class FeedPlatformFilter(val label: String) { ALL("All"), YOUTUBE("YouTube"), INSTAGRAM("Instagram") }
+enum class FeedPlatformFilter(val label: String) {
+    ALL("All"), YOUTUBE("YouTube"), INSTAGRAM("Instagram"), X("X")
+}
 
 /** Sort order for the All Feed. */
 enum class FeedSortOrder(val label: String) {

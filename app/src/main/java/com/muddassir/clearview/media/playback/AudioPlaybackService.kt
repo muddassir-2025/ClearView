@@ -100,6 +100,21 @@ class AudioPlaybackService : Service() {
         const val EXTRA_SLEEP_MS = "sleep_ms"
         const val EXTRA_SLEEP_END_OF_TRACK = "sleep_end_of_track"
 
+        /**
+         * What the notification's content intent carries: the videoId of what is
+         * playing, and whether it is a STREAM (listen mode over a video's audio)
+         * rather than a downloaded file.
+         *
+         * The service is the only place that knows both — the app-facing state
+         * is just "audio is playing" — and a tap on the card has to reopen the
+         * right player: the audio player for a download, the video player for a
+         * video that is only piping its audio. Guessing from the download list
+         * instead would mis-route every listen-mode session during the moment
+         * that list is still loading.
+         */
+        const val EXTRA_NOW_PLAYING_VIDEO_ID = "now_playing_video_id"
+        const val EXTRA_NOW_PLAYING_IS_STREAM = "now_playing_is_stream"
+
         /** Playback-speed bounds (PlaybackParams accepts 0.5x–2.0x). */
         const val MIN_SPEED = 0.5f
         const val MAX_SPEED = 2f
@@ -390,6 +405,11 @@ class AudioPlaybackService : Service() {
             thumbPath.isNotBlank() -> loadLocalThumb(thumbPath)
             artUrl.isNotBlank() -> loadRemoteArt(artUrl)
         }
+        // A tap on the Android 13 media card in Quick Settings is answered by
+        // the SESSION, not by the notification, so the session needs the same
+        // intent. Set once per loaded track rather than on every notification
+        // rebuild (the ticker rebuilds it every second).
+        session?.setSessionActivity(contentIntent())
         updateNotification(playing = false)
     }
 
@@ -788,13 +808,7 @@ class AudioPlaybackService : Service() {
             getString(R.string.audio_notification_stop),
             pendingService(ACTION_STOP, 2)
         )
-        val contentIntent = PendingIntent.getActivity(
-            this,
-            3,
-            Intent(this, LauncherActivity::class.java)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+        val contentIntent = contentIntent()
         val durationSec = (AudioPlayback.durationMs.longValue / 1000L).toInt().coerceAtLeast(0)
         val posSec = (AudioPlayback.positionMs.longValue / 1000L).toInt().coerceAtLeast(0)
 
@@ -841,6 +855,29 @@ class AudioPlaybackService : Service() {
         )
         else -> currentChannel
     }
+
+    /**
+     * What a tap on the media card does: bring the app up, TELLING IT WHAT IS
+     * PLAYING.
+     *
+     * Without the extra the tap could only launch the app, which lands on the
+     * tab the reader left it on — and since the hub opens on the Quran tab, the
+     * card appeared to open the Quran. The receiver reopens the player for this
+     * exact item instead.
+     *
+     * FLAG_UPDATE_CURRENT: the extras are rebuilt as the track changes, and a
+     * stale "what is playing" would reopen the previous track.
+     */
+    private fun contentIntent(): PendingIntent =
+        PendingIntent.getActivity(
+            this,
+            3,
+            Intent(this, LauncherActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                .putExtra(EXTRA_NOW_PLAYING_VIDEO_ID, currentVideoId)
+                .putExtra(EXTRA_NOW_PLAYING_IS_STREAM, isStream),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
     private fun pendingService(action: String, requestCode: Int): PendingIntent =
         PendingIntent.getService(

@@ -39,7 +39,10 @@ class WatchProgressStore(context: Context) {
     /** Persists [fraction] (clamped to 0..1). Negative values are ignored. */
     fun set(videoId: String, fraction: Float) {
         if (fraction < 0f) return
-        prefs.edit().putFloat(videoId, fraction.coerceIn(0f, 1f)).apply()
+        prefs.edit()
+            .putFloat(videoId, fraction.coerceIn(0f, 1f))
+            .remove(CONTINUE_DISMISSED_PREFIX + videoId)
+            .apply()
         bump()
     }
 
@@ -65,6 +68,7 @@ class WatchProgressStore(context: Context) {
             .putFloat(videoId, fraction.coerceIn(0f, 1f))
             .putLong(POS_PREFIX + videoId, positionSeconds.coerceAtLeast(0L))
             .putLong(DUR_PREFIX + videoId, durationSeconds.coerceAtLeast(0L))
+            .remove(CONTINUE_DISMISSED_PREFIX + videoId)
             .apply()
         bump()
     }
@@ -77,8 +81,61 @@ class WatchProgressStore(context: Context) {
             .remove(videoId)
             .remove(POS_PREFIX + videoId)
             .remove(DUR_PREFIX + videoId)
+            .remove(CONTINUE_DISMISSED_PREFIX + videoId)
             .apply()
         bump()
+    }
+
+    /** Hides a partially watched item from Continue Watching without changing progress. */
+    fun dismissFromContinueWatching(videoId: String) {
+        prefs.edit().putBoolean(CONTINUE_DISMISSED_PREFIX + videoId, true).apply()
+        bump()
+    }
+
+    /** True when the user explicitly removed this item from Continue Watching. */
+    fun isDismissedFromContinueWatching(videoId: String): Boolean =
+        prefs.getBoolean(CONTINUE_DISMISSED_PREFIX + videoId, false)
+
+    /**
+     * Empties Continue Watching: every video that was started but not finished
+     * loses its resume position, so the row starts again from nothing.
+     *
+     * FINISHED videos are deliberately left alone. Their progress is not what
+     * the row shows — it is the "Watched" badge and the full progress bar on
+     * the card itself — so clearing it would silently undo the one piece of
+     * state the reader did not ask to touch. Dismissals go too: they are a
+     * hide-without-erasing, and once the thing being hidden is gone the marker
+     * is just dead state.
+     *
+     * Returns how many items were cleared, so the caller can say so rather than
+     * leaving the reader to guess whether the tap did anything.
+     */
+    fun clearContinueWatching(): Int {
+        // prefs.all() is a snapshot, so the keys can be inspected while the
+        // edit below is being built.
+        val partial = prefs.all.keys.filter { key ->
+            !key.startsWith(POS_PREFIX) &&
+                !key.startsWith(DUR_PREFIX) &&
+                !key.startsWith(CONTINUE_DISMISSED_PREFIX) &&
+                when (val value = prefs.all[key]) {
+                    is Float -> value >= 0f && value < WATCHED_THRESHOLD
+                    else -> false
+                }
+        }
+        val dismissed = prefs.all.keys.filter { it.startsWith(CONTINUE_DISMISSED_PREFIX) }
+        if (partial.isEmpty() && dismissed.isEmpty()) return 0
+
+        val editor = prefs.edit()
+        partial.forEach { id ->
+            editor.remove(id)
+            editor.remove(POS_PREFIX + id)
+            editor.remove(DUR_PREFIX + id)
+            editor.remove(CONTINUE_DISMISSED_PREFIX + id)
+        }
+        dismissed.forEach { editor.remove(it) }
+        editor.apply()
+        bump()
+        return partial.size
     }
 
     companion object {
@@ -86,6 +143,7 @@ class WatchProgressStore(context: Context) {
         const val WATCHED_THRESHOLD = 0.9f
         const val POS_PREFIX = "pos_"
         const val DUR_PREFIX = "dur_"
+        private const val CONTINUE_DISMISSED_PREFIX = "continue_dismissed_"
         private val _revisionFlow = kotlinx.coroutines.flow.MutableStateFlow(0)
         val revisionFlow: kotlinx.coroutines.flow.StateFlow<Int> = _revisionFlow
         fun bumpRevision() { _revisionFlow.value++ }

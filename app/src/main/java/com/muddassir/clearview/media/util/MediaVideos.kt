@@ -33,6 +33,8 @@ object MediaVideos {
                     .put("instagramType", v.instagramType?.name ?: JSONObject.NULL)
                     .put("mediaUrl", v.mediaUrl ?: JSONObject.NULL)
                     .put("instagramUrl", v.instagramUrl ?: JSONObject.NULL)
+                    .put("sourceUrl", v.sourceUrl ?: JSONObject.NULL)
+                    .put("bodyText", v.bodyText)
             )
         }
         return arr.toString()
@@ -51,6 +53,7 @@ object MediaVideos {
                         null
                     } else {
                         val instagramUrl = o.optString("instagramUrl", "").takeIf { it.isNotBlank() }
+                        val sourceUrl = o.optString("sourceUrl", "").takeIf { it.isNotBlank() }
                         val isInstagram = o.optString("platform", "YOUTUBE") == "INSTAGRAM" ||
                             videoId.startsWith("ig_")
                         MediaVideo(
@@ -83,7 +86,9 @@ object MediaVideos {
                             platform = runCatching { com.muddassir.clearview.media.model.MediaPlatform.valueOf(o.optString("platform","YOUTUBE")) }.getOrDefault(com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE),
                             instagramType = o.optString("instagramType","").takeIf { it.isNotBlank() }?.let { runCatching { com.muddassir.clearview.media.model.InstagramMediaType.valueOf(it) }.getOrNull() },
                             mediaUrl = o.optString("mediaUrl", "").takeIf { it.isNotBlank() },
-                            instagramUrl = instagramUrl
+                            instagramUrl = instagramUrl,
+                            sourceUrl = sourceUrl,
+                            bodyText = o.optString("bodyText", "")
                         )
                     }
                 } catch (e: Exception) {

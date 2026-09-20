@@ -45,6 +45,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +57,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Collections
@@ -65,8 +69,10 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -128,6 +134,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.MediaLibraryStore
 import com.muddassir.clearview.media.data.MediaRepository
+import com.muddassir.clearview.media.data.MediaSourceStatusStore
 import com.muddassir.clearview.media.data.UserPlaylistStore
 import com.muddassir.clearview.media.data.WatchProgressStore
 import com.muddassir.clearview.media.download.AudioDownloads
@@ -144,6 +151,7 @@ import com.muddassir.clearview.media.model.MediaPlatform
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.model.PlaylistTypeFilter
 import com.muddassir.clearview.media.model.SavedChannel
+import com.muddassir.clearview.media.worker.MediaNotifier
 import com.muddassir.clearview.media.model.SavedPlaylist
 import com.muddassir.clearview.media.model.UserPlaylist
 import com.muddassir.clearview.media.model.datePickerMillisToLocalStart
@@ -231,14 +239,20 @@ fun MediaTab(
     // refresh never needs the channels to change.
     var refreshToken by remember { mutableIntStateOf(0) }
     // When the last successful refresh completed (epoch ms) — drives the
-    // "Updated Xm ago" hint under the feed header.
-    var lastRefreshedAt by remember { mutableStateOf(0L) }
+    // "Updated Xm ago" hint under the feed header. Seeded from the persisted
+    // value so the hint survives a tab switch (this composable is torn down
+    // whenever the user leaves the Media tab).
+    var lastRefreshedAt by remember { mutableStateOf(repository.lastFeedRefreshAt()) }
     // Bumped every minute while a refresh time exists so the "Updated Xm ago"
     // hint re-renders over time instead of freezing at "0 minutes ago".
     var clockTick by remember { mutableIntStateOf(0) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var showAllChannelsSheet by rememberSaveable { mutableStateOf(false) }
+    var channelDirectoryQuery by rememberSaveable { mutableStateOf("") }
+    var channelDirectoryPlatform by rememberSaveable { mutableStateOf<MediaPlatform?>(null) }
     var showAddVideoDialog by remember { mutableStateOf(false) }
     var showHiddenDialog by remember { mutableStateOf(false) }
+    var showHiddenChannelsDialog by remember { mutableStateOf(false) }
     var pendingRemove by remember { mutableStateOf<SavedChannel?>(null) }
     // A downloaded video awaiting "delete offline audio" confirmation — the
     // card's ⋮ menu "Delete download" no longer deletes without asking.
@@ -303,7 +317,7 @@ fun MediaTab(
 
     // Back handling within the Media tab: returns from channel/playlist back to All feed
     BackHandler(
-        enabled = filterChannelId != null || selectedPlaylistId != null || selectedUserPlaylistId != null || showPlaylistsSheet || searchActive
+        enabled = filterChannelId != null || selectedPlaylistId != null || selectedUserPlaylistId != null || showPlaylistsSheet || showAllChannelsSheet || searchActive
     ) {
         when {
             searchActive -> {
@@ -311,6 +325,7 @@ fun MediaTab(
                 searchQuery = ""
             }
             showPlaylistsSheet -> showPlaylistsSheet = false
+            showAllChannelsSheet -> showAllChannelsSheet = false
             selectedUserPlaylistId != null -> selectedUserPlaylistId = null
             selectedPlaylistId != null -> selectedPlaylistId = null
             filterChannelId != null -> filterChannelId = null
@@ -396,10 +411,30 @@ fun MediaTab(
     // The user opened the Media tab — its channel updates count as seen.
     LaunchedEffect(Unit) { onMediaOpened() }
 
-    // Keep the "Updated Xm ago" hint fresh: every minute (while a refresh
-    // time exists) bump clockTick, which recomposes the header text.
-    LaunchedEffect(lastRefreshedAt) {
-        while (lastRefreshedAt > 0L) {
+    // ── Per-source health (the header's status line) ───────────────
+    // The providers and the repository record why a source is not answering.
+    // Only the providers behind the channels IN VIEW can explain an empty feed
+    // here, so an X throttle is never blamed on a YouTube-only feed.
+    val sourceStatuses by MediaSourceStatusStore.statuses.collectAsState()
+    val sourceIssue: String? = remember(sourceStatuses, channels, filterChannelId, clockTick) {
+        val platforms = if (filterChannelId == null) {
+            channels.map { it.platform }.toSet()
+        } else {
+            channels.firstOrNull { it.channelId == filterChannelId }
+                ?.let { setOf(it.platform) }
+                .orEmpty()
+        }
+        val now = System.currentTimeMillis()
+        MediaSourceStatusStore.issues(now)
+            .firstOrNull { it.platform in platforms }
+            ?.let { MediaSourceStatusStore.describe(it, now) }
+    }
+
+    // Keep the "Updated Xm ago" hint and the status line's countdown fresh:
+    // every minute (while either is on screen) bump clockTick, which recomposes
+    // the header text.
+    LaunchedEffect(lastRefreshedAt, sourceIssue) {
+        while (lastRefreshedAt > 0L || sourceIssue != null) {
             delay(60_000L)
             clockTick++
         }
@@ -410,9 +445,28 @@ fun MediaTab(
     // identity — which would re-fetch every feed whenever an avatar landed).
     val channelIdsKey = channels.map { it.channelId }.sorted().joinToString(",")
 
-    // Aggregate load: every channel's cached videos first (instant), then a
-    // background refresh of all feeds merged into one list. Re-runs only when
-    // a channel is added or removed.
+    // Warm the YouTube player while the feed is on screen. Every open used to
+    // pay for the WebView renderer spawning and the IFrame API being fetched at
+    // tap time, for the video the user was still deciding on; doing it here
+    // means the tap goes straight to starting that video. No-op on low-RAM
+    // devices and only while there is something to watch.
+    LaunchedEffect(channelIdsKey) {
+        if (channels.isNotEmpty()) {
+            YoutubePlayerPrewarm.warm(context.applicationContext)
+        }
+    }
+
+    // Aggregate load. It paints in three stages so the tab never sits on a
+    // skeleton for data it already has:
+    //   1. the in-memory feed from the last visit (instant after a tab switch),
+    //   2. the per-channel caches on disk,
+    //   3. the network — and only when a refresh is actually due.
+    // The network step runs once per FEED_REFRESH_INTERVAL_MS, on a
+    // pull-to-refresh, and when a channel is added or removed (both bump
+    // refreshToken). Merely re-entering the tab, or switching between channels,
+    // never re-fetches anything — that repeated storm is what left the feed
+    // spinning on every tab switch and got X's syndication endpoint to
+    // rate-limit the install.
     LaunchedEffect(channelIdsKey, refreshToken) {
         if (channels.isEmpty()) {
             videos = emptyList()
@@ -420,13 +474,29 @@ fun MediaTab(
             errorMessage = null
             return@LaunchedEffect
         }
-        isLoading = true
-        errorMessage = null
-        val cached = withContext(Dispatchers.IO) { repository.getAllCachedVideos(channels) }
+        // Paint what we already have before touching the network. The memo can
+        // still hold a channel the user just removed (removing only rewrites
+        // the saved list), so keep just the channels that are saved right now.
+        val savedChannelIds = channels.map { it.channelId }.toSet()
+        val memo: List<MediaVideo>? = repository.getMemoizedAllFeed()
+            ?.filter { it.channelId in savedChannelIds }
+            ?.takeIf { it.isNotEmpty() }
+        val cached = memo
+            ?: withContext(Dispatchers.IO) { repository.getAllCachedVideos(channels) }
         if (cached.isNotEmpty()) {
             videos = cached
-            showingCached = true
+            // The in-memory feed came from this session's refresh, so it is not
+            // "cached" data — only a disk-only paint gets the hint.
+            showingCached = memo == null
         }
+        val explicitRefresh = refreshToken > 0
+        if (!explicitRefresh && !repository.isFeedRefreshDue()) {
+            isLoading = false
+            errorMessage = null
+            return@LaunchedEffect
+        }
+        isLoading = true
+        errorMessage = null
         val fresh = repository.refreshAllVideos(channels)
         if (fresh != null) {
             // Merge, don't replace: a channel whose refresh failed this round
@@ -441,6 +511,8 @@ fun MediaTab(
             videos = MediaVideos.merge(fresh, cached)
             showingCached = false
             lastRefreshedAt = System.currentTimeMillis()
+            repository.markFeedRefreshed(lastRefreshedAt)
+            repository.memoizeAllFeed(videos)
         } else if (cached.isEmpty()) {
             errorMessage = "Couldn't load videos. Check your internet connection."
         }
@@ -485,6 +557,7 @@ fun MediaTab(
     // filtered out everywhere EXCEPT the Hidden manager.
     val manualVideos = remember(libraryRevision) { libraryStore.getManuallyAddedVideos() }
     val hiddenVideos = remember(libraryRevision) { libraryStore.getHiddenVideos() }
+    val hiddenChannelIds = remember(libraryRevision) { libraryStore.getHiddenChannelIds() }
     // Hidden videos are scoped to the current feed context: in a channel feed
     // only THAT channel's hidden videos are shown in the manager; in the All
     // Feed every channel's hidden videos appear.
@@ -496,8 +569,14 @@ fun MediaTab(
     val mergedVideos = remember(videos, manualVideos) {
         MediaVideos.merge(videos, manualVideos)
     }
-    val visibleVideos = remember(mergedVideos, hiddenIds) {
-        mergedVideos.filterNot { it.videoId in hiddenIds }
+    // Channel hiding is an All Feed preference only. A hidden channel remains
+    // subscribed, stays in the avatar row, and remains fully visible when its
+    // avatar is opened directly.
+    val visibleVideos = remember(mergedVideos, hiddenIds, hiddenChannelIds, filterChannelId) {
+        mergedVideos.filterNot {
+            it.videoId in hiddenIds ||
+                (filterChannelId == null && it.channelId in hiddenChannelIds)
+        }
     }
 
     // Feed source: a selected imported YouTube playlist, a selected user
@@ -520,8 +599,8 @@ fun MediaTab(
     val channelVideos = remember(baseVideos, filterChannelId, feedIsPlaylist, feedIsUserPlaylist) {
         when {
             feedIsPlaylist || feedIsUserPlaylist -> baseVideos
-            // All Feed includes BOTH platforms — Instagram long videos are
-            // placed directly below the YouTube ones (see `longs` below).
+            // The All Feed includes EVERY source; each item then renders as the
+            // card its own type calls for (see the unified feed list below).
             filterChannelId == null -> baseVideos
             else -> baseVideos.filter { it.channelId == filterChannelId }
         }
@@ -590,26 +669,23 @@ fun MediaTab(
         }
     }
     // Shorts are YouTube Shorts only — an Instagram Reel is a NORMAL video
-    // here (same row, resume and Continue Watching as any YouTube video).
+    // here (same card, resume and Continue Watching as any YouTube video).
     // The three splits below are REMEMBERED: the feed recomposes on every
     // watch-progress revision, download tick and playback state change, and
-    // without a remember each one re-scanned (and re-sorted) the whole feed
-    // every time — pure wasted work while scrolling.
+    // without a remember each one re-scanned the whole feed every time.
     val shorts = remember(searchResults) { searchResults.filter { it.isShortsEntry } }
-    // YouTube long videos first, then Instagram Reels/videos directly below
-    // them (stable sort preserves each group's newest-first order). Still
-    // Instagram posts are NOT video rows — they get the square grid below.
+    // The Videos section: everything playable — YouTube long videos, Instagram
+    // Reels/videos and an X tweet that carries a clip. Instagram items sort
+    // after the YouTube ones so each source stays grouped, newest first within
+    // its group (a stable sort keeps the incoming order).
     val longs = remember(searchResults) {
-        searchResults.filterNot { it.isShortsEntry || it.isInstagramImage }
+        searchResults.filterNot { it.isShortsEntry || it.isPost }
             .sortedBy { if (it.isInstagram) 1 else 0 }
     }
-    // Instagram photo / carousel posts: small square tiles in a grid AFTER the
-    // Videos section (tap one to expand the post full screen).
-    val instagramPosts = remember(searchResults) { searchResults.filter { it.isInstagramImage } }
-    // The grid rows, chunked ONCE per posts list (chunked() allocates a new
-    // list of lists on every call, and an unstable row list defeats
-    // LazyColumn's item reuse).
-    val instagramPostRows = remember(instagramPosts) { instagramPosts.chunked(3) }
+    // The Posts grid: still posts — an Instagram photo/carousel and an X tweet
+    // with no clip attached — as small square tiles AFTER the video rows.
+    val posts = remember(searchResults) { searchResults.filter { it.isPost } }
+
     // The offline tracks behind the feed's audio entries, and the queue a
     // playlist context plays them with (its own audio entries, in order) — this
     // is what the audio player's Next / Previous buttons walk.
@@ -618,6 +694,16 @@ fun MediaTab(
         searchResults.mapNotNull { v -> downloadedItems.firstOrNull { it.videoId == v.videoId } }
     }
     val isSearching = searchActive && searchQuery.isNotBlank()
+    val unreadChannelCounts = remember(channels, libraryRevision, showAllChannelsSheet) {
+        val history = repository.getUpdatesHistory()
+        val unreadIds = repository.unreadUpdateIds(history)
+        history.filter { it.latestVideoId in unreadIds }
+            .groupingBy { it.channelId }
+            .eachCount()
+    }
+    val selectedChannel = remember(channels, filterChannelId) {
+        channels.firstOrNull { it.channelId == filterChannelId }
+    }
     val matchingChannels = remember(channels, searchQuery, isSearching) {
         if (!isSearching) emptyList()
         else {
@@ -634,12 +720,13 @@ fun MediaTab(
     // appear here — they're meant to be watched in one sitting). Hidden in
     // playlist contexts — those are curated, ordered lists.
     val continueWatching = remember(
-        channelVideos, hiddenIds, libraryRevision, feedIsPlaylist, feedIsUserPlaylist
+        channelVideos, hiddenIds, libraryRevision, feedIsPlaylist, feedIsUserPlaylist, watchRev
     ) {
         if (feedIsPlaylist || feedIsUserPlaylist) emptyList()
         else channelVideos
             .filter { v ->
                 !v.isShortsEntry && !v.isLive &&
+                    !progressStore.isDismissedFromContinueWatching(v.videoId) &&
                     (progressStore.get(v.videoId)?.let {
                         it >= 0.02f && it < 0.9f
                     } ?: false)
@@ -656,7 +743,14 @@ fun MediaTab(
         onPlayVideo(video, shorts, idx)
     }
     val playLong: (MediaVideo) -> Unit = { video ->
-        onPlayVideo(video, emptyList(), -1)
+        // A POST (an X tweet without a video, an Instagram photo/carousel)
+        // opens in the in-app post viewer; everything with playable media goes
+        // to the player. Neither path leaves the app.
+        if (video.isPost) {
+            expandedPost = video
+        } else {
+            onPlayVideo(video, emptyList(), -1)
+        }
     }
     // Inside a playlist the feed shows ONLY the playlist's own videos — the
     // channel-feed states (no channels / loading / errors) never apply there.
@@ -681,6 +775,43 @@ fun MediaTab(
         // Hidden inside a playlist — the playlist shows only its own videos
         // (leave it via the ✕ in the header instead of the channel strip).
         if (!inPlaylistContext) {
+        // WhatsApp-Channels-style subscription header: the row is clearly a
+        // channel surface, while View all remains the single directory entry.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Channels",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = { showAllChannelsSheet = true }) {
+                Text("View all")
+            }
+        }
+        // Channel-strip order, by ACTIVITY: the channel that last posted
+        // anything leads the row, so the strip re-shapes itself on every feed
+        // refresh. Volume only breaks ties, and a freshly added channel with
+        // nothing yet sorts by when it was added — it must not be buried.
+        //
+        // Computed OUT here: a LazyRow's content scope is not @Composable, so
+        // nothing that calls remember()/collectAsState() may live inside it.
+        val activeChannels = remember(channels, videos) {
+            val latestByChannel = HashMap<String, Long>()
+            val countByChannel = HashMap<String, Int>()
+            videos.forEach { video ->
+                latestByChannel[video.channelId] =
+                    maxOf(latestByChannel[video.channelId] ?: 0L, video.publishedAtEpochMillis)
+                countByChannel[video.channelId] = (countByChannel[video.channelId] ?: 0) + 1
+            }
+            channels.sortedWith(
+                compareByDescending<SavedChannel> { latestByChannel[it.channelId] ?: 0L }
+                    .thenByDescending { countByChannel[it.channelId] ?: 0 }
+                    .thenByDescending { it.addedAtEpochMillis }
+            )
+        }
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
@@ -709,7 +840,9 @@ fun MediaTab(
             item(key = "haramayn") {
                 HaramaynLiveAvatar(onClick = onOpenHaramaynLive)
             }
-            items(channels, key = { it.channelId }) { channel ->
+            // Show every saved subscription; latest activity only controls
+            // ordering, never whether a channel disappears from the row.
+            items(activeChannels, key = { it.channelId }) { channel ->
                 ChannelAvatar(
                     channel = channel,
                     selected = filterChannelId == channel.channelId,
@@ -726,9 +859,15 @@ fun MediaTab(
             item(key = "add") {
                 AddAvatar(onClick = { showAddDialog = true })
             }
+            // View all is presented in the WhatsApp-style header above; keep
+            // the row focused on subscriptions and the add action.
         }
         }
 
+        /* Imported playlist chips intentionally stay in the Playlists manager.
+           They are not rendered in the All Feed: this keeps the feed header and
+           bottom navigation compact while preserving imported playlists. */
+        /*
         // ── Imported YouTube playlist strip (below the channels) ──
         // A horizontal row of the user's imported playlists (tap to view its
         // videos as a feed, tap again / ✕ to deselect) ending in an add chip.
@@ -771,14 +910,17 @@ fun MediaTab(
                 }
             }
         }
+        */
 
         Spacer(Modifier.height(4.dp))
 
         // ── All Feed header: filter button (highlighted when active) + summary ──
         // Shown whenever there is a feed at all — including when a filter hides
-        // every video (so it can always be reset), and in playlist contexts.
-        // Hidden during the empty no-channels / loading states.
-        if (videos.isNotEmpty() || feedIsPlaylist || feedIsUserPlaylist) {
+        // every video (so it can always be reset), in playlist contexts, and
+        // whenever a provider issue has to be explained: an empty feed caused
+        // by a throttled source is exactly when this header is needed most.
+        // Hidden only during the no-channels / loading states.
+        if (videos.isNotEmpty() || feedIsPlaylist || feedIsUserPlaylist || sourceIssue != null) {
             // "Updated Xm ago" comes from whichever source feeds the screen:
             // the channel feeds in normal mode, the playlist page otherwise.
             val sourceRefreshedAt = if (feedIsPlaylist) playlistRefreshedAt else lastRefreshedAt
@@ -839,6 +981,9 @@ fun MediaTab(
                 searchEnabled = !downloadsFilter,
                 // "Updated Xm ago" — recomputed whenever a refresh lands OR
                 // the minute ticker bumps (clockTick read forces recompose).
+                // Why a provider is not answering ("X is rate-limiting …"), so
+                // an empty feed is never a silent mystery.
+                sourceStatus = sourceIssue,
                 updatedAgo = if (sourceRefreshedAt > 0L && !sourceLoading && clockTick >= 0) {
                     val ago = DateUtils.getRelativeTimeSpanString(
                         sourceRefreshedAt,
@@ -861,6 +1006,9 @@ fun MediaTab(
                 onOpenFilter = { showFilterSheet = true },
                 onReset = { saveFilter(FeedFilter()) },
                 onOpenHidden = { showHiddenDialog = true },
+                onResetContinueWatching = { progressStore.clearContinueWatching() },
+                onOpenHiddenChannels = { showHiddenChannelsDialog = true },
+                showHiddenChannelsManager = filterChannelId == null,
                 onAddVideo = { showAddVideoDialog = true },
                 onAddPlaylist = { showAddPlaylistDialog = true },
                 onOpenMyPlaylists = { showPlaylistsSheet = true },
@@ -958,10 +1106,19 @@ fun MediaTab(
                 !inPlaylistContext && (videos.isNotEmpty() || channels.isNotEmpty()) &&
                     searchResults.isEmpty() && matchingChannels.isEmpty() && isSearching && !isLoading ->
                     ErrorCard("No videos or channels match your search.")
+                // A selected channel with nothing to show says exactly that,
+                // and points at the one thing that changes it. Whether the
+                // provider is throttling is answered by the header's own
+                // status line (see MediaSourceStatusStore), so this stays a
+                // plain, short message rather than a paragraph of diagnosis.
                 !inPlaylistContext && videos.isNotEmpty() && displayed.isEmpty() && !isLoading ->
                     ErrorCard(
-                        if (feedFilter.isActive) "No videos match your filters."
-                        else "No videos for this channel yet."
+                        when {
+                            feedFilter.isActive -> "No videos match your filters."
+                            selectedChannel != null ->
+                                "No posts from this channel yet. Try another filter."
+                            else -> "No videos for this channel yet. Try another filter."
+                        }
                     )
                 else -> {
                 LazyColumn(
@@ -1010,123 +1167,133 @@ fun MediaTab(
                                         video = video,
                                         progressStore = progressStore,
                                         downloadStatus = AudioDownloads.statusFor(video.videoId),
-                                        onClick = { playLong(video) }
+                                        onClick = { playLong(video) },
+                                        onDismiss = {
+                                            progressStore.dismissFromContinueWatching(video.videoId)
+                                        }
                                     )
                                 }
                             }
                         }
                     }
+                    // ── Shorts: a horizontal rail of portrait cards, at the
+                    // top of the feed where they have always been (YouTube
+                    // Shorts only — an Instagram Reel is a normal video and
+                    // belongs with the videos below).
                     if (shorts.isNotEmpty() && !feedIsUserPlaylist) {
-                            item(key = "shorts-header") {
-                                SectionHeader(
-                                    title = "Shorts",
-                                    isLoading = feedLoading,
-                                    showingCached = feedCached
-                                )
-                            }
-                            item(key = "shorts-row") {
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    items(shorts, key = { it.videoId }) { video ->
-                                        ShortCard(
-                                            video = video,
-                                            progressStore = progressStore,
-                                            isManual = libraryStore.isManuallyAdded(video.videoId),
-                                            downloadStatus = AudioDownloads.statusFor(video.videoId),
-                                            isOffline = AudioDownloads.isDownloaded(video.videoId),
-                                            onPlayOffline = { onPlayOffline(video) },
-                                            onClick = { playShort(video) },
-                                            onDownload = {
-                                                AudioDownloads.download(video, AudioDownloads.sourceFor(video))
-                                            },
-                                            onCancelDownload = { AudioDownloads.cancel(video.videoId) },
-                                            onDeleteDownload = { pendingDeleteDownload = video },
-                                            onHide = {
-                                                libraryStore.hideVideo(video)
+                        item(key = "shorts-header") {
+                            SectionHeader(
+                                title = "Shorts",
+                                isLoading = feedLoading,
+                                showingCached = feedCached
+                            )
+                        }
+                        item(key = "shorts-row") {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                items(shorts, key = { it.videoId }) { video ->
+                                    ShortCard(
+                                        video = video,
+                                        progressStore = progressStore,
+                                        isManual = libraryStore.isManuallyAdded(video.videoId),
+                                        downloadStatus = AudioDownloads.statusFor(video.videoId),
+                                        isOffline = AudioDownloads.isDownloaded(video.videoId),
+                                        onPlayOffline = { onPlayOffline(video) },
+                                        onClick = { playShort(video) },
+                                        onDownload = {
+                                            AudioDownloads.download(video, AudioDownloads.sourceFor(video))
+                                        },
+                                        onCancelDownload = { AudioDownloads.cancel(video.videoId) },
+                                        onDeleteDownload = { pendingDeleteDownload = video },
+                                        onHide = {
+                                            libraryStore.hideVideo(video)
+                                            libraryRevision++
+                                        },
+                                        onRemoveManual = {
+                                            libraryStore.removeManuallyAdded(video.videoId)
+                                            libraryRevision++
+                                        },
+                                        onAddToPlaylist = { pendingAddToPlaylist = video },
+                                        onHideChannel = if (filterChannelId == null) {
+                                            {
+                                                libraryStore.hideChannel(video.channelId)
                                                 libraryRevision++
-                                            },
-                                            onRemoveManual = {
-                                                libraryStore.removeManuallyAdded(video.videoId)
-                                                libraryRevision++
-                                            },
-                                            onAddToPlaylist = { pendingAddToPlaylist = video }
-                                        )
-                                    }
+                                            }
+                                        } else null
+                                    )
                                 }
                             }
                         }
-                        if (longs.isNotEmpty() && !feedIsUserPlaylist) {
-                            item(key = "videos-header") {
-                                SectionHeader(
-                                    title = "Videos",
-                                    isLoading = feedLoading,
-                                    showingCached = feedCached
-                                )
-                            }
-                            // Instagram long videos use the SAME long-video
-                            // card format as YouTube and sit directly below them
-                            // (`longs` is ordered YouTube-first).
-                            items(longs, key = { it.videoId }) { video ->
-                                LongVideoCard(
-                                    video = video,
-                                    progressStore = progressStore,
-                                    isManual = libraryStore.isManuallyAdded(video.videoId),
-                                    downloadStatus = AudioDownloads.statusFor(video.videoId),
-                                    isOffline = AudioDownloads.isDownloaded(video.videoId),
-                                    onPlayOffline = { onPlayOffline(video) },
-                                    onClick = { playLong(video) },
-                                    onDownload = {
-                                        AudioDownloads.download(video, AudioDownloads.sourceFor(video))
-                                    },
-                                    onCancelDownload = { AudioDownloads.cancel(video.videoId) },
-                                    onDeleteDownload = { pendingDeleteDownload = video },
-                                    onHide = {
-                                        libraryStore.hideVideo(video)
-                                        libraryRevision++
-                                    },
-                                    onRemoveManual = {
-                                        libraryStore.removeManuallyAdded(video.videoId)
-                                        libraryRevision++
-                                    },
-                                    onAddToPlaylist = { pendingAddToPlaylist = video }
-                                )
-                            }
+                    }
+                    // ── Videos: full-width rows, newest first. YouTube long
+                    // videos lead, then Instagram Reels/videos and an X tweet
+                    // that carries a clip — all in the SAME card, because a
+                    // Reel IS a video here (same resume, same Continue Watching)
+                    // and never a post.
+                    if (longs.isNotEmpty() && !feedIsUserPlaylist) {
+                        item(key = "videos-header") {
+                            SectionHeader(
+                                title = "Videos",
+                                isLoading = feedLoading,
+                                showingCached = feedCached
+                            )
                         }
-
-                        // ── Instagram posts: a grid of small square tiles AFTER
-                        // the video rows (Reels stay up there with the videos).
-                        // Tapping a tile expands the post full screen.
-                        if (instagramPosts.isNotEmpty() && !feedIsUserPlaylist) {
-                            item(key = "instagram-posts-header") {
-                                SectionHeader(
-                                    title = "Instagram Posts",
-                                    isLoading = feedLoading,
-                                    showingCached = feedCached
-                                )
-                            }
-                            items(instagramPostRows, key = { row -> row.first().videoId }) { row ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    row.forEach { post ->
-                                        InstagramPostTile(
-                                            video = post,
-                                            progressStore = progressStore,
-                                            modifier = Modifier.weight(1f),
-                                            onClick = { expandedPost = post }
-                                        )
+                        items(longs, key = { it.videoId }) { video ->
+                            LongVideoCard(
+                                video = video,
+                                progressStore = progressStore,
+                                isManual = libraryStore.isManuallyAdded(video.videoId),
+                                downloadStatus = AudioDownloads.statusFor(video.videoId),
+                                isOffline = AudioDownloads.isDownloaded(video.videoId),
+                                onPlayOffline = { onPlayOffline(video) },
+                                onClick = { playLong(video) },
+                                onDownload = {
+                                    AudioDownloads.download(video, AudioDownloads.sourceFor(video))
+                                },
+                                onCancelDownload = { AudioDownloads.cancel(video.videoId) },
+                                onDeleteDownload = { pendingDeleteDownload = video },
+                                onHide = {
+                                    libraryStore.hideVideo(video)
+                                    libraryRevision++
+                                },
+                                onHideChannel = if (filterChannelId == null) {
+                                    {
+                                        libraryStore.hideChannel(video.channelId)
+                                        libraryRevision++
                                     }
-                                    // A short last row keeps its tiles square
-                                    // (the filler cells share the same weight).
-                                    repeat(3 - row.size) {
-                                        Spacer(Modifier.weight(1f))
-                                    }
+                                } else null,
+                                onRemoveManual = {
+                                    libraryStore.removeManuallyAdded(video.videoId)
+                                    libraryRevision++
+                                },
+                                onAddToPlaylist = { pendingAddToPlaylist = video }
+                            )
+                        }
+                    }
+                    // ── Posts: a horizontal rail of portrait cards, shaped
+                    // exactly like the Shorts row above — an Instagram
+                    // photo/carousel, or an X tweet with no clip attached.
+                    // Tapping a card opens the reader with the post's FULL text.
+                    if (posts.isNotEmpty() && !feedIsUserPlaylist) {
+                        item(key = "posts-header") {
+                            SectionHeader(
+                                title = "Posts",
+                                isLoading = feedLoading,
+                                showingCached = feedCached
+                            )
+                        }
+                        item(key = "posts-row") {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                items(posts, key = { it.videoId }) { post ->
+                                    PostCard(
+                                        video = post,
+                                        onClick = { expandedPost = post }
+                                    )
                                 }
                             }
                         }
+                    }
                     // ── User playlist: the hand-picked ORDER matters, so every
-                    // video renders as one ordered row list (no shorts/longs
-                    // split, no feed filters).
+                    // video renders as one ordered row list (no feed filters).
                     if (feedIsUserPlaylist && searchResults.isNotEmpty()) {
                         item(key = "playlist-videos-header") {
                             SectionHeader(
@@ -1212,6 +1379,37 @@ fun MediaTab(
         }
     }
 
+    // ── All saved channels directory ───────────────────────────────
+    if (showAllChannelsSheet) {
+        ChannelDirectorySheet(
+            channels = channels,
+            query = channelDirectoryQuery,
+            platform = channelDirectoryPlatform,
+            unreadCounts = unreadChannelCounts,
+            onQueryChange = { channelDirectoryQuery = it },
+            onPlatformChange = { channelDirectoryPlatform = it },
+            onSelect = { channel ->
+                filterChannelId = channel.channelId
+                showAllChannelsSheet = false
+            },
+            onRemove = { pendingRemove = it },
+            // Mute / unmute ONE channel's notifications. Persisted on the
+            // channel itself (so it survives a restart and applies to the
+            // background worker), and muting also sweeps whatever that channel
+            // already posted into the shade — silence has to be immediate, not
+            // "from the next upload onwards".
+            onToggleNotifications = { channel ->
+                val muted = !channel.notificationsMuted
+                repository.setChannelNotificationsMuted(channel.channelId, muted)
+                    ?.let { channels = it }
+                if (muted) {
+                    MediaNotifier.cancelChannelNotifications(context, channel.channelId)
+                }
+            },
+            onDismiss = { showAllChannelsSheet = false }
+        )
+    }
+
     // ── Add channel dialog ─────────────────────────────────────────
     if (showAddDialog) {
         AddChannelDialog(
@@ -1220,6 +1418,8 @@ fun MediaTab(
                 showAddDialog = false
                 channels = repository.getSavedChannels()
                 filterChannelId = addedList.lastOrNull()?.channelId
+                // A new channel must be fetched now, not at the next interval.
+                refreshToken++
             },
             onDismiss = { showAddDialog = false }
         )
@@ -1263,6 +1463,22 @@ fun MediaTab(
             },
             onChanged = { libraryRevision++ },
             onDismiss = { showHiddenDialog = false }
+        )
+    }
+
+    // ── Hidden channels manager (All Feed only) ───────────────────
+    if (showHiddenChannelsDialog) {
+        HiddenChannelsDialog(
+            channels = channels.filter { it.channelId in hiddenChannelIds },
+            onUnhide = { channelId ->
+                libraryStore.unhideChannel(channelId)
+                libraryRevision++
+            },
+            onUnhideAll = {
+                libraryStore.unhideAllChannels()
+                libraryRevision++
+            },
+            onDismiss = { showHiddenChannelsDialog = false }
         )
     }
 
@@ -1507,15 +1723,24 @@ fun MediaTab(
         )
     }
 
-    // ── Instagram post expanded from the grid (tapping a tile) ─────
+    // ── A post expanded from the feed (tapping a post card) ─────────
     expandedPost?.let { post ->
-        InstagramPostViewer(
-            video = post,
+        // The reader pages LEFT/RIGHT through the same list the grid rendered,
+        // so "next" is the next tile the user would have tapped — no going back
+        // to the grid for each post. The list is snapshotted per open, so hiding
+        // a post never renumbers the pages under the user's finger.
+        val readerPosts = remember(post) {
+            posts.ifEmpty { listOf(post) }
+        }
+        val initialIndex = readerPosts.indexOfFirst { it.videoId == post.videoId }
+            .takeIf { it >= 0 } ?: 0
+        PostViewer(
+            posts = readerPosts,
+            initialIndex = initialIndex,
             progressStore = progressStore,
-            onHide = {
-                libraryStore.hideVideo(post)
+            onHide = { hidden ->
+                libraryStore.hideVideo(hidden)
                 libraryRevision++
-                expandedPost = null
             },
             onDismiss = { expandedPost = null }
         )
@@ -1555,6 +1780,8 @@ fun MediaTab(
                     repository.removeChannel(channel.channelId)
                     channels = repository.getSavedChannels()
                     if (filterChannelId == channel.channelId) filterChannelId = null
+                    // Re-merge the feed so the removed channel's videos leave it.
+                    refreshToken++
                     pendingRemove = null
                 }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
             },
@@ -1678,14 +1905,16 @@ private fun ChannelAvatar(
     ) {
         Box(modifier = Modifier.size(52.dp)) {
             val isInstagram = channel.platform == MediaPlatform.INSTAGRAM
+            val isX = channel.platform == MediaPlatform.X
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
                     .border(
-                        width = if (selected) 2.dp else if (isInstagram) 1.5.dp else 0.dp,
+                        width = if (selected) 2.dp else if (isInstagram || isX) 1.5.dp else 0.dp,
                         color = if (selected) MaterialTheme.colorScheme.primary
                                 else if (isInstagram) Color(0xFFE1306C)
+                                else if (isX) Color.Black
                                 else Color.Transparent,
                         shape = CircleShape
                     )
@@ -1729,6 +1958,29 @@ private fun ChannelAvatar(
                     modifier = Modifier.size(11.dp)
                 )
             }
+            // Silenced badge, diagonally OPPOSITE the ✕ so "notifications off"
+            // and "unsubscribed" can never be mistaken for each other. A muted
+            // channel still refreshes and still appears in the feed — only its
+            // notifications are silenced — so the state has to be visible right
+            // on the avatar, without opening "View all".
+            if (channel.notificationsMuted) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Filled.NotificationsOff,
+                        contentDescription = "Notifications muted for ${channel.displayName}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(11.dp)
+                    )
+                }
+            }
         }
         Spacer(Modifier.height(4.dp))
         Text(
@@ -1758,13 +2010,15 @@ private fun SearchChannelCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val isInstagram = channel.platform == MediaPlatform.INSTAGRAM
+            val isX = channel.platform == MediaPlatform.X
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(CircleShape)
                     .border(
-                        width = if (isInstagram) 1.5.dp else 0.dp,
-                        color = if (isInstagram) Color(0xFFE1306C) else Color.Transparent,
+                        width = if (isInstagram || isX) 1.5.dp else 0.dp,
+                        color = if (isInstagram) Color(0xFFE1306C)
+                        else if (isX) Color.Black else Color.Transparent,
                         shape = CircleShape
                     )
             ) {
@@ -1800,7 +2054,11 @@ private fun SearchChannelCard(
                 )
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    text = if (isInstagram) "Instagram Profile" else "YouTube Channel",
+                    text = when (channel.platform) {
+                        MediaPlatform.INSTAGRAM -> "Instagram Profile"
+                        MediaPlatform.X -> "X Profile"
+                        MediaPlatform.YOUTUBE -> "YouTube Channel"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1898,6 +2156,25 @@ private fun HaramaynLiveAvatar(onClick: () -> Unit) {
     }
 }
 
+/** Opens the full saved-channel directory. */
+@Composable
+private fun ViewAllChannelsChip(onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(72.dp).clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier.size(52.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "View all channels", modifier = Modifier.size(24.dp))
+        }
+        Spacer(Modifier.height(4.dp))
+        Text("View all", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
 /** "+" entry at the end of the strip — opens the add-channel dialog. */
 @Composable
 private fun AddAvatar(onClick: () -> Unit) {
@@ -1929,9 +2206,9 @@ private fun AddAvatar(onClick: () -> Unit) {
 }
 
 /**
- * Vertical Shorts card for the horizontal Shorts row — the title and view
+ * Vertical Shorts card for the horizontal Shorts rail — the title and view
  * count are overlaid on the thumbnail over a bottom scrim (YouTube Shorts
- * style), with a small play badge in the corner.
+ * style), with the overflow menu in the corner.
  */
 @Composable
 private fun ShortCard(
@@ -1948,7 +2225,8 @@ private fun ShortCard(
     onDeleteDownload: () -> Unit,
     onHide: () -> Unit,
     onRemoveManual: () -> Unit,
-    onAddToPlaylist: () -> Unit = {}
+    onAddToPlaylist: () -> Unit = {},
+    onHideChannel: (() -> Unit)? = null
 ) {
     val fraction = remember(video.videoId) { progressStore.get(video.videoId) }
     // A live broadcast has no finite duration to complete — never show a
@@ -1982,7 +2260,8 @@ private fun ShortCard(
                         )
                     )
             )
-            // Watch status: watched dims the card, partial shows a thin bar.
+            // Watch status: watched dims the card, partial shows a percentage
+            // pill and a thin progress bar.
             if (watched) {
                 Box(
                     Modifier
@@ -2043,8 +2322,8 @@ private fun ShortCard(
                     )
                 }
             }
-            // Overflow menu (top-right, where the play badge used to be):
-            // add to playlist / download / hide / remove manual.
+            // Overflow menu (top-right): add to playlist / download / hide /
+            // hide channel / remove manual.
             VideoCardMenu(
                 modifier = Modifier.align(Alignment.TopEnd).padding(6.dp),
                 isManual = isManual,
@@ -2055,11 +2334,10 @@ private fun ShortCard(
                 onPlayOffline = if (isOffline) onPlayOffline else null,
                 onHide = onHide,
                 onRemoveManual = onRemoveManual,
-                onAddToPlaylist = onAddToPlaylist
+                onAddToPlaylist = onAddToPlaylist,
+                onHideChannel = onHideChannel
             )
-            // Live download progress renders on the thumbnail itself (a
-            // status pill + bottom progress bar); the ⋮ menu keeps the
-            // Cancel / Retry action. Bottom-end stack: status pills + duration pill.
+            // Bottom-end stack: status pills + duration pill.
             Column(
                 modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp),
                 horizontalAlignment = Alignment.End,
@@ -2126,6 +2404,201 @@ private fun ShortCard(
 }
 
 /**
+ * Width of one Posts-rail card. A little wider than a Shorts card: a post is
+ * mostly its words, and four lines of text in a 158 dp column is cramped.
+ */
+private val POST_CARD_WIDTH = 186.dp
+
+/**
+ * One card in the Posts rail: the SAME portrait card the Shorts row uses, so a
+ * photo or a text post sits in the feed as a piece of media rather than as a
+ * tiny square tile. A post with a picture shows it; a post with none (an X
+ * tweet of text only) shows its own text over the scrim, so it never renders as
+ * an empty square. Tapping it opens the post's FULL text in [PostViewer].
+ */
+@Composable
+private fun PostCard(
+    video: MediaVideo,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier.width(POST_CARD_WIDTH),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        )
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(9f / 16f)
+        ) {
+            if (video.thumbnailUrl.isNotBlank()) {
+                RemoteImage(
+                    url = video.thumbnailUrl,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                // No picture at all: a soft, platform-tinted backdrop keeps the
+                // card intentional and gives the post's own text a readable
+                // surface. Deliberately NOT the music-note fallback — a text
+                // post is not audio.
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    platformAccent(video.platform).copy(alpha = 0.35f),
+                                    MaterialTheme.colorScheme.surfaceVariant
+                                )
+                            )
+                        )
+                )
+            }
+            // Bottom scrim keeps the overlay text legible on any picture.
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            0.45f to Color.Black.copy(alpha = 0.40f),
+                            1f to Color.Black.copy(alpha = 0.85f)
+                        )
+                    )
+            )
+            // The source chip: this rail mixes Instagram posts and X posts, so
+            // every card says which one it came from.
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
+                shape = RoundedCornerShape(5.dp),
+                color = Color.Black.copy(alpha = 0.55f)
+            ) {
+                Text(
+                    text = platformBadgeLabel(video.platform),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
+            // Carousel posts get the stacked-squares badge, like Instagram's grid.
+            if (video.instagramType == InstagramMediaType.CAROUSEL) {
+                Surface(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                    shape = RoundedCornerShape(4.dp),
+                    color = Color.Black.copy(alpha = 0.5f)
+                ) {
+                    Icon(
+                        Icons.Filled.Collections,
+                        contentDescription = "Carousel",
+                        tint = Color.White,
+                        modifier = Modifier.padding(2.dp).size(14.dp)
+                    )
+                }
+            }
+            // The post's own words (the short card label for a picture post)
+            // and its author, over the scrim — the same treatment as the Shorts
+            // cards above. A post with NO picture has nothing for the words to
+            // sit under, so they start from the middle of the card instead of
+            // hanging off the bottom edge with empty space above them.
+            Column(
+                modifier = Modifier
+                    .align(if (video.thumbnailUrl.isNotBlank()) Alignment.BottomStart else Alignment.Center)
+                    .fillMaxWidth()
+                    .padding(10.dp)
+            ) {
+                Text(
+                    text = video.bodyText.ifBlank { video.title },
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 5,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = video.channelName.ifBlank { platformBadgeLabel(video.platform) },
+                    color = Color.White.copy(alpha = 0.78f),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+
+/** Source name for a card badge. */
+private fun platformBadgeLabel(platform: MediaPlatform): String = when (platform) {
+    MediaPlatform.YOUTUBE -> "YouTube"
+    MediaPlatform.INSTAGRAM -> "Instagram"
+    MediaPlatform.X -> "X"
+}
+
+/** The source's own brand colour, used to tint poster-less card backdrops. */
+private fun platformAccent(platform: MediaPlatform): Color = when (platform) {
+    MediaPlatform.YOUTUBE -> Color(0xFFD93025)
+    MediaPlatform.INSTAGRAM -> Color(0xFFE1306C)
+    MediaPlatform.X -> Color(0xFF1D9BF0)
+}
+
+/**
+ * What a card shows when the item itself has no poster.
+ *
+ * The music note is reserved for entries that really ARE audio — a downloaded
+ * track, a device import. Using it as the generic "no thumbnail" art put a
+ * music icon behind a text post or a poster-less clip, which claims the item is
+ * an audio file when it is not. Everything else gets a neutral, platform-tinted
+ * backdrop with the source name instead.
+ */
+@Composable
+private fun StillFallback(video: MediaVideo, modifier: Modifier = Modifier) {
+    val isAudio = video.isOfflineAudio || video.videoId.startsWith("device-")
+    Box(
+        modifier = modifier.background(
+            Brush.linearGradient(
+                listOf(
+                    platformAccent(video.platform).copy(alpha = 0.28f),
+                    MaterialTheme.colorScheme.surfaceVariant
+                )
+            )
+        ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isAudio) {
+            Icon(
+                Icons.Filled.MusicNote,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                modifier = Modifier.size(40.dp)
+            )
+        } else {
+            Text(
+                text = platformBadgeLabel(video.platform),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
+/** "3 hours ago" style label, empty when the time is unknown. */
+private fun relativeTime(epochMillis: Long): String {
+    if (epochMillis <= 0L) return ""
+    return DateUtils.getRelativeTimeSpanString(
+        epochMillis,
+        System.currentTimeMillis(),
+        DateUtils.MINUTE_IN_MILLIS,
+        DateUtils.FORMAT_ABBREV_RELATIVE
+    ).toString()
+}
+
+/**
  * YouTube-style long-video row: thumbnail with a red watch-progress bar and a
  * "Watched" badge, title + channel/date to the right.
  */
@@ -2145,6 +2618,7 @@ private fun LongVideoCard(
     onHide: () -> Unit,
     onRemoveManual: () -> Unit,
     onAddToPlaylist: () -> Unit = {},
+    onHideChannel: (() -> Unit)? = null,
     /** When set (user-playlist feed), the ⋮ menu offers removing from it. */
     onRemoveFromPlaylist: (() -> Unit)? = null,
     /** Inside a playlist the ⋮ menu drops the feed-only entries (Add to
@@ -2174,29 +2648,7 @@ private fun LongVideoCard(
                     .aspectRatio(16f / 9f)
             ) {
                 if (video.thumbnailUrl.isBlank()) {
-                    // Device/system audio has no thumbnail — a soft minimalist
-                    // gradient with a music note keeps the card looking
-                    // intentional instead of showing a broken image.
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                    )
-                                )
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(42.dp)
-                        )
-                    }
+                    StillFallback(video, Modifier.fillMaxSize())
                 } else {
                     RemoteImage(url = video.thumbnailUrl, modifier = Modifier.fillMaxSize())
                 }
@@ -2249,7 +2701,9 @@ private fun LongVideoCard(
                     onHide = onHide,
                     onRemoveManual = onRemoveManual,
                     onAddToPlaylist = onAddToPlaylist,
+                    onHideChannel = onHideChannel,
                     onRemoveFromPlaylist = onRemoveFromPlaylist,
+
                     inPlaylist = inPlaylist
                 )
             // Live download progress renders on the thumbnail itself (a
@@ -2395,94 +2849,33 @@ private fun LongVideoCard(
 }
 
 /**
- * One tile in the Instagram grid: a small square thumbnail, exactly like a
- * profile grid tile. Tapping it expands the post ([InstagramPostViewer]).
+ * The post reader, opened by tapping a tile in the Posts grid: a full-screen,
+ * LEFT/RIGHT pager over the very list the grid rendered, each page a scrollable
+ * view of one post's media, creator, FULL text and date, plus its actions
+ * (mark watched / unwatched, hide post). Works for every source — X tweets and
+ * Instagram photos/carousels both land here.
+ *
+ * Paging (swipe or the ‹ › buttons) is why a reader can now go from one post
+ * straight to the next instead of closing back to the grid, tapping, and
+ * scrolling to find where they were.
  */
 @Composable
-private fun InstagramPostTile(
-    video: MediaVideo,
+private fun PostViewer(
+    posts: List<MediaVideo>,
+    initialIndex: Int,
     progressStore: WatchProgressStore,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val watchRev by WatchProgressStore.revisionFlow.collectAsState()
-    val fraction = remember(video.videoId, watchRev) { progressStore.get(video.videoId) }
-    val watched = (fraction ?: 0f) >= 0.9f
-
-    Card(
-        onClick = onClick,
-        modifier = modifier.aspectRatio(1f),
-        shape = RoundedCornerShape(6.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
-        )
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (video.thumbnailUrl.isNotBlank()) {
-                RemoteImage(
-                    url = video.thumbnailUrl,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surfaceVariant),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Filled.MusicNote,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-            // Carousel posts get the stacked-squares badge, like Instagram's grid.
-            if (video.instagramType == InstagramMediaType.CAROUSEL) {
-                Surface(
-                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp),
-                    shape = RoundedCornerShape(4.dp),
-                    color = Color.Black.copy(alpha = 0.5f)
-                ) {
-                    Icon(
-                        Icons.Filled.Collections,
-                        contentDescription = "Carousel",
-                        tint = Color.White,
-                        modifier = Modifier.padding(2.dp).size(14.dp)
-                    )
-                }
-            }
-            if (watched) {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.4f))
-                )
-                Icon(
-                    Icons.Filled.Check,
-                    contentDescription = "Watched",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.align(Alignment.Center).size(26.dp)
-                )
-            }
-        }
-    }
-}
-
-/**
- * The EXPANDED Instagram post, opened by tapping a grid tile: a full-screen,
- * scrollable view of the post's media, creator, caption and date, plus its
- * actions (mark watched / unwatched, hide post).
- */
-@Composable
-private fun InstagramPostViewer(
-    video: MediaVideo,
-    progressStore: WatchProgressStore,
-    onHide: () -> Unit,
+    onHide: (MediaVideo) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val pagerState = rememberPagerState(
+        initialPage = initialIndex.coerceIn(0, (posts.size - 1).coerceAtLeast(0)),
+        pageCount = { posts.size }
+    )
+    val scope = rememberCoroutineScope()
+    val current = posts.getOrNull(pagerState.currentPage) ?: posts.first()
+    val hasPrevious = pagerState.currentPage > 0
+    val hasNext = pagerState.currentPage < posts.lastIndex
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -2501,26 +2894,78 @@ private fun InstagramPostViewer(
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Filled.Close, contentDescription = "Close post")
                     }
-                    Text(
-                        text = video.channelName.ifBlank { "Instagram post" },
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = current.channelName.ifBlank { "Post" },
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        // Where the reader is in the grid — the swipe is only
+                        // discoverable if the count is visible.
+                        Text(
+                            text = "${pagerState.currentPage + 1} of ${posts.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    // Explicit ‹ › as well as the swipe: on a post that is mostly
+                    // one long image it is not obvious that the reader is a pager.
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage - 1)
+                            }
+                        },
+                        enabled = hasPrevious
+                    ) {
+                        Icon(
+                            Icons.Filled.ChevronLeft,
+                            contentDescription = "Previous post",
+                            tint = if (hasPrevious) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                            }
+                        )
+                    }
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                pagerState.animateScrollToPage(pagerState.currentPage + 1)
+                            }
+                        },
+                        enabled = hasNext
+                    ) {
+                        Icon(
+                            Icons.Filled.ChevronRight,
+                            contentDescription = "Next post",
+                            tint = if (hasNext) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+                            }
+                        )
+                    }
                 }
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    InstagramPostView(
-                        video = video,
-                        onClick = {},
-                        onHide = onHide,
-                        progressStore = progressStore
-                    )
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f).fillMaxWidth()
+                ) { page ->
+                    val post = posts.getOrNull(page) ?: return@HorizontalPager
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        PostView(
+                            video = post,
+                            onClick = {},
+                            onHide = { onHide(post) },
+                            progressStore = progressStore
+                        )
+                    }
                 }
             }
         }
@@ -2528,12 +2973,12 @@ private fun InstagramPostViewer(
 }
 
 /**
- * The post's own card (1:1 media on top, creator / caption / date underneath,
+ * The post's own card (its media on top, creator / FULL text / date underneath,
  * with the ⋮ actions: mark watched / unwatched, hide post). Rendered inside
- * [InstagramPostViewer] once the user expands a grid tile.
+ * [PostViewer].
  */
 @Composable
-private fun InstagramPostView(
+private fun PostView(
     video: MediaVideo,
     onClick: () -> Unit,
     onHide: () -> Unit,
@@ -2558,7 +3003,9 @@ private fun InstagramPostView(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1f)
+                    // Instagram media is square; an X attachment keeps its
+                    // 16:9 shape instead of being letterboxed into a square.
+                    .aspectRatio(if (video.isInstagram) 1f else 16f / 9f)
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
@@ -2569,19 +3016,7 @@ private fun InstagramPostView(
                         contentScale = ContentScale.Crop
                     )
                 } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Filled.MusicNote,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                            modifier = Modifier.size(48.dp)
-                        )
-                    }
+                    StillFallback(video, Modifier.fillMaxSize())
                 }
 
                 if (isWatched) {
@@ -2687,14 +3122,16 @@ private fun InstagramPostView(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (video.title.isNotBlank()) {
+                // The WHOLE post, never cut off at the card's label: `title` is
+                // only the short label a feed row shows, so a post used to be
+                // readable up to those lines and no further.
+                val fullText = video.bodyText.ifBlank { video.title }
+                if (fullText.isNotBlank()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = video.title,
+                        text = fullText,
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
                 if (video.publishedAtEpochMillis > 0L) {
@@ -2747,6 +3184,12 @@ private fun FeedHeader(
     searchEnabled: Boolean = true,
     /** "Updated Xm ago" text shown under the title row (null = hide). */
     updatedAgo: String? = null,
+    /**
+     * Why a provider behind this feed is not answering (null = none), e.g.
+     * "X is rate-limiting this device — retrying in 8m". Shown under the
+     * summary so an empty feed always has an explanation.
+     */
+    sourceStatus: String? = null,
     /** When set, an ✕ appears that exits the current playlist context. */
     onClose: (() -> Unit)? = null,
     onSearchQueryChange: (String) -> Unit,
@@ -2754,6 +3197,10 @@ private fun FeedHeader(
     onOpenFilter: () -> Unit,
     onReset: () -> Unit,
     onOpenHidden: () -> Unit,
+    /** Empties Continue Watching from the ⋮ menu (confirmed first). */
+    onResetContinueWatching: () -> Unit = {},
+    onOpenHiddenChannels: () -> Unit = {},
+    showHiddenChannelsManager: Boolean = true,
     onAddVideo: () -> Unit,
     onAddPlaylist: (() -> Unit)? = null,
     onOpenMyPlaylists: (() -> Unit)? = null,
@@ -2766,6 +3213,7 @@ private fun FeedHeader(
     summaryOverride: String? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    var showResetContinueWatching by remember { mutableStateOf(false) }
     val keyboardController = LocalSoftwareKeyboardController.current
     // Autofocus the search field the moment search mode opens.
     val searchFocus = remember { FocusRequester() }
@@ -2852,7 +3300,7 @@ private fun FeedHeader(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false }
                 ) {
-                    // Feed-only actions — hidden inside a playlist, where they
+                        // Feed-only actions — hidden inside a playlist, where they
                     // don't apply (the ✕ button already exits the playlist).
                     if (!isPlaylistContext) {
                         DropdownMenuItem(
@@ -2865,6 +3313,25 @@ private fun FeedHeader(
                             onClick = {
                                 showMenu = false
                                 onOpenHidden()
+                            }
+                        )
+                        if (showHiddenChannelsManager) {
+                            DropdownMenuItem(
+                                text = { Text("Hidden channels") },
+                                onClick = {
+                                    showMenu = false
+                                    onOpenHiddenChannels()
+                                }
+                            )
+                        }
+                        DropdownMenuItem(
+                            text = { Text("Reset Continue Watching") },
+                            onClick = {
+                                showMenu = false
+                                // Confirm first: this throws away resume
+                                // positions, and a ⋮ menu is one tap away from
+                                // any card in the feed.
+                                showResetContinueWatching = true
                             }
                         )
                         DropdownMenuItem(
@@ -2909,6 +3376,34 @@ private fun FeedHeader(
                         }
                     )
                 }
+            }
+            // Reset Continue Watching asks first: a ⋮ menu is one careless tap
+            // from any card, and this throws away resume positions.
+            if (showResetContinueWatching) {
+                AlertDialog(
+                    onDismissRequest = { showResetContinueWatching = false },
+                    title = { Text("Reset Continue Watching?") },
+                    text = {
+                        Text(
+                            "This clears the resume position of every unfinished video, so " +
+                                "Continue Watching starts over. Videos you finished keep their " +
+                                "watched progress."
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showResetContinueWatching = false
+                                onResetContinueWatching()
+                            }
+                        ) { Text("Reset") }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showResetContinueWatching = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
             }
             if (filterEnabled) {
                 IconButton(
@@ -2999,6 +3494,25 @@ private fun FeedHeader(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, top = 2.dp)
             )
+        }
+        if (sourceStatus != null && !searchActive) {
+            Row(
+                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(12.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = sourceStatus,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
         }
     }
 }
@@ -3115,6 +3629,8 @@ private fun FilterSheet(
                         listOf(FeedContentFilter.ALL, FeedContentFilter.VIDEOS, FeedContentFilter.SHORTS, FeedContentFilter.DOWNLOADS)
                     com.muddassir.clearview.media.model.FeedPlatformFilter.INSTAGRAM ->
                         listOf(FeedContentFilter.ALL, FeedContentFilter.REELS, FeedContentFilter.IMAGE_POSTS)
+                    com.muddassir.clearview.media.model.FeedPlatformFilter.X ->
+                        listOf(FeedContentFilter.ALL)
                     else ->
                         FeedContentFilter.entries.filterNot { it == FeedContentFilter.LIVE }
                 }
@@ -3356,9 +3872,12 @@ private fun ContinueWatchingCard(
     video: MediaVideo,
     progressStore: WatchProgressStore,
     downloadStatus: DownloadStatus? = null,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onDismiss: () -> Unit
 ) {
-    val progress = remember(video.videoId) { progressStore.getProgress(video.videoId) }
+    val watchRev by WatchProgressStore.revisionFlow.collectAsState()
+    val progress = remember(video.videoId, watchRev) { progressStore.getProgress(video.videoId) }
+    var showMenu by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
         modifier = Modifier.width(210.dp),
@@ -3374,6 +3893,31 @@ private fun ContinueWatchingCard(
                     .aspectRatio(16f / 9f)
             ) {
                 RemoteImage(url = video.thumbnailUrl, modifier = Modifier.fillMaxSize())
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)) {
+                    IconButton(
+                        onClick = { showMenu = true },
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "Continue Watching options",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = showMenu,
+                        onDismissRequest = { showMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Remove from Continue Watching") },
+                            onClick = {
+                                showMenu = false
+                                onDismiss()
+                            }
+                        )
+                    }
+                }
                 if (downloadStatus != null) {
                     // A re-download in flight: the thumbnail shows the live
                     // download pill + bar instead of the watch progress.
@@ -3589,6 +4133,7 @@ private fun VideoCardMenu(
     onHide: () -> Unit,
     onRemoveManual: () -> Unit,
     onAddToPlaylist: (() -> Unit)? = null,
+    onHideChannel: (() -> Unit)? = null,
     /** When set (a user-playlist feed), the menu also offers removing from it. */
     onRemoveFromPlaylist: (() -> Unit)? = null,
     /** Inside a playlist the ⋮ menu drops the feed-only entries (Add to
@@ -3669,6 +4214,15 @@ private fun VideoCardMenu(
                         onHide()
                     }
                 )
+                if (onHideChannel != null) {
+                    DropdownMenuItem(
+                        text = { Text("Hide channel") },
+                        onClick = {
+                            showMenu = false
+                            onHideChannel()
+                        }
+                    )
+                }
             }
         }
     }
@@ -3704,6 +4258,7 @@ private fun AddChannelDialog(
 ) {
     val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
+    var platform by remember { mutableStateOf(MediaPlatform.YOUTUBE) }
     var error by remember { mutableStateOf<String?>(null) }
     var adding by remember { mutableStateOf(false) }
 
@@ -3713,10 +4268,28 @@ private fun AddChannelDialog(
         text = {
             Column {
                 Text(
-                    text = "Paste a YouTube or Instagram @handle or URL, e.g. @SafinaSociety or @maherzainofficial",
+                    text = "Choose a platform, then paste its @handle or URL. YouTube, Instagram and X are supported.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = platform == MediaPlatform.YOUTUBE,
+                        onClick = { platform = MediaPlatform.YOUTUBE; error = null },
+                        label = { Text("YouTube") }
+                    )
+                    FilterChip(
+                        selected = platform == MediaPlatform.INSTAGRAM,
+                        onClick = { platform = MediaPlatform.INSTAGRAM; error = null },
+                        label = { Text("Instagram") }
+                    )
+                    FilterChip(
+                        selected = platform == MediaPlatform.X,
+                        onClick = { platform = MediaPlatform.X; error = null },
+                        label = { Text("X") }
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = input,
@@ -3742,7 +4315,7 @@ private fun AddChannelDialog(
                 onClick = {
                     adding = true
                     scope.launch {
-                        when (val result = repository.addChannel(input)) {
+                        when (val result = repository.addChannel(input, platform)) {
                             is MediaRepository.AddChannelResult.Success -> onAdded(result.channels)
                             is MediaRepository.AddChannelResult.Error -> {
                                 error = result.message
@@ -3765,6 +4338,50 @@ private fun AddChannelDialog(
  * plus an "Unhide all" escape hatch (scoped to the shown list). Hidden
  * videos stay out of every feed until unhidden here.
  */
+@Composable
+private fun HiddenChannelsDialog(
+    channels: List<SavedChannel>,
+    onUnhide: (String) -> Unit,
+    onUnhideAll: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Hidden channels") },
+        text = {
+            if (channels.isEmpty()) {
+                Text("No hidden channels. Channels hidden from All Feed remain available in the channel row.")
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    items(channels, key = { it.channelId }) { channel ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = channel.displayName,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            TextButton(onClick = { onUnhide(channel.channelId) }) {
+                                Text("Unhide")
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (channels.isNotEmpty()) TextButton(onClick = onUnhideAll) { Text("Unhide all") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } }
+    )
+}
+
 @Composable
 private fun HiddenVideosDialog(
     libraryStore: MediaLibraryStore,

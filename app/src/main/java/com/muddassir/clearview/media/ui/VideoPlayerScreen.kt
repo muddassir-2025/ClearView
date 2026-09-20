@@ -117,6 +117,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.MediaLibraryStore
 import com.muddassir.clearview.media.data.UserPlaylistStore
@@ -612,7 +614,9 @@ fun VideoPlayerScreen(
         // Exactly matches the WebView's bounds so no sibling can cover it.
         // Vertical fullscreen (Shorts style) fills the whole portrait screen;
         // landscape is naturally full screen; otherwise a 16:9 box at the top.
-        val isInstagram = video.isInstagram
+        val isInstagram = video.isInstagram ||
+            (video.platform == MediaPlatform.X &&
+                com.muddassir.clearview.media.data.InstagramStreamResolver.isPlayableVideoUrl(video.mediaUrl))
         // Portrait Instagram gets an ADAPTIVE, full-width box that matches the
         // media's OWN aspect ratio (reported by the native player the moment it
         // is prepared) instead of a hardcoded 16:9 or 9:16 frame — Reels come
@@ -1131,7 +1135,7 @@ fun VideoPlayerScreen(
                 onRemoveFromPlaylist = { pendingRemovePlaylist = containingPlaylist },
                 containingPlaylistName = containingPlaylist?.name,
                 onSpeedMenuToggle = { showSpeedMenu = !showSpeedMenu },
-                onSpeedSelect = { setPlaybackRate(it); showSpeedMenu = false },
+                onSpeedChange = { setPlaybackRate(it) },
                 onContinue = { requestSeek(resumeFromSeconds) },
                 onWatchAgain = { requestSeek(0.0) },
                 onShare = { shareVideo() },
@@ -1384,7 +1388,8 @@ private fun PlayerControlPanel(
     /** Name of the user playlist holding this video, or null (no entry shown). */
     containingPlaylistName: String?,
     onSpeedMenuToggle: () -> Unit,
-    onSpeedSelect: (Double) -> Unit,
+    /** Applies a rate from the speed bar — live, as the slider moves. */
+    onSpeedChange: (Double) -> Unit,
     onContinue: () -> Unit,
     onWatchAgain: () -> Unit,
     onShare: () -> Unit,
@@ -1429,9 +1434,6 @@ private fun PlayerControlPanel(
     val sleepRemainingMs = AudioPlayback.sleepRemainingMs.longValue
     val sleepEndOfTrack = AudioPlayback.sleepEndOfTrack.value
     val sleepChoiceMinutes = AudioPlayback.sleepChoiceMinutes.value
-    // Custom playback speed (0.25×–5×, 0.05 steps) — opened from the speed menu.
-    var showCustomSpeedDialog by remember { mutableStateOf(false) }
-    var customSpeed by remember { mutableStateOf(playbackRate) }
     val scrollState = rememberScrollState()
     Column(
         modifier = modifier
@@ -1659,43 +1661,31 @@ private fun PlayerControlPanel(
                 onClick = onShare,
                 modifier = Modifier.weight(1f)
             )
-            // Speed hosts its own dropdown menu.
-            Box(modifier = Modifier.weight(1f)) {
-                PanelAction(
-                    icon = Icons.Filled.Speed,
-                    label = "Speed",
-                    onClick = onSpeedMenuToggle,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                DropdownMenu(
-                    expanded = showSpeedMenu,
-                    onDismissRequest = onSpeedMenuToggle
-                ) {
-                    SPEED_OPTIONS.forEach { rate ->
-                        DropdownMenuItem(
-                            text = { Text(formatRate(rate)) },
-                            trailingIcon = if (rate == playbackRate) {
-                                { Icon(Icons.Filled.Check, contentDescription = null) }
-                            } else null,
-                            onClick = { onSpeedSelect(rate) }
-                        )
-                    }
-                    // Custom speed: up to 5× with 0.05 precision.
-                    DropdownMenuItem(
-                        text = { Text("Custom speed…") },
-                        onClick = {
-                            onSpeedMenuToggle()
-                            customSpeed = playbackRate
-                            showCustomSpeedDialog = true
-                        }
-                    )
-                }
-            }
+            // Speed toggles a BAR, not a menu: the only thing to choose is the
+            // rate itself, and a list of presets made the reader pick the
+            // closest one and then hunt for "Custom" to fine-tune it.
+            PanelAction(
+                icon = Icons.Filled.Speed,
+                label = "Speed",
+                onClick = onSpeedMenuToggle,
+                modifier = Modifier.weight(1f)
+            )
             PanelAction(
                 icon = Icons.AutoMirrored.Filled.PlaylistAdd,
                 label = "Playlist",
                 onClick = onAddToPlaylist,
                 modifier = Modifier.weight(1f)
+            )
+        }
+
+        // The speed bar, opened by the Speed action above: one slider from
+        // 0.25× to 5×, applied as it moves so the rate can be judged by ear
+        // while dragging it. Normal speed is one tap away at the Reset.
+        if (showSpeedMenu) {
+            SpeedBar(
+                rate = playbackRate,
+                onRateChange = onSpeedChange,
+                modifier = Modifier.padding(top = 10.dp)
             )
         }
 
@@ -1849,43 +1839,6 @@ private fun PlayerControlPanel(
             }
         }
 
-    if (showCustomSpeedDialog) {
-        AlertDialog(
-            onDismissRequest = { showCustomSpeedDialog = false },
-            title = { Text("Playback speed") },
-            text = {
-                Column {
-                    Text(
-                        text = "Current: ${formatRate(customSpeed)}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Slider(
-                        value = customSpeed.toFloat(),
-                        onValueChange = { customSpeed = it.toDouble() },
-                        valueRange = MIN_CUSTOM_SPEED.toFloat()..MAX_CUSTOM_SPEED.toFloat(),
-                        steps = (((MAX_CUSTOM_SPEED - MIN_CUSTOM_SPEED) / CUSTOM_SPEED_STEP).toInt() - 1)
-                            .coerceAtLeast(0)
-                    )
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Text("0.25×", style = MaterialTheme.typography.labelSmall)
-                        Spacer(Modifier.weight(1f))
-                        Text("5×", style = MaterialTheme.typography.labelSmall)
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    onSpeedSelect((Math.round(customSpeed * 100.0) / 100.0))
-                    showCustomSpeedDialog = false
-                }) { Text("Set") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomSpeedDialog = false }) { Text("Cancel") }
-            }
-        )
-    }
     }
 }
 
@@ -2258,30 +2211,36 @@ private fun VideoTransportControls(
             // (setPlaybackRate through the IFrame API / setPlaybackParams for
             // Instagram). Offered here because the fullscreen Shorts viewer has
             // no control panel to reach the Speed action in.
-            if (playbackRate != null && onSelectRate != null) {
+            val rate = playbackRate
+            val setRate = onSelectRate
+            if (rate != null && setRate != null) {
                 Box {
                     TransportIconButton(
                         icon = Icons.Filled.Speed,
-                        label = "Playback speed ${formatRate(playbackRate)}",
+                        label = "Playback speed ${formatRate(rate)}",
                         enabled = true,
                         onClick = { showRateMenu = true },
                         tint = iconTint
                     )
-                    DropdownMenu(
-                        expanded = showRateMenu,
-                        onDismissRequest = { showRateMenu = false }
-                    ) {
-                        SPEED_OPTIONS.forEach { rate ->
-                            DropdownMenuItem(
-                                text = { Text(formatRate(rate)) },
-                                trailingIcon = if (rate == playbackRate) {
-                                    { Icon(Icons.Filled.Check, contentDescription = null) }
-                                } else null,
-                                onClick = {
-                                    showRateMenu = false
-                                    onSelectRate(rate)
-                                }
-                            )
+                    // The same speed BAR the portrait panel shows — this viewer
+                    // has no control panel, so it hosts its own. It opens
+                    // upward from the button so it can never fall off the
+                    // bottom of the screen.
+                    if (showRateMenu) {
+                        Popup(
+                            alignment = Alignment.BottomCenter,
+                            onDismissRequest = { showRateMenu = false },
+                            properties = PopupProperties(focusable = true)
+                        ) {
+                            Surface(
+                                modifier = Modifier.width(280.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 6.dp,
+                                shadowElevation = 8.dp
+                            ) {
+                                SpeedBar(rate = rate, onRateChange = setRate)
+                            }
                         }
                     }
                 }
@@ -2366,6 +2325,59 @@ private fun formatPosition(seconds: Long): String {
 }
 
 /**
+ * The playback-speed control, as a single bar.
+ *
+ * There is exactly one thing to pick — the rate — so the control is one
+ * slider from [MIN_CUSTOM_SPEED]× to [MAX_CUSTOM_SPEED]× that applies as it
+ * moves: the new rate is audible while dragging, which is the only way to
+ * judge it. Preset rates are a tap away at the ends (the 1× Reset), not a list
+ * of eleven rows to read first.
+ */
+@Composable
+internal fun SpeedBar(
+    rate: Double,
+    onRateChange: (Double) -> Unit,
+    modifier: Modifier = Modifier,
+    // The bounds differ per surface — a 5× lecture video is watchable, a 5×
+    // podcast is not — but the bar itself is the same control.
+    minRate: Double = MIN_CUSTOM_SPEED,
+    maxRate: Double = MAX_CUSTOM_SPEED
+) {
+    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Playback speed",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = formatRate(rate),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            // Back to normal in one tap — the one preset worth keeping.
+            if (Math.round(rate * 100.0) != 100L) {
+                TextButton(onClick = { onRateChange(1.0) }) { Text("Reset") }
+            }
+        }
+        Slider(
+            value = rate.toFloat(),
+            onValueChange = { onRateChange(Math.round(it * 100.0) / 100.0) },
+            valueRange = minRate.toFloat()..maxRate.toFloat(),
+            steps = speedBarSteps(minRate, maxRate),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(modifier = Modifier.fillMaxWidth()) {
+            Text("${formatBound(minRate)}×", style = MaterialTheme.typography.labelSmall)
+            Spacer(Modifier.weight(1f))
+            Text("${formatBound(maxRate)}×", style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+/**
  * "1x", "1.25x", … — rounded to 2 decimals so a custom slider value never
  * renders floating-point noise ("1.3500000000000001x"), and whole values drop
  * the trailing decimals.
@@ -2382,14 +2394,35 @@ internal fun formatRate(rate: Double): String {
     return "${text}x"
 }
 
-/** The playback-speed presets offered by the players (up to 5×). */
-internal val SPEED_OPTIONS =
-    listOf(0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0)
+/**
+ * Whether the player's real [playing] state is NEWS to a UI that was last told
+ * [reported].
+ *
+ * Both directions count. The native (Instagram/X) player used to report only a
+ * resume, so a pause stopped the audio but left the transport showing "Pause" —
+ * and the next tap therefore sent *another* pause, which is the "frozen, does
+ * nothing" report this answers. YouTube was unaffected because its IFrame API
+ * pushes every state change.
+ */
+internal fun playbackStateChanged(reported: Boolean, playing: Boolean): Boolean =
+    reported != playing
 
 /** Bounds for the custom playback-speed picker. */
 internal const val MIN_CUSTOM_SPEED = 0.25
 internal const val MAX_CUSTOM_SPEED = 5.0
 internal const val CUSTOM_SPEED_STEP = 0.05
+
+/**
+ * The number of discrete stops in a [minRate]..[maxRate] bar — Material's
+ * `steps` counts the stops BETWEEN the ends, hence the `- 1`.
+ */
+internal fun speedBarSteps(minRate: Double, maxRate: Double): Int =
+    (((maxRate - minRate) / CUSTOM_SPEED_STEP).toInt() - 1).coerceAtLeast(0)
+
+/** "0.5", "3" — a bound reads as a plain number, never "0.50" or "3.0". */
+internal fun formatBound(rate: Double): String =
+    if (rate == rate.toLong().toDouble()) rate.toLong().toString()
+    else String.format(Locale.US, "%.2f", rate).trimEnd('0').trimEnd('.')
 
 /**
  * The canonical SHARE URL for [video].
@@ -2402,6 +2435,9 @@ internal const val CUSTOM_SPEED_STEP = 0.05
 internal fun shareUrlFor(video: MediaVideo): String {
     val isInstagram = video.platform == MediaPlatform.INSTAGRAM ||
         video.videoId.startsWith("ig_")
+    if (video.platform == MediaPlatform.X) {
+        return video.sourceUrl ?: "https://x.com/"
+    }
     if (!isInstagram) return "https://www.youtube.com/watch?v=${video.videoId}"
     val source = video.instagramUrl ?: video.videoId
     val shortcode =
@@ -2601,7 +2637,9 @@ private fun InstagramPlayer(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val isVideo = video.isInstagramVideo
+    val isVideo = video.isInstagramVideo ||
+        (video.platform == MediaPlatform.X &&
+            com.muddassir.clearview.media.data.InstagramStreamResolver.isPlayableVideoUrl(video.mediaUrl))
 
     val shortcode = remember(video.videoId, video.instagramUrl) {
         com.muddassir.clearview.media.data.InstagramStreamResolver.extractShortcode(
@@ -2725,7 +2763,14 @@ private fun InstagramPlayer(
             if (url.startsWith("content://")) {
                 mp.setDataSource(context, Uri.parse(url))
             } else {
-                mp.setDataSource(url)
+                mp.setDataSource(
+                    context,
+                    Uri.parse(url),
+                    mapOf(
+                        "User-Agent" to "Mozilla/5.0 (Android) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36",
+                        "Referer" to if (video.platform == MediaPlatform.X) "https://x.com/" else "https://www.instagram.com/"
+                    )
+                )
             }
             mp.setOnPreparedListener { p ->
                 prepared = true
@@ -2840,10 +2885,10 @@ private fun InstagramPlayer(
                     progressCallback(positionSeconds, durationSeconds)
                 }
                 val playing = runCatching { mp.isPlaying }.getOrDefault(false)
-                if (playing != reportedPlaying) {
+                if (playbackStateChanged(reportedPlaying, playing)) {
                     reportedPlaying = playing
                     isPlaying = playing
-                    if (playing) stateCallback(true, false)
+                    stateCallback(playing, false)
                 }
             }
             delay(PROGRESS_POLL_MS)
@@ -2883,6 +2928,16 @@ private fun InstagramPlayer(
                 mp.seekTo(if (total > 0) target.coerceAtMost(total) else target)
             }
         }
+        // Answer the press NOW rather than at the next poll tick. The reader
+        // pressed a button; leaving the icon unchanged for up to 400 ms reads
+        // as a dead button, and a second press would then send the opposite of
+        // what is on screen.
+        val playing = runCatching { mp.isPlaying }.getOrDefault(false)
+        if (playbackStateChanged(reportedPlaying, playing)) {
+            reportedPlaying = playing
+            isPlaying = playing
+            stateCallback(playing, false)
+        }
     }
 
     // Apply the persisted playback rate (and re-apply it after a retry).
@@ -2914,8 +2969,18 @@ private fun InstagramPlayer(
     val retryInstagramPlayback: () -> Unit = {
         playbackFailed = false
         streamFailed = false
-        streamUrl = null
-        resolveToken++
+        if (video.platform == MediaPlatform.X) {
+            // X attachment URLs are already direct media URLs; retry them with
+            // fresh HTTP headers rather than sending an X post to Instagram's
+            // shortcode resolver.
+            streamUrl = video.mediaUrl?.takeIf {
+                com.muddassir.clearview.media.data.InstagramStreamResolver.isPlayableVideoUrl(it)
+            }
+        } else {
+            streamUrl = null
+            resolveToken++
+        }
+        playAttempt++
     }
 
 

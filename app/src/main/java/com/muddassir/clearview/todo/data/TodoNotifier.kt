@@ -322,6 +322,39 @@ object TodoNotifier {
         (((todoId.hashCode() and 0x7FFF) * 31) + (epochDay % 31).toInt() % 31) % 100_000 + 1
 
     /**
+     * Rewrites a reminder's notification to say why its Complete action was
+     * refused.
+     *
+     * A background receiver cannot show a toast (Android 12+ blocks them), so
+     * for the notification path the notification itself is where the answer has
+     * to live. It replaces the reminder's card — same id, same channel — keeps a
+     * Dismiss action, and drops Complete/Snooze: both are answers to "do this
+     * now", and the rule that refused the completion will refuse them too.
+     */
+    @SuppressLint("MissingPermission")
+    fun postCompletionRefused(
+        context: Context,
+        item: TodoItem,
+        epochDay: Long,
+        reason: String
+    ) {
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_clearview)
+            .setContentTitle(item.title)
+            .setContentText(reason)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(reason))
+            .setContentIntent(openAppIntent(context))
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
+        runCatching {
+            NotificationManagerCompat.from(context)
+                .notify(notificationId(item.id, epochDay), builder.build())
+        }
+    }
+
+    /**
      * Dismisses the reminder notification for [todoId] on [epochDay] (one per
      * day per todo). Used by the Complete / Snooze actions so they give visible
      * feedback — the notification leaves the shade instead of lingering.

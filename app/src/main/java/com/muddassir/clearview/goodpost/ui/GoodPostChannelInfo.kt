@@ -323,6 +323,19 @@ internal fun GoodPostChannelInfo(
                 onToggleStar = {
                     state.posts.firstOrNull { it.id == viewingItem.postId }
                         ?.let(viewModel::toggleStar)
+                },
+                // The strip's own delete goes through the same device-delete the
+                // gallery's selection does (§6, §13). This is the screen the bug
+                // was reported from: the menu emptied the cache and closed the
+                // viewer, and the thumbnail behind it kept drawing a decode it
+                // already held, so the picture only left when the channel was
+                // closed and opened again.
+                onDeleteFromDevice = {
+                    viewModel.deleteMediaFromDevice(
+                        viewingItem.postId,
+                        viewingItem.id,
+                        viewingItem.url
+                    )
                 }
             )
         }

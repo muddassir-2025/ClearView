@@ -2,6 +2,7 @@ package com.muddassir.clearview.goodpost.data
 
 import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -109,10 +110,37 @@ internal object GoodPostDownloads {
         return safe
     }
 
-    /**
-     * Stream a signed URL into the gallery (Android 10+), or say that a
-     * destination is needed (9 and below).
-     */
+/**
+ * Hand a materialised file to another app, and say whether one took it.
+ *
+ * The whole point of a document card: a PDF is not drawn by this app, and on
+ * Android there is no built-in renderer to draw it with — what a device has is a
+ * viewer somebody installed. So the file is fetched, given to the system under a
+ * read grant for that one URI, and the SYSTEM decides with what: a chooser rather
+ * than a hard-coded intent, because the right app is the one the reader would pick.
+ *
+ * False when nothing on the device claims the type, which is a real state on a
+ * stripped-down ROM. The card says so instead of throwing.
+ */
+fun openMediaFileExternally(context: Context, uri: Uri, contentType: String?): Boolean {
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, contentType?.takeIf { it.isNotBlank() } ?: "application/octet-stream")
+        // The receiving app gets this one URI and nothing else: the cache is not a
+        // shared directory, and without the grant the viewer opens a FileNotFound.
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    return try {
+        context.startActivity(Intent.createChooser(intent, null))
+        true
+    } catch (e: Exception) {
+        false
+    }
+}
+
+/**
+ * Stream a signed URL into the gallery (Android 10+), or say that a
+ * destination is needed (9 and below).
+ */
     suspend fun saveToLibrary(
         context: Context,
         url: String,
@@ -144,9 +172,19 @@ internal object GoodPostDownloads {
         context: Context,
         url: String,
         kind: String,
-        contentType: String?
+        contentType: String?,
+        /**
+         * What to call the copy, when a name is known.
+         *
+         * A document HAS a name — it is what the sender chose and what the card
+         * shows — and handing somebody `GoodPost_20260919_101500.pdf` in place of
+         * `timetable-2026.pdf` would be throwing away the only thing about the file
+         * a person recognises. A picture has no such name, so it keeps the
+         * timestamped one made above.
+         */
+        name: String? = null
     ): Uri? = withContext(Dispatchers.IO) {
-        val name = fileName(kind, contentType)
+        val name = name?.takeIf { it.isNotBlank() } ?: fileName(kind, contentType)
         val dir = java.io.File(context.cacheDir, "shared").apply { mkdirs() }
         val target = java.io.File(dir, name)
         val written = try {

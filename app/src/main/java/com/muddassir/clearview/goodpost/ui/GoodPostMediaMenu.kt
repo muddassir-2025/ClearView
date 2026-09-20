@@ -17,6 +17,7 @@ import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.data.GoodPostDownloads
 import com.muddassir.clearview.goodpost.data.GoodPostImages
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import kotlinx.coroutines.launch
 
@@ -67,6 +68,15 @@ internal fun MediaActionMenu(
     shareCaption: String? = null,
     /** Called after the local copy was dropped, so a caller can react. */
     onDeleted: () -> Unit = {},
+    /**
+     * Told to the tab that owns the row, so the post stops being drawn (§6).
+     *
+     * This menu can empty a cache, but it cannot empty a list: a picture already
+     * decoded lives in the composable that drew it, so forgetting the bytes left
+     * the image on screen until the channel was reopened. The caller — the
+     * viewer, which knows its post and its media id — passes this in.
+     */
+    onDeleteFromDevice: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -163,7 +173,14 @@ internal fun MediaActionMenu(
             onDeleteForMe = {
                 confirmingDelete = false
                 scope.launch {
+                    // The state first, then the bytes: a list that still holds the
+                    // row would draw the file again the moment the cache missed,
+                    // and the row leaving is what makes the deletion visible.
+                    onDeleteFromDevice?.invoke()
                     GoodPostImages.forget(listOf(mediaUrl))
+                    // A clip's still is held under the same key, and leaving it
+                    // behind kept drawing the deleted video's frame in the grid.
+                    GoodPostVideoPoster.forget(listOf(mediaUrl))
                     GoodPostVideoCache.evict(mediaUrl)
                     showToast(context, R.string.goodpost_deleted_from_device)
                     onDeleted()

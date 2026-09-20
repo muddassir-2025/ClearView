@@ -29,9 +29,6 @@ object MediaNotifier {
     // on app-close of the update feed so a leftover from a previous version
     // doesn't linger in the shade.
     private const val SUMMARY_ID = 0
-    // Cap the per-run notifications so a channel that uploaded a backlog of
-    // videos can't flood the user; the summary still counts everything.
-    private const val MAX_SHOWN = 4
 
     /** Idempotent — creates the notification channel on first use. */
     fun ensureChannel(context: Context) {
@@ -77,7 +74,10 @@ object MediaNotifier {
         val postable = updates.filterNot { update ->
             NotificationStateStore.isDismissed(context, update.channelId, update.latestVideoId)
         }
-        postable.take(MAX_SHOWN).forEach { update ->
+        // Do not cap by platform or source: every saved channel update is
+        // posted. Updates are already collapsed to one newest item per channel
+        // by the worker, so this cannot duplicate a channel in one run.
+        postable.forEach { update ->
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_clearview)
                 .setContentTitle(
@@ -91,8 +91,16 @@ object MediaNotifier {
                 .setAutoCancel(true)
                 .build()
             // Deterministic per-channel id: dismissing an update in the app can
-            // cancel exactly the notification that was posted for it.
-            manager.notify(channelNotificationId(update.channelId), notification)
+            // cancel exactly the notification that was posted for it. The TAG
+            // is the channel id — invisible in the shade, but it is what lets
+            // [cancelChannelNotifications] sweep every notification a channel
+            // posted when the user mutes it (the numeric id is per post, so a
+            // channel that published three times owns three of them).
+            manager.notify(
+                update.channelId,
+                postNotificationId(update.channelId, update.latestVideoId),
+                notification
+            )
         }
         return postable.size
     }
@@ -145,6 +153,31 @@ object MediaNotifier {
         manager.cancel(channelNotificationId(channelId))
     }
 
+    fun cancelPostNotification(context: Context, channelId: String, videoId: String) {
+        NotificationManagerCompat.from(context)
+            .cancel(channelId, postNotificationId(channelId, videoId))
+    }
+
+    /**
+     * Removes EVERY update notification [channelId] has in the shade.
+     *
+     * Called when the user mutes a channel: leaving already-posted "… has an
+     * update" lines behind after they asked for silence is the exact behaviour
+     * the toggle exists to prevent. Notifications are posted under the channel
+     * id as their tag, so the channel's own notifications can be identified and
+     * cancelled without touching any other channel's. The legacy untagged
+     * per-channel id is cleared too, for a leftover from an older build.
+     */
+    fun cancelChannelNotifications(context: Context, channelId: String) {
+        val manager = NotificationManagerCompat.from(context)
+        manager.activeNotifications
+            .filter { it.tag == channelId }
+            .forEach { posted ->
+                runCatching { manager.cancel(posted.tag, posted.id) }
+            }
+        manager.cancel(channelNotificationId(channelId))
+    }
+
     /**
      * Cancels any leftover "N channels have updates" summary notification that
      * an OLD build posted (new builds never post one). Called when the in-app
@@ -156,7 +189,11 @@ object MediaNotifier {
         manager.cancel(SUMMARY_ID)
     }
 
-    /** Stable per-channel notification id (positive, won't collide with the summary). */
+    /** Stable per-post notification id, so one channel can show every update. */
+    private fun postNotificationId(channelId: String, videoId: String): Int =
+        ("$channelId|$videoId".hashCode() and 0x7FFFFFFF) % 100_000 + 1
+
+    /** Legacy per-channel id retained for cancelling notifications from older builds. */
     private fun channelNotificationId(channelId: String): Int =
         (channelId.hashCode() and 0x7FFFFFFF) % 100_000 + 1
 }

@@ -42,6 +42,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.playback.AudioPlayback
+import com.muddassir.clearview.media.playback.AudioPlaybackService
 import com.muddassir.clearview.media.worker.AudioWorkScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.phonelimit.PhoneLimitCoordinator
@@ -62,6 +63,7 @@ import com.muddassir.clearview.ui.ApplyImmersiveIfNeeded
 import com.muddassir.clearview.ui.contentHubNavItems
 import com.muddassir.clearview.ui.isLandscape
 import com.muddassir.clearview.ui.rememberContentHubState
+import com.muddassir.clearview.ui.theme.ThemeStore
 import com.muddassir.clearview.ui.theme.UrlblockerTheme
 import com.muddassir.clearview.viewmodel.MainViewModel
 
@@ -105,11 +107,35 @@ open class MainActivity : ComponentActivity() {
             intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
             phoneLimitRequestState.value = true
         }
+        // Media card tap: reopen the player for what the audio service is
+        // playing (the notification's content intent carries both fields).
+        nowPlayingFrom(intent)?.let { request ->
+            intent.removeExtra(AudioPlaybackService.EXTRA_NOW_PLAYING_VIDEO_ID)
+            nowPlayingRequestState.value = request
+        }
     }
 
     /** Clears the warm-start request after MainScreen has handled it. */
     fun consumeTodoScreenRequest() {
         todoRequestState.value = false
+    }
+
+    // ── The media card's "open what is playing" deep link ──
+
+    /**
+     * Warm-start request to reopen the player for what is playing.
+     *
+     * Same shape as [todoRequestState], and for the same reason: a tap on the
+     * media card while the app is already up arrives through [onNewIntent], and
+     * only a snapshot state lets MainScreen react to it. The cold-start path
+     * reads the extra straight off the launch intent.
+     */
+    private val nowPlayingRequestState = mutableStateOf<NowPlayingRequest?>(null)
+    val nowPlayingRequested: NowPlayingRequest? get() = nowPlayingRequestState.value
+
+    /** Clears the request once MainScreen has opened the player for it. */
+    fun consumeNowPlayingRequest() {
+        nowPlayingRequestState.value = null
     }
 
     // ── Phone Limit deep link (widget fallback / expiry notification) ──
@@ -214,6 +240,30 @@ internal fun channelSlugFrom(data: Uri?): String? =
     channelSlugFrom(data?.scheme, data?.host, data?.path)
 
 /**
+ * What the background audio service is playing, as carried by the media card's
+ * content intent: the videoId, plus whether those bytes are a video's
+ * audio-only stream rather than a downloaded file.
+ */
+data class NowPlayingRequest(val videoId: String, val isStream: Boolean)
+
+/**
+ * The "open what is playing" request carried by [intent], or null when this
+ * intent did not come from the media card.
+ *
+ * A blank id is treated as absent: the intent is rebuilt as tracks change, and
+ * an id-less tap must fall back to an ordinary launch rather than opening a
+ * player for nothing.
+ */
+internal fun nowPlayingFrom(intent: Intent): NowPlayingRequest? {
+    val videoId = intent.getStringExtra(AudioPlaybackService.EXTRA_NOW_PLAYING_VIDEO_ID)
+    if (videoId.isNullOrBlank()) return null
+    return NowPlayingRequest(
+        videoId = videoId,
+        isStream = intent.getBooleanExtra(AudioPlaybackService.EXTRA_NOW_PLAYING_IS_STREAM, false)
+    )
+}
+
+/**
  * The same decision, taken from the three parts of a URI.
  *
  * Separated from the Uri form because `android.net.Uri` is stubbed to return
@@ -264,6 +314,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
      */
     var pendingChannelSlug by remember { mutableStateOf<String?>(null) }
     val hub = rememberContentHubState()
+    // The app-wide colour scheme (appearance setting). Held here because the
+    // More tab sets it and every tab is composed below MainScreen, so changing
+    // it recomposes all of them in one pass.
+    var themeMode by remember { mutableStateOf(ThemeStore.current(context)) }
 
     // A Todo-reminder notification tap opens straight into the Todo screen —
     // either from a cold start (the launcher intent carries EXTRA_OPEN_TODO) or
@@ -311,6 +365,29 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
+        }
+    }
+
+    // A tap on the media card reopens the player for what the audio service is
+    // playing — the audio player for a downloaded track, the video player for a
+    // video that is only piping its audio. Cold start: the launch intent carries
+    // the request; warm start: onNewIntent stored it. Either way the reader ends
+    // up in the Media hub, NOT on the Quran tab the hub happens to open on.
+    LaunchedEffect(Unit) {
+        nowPlayingFrom(activity?.intent ?: return@LaunchedEffect)?.let { request ->
+            activity?.intent?.removeExtra(AudioPlaybackService.EXTRA_NOW_PLAYING_VIDEO_ID)
+            selectedTab = MainTab.MEDIA
+            hub.selectTab(ContentTab.MEDIA)
+            hub.openNowPlaying(request.videoId, request.isStream)
+        }
+    }
+    val nowPlayingRequest = activity?.nowPlayingRequested
+    LaunchedEffect(nowPlayingRequest) {
+        if (nowPlayingRequest != null) {
+            activity?.consumeNowPlayingRequest()
+            selectedTab = MainTab.MEDIA
+            hub.selectTab(ContentTab.MEDIA)
+            hub.openNowPlaying(nowPlayingRequest.videoId, nowPlayingRequest.isStream)
         }
     }
 
@@ -609,6 +686,13 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     } else {
                         MoreTab(
+                            // Read through the store, not as a parameter, so the
+                            // card always names the scheme actually in force.
+                            themeMode = themeMode,
+                            onThemeModeChange = { mode ->
+                                ThemeStore.set(context, mode)
+                                themeMode = mode
+                            },
                             onOpenTodo = { hub.showTodoScreen = true },
                             onOpenPhoneLimit = { hub.showPhoneLimitSheet = true },
                             onOpenZikr = { hub.showDhikrCounter = true },

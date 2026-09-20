@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -53,6 +55,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -77,6 +81,11 @@ import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.font.FontVariation
 import androidx.compose.ui.text.font.FontWeight
 import com.muddassir.clearview.BuildConfig
 import androidx.compose.ui.text.input.ImeAction
@@ -213,6 +222,81 @@ internal object Wa {
         if (seed.isEmpty()) AvatarFills.first()
         else AvatarFills[abs(seed.hashCode()) % AvatarFills.size]
 }
+
+/**
+ * The face a post's words are set in (§17).
+ *
+ * Monospace, and every surface that shows a post's text uses it — the feed
+ * bubble, the starred list, a search result and the composer the words are typed
+ * into. A channel here is a place for text people copy out: a command, a code
+ * block, a list of numbers, a file path. Setting it in a proportional face made
+ * the one thing a reader does with it — align it against something else —
+ * impossible, and it made the text change shape between the composer and the
+ * feed for no reason a reader could see.
+ *
+ * It is deliberately NOT applied to prose ABOUT a channel: a name, a
+ * description, a preview of something that is not a post. Those are the app
+ * talking, and the app talks in the platform's own face.
+ */
+// The variation settings below are Compose's own experimental text API: naming a
+// weight on a variable font's axis. Opted in at this one declaration rather than
+// for the file, so nothing else here quietly picks up an experimental surface.
+@OptIn(ExperimentalTextApi::class)
+internal val WaPostFont = FontFamily(
+    // JetBrains Mono, bundled rather than borrowed from the platform.
+    //
+    // This used to be `FontFamily.Monospace`, which asks ANDROID for its
+    // "monospace" family — and that family is not the app's to rely on. A phone
+    // whose font style has been changed in Display settings can have the family
+    // remapped by the vendor's font engine, so the same build was monospace on
+    // one handset and proportional on another (reported on a Motorola Edge 30
+    // Ultra). Even stock Android's own monospace is not reliably fixed-pitch.
+    //
+    // Bundling the face is the only way the tab's promise — every post's words
+    // are monospace — can be true on every device it runs on.
+    //
+    // Four entries, two FILES, and both halves of that matter.
+    //
+    // The entries are per weight and style because formatting needs them (§17):
+    // a post can set a span to bold, italic or both, and a family with no entry
+    // for the style being asked for falls back to the DEFAULT face for that span
+    // — so a single regular file would put one proportional word in the middle
+    // of a monospace paragraph.
+    //
+    // The files are two because JetBrains Mono ships a variable font: one file
+    // carries every weight between 100 and 800 on its `wght` axis, so the roman
+    // and italic pairs cover all four entries in about 600KB where the four
+    // static weights cost 1.1MB.
+    //
+    // On API 24 and 25 the axis itself is ignored — variable-font instances need
+    // API 26 — so a bold span there draws at the face's own default weight. It is
+    // still monospace, which is the promise this family exists to keep; the
+    // weight is what those two releases do without.
+    Font(
+        resId = R.font.jetbrains_mono_variable,
+        weight = FontWeight.Normal,
+        style = FontStyle.Normal,
+        variationSettings = FontVariation.Settings(FontVariation.weight(400))
+    ),
+    Font(
+        resId = R.font.jetbrains_mono_variable,
+        weight = FontWeight.Bold,
+        style = FontStyle.Normal,
+        variationSettings = FontVariation.Settings(FontVariation.weight(700))
+    ),
+    Font(
+        resId = R.font.jetbrains_mono_italic_variable,
+        weight = FontWeight.Normal,
+        style = FontStyle.Italic,
+        variationSettings = FontVariation.Settings(FontVariation.weight(400))
+    ),
+    Font(
+        resId = R.font.jetbrains_mono_italic_variable,
+        weight = FontWeight.Bold,
+        style = FontStyle.Italic,
+        variationSettings = FontVariation.Settings(FontVariation.weight(700))
+    )
+)
 
 // ── Surfaces ────────────────────────────────────────────────────────────
 
@@ -540,6 +624,11 @@ internal fun WaChannelRow(
                                 AnnotatedString(preview)
                             },
                             color = Wa.TextDim,
+                            // §17: a preview of a POST wears the same face the post
+                            // wears in the feed, so the line does not change shape
+                            // on the way in. A description is prose about the
+                            // channel and keeps the platform's face.
+                            fontFamily = if (previewIsPostBody) WaPostFont else null,
                             fontSize = 14.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -578,6 +667,15 @@ internal fun WaSelectionBar(
     count: Int,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * True while an action on the selection is on its way to the server (§5).
+     *
+     * The bar grows a small spinner beside the count and the caller withholds
+     * its destructive controls, so a batch delete reads as "working" rather than
+     * as a bar that did not notice the tap. The count itself stays: the reader
+     * still needs to know what they selected while they wait.
+     */
+    busy: Boolean = false,
     actions: @Composable () -> Unit = {}
 ) {
     // §22: the bar drops into the place of the title bar it replaces. It is the
@@ -612,6 +710,15 @@ internal fun WaSelectionBar(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
+
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = Wa.Accent
+                )
+                Spacer(Modifier.width(10.dp))
+            }
 
             actions()
         }
@@ -1151,31 +1258,66 @@ internal fun WaFollowAction(
         else -> stringResource(R.string.goodpost_follow)
     }
 
-    Box(
+    // The two states are animated INTO each other rather than swapped, and the
+    // colour is the message: a follow that has just been taken is a pill that
+    // drains from green to a quiet outline under the reader's own thumb. A hard
+    // swap reads as the row having been redrawn by somebody else.
+    val fill by animateColorAsState(
+        targetValue = when {
+            busy -> Wa.Bar
+            following -> Color.Transparent
+            else -> Wa.Accent
+        },
+        animationSpec = tween(durationMillis = 180),
+        label = "wa-follow-fill"
+    )
+    val outline by animateColorAsState(
+        targetValue = if (following) Wa.Divider else Wa.Accent,
+        animationSpec = tween(durationMillis = 180),
+        label = "wa-follow-outline"
+    )
+    val content by animateColorAsState(
+        targetValue = if (following) Wa.TextDim else Wa.OnAccent,
+        animationSpec = tween(durationMillis = 180),
+        label = "wa-follow-content"
+    )
+
+    // A Row rather than a Box, so the state can carry a mark as well as a word:
+    // a tick beside "Following" says which of the two states this is even to
+    // somebody who has not read the label, which is the whole job of an
+    // unfollowable-looking button.
+    Row(
         modifier = Modifier
+            .animateContentSize()
             .clip(RoundedCornerShape(18.dp))
-            .background(if (following) Wa.Pressed else Color.Transparent)
-            .border(
-                width = 1.dp,
-                color = if (following) Wa.Divider else Wa.Accent,
-                shape = RoundedCornerShape(18.dp)
-            )
+            .background(fill)
+            .border(width = 1.dp, color = outline, shape = RoundedCornerShape(18.dp))
+            // §22: a follow is a deliberate, one-per-channel tap, so it keeps the
+            // platform's own ripple rather than the scale the small chips use —
+            // the press should feel like a button and not like a chip.
             .clickable(enabled = !busy, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-        contentAlignment = Alignment.Center
+            .padding(horizontal = 13.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         if (label == null) {
             CircularProgressIndicator(
                 modifier = Modifier.size(14.dp),
                 strokeWidth = 1.5.dp,
-                color = Wa.Accent
+                color = Wa.TextDim
             )
         } else {
+            Icon(
+                imageVector = if (following) Icons.Filled.Check else Icons.Filled.Add,
+                contentDescription = null,
+                tint = content,
+                modifier = Modifier.size(15.dp)
+            )
             Text(
                 text = label,
-                color = if (following) Wa.TextDim else Wa.Accent,
+                color = content,
                 fontSize = 13.sp,
-                fontWeight = FontWeight.Medium,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )
         }
@@ -1449,10 +1591,19 @@ internal fun WaPostContainer(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Wa.Bubble)
-            .padding(horizontal = 10.dp, vertical = 9.dp),
+            .padding(horizontal = WaPostPadding, vertical = 9.dp),
         content = content
     )
 }
+
+/**
+ * The bubble's own horizontal inset (§18).
+ *
+ * Named rather than spelled out because the FEED has to know it: a post's media is
+ * sized against the room inside the bubble, and the bubble is then made as wide as
+ * that media. Two numbers that have to agree, so there is one number.
+ */
+internal val WaPostPadding = 10.dp
 
 /** The timestamp line under a post's content, right-aligned. */
 @Composable

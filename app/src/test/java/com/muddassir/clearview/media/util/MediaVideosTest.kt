@@ -91,6 +91,21 @@ class MediaVideosTest {
     }
 
     @Test
+    fun `encode decode round-trips the full post text`() {
+        val caption = "line one\n" + "x".repeat(400)
+        val list = listOf(
+            video("x_123", 100L).copy(
+                title = caption.take(160),
+                bodyText = caption,
+                platform = com.muddassir.clearview.media.model.MediaPlatform.X
+            )
+        )
+        val decoded = MediaVideos.decode(MediaVideos.encode(list))
+        assertEquals(caption, decoded.single().bodyText)
+        assertEquals(list, decoded)
+    }
+
+    @Test
     fun `decode handles blank and corrupt input`() {
         assertEquals(emptyList<MediaVideo>(), MediaVideos.decode(null))
         assertEquals(emptyList<MediaVideo>(), MediaVideos.decode(""))

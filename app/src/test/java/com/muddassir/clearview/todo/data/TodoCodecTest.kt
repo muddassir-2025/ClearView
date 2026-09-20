@@ -804,5 +804,79 @@ class TodoCodecTest {
         assertEquals(original.events.size, decoded.events.size)
         assertEquals(original.events, decoded.events)
     }
+
+    @Test
+    fun `alarm ring length and sound round-trip`() {
+        val picked = "content://com.android.providers.media.documents/document/audio%3A1234"
+        val original = item(
+            id = "t1",
+            start = TODAY,
+            time = 7 * 60,
+            reminder = ReminderConfig(
+                timesMinutes = listOf(7 * 60),
+                repeat = true,
+                asAlarm = true,
+                alarmMinutes = 5,
+                alarmUri = picked
+            )
+        )
+        val decoded = TodoCodec.decode(TodoCodec.encode(listOf(original))).first()
+        assertEquals(5, decoded.reminder!!.alarmMinutes)
+        assertEquals(picked, decoded.reminder!!.alarmUri)
+        assertEquals(5 * 60_000L, decoded.reminder!!.alarmDurationMs)
+    }
+
+    @Test
+    fun `a reminder with no ring length written by an older build rings for one minute`() {
+        // The exact JSON shape the previous build wrote: no alarmMinutes, no
+        // alarmUri.
+        val legacy = """
+            [{"id":"t1","title":"t1","type":"TEMPORARY","start":0,"end":0,
+              "reminder":{"times":[540],"repeat":true,"enabled":true,"asAlarm":true}}]
+        """.trimIndent()
+        val decoded = TodoCodec.decode(legacy).first()
+        assertEquals(ReminderConfig.DEFAULT_ALARM_MINUTES, decoded.reminder!!.alarmMinutes)
+        assertNull(decoded.reminder!!.alarmUri)
+        assertEquals(60_000L, decoded.reminder!!.alarmDurationMs)
+    }
+
+    @Test
+    fun `a nonsense ring length from storage is clamped, not trusted`() {
+        val zero = ReminderConfig(listOf(540), repeat = true).copy(alarmMinutes = 0)
+        assertEquals(60_000L, zero.alarmDurationMs)
+        val negative = ReminderConfig(listOf(540), repeat = true).copy(alarmMinutes = -30)
+        assertEquals(60_000L, negative.alarmDurationMs)
+        val absurd = ReminderConfig(listOf(540), repeat = true).copy(alarmMinutes = 10_000)
+        assertEquals(ReminderConfig.MAX_ALARM_MINUTES * 60_000L, absurd.alarmDurationMs)
+
+        // …and the clamp survives a write/read cycle through storage.
+        val stored = item(
+            id = "t1",
+            start = TODAY,
+            time = 9 * 60,
+            reminder = ReminderConfig(listOf(9 * 60), repeat = true).copy(alarmMinutes = 9_999)
+        )
+        val decoded = TodoCodec.decode(TodoCodec.encode(listOf(stored))).first()
+        assertEquals(ReminderConfig.MAX_ALARM_MINUTES, decoded.reminder!!.alarmMinutes)
+    }
+
+    @Test
+    fun `every offered ring length is a sane number of minutes`() {
+        assertTrue(ReminderConfig.ALARM_MINUTE_CHOICES.isNotEmpty())
+        assertTrue(ReminderConfig.ALARM_MINUTE_CHOICES.all { it >= 1 })
+        assertTrue(
+            ReminderConfig.ALARM_MINUTE_CHOICES.all { it <= ReminderConfig.MAX_ALARM_MINUTES }
+        )
+        // The default must be one of the choices, or the editor would show a
+        // selection the reader cannot make again after changing it.
+        assertTrue(
+            ReminderConfig.DEFAULT_ALARM_MINUTES in ReminderConfig.ALARM_MINUTE_CHOICES
+        )
+        assertEquals(
+            "choices must be ascending",
+            ReminderConfig.ALARM_MINUTE_CHOICES.sorted(),
+            ReminderConfig.ALARM_MINUTE_CHOICES
+        )
+    }
 }
 

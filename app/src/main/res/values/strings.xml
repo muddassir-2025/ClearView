@@ -8,6 +8,15 @@
     <string name="more_tab">More</string>
     <string name="more_tab_subtitle">Tools &amp; protection</string>
     <string name="more_section_tools">TOOLS</string>
+    <string name="more_section_appearance">APPEARANCE</string>
+    <!-- Appearance / theme choice (applies to every tab at once). -->
+    <string name="theme_card_title">Theme</string>
+    <string name="theme_dialog_title">Theme</string>
+    <string name="theme_option_system">Follow system</string>
+    <string name="theme_option_light">Light</string>
+    <string name="theme_option_dark">Dark</string>
+    <!-- The Theme card's one-line note, e.g. "Dark — change". -->
+    <string name="theme_note_format">%1$s — change</string>
     <string name="more_section_protection">PROTECTION</string>
     <!-- The Protection card, and the page it opens (the old Block dashboard). -->
     <string name="more_protection_title">Protection</string>
@@ -103,6 +112,14 @@
     <string name="quran_ayah_progress_desc">Ayah %1$d of %2$d in this surah</string>
     <!-- Compact ayah/total used in dense rows (search results, bookmarks, widget). -->
     <string name="quran_ayah_progress_short">%1$d/%2$d</string>
+    <!-- The verse's reference line, with the reader's position in the surah
+         folded into it. The old layout printed the ayah number twice — "Surah 97
+         · Ayah 2" over "2 / 5 ayahs" — which read as a duplication rather than
+         as progress, so the number now appears once and the position under it is
+         a bar. The plain form is for a verse whose surah total is not known yet
+         (a persisted verse from before the surah counts were downloaded). -->
+    <string name="quran_ayah_reference">Surah %1$d · Ayah %2$d</string>
+    <string name="quran_ayah_reference_of">Surah %1$d · Ayah %2$d of %3$d</string>
     <string name="quran_settings_title">Settings</string>
     <string name="quran_notifications_title">Notifications</string>
     <string name="quran_notifications">Quran Reminders</string>
@@ -327,6 +344,32 @@
     <string name="todo_reminder_style_notification_note">Posts a notification with Complete and Snooze actions</string>
     <string name="todo_reminder_style_alarm">Alarm</string>
     <string name="todo_reminder_style_alarm_note">Rings the system alarm — exact, full-screen, shown in the Clock app</string>
+    <!-- Section headings of the (carded) editor. "Basics", "Dates" etc. -->
+    <string name="todo_section_what">What to do</string>
+    <string name="todo_section_when">When</string>
+    <string name="todo_section_remind">Reminder</string>
+    <string name="todo_section_organise">Organise</string>
+    <string name="todo_new_subtitle">Fill in the details — only the name is required</string>
+    <string name="todo_edit_subtitle">Change anything and save</string>
+    <!-- Alarm ring length (applies to alarm-style reminders). -->
+    <string name="todo_alarm_ring_for">Ring for</string>
+    <string name="todo_alarm_minutes">%1$d min</string>
+    <string name="todo_alarm_ring_note">The alarm stops after this, but its notification stays so you can still complete or snooze it</string>
+    <!-- Alarm sound: the system tone or an audio file off the device. -->
+    <string name="todo_alarm_sound">Alarm sound</string>
+    <string name="todo_alarm_sound_system">System alarm</string>
+    <string name="todo_alarm_sound_device">Device audio</string>
+    <string name="todo_alarm_sound_choose">Choose from device</string>
+    <string name="todo_alarm_sound_change">Change sound</string>
+    <string name="todo_alarm_sound_reset">Use system alarm</string>
+    <string name="todo_alarm_sound_note">Rings with this file instead of the system alarm tone</string>
+    <string name="todo_alarm_sound_missing">That file is no longer available — the system alarm will be used</string>
+    <!-- Why a Complete tap was refused (never silently: a button that does
+         nothing reads as broken). -->
+    <string name="todo_complete_refused_window">That day\'s time window has closed, so it is locked as missed</string>
+    <string name="todo_complete_refused_inactive">This todo is not scheduled for that day</string>
+    <string name="todo_complete_refused_done">Already marked complete for that day</string>
+    <string name="todo_complete_refused_future">That day has not arrived yet</string>
     <string name="todo_priority">Priority</string>
     <string name="todo_priority_low">Low</string>
     <string name="todo_priority_normal">Normal</string>
@@ -510,9 +553,14 @@
     <string name="todo_stats_productive_minutes_label">Productive time</string>
     <string name="todo_graph_attempted">Attempted Todos</string>
     <string name="todo_filter_attempted">Attempted</string>
-    <string name="todo_heatmap_title">Productivity heatmap</string>
-    <!-- Subtitle under the heatmap title: what the grid covers. -->
-    <string name="todo_heatmap_subtitle">Last 12 months · one square per day, darker means more completed</string>
+    <!-- Heatmap headline: what the shown window adds up to, above the grid. -->
+    <string name="todo_heatmap_total_past_year">%1$d completed in the past year</string>
+    <string name="todo_heatmap_total_year">%1$d completed in %2$d</string>
+    <string name="todo_heatmap_active_days">Total active days: %1$d</string>
+    <string name="todo_heatmap_max_streak">Max streak: %1$d</string>
+    <!-- Heatmap period menu: "Past year" and one entry per calendar year. -->
+    <string name="todo_heatmap_range_past_year">Past year</string>
+    <string name="todo_heatmap_range_menu">Choose the period to show</string>
     <string name="todo_heatmap_cell_desc">%1$s · %2$d completed · %3$d%% of the day\'s plan</string>
     <string name="todo_heatmap_less">Less</string>
     <string name="todo_heatmap_more">More</string>
@@ -930,6 +978,10 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_delete_confirm_word">delete</string>
 
     <string name="goodpost_write_update">Write an update</string>
+    <!-- The strip's own send control, inside the field. -->
+    <string name="goodpost_send">Send</string>
+    <!-- The pencil beside the field: the posting page, not a send. -->
+    <string name="goodpost_open_composer">Open the writing page</string>
     <string name="goodpost_new_channel">New channel</string>
     <string name="goodpost_video">Video</string>
     <string name="goodpost_edit_post">Edit post</string>
@@ -992,15 +1044,26 @@ This video cannot be played inside the app.</string>
          each needs a different thing from the person holding the phone:
          pick another file, wait, or try again later. -->
     <string name="goodpost_error_media_too_large">That file is too large to upload. Try a smaller one.</string>
-    <string name="goodpost_error_media_type">That file type cannot be posted. Images and video only.</string>
+    <string name="goodpost_error_media_type">That file type cannot be posted. Photos, video and PDF documents only.</string>
     <string name="goodpost_error_attachment_uploading">A file is still uploading. Wait for it to finish, then post.</string>
-    <string name="goodpost_error_attachment_failed">A file could not be attached. Remove it, or post without it.</string>
+    <string name="goodpost_error_attachment_failed">A file could not be attached. Tap it to send it again, or remove it.</string>
 
     <!-- The composer's media strip (§21). -->
-    <string name="goodpost_add_media">Add photo or video</string>
+    <string name="goodpost_add_media">Attach a file</string>
+    <!-- The chooser behind the paperclip: Android's photo picker cannot show a PDF and its document picker cannot show a camera roll, so which one opens is the sender's choice. -->
+    <string name="goodpost_attach_title">Attach</string>
+    <string name="goodpost_attach_photos">Photos &amp; videos</string>
+    <string name="goodpost_attach_document">Document (PDF)</string>
+    <!-- A document's tile, which has no preview to draw: what it is, and the way to open it. -->
+    <string name="goodpost_document">PDF</string>
+    <!-- A starred message whose post is a document: the label stands in for the picture the list cannot draw. -->
+    <string name="goodpost_posted_document">Document</string>
+    <string name="goodpost_document_open">Open document</string>
     <string name="goodpost_attachment_uploading">Uploading…</string>
     <string name="goodpost_attachment_ready">Ready</string>
     <string name="goodpost_attachment_failed">Failed</string>
+    <!-- On the failed tile itself: the whole square is the way to send it again. -->
+    <string name="goodpost_attachment_retry">Send this file again</string>
     <!-- The channel's profile image (§11), set from the same upload handshake as a post's media (§22). -->
     <string name="goodpost_channel_image">Channel image</string>
     <string name="goodpost_channel_image_add">Add image</string>

@@ -128,4 +128,61 @@ class MediaVideoInstagramTest {
         assertFalse(short.isInstagramImage)
         assertFalse(long.isShortsEntry)
     }
+
+    // ── Posts vs playable media (the feed renders each differently) ──
+
+    @Test
+    fun `an x tweet without a video is a post`() {
+        val textOnly = video(videoId = "x_1", platform = MediaPlatform.X)
+        val withPhoto = video(
+            videoId = "x_2",
+            platform = MediaPlatform.X,
+            mediaUrl = null
+        ).copy(thumbnailUrl = "https://pbs.twimg.com/media/x.jpg")
+        assertTrue(textOnly.isPost)
+        assertTrue(withPhoto.isPost)
+        assertFalse(textOnly.hasPlayableVideo)
+    }
+
+    @Test
+    fun `an x video attachment is playable media, not a post`() {
+        val clip = video(
+            videoId = "x_3",
+            platform = MediaPlatform.X,
+            mediaUrl = "https://video.twimg.com/ext_tw_video/1/pu/vid/640x360/a.mp4?tag=12"
+        )
+        assertTrue(clip.hasPlayableVideo)
+        assertFalse(clip.isPost)
+    }
+
+    @Test
+    fun `instagram photos are posts and reels are not`() {
+        val photo = video(
+            videoId = "ig_P1",
+            platform = MediaPlatform.INSTAGRAM,
+            type = InstagramMediaType.IMAGE
+        )
+        val reel = video(
+            videoId = "ig_R1",
+            platform = MediaPlatform.INSTAGRAM,
+            type = InstagramMediaType.REEL
+        )
+        assertTrue(photo.isPost)
+        assertFalse(reel.isPost)
+    }
+
+    @Test
+    fun `a youtube video is never a post`() {
+        assertFalse(video(videoId = "yt1").isPost)
+        assertFalse(video(videoId = "yt2", isShort = true).isPost)
+    }
+
+    @Test
+    fun `post body text is carried separately from the card label`() {
+        val long = "x".repeat(500)
+        val post = video(videoId = "x_9", platform = MediaPlatform.X)
+            .copy(title = long.take(160), bodyText = long)
+        assertTrue(post.title.length < post.bodyText.length)
+        assertTrue(post.bodyText.endsWith("xxxx"))
+    }
 }

@@ -11,9 +11,11 @@ import kotlinx.coroutines.withContext
  *
  * Uses a prioritized list of [InstagramSource] providers:
  * 1. DirectRssInstagramSource — for explicit RSS feed URLs (RSS.app, etc.)
- * 2. BackendInstagramSource — server-side proxy
- * 3. PublicRssBridgeInstagramSource — public RSS-Bridge instances
- * 4. WebProfileInstagramSource — direct client-side scraper (fallback)
+ * 2. ProfileEmbedInstagramSource — Instagram's own login-free profile embed
+ *    (the only one that still answers: see the class docs)
+ * 3. BackendInstagramSource — server-side proxy
+ * 4. PublicRssBridgeInstagramSource — public RSS-Bridge instances
+ * 5. WebProfileInstagramSource — direct client-side scraper (fallback)
  *
  * If ALL sources fail, returns null so the caller can show an error.
  * No dummy/fallback posts are ever generated.
@@ -25,6 +27,7 @@ object InstagramResolver {
     private val sources: List<InstagramSource>
         get() = listOf(
             DirectRssInstagramSource(),
+            ProfileEmbedInstagramSource(),
             BackendInstagramSource(ClearViewBackendClient.baseUrl),
             PublicRssBridgeInstagramSource(),
             WebProfileInstagramSource()
@@ -55,10 +58,13 @@ object InstagramResolver {
             ) {
                 return trimmed
             }
-            if (trimmed.contains("instagram.com/") || trimmed.contains("instagr.am/")) {
-                val after = trimmed.substringAfter("instagram.com/").substringAfter("instagr.am/")
-                val user = after.substringBefore('/').substringBefore('?').substringBefore('#').trim()
-                if (user.isNotEmpty() && user != "p" && user != "reel" && user != "stories") {
+            val profileMatch = Regex(
+                "(?:instagram\\.com|instagr\\.am)/([^/?#]+)",
+                RegexOption.IGNORE_CASE
+            ).find(trimmed)
+            if (profileMatch != null) {
+                val user = profileMatch.groupValues[1].trim()
+                if (user.isNotEmpty() && !isReservedProfilePath(user)) {
                     return user.removePrefix("@")
                 }
             }
@@ -70,6 +76,12 @@ object InstagramResolver {
         }
         return null
     }
+
+    private fun isReservedProfilePath(value: String): Boolean =
+        value.lowercase() in setOf(
+            "p", "reel", "reels", "stories", "accounts", "explore", "direct",
+            "about", "developer", "directory", "web", "emails", "challenge"
+        )
 
     /**
      * Attempts to resolve an Instagram profile for [input].
@@ -94,9 +106,20 @@ object InstagramResolver {
                 Log.d(TAG, "Trying source ${source.name} for $cleanInput")
                 when (val result = source.fetchProfile(cleanInput)) {
                     is InstagramFeedResult.Success -> {
+                        // A bridge can answer successfully with a generic or
+                        // unrelated feed. For a handle/profile URL, accept only
+                        // the exact requested username; never save another
+                        // account under this subscription.
+                        val requested = extractProfileUsername(cleanInput)
+                        if (requested != null &&
+                            !result.username.equals(requested, ignoreCase = true)
+                        ) {
+                            Log.w(TAG, "Ignoring mismatched ${source.name} result=${result.username} expected=$requested")
+                            continue
+                        }
                         Log.d(TAG, "Source ${source.name} returned ${result.items.size} items for $cleanInput")
                         return@withContext InstagramProfile(
-                            username = result.username,
+                            username = requested ?: result.username,
                             fullName = result.fullName,
                             avatarUrl = result.avatarUrl,
                             posts = result.items
@@ -113,5 +136,20 @@ object InstagramResolver {
 
         Log.w(TAG, "All sources failed for $cleanInput")
         null
+    }
+
+    /** Extracts the account name from an Instagram handle or profile URL. */
+    private fun extractProfileUsername(input: String): String? {
+        val value = input.trim()
+        if (value.startsWith("http", ignoreCase = true)) {
+            val match = Regex(
+                "(?:instagram\\.com|instagr\\.am)/([^/?#]+)",
+                RegexOption.IGNORE_CASE
+            ).find(value) ?: return null
+            return match.groupValues[1]
+                .removePrefix("@")
+                .takeIf { it.isNotBlank() && !isReservedProfilePath(it) }
+        }
+        return value.removePrefix("@").takeIf { it.isNotBlank() }
     }
 }

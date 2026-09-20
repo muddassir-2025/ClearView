@@ -49,7 +49,9 @@ import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
 import com.muddassir.clearview.media.model.MediaChannelUpdate
 import com.muddassir.clearview.media.model.MediaVideo
+import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.ui.AudioPlayerScreen
+import android.util.Log
 import com.muddassir.clearview.media.ui.LiveTab
 import com.muddassir.clearview.media.ui.MediaTab
 import com.muddassir.clearview.media.ui.VideoPlayerScreen
@@ -91,6 +93,36 @@ import java.time.format.FormatStyle
  * bar can trigger (share / bookmark / copy / new verse / interval).
  */
 enum class ContentTab { QURAN, MEDIA }
+
+/**
+ * Which player a tap on the media card should reopen.
+ *
+ * [NONE] is a real answer, not a failure case: the track may have been deleted
+ * from the download library, or come from a feed that is no longer cached, and
+ * opening an empty player would be worse than leaving the reader where they
+ * were.
+ */
+enum class NowPlayingTarget { DOWNLOADED_AUDIO, VIDEO, NONE }
+
+/**
+ * The routing rule itself, split out so it can be tested without a hub, a
+ * player or a service.
+ *
+ * A STREAM wins over everything: the service says those bytes are a video's
+ * audio, so even if a download of the same id exists the reader asked for that
+ * video. A downloaded file is the audio player. Anything else has to be a video
+ * this device can still find.
+ */
+internal fun nowPlayingTarget(
+    isStream: Boolean,
+    hasDownload: Boolean,
+    hasVideo: Boolean
+): NowPlayingTarget = when {
+    isStream && hasVideo -> NowPlayingTarget.VIDEO
+    !isStream && hasDownload -> NowPlayingTarget.DOWNLOADED_AUDIO
+    hasVideo -> NowPlayingTarget.VIDEO
+    else -> NowPlayingTarget.NONE
+}
 
 /**
  * The three views of the Quran screen (§1–§3).
@@ -454,7 +486,13 @@ class ContentHubState(appContext: Context) {
         scope.launch {
             // Remove the OS notifications too (deterministic per-channel ids),
             // so the shade and the launcher bubble follow the in-app feed.
-            mediaUpdates.forEach { MediaNotifier.cancelChannelNotification(appContext, it.channelId) }
+            mediaUpdates.forEach { update ->
+                MediaNotifier.cancelPostNotification(
+                    appContext,
+                    update.channelId,
+                    update.latestVideoId
+                )
+            }
             withContext(Dispatchers.IO) { mediaRepository.clearAllUpdates() }
             mediaUpdates = emptyList()
             unreadUpdateIds = emptySet()
@@ -616,7 +654,13 @@ class ContentHubState(appContext: Context) {
             // Remove its OS notification too (deterministic per-channel id), so
             // the shade and the launcher bubble follow the in-app feed.
             mediaUpdates.firstOrNull { it.latestVideoId == latestVideoId }
-                ?.let { MediaNotifier.cancelChannelNotification(appContext, it.channelId) }
+                ?.let { update ->
+                    MediaNotifier.cancelPostNotification(
+                        appContext,
+                        update.channelId,
+                        update.latestVideoId
+                    )
+                }
             withContext(Dispatchers.IO) { mediaRepository.dismissUpdate(latestVideoId) }
             val updated = mediaUpdates.filterNot { it.latestVideoId == latestVideoId }
             mediaUpdates = updated
@@ -708,6 +752,69 @@ class ContentHubState(appContext: Context) {
     fun exitAudio() {
         playingAudio = null
     }
+
+    /**
+     * Opens the player for what the background audio service is playing.
+     *
+     * Called when the media card is tapped, which is the reader saying "take me
+     * back to what I am listening to". [isStream] comes from the service, which
+     * is the only component that knows whether those bytes are a downloaded file
+     * or a video's audio-only stream.
+     *
+     * Returns false when there is nothing on this device to open — a download
+     * that has since been deleted, a video no longer in any cached feed — so the
+     * caller can leave the reader where they are rather than on a blank player.
+     */
+    fun openNowPlaying(videoId: String, isStream: Boolean): Boolean {
+        val downloaded = AudioDownloads.itemFor(videoId)
+        // Only looked up when the decision can need it: reading the channel
+        // caches is real work, and the downloaded-audio path never wants a video.
+        val video = if (isStream || downloaded == null) cachedVideo(videoId) else null
+        val target = nowPlayingTarget(
+            isStream = isStream,
+            hasDownload = downloaded != null,
+            hasVideo = video != null
+        )
+        // One line for a path that is otherwise invisible: the card tap lands in
+        // a tab the reader did not choose, and "nothing opened" has several
+        // possible causes (a stream the device cannot find, a download that is
+        // gone, an id that never reached the app).
+        Log.i(
+            "ContentHub",
+            "openNowPlaying id=$videoId stream=$isStream download=${downloaded != null} " +
+                "video=${video != null} -> $target"
+        )
+        return when (target) {
+            NowPlayingTarget.DOWNLOADED_AUDIO -> {
+                playAudioItem(downloaded!!)
+                true
+            }
+
+            NowPlayingTarget.VIDEO -> {
+                // Listening and watching the same video are mutually exclusive
+                // (the same rule the player enforces in both directions), and
+                // two copies of one lecture a few hundred milliseconds apart is
+                // the one failure worse than either alone. The video resumes
+                // from the position the audio was at — the service files its
+                // progress under the same videoId.
+                AudioPlayback.stop()
+                playVideo(video!!)
+                true
+            }
+
+            NowPlayingTarget.NONE -> false
+        }
+    }
+
+    /**
+     * The video [videoId] out of what this device already has: the in-memory
+     * All Feed first (instant, and the feed is where listen mode is started
+     * from), then the per-channel caches.
+     */
+    private fun cachedVideo(videoId: String): MediaVideo? =
+        mediaRepository.getMemoizedAllFeed()?.firstOrNull { it.videoId == videoId }
+            ?: mediaRepository.getAllCachedVideos(mediaRepository.getSavedChannels())
+                .firstOrNull { it.videoId == videoId }
 
     /** Vertical Shorts paging: +1 next, -1 previous (no-op at the ends). */
     fun navigateShorts(delta: Int) {

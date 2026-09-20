@@ -10,8 +10,10 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -26,25 +28,39 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EditNote
+import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -63,10 +79,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
+import com.muddassir.clearview.todo.data.AlarmSounds
 import com.muddassir.clearview.todo.data.TodoCodec
 import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.todo.model.ReminderConfig
@@ -80,7 +98,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 /** Temporary-todo period presets. */
-private enum class PeriodChoice { TODAY, TOMORROW, THIS_WEEK, CUSTOM }
+internal enum class PeriodChoice { TODAY, TOMORROW, THIS_WEEK, CUSTOM }
 
 /** Time options in the editor: none / a single time / a start–end range. */
 private enum class TimeChoice { NONE, SINGLE, RANGE }
@@ -98,6 +116,14 @@ private sealed class TimeTarget {
 
 /** Which date the date picker is editing (custom-range only). */
 private enum class DateTarget { START, END }
+
+/**
+ * Which value-list picker is open, if any.
+ *
+ * One state instead of a boolean per picker: only one can be open at a time, and
+ * "which one" is exactly what the editor needs to know to draw its dialog.
+ */
+private enum class EditorChoice { DATES, DURATION, RING }
 
 private val DAY_LETTERS = listOf("M", "T", "W", "T", "F", "S", "S")
 private val DAY_NAMES = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -121,6 +147,7 @@ fun TodoEditorDialog(
     onDismiss: () -> Unit
 ) {
     val today = LocalDate.now()
+    val context = LocalContext.current
 
     var title by remember { mutableStateOf(initial?.title ?: "") }
     var details by remember { mutableStateOf(initial?.details ?: "") }
@@ -187,6 +214,17 @@ fun TodoEditorDialog(
             }
         )
     }
+    // ALARM style only: how long it rings, and which sound it rings with.
+    // [alarmUri] is null for the system alarm; a device pick is a persisted
+    // content:// URI the service plays directly.
+    var alarmMinutes by remember {
+        mutableStateOf(
+            initial?.reminder?.alarmMinutes
+                ?.coerceIn(1, ReminderConfig.MAX_ALARM_MINUTES)
+                ?: ReminderConfig.DEFAULT_ALARM_MINUTES
+        )
+    }
+    var alarmUri by remember { mutableStateOf(initial?.reminder?.alarmUri) }
     var priority by remember { mutableStateOf(initial?.priority ?: TodoPriority.NORMAL) }
     var behavior by remember { mutableStateOf(initial?.behavior ?: TodoBehavior.NORMAL) }
     var targetDurationMinutes by remember { mutableStateOf(initial?.targetDurationMinutes ?: 60) }
@@ -195,6 +233,7 @@ fun TodoEditorDialog(
     // ("can't redo") — the checkbox disables and the notification Complete
     // action is rejected. Only meaningful (and shown) for RANGE todos.
     var strictInterval by remember { mutableStateOf(initial?.strictInterval ?: false) }
+    var choice by remember { mutableStateOf<EditorChoice?>(null) }
     var dateTarget by remember { mutableStateOf<DateTarget?>(null) }
     var timeTarget by remember { mutableStateOf<TimeTarget?>(null) }
 
@@ -204,6 +243,22 @@ fun TodoEditorDialog(
     val notificationPermLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* granted or denied: no extra action — the UI just reflects it */ }
+
+    // Picking the alarm sound: OpenDocument (not GetContent) because its URIs can
+    // be kept — the alarm rings days later, from a service that was not the
+    // activity that opened the picker, so a one-shot grant would be worthless.
+    val pickAlarmSound = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { picked ->
+        picked ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                picked,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        alarmUri = picked.toString()
+    }
 
     fun effectiveStart(): LocalDate = when (period) {
         PeriodChoice.TODAY -> today
@@ -276,7 +331,9 @@ fun TodoEditorDialog(
                 timesMinutes = listOf(timeMinutes ?: 20 * 60),
                 repeat = true,
                 enabled = styleOn,
-                asAlarm = reminderStyle == ReminderStyle.ALARM
+                asAlarm = reminderStyle == ReminderStyle.ALARM,
+                alarmMinutes = alarmMinutes,
+                alarmUri = alarmUri
             )
             TimeChoice.RANGE -> ReminderConfig(
                 timesMinutes = reminderTimes.ifEmpty {
@@ -284,7 +341,9 @@ fun TodoEditorDialog(
                 }.distinct(),
                 repeat = true,
                 enabled = styleOn,
-                asAlarm = reminderStyle == ReminderStyle.ALARM
+                asAlarm = reminderStyle == ReminderStyle.ALARM,
+                alarmMinutes = alarmMinutes,
+                alarmUri = alarmUri
             )
         }
         onSave(
@@ -324,35 +383,29 @@ fun TodoEditorDialog(
                     .statusBarsPadding()
                     .navigationBarsPadding()
             ) {
-                // ── Top bar ──
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 4.dp, end = 16.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = stringResource(R.string.todo_back)
-                        )
-                    }
-                    Text(
-                        text = stringResource(
-                            if (initial == null) R.string.todo_add else R.string.todo_edit
-                        ),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+                EditorTopBar(
+                    title = stringResource(
+                        if (initial == null) R.string.todo_add else R.string.todo_edit
+                    ),
+                    subtitle = stringResource(
+                        if (initial == null) R.string.todo_new_subtitle
+                        else R.string.todo_edit_subtitle
+                    ),
+                    onBack = onDismiss
+                )
 
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = 24.dp)
+                        .padding(horizontal = 16.dp)
+                        .padding(top = 6.dp, bottom = 12.dp)
                 ) {
+                    SectionHeader(
+                        icon = Icons.Filled.EditNote,
+                        title = stringResource(R.string.todo_section_what),
+                        first = true
+                    )
                     // ── Name + details ──
                     OutlinedTextField(
                         value = title,
@@ -371,145 +424,76 @@ fun TodoEditorDialog(
                         minLines = 2
                     )
 
-                    Spacer(Modifier.height(20.dp))
-                    SectionTitle(stringResource(R.string.todo_type))
+                    // A two-way choice is a segmented control, not two floating
+                    // boxes: it reads as ONE setting with two states, which is
+                    // what it is.
+                    Spacer(Modifier.height(16.dp))
+                    FieldLabel(stringResource(R.string.todo_type))
+                    Spacer(Modifier.height(8.dp))
+                    EditorSegments(
+                        options = listOf(
+                            stringResource(R.string.todo_type_temporary),
+                            stringResource(R.string.todo_type_permanent)
+                        ),
+                        selectedIndex = if (type == TodoType.TEMPORARY) 0 else 1,
+                        onSelect = { type = if (it == 0) TodoType.TEMPORARY else TodoType.PERMANENT }
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TodoType.entries.forEach { t ->
-                            FilterChip(
-                                selected = type == t,
-                                onClick = { type = t },
-                                label = {
-                                    Text(
-                                        stringResource(
-                                            if (t == TodoType.TEMPORARY) R.string.todo_type_temporary
-                                            else R.string.todo_type_permanent
-                                        )
-                                    )
-                                }
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(
+                    HintText(
+                        stringResource(
                             if (type == TodoType.TEMPORARY) R.string.todo_type_temporary_note
                             else R.string.todo_type_permanent_note
-                        ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     )
 
-                    Spacer(Modifier.height(20.dp))
-                    SectionTitle("Task Variety")
-                    Spacer(Modifier.height(6.dp))
-                    // Wrapping rows: the chips size themselves and fall to the
-                    // next line instead of being squeezed/overflowing on a
-                    // narrow screen (a fixed Row clips its last chip).
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        TodoBehavior.entries.forEach { b ->
-                            FilterChip(
-                                selected = behavior == b,
-                                onClick = { behavior = b },
-                                label = {
-                                    Text(
-                                        when (b) {
-                                            TodoBehavior.NORMAL -> "Normal"
-                                            TodoBehavior.ATTEMPTED -> "Attempted"
-                                            TodoBehavior.TIME -> "Time-based"
-                                        }
-                                    )
-                                }
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = when (behavior) {
-                            TodoBehavior.NORMAL -> "Simple checkbox: directly mark as completed"
-                            TodoBehavior.ATTEMPTED -> "3-step progress: Not started → Attempted → Completed"
-                            TodoBehavior.TIME -> "Duration tracker: log completed time against a target"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Spacer(Modifier.height(18.dp))
+                    FieldLabel("Task variety")
+                    Spacer(Modifier.height(8.dp))
+                    EditorSegments(
+                        options = TodoBehavior.entries.map(::behaviorLabel),
+                        selectedIndex = TodoBehavior.entries.indexOf(behavior),
+                        onSelect = { behavior = TodoBehavior.entries[it] }
                     )
+                    Spacer(Modifier.height(6.dp))
+                    HintText(behaviorNote(behavior))
+                    // Only meaningful for a duration tracker — and then it is one
+                    // row showing the current target rather than a row of six
+                    // boxes to guess from.
                     if (behavior == TodoBehavior.TIME) {
                         Spacer(Modifier.height(10.dp))
-                        Text(
-                            text = "Target Duration",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.SemiBold
+                        EditorChoiceRow(
+                            label = "Target duration",
+                            value = durationLabel(targetDurationMinutes),
+                            onClick = { choice = EditorChoice.DURATION }
                         )
-                        Spacer(Modifier.height(6.dp))
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(
-                                15 to "15m",
-                                30 to "30m",
-                                45 to "45m",
-                                60 to "1h",
-                                120 to "2h",
-                                180 to "3h"
-                            ).forEach { (mins, lbl) ->
-                                FilterChip(
-                                    selected = targetDurationMinutes == mins,
-                                    onClick = { targetDurationMinutes = mins },
-                                    label = { Text(lbl) }
-                                )
-                            }
-                        }
                     }
 
-                    Spacer(Modifier.height(20.dp))
-                    SectionTitle(stringResource(R.string.todo_date))
-                    Spacer(Modifier.height(6.dp))
+                    SectionHeader(icon = Icons.Filled.Event, title = stringResource(R.string.todo_section_when))
                     if (type == TodoType.TEMPORARY) {
-                        // Today / Tomorrow / This week / Custom no longer share
-                        // one line: on most phones the four chips did not fit,
-                        // so "Custom" was squeezed against the edge. FlowRow
-                        // drops it onto its own line when it needs to.
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf(
-                                PeriodChoice.TODAY to R.string.todo_today,
-                                PeriodChoice.TOMORROW to R.string.todo_tomorrow,
-                                PeriodChoice.THIS_WEEK to R.string.todo_this_week,
-                                PeriodChoice.CUSTOM to R.string.todo_custom
-                            ).forEach { (choice, label) ->
-                                FilterChip(
-                                    selected = period == choice,
-                                    onClick = { period = choice },
-                                    label = { Text(stringResource(label)) }
-                                )
-                            }
-                        }
+                        // One row that names the current period and opens the
+                        // four options — instead of four chips permanently on
+                        // screen, three of which are not chosen.
+                        EditorChoiceRow(
+                            label = stringResource(R.string.todo_date),
+                            value = periodLabel(period, startDate, endDate),
+                            onClick = { choice = EditorChoice.DATES }
+                        )
                         if (period == PeriodChoice.CUSTOM) {
-                            Spacer(Modifier.height(8.dp))
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(onClick = { dateTarget = DateTarget.START }) {
-                                    Text(stringResource(R.string.todo_date_range_start, DATE_FORMAT.format(startDate)))
-                                }
-                                OutlinedButton(onClick = { dateTarget = DateTarget.END }) {
-                                    Text(stringResource(R.string.todo_date_range_end, DATE_FORMAT.format(endDate)))
-                                }
-                            }
+                            EditorChoiceRow(
+                                label = stringResource(R.string.todo_date_range_start, ""),
+                                value = DATE_FORMAT.format(startDate),
+                                onClick = { dateTarget = DateTarget.START }
+                            )
+                            EditorChoiceRow(
+                                label = stringResource(R.string.todo_date_range_end, ""),
+                                value = DATE_FORMAT.format(endDate),
+                                onClick = { dateTarget = DateTarget.END }
+                            )
                         }
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
+                            FieldLabel(
                                 text = stringResource(R.string.todo_active_days),
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(onClick = { selectedDays = (1..7).toSet() }) {
@@ -517,18 +501,13 @@ fun TodoEditorDialog(
                             }
                         }
                         Spacer(Modifier.height(4.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            (1..7).forEach { dow ->
-                                FilterChip(
-                                    selected = dow in selectedDays,
-                                    onClick = {
-                                        selectedDays = if (dow in selectedDays) selectedDays - dow
-                                        else selectedDays + dow
-                                    },
-                                    label = { Text(DAY_LETTERS[dow - 1]) }
-                                )
+                        DayToggleRow(
+                            selectedDays = selectedDays,
+                            onToggle = { dow ->
+                                selectedDays = if (dow in selectedDays) selectedDays - dow
+                                else selectedDays + dow
                             }
-                        }
+                        )
                         Spacer(Modifier.height(4.dp))
                         // Live summary of the current selection — clicking the day
                         // chips updates this instantly (previously only a static
@@ -545,98 +524,60 @@ fun TodoEditorDialog(
                         )
                     }
 
-                    Spacer(Modifier.height(20.dp))
-                    SectionTitle(stringResource(R.string.todo_time))
-                    Spacer(Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = timeChoice == TimeChoice.NONE,
-                            onClick = { timeChoice = TimeChoice.NONE },
-                            label = { Text(stringResource(R.string.todo_no_time)) }
-                        )
-                        FilterChip(
-                            selected = timeChoice == TimeChoice.SINGLE,
-                            onClick = { timeChoice = TimeChoice.SINGLE },
-                            label = { Text(stringResource(R.string.todo_at_time)) }
-                        )
-                        FilterChip(
-                            selected = timeChoice == TimeChoice.RANGE,
-                            onClick = {
-                                timeChoice = TimeChoice.RANGE
-                                if (reminderTimes.isEmpty()) {
-                                    reminderTimes = TodoCodec.rangeTimes(
-                                        timeStartMinutes,
-                                        timeEndMinutes,
-                                        rangeReminderCount
-                                    )
-                                }
-                            },
-                            label = { Text(stringResource(R.string.todo_time_range)) }
-                        )
-                    }
+                    Spacer(Modifier.height(18.dp))
+                    FieldLabel(stringResource(R.string.todo_time))
+                    Spacer(Modifier.height(8.dp))
+                    // How the day is timed is a MODE, so it is one segmented
+                    // control: no time, one time, or a window.
+                    EditorSegments(
+                        options = listOf(
+                            stringResource(R.string.todo_no_time),
+                            stringResource(R.string.todo_at_time),
+                            stringResource(R.string.todo_time_range)
+                        ),
+                        selectedIndex = when (timeChoice) {
+                            TimeChoice.NONE -> 0
+                            TimeChoice.SINGLE -> 1
+                            TimeChoice.RANGE -> 2
+                        },
+                        onSelect = { index ->
+                            timeChoice = TimeChoice.entries[index]
+                            if (timeChoice == TimeChoice.RANGE && reminderTimes.isEmpty()) {
+                                reminderTimes = TodoCodec.rangeTimes(
+                                    timeStartMinutes,
+                                    timeEndMinutes,
+                                    rangeReminderCount
+                                )
+                            }
+                        }
+                    )
                     when (timeChoice) {
                         TimeChoice.NONE -> {}
                         TimeChoice.SINGLE -> {
                             Spacer(Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (timeMinutes != null) {
-                                    FilterChip(
-                                        selected = true,
-                                        onClick = { timeTarget = TimeTarget.Scheduled },
-                                        label = { Text(TodoCodec.timeLabel(timeMinutes!!)) }
-                                    )
-                                } else {
-                                    FilterChip(
-                                        selected = false,
-                                        onClick = {
-                                            timeMinutes = 20 * 60
-                                            timeTarget = TimeTarget.Scheduled
-                                        },
-                                        label = { Text(stringResource(R.string.todo_set_time)) }
-                                    )
+                            EditorChoiceRow(
+                                label = stringResource(R.string.todo_set_time),
+                                value = timeMinutes?.let { TodoCodec.timeLabel(it) }
+                                    ?: stringResource(R.string.todo_set_time),
+                                onClick = {
+                                    if (timeMinutes == null) timeMinutes = 20 * 60
+                                    timeTarget = TimeTarget.Scheduled
                                 }
-                            }
-                            // The reminder is automatic — one reminder at the
-                            // chosen time (Off / Notification / Alarm style).
-                            // The "you'll be reminded at" hint is only shown
-                            // when a reminder will actually fire.
-                            if (timeMinutes != null) {
-                                Spacer(Modifier.height(6.dp))
-                                if (reminderStyle != ReminderStyle.OFF) {
-                                    Text(
-                                        text = stringResource(
-                                            R.string.todo_reminder_at_label,
-                                            TodoCodec.timeLabel(timeMinutes!!)
-                                        ),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Spacer(Modifier.height(8.dp))
-                                ReminderStyleRow(
-                                    reminderStyle,
-                                    { reminderStyle = it },
-                                    { notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
-                                )
-                            }
+                            )
                         }
                         TimeChoice.RANGE -> {
                             Spacer(Modifier.height(8.dp))
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(onClick = { timeTarget = TimeTarget.RangeStart }) {
-                                    Text(stringResource(R.string.todo_time_from, TodoCodec.timeLabel(timeStartMinutes)))
-                                }
-                                OutlinedButton(onClick = { timeTarget = TimeTarget.RangeEnd }) {
-                                    Text(stringResource(R.string.todo_time_to, TodoCodec.timeLabel(timeEndMinutes)))
-                                }
-                            }
-                            Spacer(Modifier.height(10.dp))
+                            EditorChoiceRow(
+                                label = stringResource(R.string.todo_time_from, ""),
+                                value = TodoCodec.timeLabel(timeStartMinutes),
+                                onClick = { timeTarget = TimeTarget.RangeStart }
+                            )
+                            EditorChoiceRow(
+                                label = stringResource(R.string.todo_time_to, ""),
+                                value = TodoCodec.timeLabel(timeEndMinutes),
+                                onClick = { timeTarget = TimeTarget.RangeEnd }
+                            )
+                            Spacer(Modifier.height(4.dp))
                             // Strict interval: completion only inside the window.
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -741,43 +682,106 @@ fun TodoEditorDialog(
                                     Text(stringResource(R.string.todo_reminder_add_time))
                                 }
                             }
-                            Spacer(Modifier.height(8.dp))
-                            ReminderStyleRow(
-                                reminderStyle,
-                                { reminderStyle = it },
-                                { notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
-                            )
                         }
                     }
 
-                    Spacer(Modifier.height(20.dp))
-                    SectionTitle(stringResource(R.string.todo_priority))
-                    Spacer(Modifier.height(6.dp))
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    // ── Reminder ──
+                    // One reminder is derived from the time choice (above), so
+                    // how it FIRES is its own concern — and one place, rather
+                    // than repeated inside both time branches.
+                    if (timeChoice == TimeChoice.RANGE ||
+                        (timeChoice == TimeChoice.SINGLE && timeMinutes != null)
                     ) {
-                        listOf(
-                            TodoPriority.LOW to R.string.todo_priority_low,
-                            TodoPriority.NORMAL to R.string.todo_priority_normal,
-                            TodoPriority.HIGH to R.string.todo_priority_high
-                        ).forEach { (p, label) ->
-                            FilterChip(
-                                selected = priority == p,
-                                onClick = { priority = p },
-                                label = { Text(stringResource(label)) }
+                        SectionHeader(
+                            icon = Icons.Filled.NotificationsActive,
+                            title = stringResource(R.string.todo_section_remind)
+                        )
+                        if (timeChoice == TimeChoice.SINGLE &&
+                            reminderStyle != ReminderStyle.OFF
+                        ) {
+                            Text(
+                                text = stringResource(
+                                    R.string.todo_reminder_at_label,
+                                    TodoCodec.timeLabel(timeMinutes!!)
+                                ),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Spacer(Modifier.height(8.dp))
                         }
+                        ReminderStyleRow(
+                            reminderStyle,
+                            { reminderStyle = it },
+                            { notificationPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                        )
+                        AlarmTuning(
+                            style = reminderStyle,
+                            minutes = alarmMinutes,
+                            uri = alarmUri,
+                            onPick = { pickAlarmSound.launch(arrayOf("audio/*")) },
+                            onReset = { alarmUri = null },
+                            onRingChoice = { choice = EditorChoice.RING }
+                        )
                     }
 
-                    Spacer(Modifier.height(24.dp))
-                    Button(onClick = ::submit, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.todo_save))
-                    }
-                    Spacer(Modifier.height(8.dp))
+                    SectionHeader(
+                        icon = Icons.Filled.Flag,
+                        title = stringResource(R.string.todo_section_organise)
+                    )
+                    EditorSegments(
+                        options = listOf(
+                            stringResource(R.string.todo_priority_low),
+                            stringResource(R.string.todo_priority_normal),
+                            stringResource(R.string.todo_priority_high)
+                        ),
+                        selectedIndex = TodoPriority.entries.indexOf(priority),
+                        onSelect = { priority = TodoPriority.entries[it] }
+                    )
+
                 }
+
+                // The save action sits OUTSIDE the scroll: this form is long
+                // enough that a button at the end of it is off-screen for most
+                // of the time it is being filled in.
+                EditorSaveBar(onSave = ::submit)
             }
         }
+    }
+
+    // ── Value-list pickers (the rows that open one) ──
+    when (choice) {
+        EditorChoice.DATES -> ChoiceDialog(
+            title = stringResource(R.string.todo_date),
+            options = listOf(
+                PeriodChoice.TODAY to stringResource(R.string.todo_today),
+                PeriodChoice.TOMORROW to stringResource(R.string.todo_tomorrow),
+                PeriodChoice.THIS_WEEK to stringResource(R.string.todo_this_week),
+                PeriodChoice.CUSTOM to stringResource(R.string.todo_custom)
+            ),
+            selected = period,
+            onSelect = { period = it; choice = null },
+            onDismiss = { choice = null }
+        )
+
+        EditorChoice.DURATION -> ChoiceDialog(
+            title = "Target duration",
+            options = DURATION_CHOICES.map { it to durationLabel(it) },
+            selected = targetDurationMinutes,
+            onSelect = { targetDurationMinutes = it; choice = null },
+            onDismiss = { choice = null }
+        )
+
+        EditorChoice.RING -> ChoiceDialog(
+            title = stringResource(R.string.todo_alarm_ring_for),
+            options = ReminderConfig.ALARM_MINUTE_CHOICES.map {
+                it to stringResource(R.string.todo_alarm_minutes, it)
+            },
+            selected = alarmMinutes,
+            onSelect = { alarmMinutes = it; choice = null },
+            onDismiss = { choice = null }
+        )
+
+        null -> {}
     }
 
     // ── Date picker (custom range) ──
@@ -874,13 +878,459 @@ fun TodoEditorDialog(
     }
 }
 
+/**
+ * The name of a field inside a section: what the control below it chooses.
+ *
+ * Deliberately lighter than a [SectionHeader]: a section heading is a place in
+ * the form, a field label is a property of the todo.
+ */
 @Composable
-private fun SectionTitle(text: String) {
+private fun FieldLabel(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold
+        fontWeight = FontWeight.SemiBold,
+        modifier = modifier
     )
+}
+
+/** The one-line explanation under a control. */
+@Composable
+private fun HintText(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+}
+
+/**
+ * A MODE: two to three mutually exclusive options, drawn as one segmented
+ * control.
+ *
+ * Segmented buttons rather than chips because this is a switch, not a set of
+ * tags — and because a row of separate chips makes every form look like it is
+ * asking eight unrelated questions.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun EditorSegments(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit
+) {
+    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+        options.forEachIndexed { index, label ->
+            SegmentedButton(
+                selected = index == selectedIndex,
+                onClick = { onSelect(index) },
+                shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size)
+            ) {
+                Text(
+                    text = label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A VALUE: the current choice and a chevron, with the list of alternatives
+ * behind a tap.
+ *
+ * No container and no outline — a settings row, not a button — because the
+ * point of these rows is that the form stops looking like a wall of boxes.
+ */
+@Composable
+private fun EditorChoiceRow(
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    supporting: String? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(1.dp))
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            if (supporting != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = supporting,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            imageVector = Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
+    }
+}
+
+/**
+ * The picker an [EditorChoiceRow] opens: the options as rows, the current one
+ * marked.
+ *
+ * The selection is shown the quiet way — a tinted row and coloured label —
+ * rather than with a trailing tick: the value is already spelled out in the row
+ * that opened this dialog, so a tick adds a second "chosen" mark with nothing
+ * new to say, and on a short list it reads as decoration.
+ *
+ * A dialog rather than a sheet: it is short, it is a decision the reader makes
+ * and leaves, and it must sit above the editor — which is itself a dialog.
+ */
+@Composable
+private fun <T> ChoiceDialog(
+    title: String,
+    options: List<Pair<T, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                options.forEach { (value, label) ->
+                    val isSelected = value == selected
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                                else Color.Transparent
+                            )
+                            .clickable { onSelect(value) }
+                            .padding(horizontal = 10.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.todo_cancel)) }
+        }
+    )
+}
+
+/**
+ * The weekday picker: seven small circles, filled on the active days.
+ *
+ * A circle per day rather than seven chips: the letters are one character, and
+ * a chip sized for "Wed" wastes most of the row it sits in — the whole week
+ * fits on one line this way, which is what makes it readable at a glance.
+ */
+@Composable
+private fun DayToggleRow(selectedDays: Set<Int>, onToggle: (Int) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        (1..7).forEach { dow ->
+            val active = dow in selectedDays
+            Surface(
+                shape = CircleShape,
+                color = if (active) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = if (active) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .clickable { onToggle(dow) }
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        text = DAY_LETTERS[dow - 1],
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The label of a Task-variety option. */
+private fun behaviorLabel(behavior: TodoBehavior): String = when (behavior) {
+    TodoBehavior.NORMAL -> "Normal"
+    TodoBehavior.ATTEMPTED -> "Attempted"
+    TodoBehavior.TIME -> "Time-based"
+}
+
+/** One line saying what the chosen Task variety does. */
+private fun behaviorNote(behavior: TodoBehavior): String = when (behavior) {
+    TodoBehavior.NORMAL -> "Simple checkbox: directly mark as completed"
+    TodoBehavior.ATTEMPTED -> "3-step progress: Not started → Attempted → Completed"
+    TodoBehavior.TIME -> "Duration tracker: log completed time against a target"
+}
+
+/** The offered target durations for a time-tracking todo, in minutes. */
+internal val DURATION_CHOICES = listOf(15, 30, 45, 60, 120, 180)
+
+/**
+ * "15m", "1h", "2h 30m" — a duration as a reader would say it.
+ *
+ * Never "90m": past an hour the hours count, because the point of a target is
+ * to be judged at a glance.
+ */
+internal fun durationLabel(minutes: Int): String {
+    val safe = minutes.coerceAtLeast(0)
+    if (safe < 60) return "${safe}m"
+    val hours = safe / 60
+    val rest = safe % 60
+    return if (rest == 0) "${hours}h" else "${hours}h ${rest}m"
+}
+
+/** "Today" / "Tomorrow" / "This week" / "Aug 12 – Aug 16" for the period row. */
+internal fun periodLabel(choice: PeriodChoice, start: LocalDate, end: LocalDate): String = when (choice) {
+    PeriodChoice.TODAY -> "Today"
+    PeriodChoice.TOMORROW -> "Tomorrow"
+    PeriodChoice.THIS_WEEK -> "This week"
+    PeriodChoice.CUSTOM -> if (start == end) {
+        DATE_FORMAT.format(start)
+    } else {
+        "${DATE_FORMAT.format(start)} – ${DATE_FORMAT.format(end)}"
+    }
+}
+
+/**
+ * The header of the editor: back, what the screen is, and a line saying what it
+ * is for.
+ *
+ * The subtitle is not decoration — "only the name is required" is the one thing
+ * a reader needs before deciding how much of a long form to fill in, and the
+ * form's Save button is reachable from anywhere now that it is pinned.
+ */
+@Composable
+private fun EditorTopBar(title: String, subtitle: String, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(end = 12.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = stringResource(R.string.todo_back)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+    }
+}
+
+/**
+ * A section heading: a small tinted badge with the section's icon, its name,
+ * and a divider separating it from the section above.
+ *
+ * The form is long, and a heading that is only slightly bolder than the labels
+ * under it does not separate anything — the icon and the rule are what make it
+ * skimmable, so a reader looking for the reminder style can find it without
+ * reading the whole page.
+ */
+@Composable
+private fun SectionHeader(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    first: Boolean = false
+) {
+    if (first) {
+        Spacer(Modifier.height(6.dp))
+    } else {
+        Spacer(Modifier.height(20.dp))
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+        Spacer(Modifier.height(16.dp))
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            modifier = Modifier.size(28.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+    }
+    Spacer(Modifier.height(10.dp))
+}
+
+/**
+ * The pinned Save action at the bottom of the editor.
+ *
+ * Pinned rather than last: this form scrolls for several screens, and a save
+ * button at the end of it is invisible for most of the time the reader spends
+ * filling it in — which is how a form ends up feeling as if it has no way
+ * forward.
+ */
+@Composable
+private fun EditorSaveBar(onSave: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 3.dp
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+            Button(
+                onClick = onSave,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .height(48.dp)
+            ) {
+                Text(stringResource(R.string.todo_save))
+            }
+        }
+    }
+}
+
+/**
+ * The extras of an ALARM-style reminder: how long it rings, and which sound.
+ *
+ * Shown only for the Alarm style, because a notification has neither — and
+ * hidden entirely while the style is Off, so the two settings can never look
+ * like they apply to a reminder that will not fire.
+ */
+@Composable
+private fun androidx.compose.foundation.layout.ColumnScope.AlarmTuning(
+    style: ReminderStyle,
+    minutes: Int,
+    uri: String?,
+    onPick: () -> Unit,
+    onReset: () -> Unit,
+    onRingChoice: () -> Unit
+) {
+    if (style != ReminderStyle.ALARM) return
+    val context = LocalContext.current
+    val soundLabel = AlarmSounds.shortLabel(context, uri)
+
+    Spacer(Modifier.height(16.dp))
+
+    // ── Ring length ──
+    // One row naming the current length, not six boxes: the reader changes it
+    // a handful of times in the life of a todo, and six chips on screen cost
+    // every reader every time they open the form.
+    EditorChoiceRow(
+        label = stringResource(R.string.todo_alarm_ring_for),
+        value = stringResource(R.string.todo_alarm_minutes, minutes),
+        supporting = stringResource(R.string.todo_alarm_ring_note),
+        onClick = { onRingChoice() }
+    )
+
+    // ── Sound ──
+    Spacer(Modifier.height(14.dp))
+    FieldLabel(stringResource(R.string.todo_alarm_sound))
+    Spacer(Modifier.height(6.dp))
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (soundLabel == null) Icons.Filled.Alarm else Icons.Filled.LibraryMusic,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = soundLabel
+                        ?: stringResource(R.string.todo_alarm_sound_system),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = stringResource(
+                        if (soundLabel == null) R.string.todo_alarm_sound_note
+                        else R.string.todo_alarm_sound_device
+                    ),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(onClick = onPick) {
+                Text(
+                    stringResource(
+                        if (soundLabel == null) R.string.todo_alarm_sound_choose
+                        else R.string.todo_alarm_sound_change
+                    )
+                )
+            }
+        }
+    }
+    if (soundLabel != null) {
+        TextButton(onClick = onReset, modifier = Modifier.align(Alignment.Start)) {
+            Text(stringResource(R.string.todo_alarm_sound_reset))
+        }
+    }
 }
 
 /** How the automatic reminder fires: Off / Notification / real system Alarm. */
@@ -891,41 +1341,33 @@ private fun ReminderStyleRow(
     onSelect: (ReminderStyle) -> Unit,
     onRequestNotifications: () -> Unit
 ) {
-    // The title sits ABOVE the chips (not beside them): sharing one line left
-    // the three chips too little width and clipped the last one on a phone.
-    Text(
-        text = stringResource(R.string.todo_reminder_style),
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.SemiBold
+    FieldLabel(stringResource(R.string.todo_reminder_style))
+    Spacer(Modifier.height(8.dp))
+    // Off / Notification / Alarm is a three-way MODE: one segmented control,
+    // which is also what keeps the label, the choice and its explanation
+    // reading as a single setting.
+    EditorSegments(
+        options = listOf(
+            stringResource(R.string.todo_reminder_style_off),
+            stringResource(R.string.todo_reminder_style_notification),
+            stringResource(R.string.todo_reminder_style_alarm)
+        ),
+        selectedIndex = when (style) {
+            ReminderStyle.OFF -> 0
+            ReminderStyle.NOTIFICATION -> 1
+            ReminderStyle.ALARM -> 2
+        },
+        onSelect = { onSelect(ReminderStyle.entries[it]) }
     )
     Spacer(Modifier.height(6.dp))
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        listOf(
-            ReminderStyle.OFF to R.string.todo_reminder_style_off,
-            ReminderStyle.NOTIFICATION to R.string.todo_reminder_style_notification,
-            ReminderStyle.ALARM to R.string.todo_reminder_style_alarm
-        ).forEach { (option, label) ->
-            FilterChip(
-                selected = style == option,
-                onClick = { onSelect(option) },
-                label = { Text(stringResource(label)) }
-            )
-        }
-    }
-    Spacer(Modifier.height(3.dp))
-    Text(
-        text = stringResource(
+    HintText(
+        stringResource(
             when (style) {
                 ReminderStyle.OFF -> R.string.todo_reminder_style_off_note
                 ReminderStyle.NOTIFICATION -> R.string.todo_reminder_style_notification_note
                 ReminderStyle.ALARM -> R.string.todo_reminder_style_alarm_note
             }
-        ),
-        style = MaterialTheme.typography.bodySmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     )
     // Notification-style reminders are ALSO scheduled with exact alarms
     // (setExactAndAllowWhileIdle), so the exact-alarm permission matters for

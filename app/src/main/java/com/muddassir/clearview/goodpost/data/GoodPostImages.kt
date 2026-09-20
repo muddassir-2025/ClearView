@@ -3,6 +3,8 @@ package com.muddassir.clearview.goodpost.data
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.media.ExifInterface
 import android.net.Uri
 import android.util.Log
 import android.util.LruCache
@@ -181,12 +183,25 @@ internal object GoodPostImages {
                     inSampleSize = sampleSize(bounds.outWidth, maxWidthPx)
                     inPreferredConfig = Bitmap.Config.RGB_565
                 }
-                context.contentResolver.openInputStream(parsed)
+                val decoded = context.contentResolver.openInputStream(parsed)
                     ?.use { BitmapFactory.decodeStream(it, null, options) }
+                // A camera photo the reader just picked is the likeliest file in
+                // this whole app to be carrying an orientation flag, so the preview
+                // is turned the same way the feed will turn the uploaded copy.
+                upright(decoded, orientationOfUri(context, parsed))
             } catch (e: Exception) {
                 null
             }
         }
+
+    private fun orientationOfUri(context: Context, uri: Uri): Int = try {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            ExifInterface(stream)
+                .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+        } ?: ExifInterface.ORIENTATION_NORMAL
+    } catch (e: Exception) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
 
     /**
      * Warm the cache for images that are about to be on screen (§24).
@@ -317,7 +332,8 @@ internal object GoodPostImages {
             inSampleSize = sampleSize(bounds.outWidth, maxWidthPx)
             inPreferredConfig = Bitmap.Config.RGB_565
         }
-        BitmapFactory.decodeFile(file.absolutePath, options)
+        val decoded = BitmapFactory.decodeFile(file.absolutePath, options)
+        upright(decoded, orientationOfFile(file))
     } catch (e: Exception) {
         null
     }
@@ -329,9 +345,74 @@ internal object GoodPostImages {
             inSampleSize = sampleSize(bounds.outWidth, maxWidthPx)
             inPreferredConfig = Bitmap.Config.RGB_565
         }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+        upright(decoded, orientationOfBytes(bytes))
     } catch (e: Exception) {
         null
+    }
+
+    /**
+     * A JPEG's orientation flag, or [ExifInterface.ORIENTATION_NORMAL].
+     *
+     * A camera writes a portrait photo as a LANDSCAPE buffer with a flag saying
+     * "turn this a quarter turn to the right", because that is how the sensor is
+     * wired. `BitmapFactory` does not read the flag, so without this the picture is
+     * decoded sideways — and, worse, its decoded width and height describe a shape
+     * the reader never sees: a 4:3 box drawn around a 3:4 photo, with the bubble
+     * showing through the difference on both sides.
+     *
+     * Every path that fails to read a flag answers NORMAL, which is also the flag
+     * most files carry: a PNG, a WebP or a screenshot has no EXIF block at all, and
+     * "no rotation" is the right answer for all of them.
+     */
+    private fun orientationOfFile(file: File): Int = try {
+        ExifInterface(file.absolutePath)
+            .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    } catch (e: Exception) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
+
+    private fun orientationOfBytes(bytes: ByteArray): Int = try {
+        ExifInterface(bytes.inputStream())
+            .getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+    } catch (e: Exception) {
+        ExifInterface.ORIENTATION_NORMAL
+    }
+
+    /**
+     * The decoded picture, turned the way the camera meant it to be seen.
+     *
+     * Only the quarter turns are applied, plus the two mirrored quarter turns
+     * (`TRANSPOSE`/`TRANSVERSE`), which several front cameras write. A full mirror
+     * is NOT applied to `ORIENTATION_FLIP_HORIZONTAL` and its vertical twin: those
+     * describe a scan or a screenshot taken through a mirror, and flipping one
+     * would silently rewrite a picture the sender chose the way it is.
+     *
+     * The result is measured against [maxWidthPx] like everything else, because
+     * this runs on a bitmap that was already downsampled — and it is the reason the
+     * caller can size a card from [Bitmap.getWidth]/[Bitmap.getHeight] and get a
+     * shape that matches the pixels: after this, the two agree.
+     */
+    private fun upright(decoded: Bitmap?, orientation: Int): Bitmap? {
+        if (decoded == null) return null
+        val degrees = when (orientation) {
+            ExifInterface.ORIENTATION_ROTATE_90, ExifInterface.ORIENTATION_TRANSPOSE -> 90f
+            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            ExifInterface.ORIENTATION_ROTATE_270, ExifInterface.ORIENTATION_TRANSVERSE -> 270f
+            else -> return decoded
+        }
+        return try {
+            val matrix = Matrix().apply { postRotate(degrees) }
+            val turned = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+            // The original is a fresh decode nobody else holds, so recycling it here
+            // is what keeps a rotated decode from costing two bitmaps.
+            if (turned !== decoded) decoded.recycle()
+            turned
+        } catch (e: Exception) {
+            // Out of memory on a very large photo: the picture un-rotated is a
+            // worse picture, not a broken screen.
+            decoded
+        }
     }
 
     /**

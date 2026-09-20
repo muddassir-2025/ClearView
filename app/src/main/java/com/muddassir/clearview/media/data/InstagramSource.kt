@@ -213,7 +213,8 @@ class BackendInstagramSource(private val backendBaseUrl: String) : InstagramSour
                         platform = MediaPlatform.INSTAGRAM,
                         instagramType = igType,
                         mediaUrl = mediaUrl,
-                        instagramUrl = instagramUrl
+                        instagramUrl = instagramUrl,
+                        bodyText = caption.trim()
                     )
                 )
             }
@@ -330,7 +331,8 @@ class WebProfileInstagramSource : InstagramSource {
                                     platform = MediaPlatform.INSTAGRAM,
                                     instagramType = igType,
                                     mediaUrl = if (isVideo) videoUrl else null,
-                                    instagramUrl = instagramUrl
+                                    instagramUrl = instagramUrl,
+                                    bodyText = captionText.trim()
                                 )
                             )
                         }

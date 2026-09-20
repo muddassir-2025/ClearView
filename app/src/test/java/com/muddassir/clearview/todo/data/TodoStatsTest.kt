@@ -75,6 +75,64 @@ class TodoStatsTest {
     )
 
     @Test
+    fun `heatmap summary counts completions, active days and the longest run`() {
+        // A year with two clear runs and a gap: Mon/Tue/Wed worked, Thursday
+        // blank, then Friday and Saturday.
+        val start = TODAY.minusDays(10)
+        val worked = listOf(0, 1, 2, 4, 5).map { start.plusDays(it.toLong()) }
+        val items = listOf(
+            item(
+                "h1",
+                start = start,
+                type = TodoType.PERMANENT,
+                completions = worked.associate { it.toEpochDay() to at(it, 9) }
+            )
+        )
+        val days = start.datesUntil(start.plusDays(12)).toList()
+        val summary = TodoStats.heatmapSummary(
+            TodoStats.productivityHeatmap(items, days, at(start.plusDays(20), 12))
+        )
+        assertEquals("every completion is counted", 5, summary.completed)
+        assertEquals("the blank Thursday is not an active day", 5, summary.activeDays)
+        assertEquals("the longest run is the first one", 3, summary.maxStreak)
+    }
+
+    @Test
+    fun `a heatmap streak never counts days outside the shown window`() {
+        // Completed on the day BEFORE the window opens: a run that starts at the
+        // window's edge must not be extended by it — the graph only shows (and
+        // only scores) the days it is handed.
+        val first = TODAY
+        val items = listOf(
+            item(
+                "h2",
+                start = first.minusDays(3),
+                type = TodoType.PERMANENT,
+                completions = mapOf(
+                    first.minusDays(1).toEpochDay() to at(first.minusDays(1), 9),
+                    (first.toEpochDay()) to at(first, 9),
+                    first.plusDays(1).toEpochDay() to at(first.plusDays(1), 9)
+                )
+            )
+        )
+        val window = listOf(first, first.plusDays(1), first.plusDays(2))
+        val summary = TodoStats.heatmapSummary(
+            TodoStats.productivityHeatmap(items, window, at(first, 12))
+        )
+        assertEquals("two days of the window were worked on", 2, summary.activeDays)
+        assertEquals("the run is 2, not 3", 2, summary.maxStreak)
+        assertEquals(2, summary.completed)
+    }
+
+    @Test
+    fun `an empty heatmap window summarises as zero, not as a fake streak`() {
+        val summary = TodoStats.heatmapSummary(emptyList())
+        assertEquals(0, summary.completed)
+        assertEquals(0, summary.activeDays)
+        assertEquals(0, summary.maxStreak)
+    }
+
+    @Test
     fun `weekly due and completed counts only include applicable days`() {
         val stats = TodoStats.weekStats(items, TODAY)
         assertEquals(7, stats.days.size)

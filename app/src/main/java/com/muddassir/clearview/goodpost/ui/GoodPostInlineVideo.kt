@@ -48,6 +48,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -240,6 +241,13 @@ internal fun InlineVideoCard(
     // that looks stuck.
     var position by remember(url) { mutableStateOf(0L) }
     var triedRefresh by remember(url) { mutableStateOf(false) }
+    // The clip's shape as the PLAYER reports it, which is the one that matches the
+    // pixels: a portrait clip is recorded landscape with a rotation in its header,
+    // and the player turns it — so a box built from the stored dims is a wide box
+    // around a tall video, letterboxed, with the bubble's green showing whenever
+    // the box and the bubble disagree. Once a frame has decoded, this is the shape
+    // the card is drawn at.
+    var playerAspect by remember(url) { mutableStateOf<Float?>(null) }
 
     // Keyed on the URL, so a refresh lands on a *new* player: a player that has
     // already failed keeps that failure, and re-pointing a released one at a
@@ -284,6 +292,23 @@ internal fun InlineVideoCard(
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 if (isPlaying) state = InlineVideoState.Playing
+            }
+
+            override fun onVideoSizeChanged(videoSize: VideoSize) {
+                val width = videoSize.width
+                val height = videoSize.height
+                if (width <= 0 || height <= 0) return
+
+                // `unappliedRotationDegrees` is non-zero only on a decoder that
+                // could not turn the frame itself, in which case the size arriving
+                // here is still the stored one.
+                val turned = videoSize.unappliedRotationDegrees == 90 ||
+                    videoSize.unappliedRotationDegrees == 270
+                playerAspect = if (turned) {
+                    height.toFloat() / width.toFloat()
+                } else {
+                    width.toFloat() / height.toFloat()
+                }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
@@ -367,8 +392,12 @@ internal fun InlineVideoCard(
             .background(Color.Black)
             .let { base ->
                 // A known shape holds its space while the first frame decodes, so
-                // the feed does not jump under the reader's thumb.
-                if (aspect != null) base.aspectRatio(aspect) else base.height(220.dp)
+                // the feed does not jump under the reader's thumb — and the shape
+                // the PLAYER reports takes over from the stored one as soon as
+                // there is one, because that is the shape of the frames being
+                // drawn.
+                val shape = playerAspect ?: aspect
+                if (shape != null) base.aspectRatio(shape) else base.height(220.dp)
             }
             .onGloballyPositioned { coordinates ->
                 val bounds = coordinates.boundsInWindow()

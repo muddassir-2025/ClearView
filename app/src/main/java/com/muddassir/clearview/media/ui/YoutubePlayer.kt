@@ -249,6 +249,10 @@ fun YoutubePlayer(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
+            // The real player is here: the hidden warm-up page has done its job
+            // (its network cache and renderer are process-wide), so release the
+            // memory it holds rather than keeping it through playback.
+            YoutubePlayerPrewarm.release()
             WebView(ctx).apply {
                 controller.webView = this
                 // Recomposition diagnostic (user directive 3): the AndroidView
@@ -369,7 +373,18 @@ fun YoutubePlayer(
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest?
-                    ): Boolean = false
+                    ): Boolean {
+                        // YouTube controls remain rendered by the iframe, but
+                        // any navigation they request must not replace the local
+                        // player page or launch an external YouTube surface.
+                        val url = request?.url?.toString().orEmpty()
+                        return url.isNotBlank() && !url.startsWith(BASE_URL)
+                    }
+
+                    @Suppress("DEPRECATION")
+                    override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                        return url.isNotBlank() && !url.startsWith(BASE_URL)
+                    }
 
                     override fun onPageFinished(view: WebView, url: String) {
                         Log.d(TAG, "PAGE_FINISHED url=$url")
@@ -913,12 +928,19 @@ private const val TAG = "YoutubePlayer"
  * passes the origin check instead. Flip this constant to test step 3
  * (https://www.youtube-nocookie.com) as the next variant.
  */
-private const val BASE_URL = "https://localhost"
+internal const val BASE_URL = "https://localhost"
+
+/**
+ * The UA the player page must be loaded with. Shared with [YoutubePlayerPrewarm]
+ * so the warm-up primes exactly the settings a real playback needs — a
+ * prewarmed page served under a different user agent would not be reusable.
+ */
+internal const val YOUTUBE_PLAYER_USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
 /**
  * DIAGNOSTIC desktop Chrome UA (Step 2 experiment) — set verbatim per the
  * diagnosis directive so YouTube serves its desktop player config.
  */
-private const val DESKTOP_CHROME_UA =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+private const val DESKTOP_CHROME_UA = YOUTUBE_PLAYER_USER_AGENT

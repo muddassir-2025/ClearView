@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "843469386953-c603jvo7icenhkggom2g05oan5624js6.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.muddassir.clearview",
+            "certificate_hash": "d5c51f1bcf65efc6e7743afd222a18feed0b08fc"
+          }
+        },
+        {
           "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -25,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     },
@@ -38,16 +51,16 @@
       },
       "oauth_client": [
         {
-          "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
-          "client_type": 3
-        },
-        {
           "client_id": "843469386953-n03co8eic7k7at4iuv3dou3cd5g4en3f.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
             "package_name": "com.muddassir.clearview.debug",
             "certificate_hash": "775ccb4c5d8c59d78603694132f56067ab2478a8"
           }
+        },
+        {
+          "client_id": "843469386953-bfge9m3f9vf11hg7pdaojo66ikbl4fpl.apps.googleusercontent.com",
+          "client_type": 3
         }
       ],
       "api_key": [

@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -40,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.TrendingDown
 import androidx.compose.material.icons.automirrored.filled.TrendingFlat
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -115,6 +115,7 @@ import com.muddassir.clearview.todo.data.TodoSort
 import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.todo.data.TodoStats
 import com.muddassir.clearview.todo.data.TodoStore
+import com.muddassir.clearview.todo.data.completionRefusalMessage
 import com.muddassir.clearview.todo.model.TodoBehavior
 import com.muddassir.clearview.todo.model.TodoItem
 import com.muddassir.clearview.todo.model.TodoType
@@ -152,27 +153,6 @@ private fun monthShortFormat(locale: Locale): DateTimeFormatter =
     DateTimeFormatter.ofPattern("MMM", locale)
 
 /**
- * Month + 2-digit year ("Jan 26") — used for the columns that open a new year
- * (and the very first column), so a full-year grid can never show two identical
- * "Aug" labels with no way to tell which year each belongs to.
- */
-private fun monthYearFormat(locale: Locale): DateTimeFormatter =
-    DateTimeFormatter.ofPattern("MMM yy", locale)
-
-/**
- * How many months the productivity heatmap covers (including the current one).
- * A full ROLLING YEAR (≈53 week columns, horizontally scrollable), not the
- * last few months: consistency is only visible across a year.
- */
-private const val HEATMAP_MONTHS = 12
-
-/** Heatmap geometry: one square per day, one column per week. */
-private val HEATMAP_CELL = 15.dp
-private val HEATMAP_GAP = 3.dp
-private val HEATMAP_MONTH_GAP = 8.dp
-private val HEATMAP_LABEL_ROW = 16.dp
-
-/**
  * The filter chips, in display order, with their label resources. Declared once
  * so the chip row can never drift out of sync with the filter enum (a new
  * filter that is forgotten here is also caught by the exhaustive `when` in
@@ -188,11 +168,8 @@ private val FILTER_CHIPS = listOf(
     TodoFilter.PERMANENT to R.string.todo_filter_permanent
 )
 
-/** Which metric the weekly bar graph shows. */
-private enum class BarMode { COMPLETED, ATTEMPTED, INCOMPLETE, TOTAL }
-
-/** A request to open the day dialog: the day and the slice to show. */
-private data class DayDialogRequest(val day: LocalDate, val mode: BarMode)
+/** A request to open the day dialog for one day. */
+private data class DayDialogRequest(val day: LocalDate)
 
 /**
  * The Todo screen — a calm productivity dashboard with a clean hierarchy:
@@ -298,13 +275,37 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
         // exactly, so the visible affordance and the enforcement can never
         // disagree. The notification Complete path enforces the same rule
         // with the real clock.
-        if (!TodoCodec.isActiveOn(item, day)) return
+        if (!TodoCodec.isActiveOn(item, day)) {
+            Toast.makeText(
+                context,
+                completionRefusalMessage(context, TodoCodec.CompletionRefusal.NOT_ACTIVE_DAY),
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         if (TodoCodec.completedOn(item, day)) {
             // Un-complete — blocked once a strict window has closed (the day
             // is locked as done, mirroring "can't redo" for missed days).
-            if (TodoCodec.intervalEnded(item, day, nowMillis)) return
-        } else if (!TodoCodec.canCompleteOn(item, day, nowMillis)) {
-            return
+            if (TodoCodec.intervalEnded(item, day, nowMillis)) {
+                Toast.makeText(
+                    context,
+                    completionRefusalMessage(context, TodoCodec.CompletionRefusal.WINDOW_CLOSED),
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
+        } else {
+            // A refused completion says WHY. Silently doing nothing is what made
+            // a snoozed reminder answered after its window closed look like a
+            // broken checkbox.
+            TodoCodec.completionRefusal(item, day, nowMillis)?.let { refusal ->
+                Toast.makeText(
+                    context,
+                    completionRefusalMessage(context, refusal),
+                    Toast.LENGTH_SHORT
+                ).show()
+                return
+            }
         }
         val (updated, nowCompleted) = TodoCodec.toggled(items, item.id, day, nowMillis)
         // Persist the completion FIRST, then cancel EVERY reminder for this
@@ -732,7 +733,7 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                             items = items,
                             today = today,
                             nowMillis = nowMillis,
-                            onDayTap = { day, mode -> dayDialog = DayDialogRequest(day, mode) },
+                            onDayTap = { dayDialog = DayDialogRequest(it) },
                             onScoreClick = { showScoreDialog = true },
                             onShareProgress = { showProgressCard = true }
                         )
@@ -744,7 +745,7 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                             today = today,
                             onPrevMonth = { calendarMonth = calendarMonth.minusMonths(1) },
                             onNextMonth = { calendarMonth = calendarMonth.plusMonths(1) },
-                            onDayTap = { dayDialog = DayDialogRequest(it, BarMode.TOTAL) }
+                            onDayTap = { dayDialog = DayDialogRequest(it) }
                         )
                     }
                     item { Spacer(Modifier.height(24.dp)) }
@@ -833,7 +834,6 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     dayDialog?.let { request ->
         DayTodosDialog(
             day = request.day,
-            mode = request.mode,
             items = items,
             today = today,
             nowMillis = nowMillis,
@@ -877,6 +877,13 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     if (showResetDialog) {
         ResetHistoryDialog(
             onConfirm = {
+                // Wipe the records first, THEN the items: the pending-snooze
+                // bookkeeping is the one piece of "what happened" stored outside
+                // the items, and a reset that left a card still promising a
+                // snoozed reminder would not have cleared everything. save()
+                // re-schedules every reminder below, so the now-forgotten snooze
+                // can never come back on its own.
+                store.clearSnoozedReminders()
                 save(TodoCodec.resetHistory(items, today))
                 showResetDialog = false
             },
@@ -1979,7 +1986,7 @@ private fun ProductivityDashboard(
     items: List<TodoItem>,
     today: LocalDate,
     nowMillis: Long,
-    onDayTap: (LocalDate, BarMode) -> Unit,
+    onDayTap: (LocalDate) -> Unit,
     onScoreClick: () -> Unit,
     onShareProgress: () -> Unit
 ) {
@@ -2012,7 +2019,7 @@ private fun ProductivityDashboard(
             summary = summary,
             items = items,
             today = today,
-            onDayTap = { onDayTap(it, BarMode.TOTAL) },
+            onDayTap = { onDayTap(it) },
             onScoreClick = onScoreClick
         )
         WeeklyBarGraph(
@@ -2634,23 +2641,19 @@ private fun ScoreSummaryRow(
 }
 
 /**
- * A single heatmap column: one week (Monday..Sunday) plus the month label that
- * belongs above it (null when the column continues the previous month).
- */
-private data class HeatmapColumn(val monday: LocalDate, val monthLabel: String?)
-
-/**
- * LeetCode/GitHub-style productivity heatmap: one square per day, one COLUMN
- * per week, running left to right along the timeline with the month named above
- * the first column of each month — so the weeks read as clear month blocks
- * instead of one undifferentiated grid.
+ * The productivity heatmap card: ONE continuous GitHub-style contribution
+ * graph — a square per day, a column per week, Monday at the top of every
+ * column — with the month names above the week columns they begin and the
+ * weekday letters down the left.
  *
- * It spans the last [HEATMAP_MONTHS] months and scrolls horizontally when it
- * cannot fit (phones), while staying compact/complete on wide screens. Square
- * shading follows the day's earned score (5 levels); tapping one shows that
- * day's completed / attempted counts, productive time and score beneath the
- * grid. The weekday letters on the left are Monday / Wednesday / Friday, the
- * same Monday-first convention as the weekly strip and the calendar.
+ * The card leads with the numbers the graph adds up to (how much was completed
+ * over the window, how many days were worked on, the longest run of them) and a
+ * menu for choosing WHICH window: the rolling past year, or any calendar year
+ * the reader has data in. The graph itself is the same either way.
+ *
+ * Shading follows the day's earned score (5 levels: nothing, then four greens);
+ * tapping a square shows that day's completed / attempted counts, productive
+ * time and score beneath the grid.
  */
 @Composable
 private fun TodoProductivityHeatmap(
@@ -2659,37 +2662,24 @@ private fun TodoProductivityHeatmap(
     nowMillis: Long
 ) {
     val locale = LocalConfiguration.current.locales[0]
-    // Weeks are Monday-aligned and start on a month boundary, so every month
-    // label sits over its own columns.
-    val weeks = remember(today) {
-        val firstOfMonth = today.minusMonths((HEATMAP_MONTHS - 1).toLong()).withDayOfMonth(1)
-        val aligned = firstOfMonth.minusDays((firstOfMonth.dayOfWeek.value - 1).toLong())
-        val count = ((today.toEpochDay() - aligned.toEpochDay()) / 7).toInt() + 1
-        (0 until count).map { index -> aligned.plusDays(index * 7L) }
+    var range by remember { mutableStateOf<HeatmapRange>(HeatmapRange.PastYear) }
+    var menuOpen by remember { mutableStateOf(false) }
+    // Keyed on today: the menu is rebuilt as the clock advances, so next year's
+    // entry appears on its own (see [heatmapRangeOptions]).
+    val rangeOptions = remember(items, today, range) { heatmapRangeOptions(items, today, range) }
+    val columns = remember(range, today) { heatmapColumns(range, today) }
+    val monthLabels = remember(columns, range, locale) {
+        heatmapMonthLabels(columns, range) { date -> monthShortFormat(locale).format(date) }
     }
-    val columns = remember(weeks, locale) {
-        val fmt = monthShortFormat(locale)
-        val yearFmt = monthYearFormat(locale)
-        var lastMonth: YearMonth? = null
-        weeks.mapIndexed { index, monday ->
-            val month = YearMonth.from(monday)
-            val label = if (month != lastMonth) {
-                lastMonth = month
-                // The first column and every January carry the year.
-                if (index == 0 || month.monthValue == 1) yearFmt.format(monday)
-                else fmt.format(monday)
-            } else null
-            HeatmapColumn(monday, label)
-        }
-    }
-    val days = remember(weeks) {
-        weeks.flatMap { monday -> (0..6).map { monday.plusDays(it.toLong()) } }
-    }
+    val days = remember(columns) { heatmapDays(columns) }
     val data = remember(items, days, nowMillis) {
         TodoStats.productivityHeatmap(items, days, nowMillis)
     }
+    val summary = remember(data) { TodoStats.heatmapSummary(data) }
     val byDate = remember(data) { data.associateBy { it.date } }
-    var selected by remember { mutableStateOf<TodoStats.DayProductivity?>(null) }
+    // Keyed on the range: switching the window drops a day the reader picked in
+    // the last one, rather than leaving a panel about a date no longer shown.
+    var selected by remember(range) { mutableStateOf<TodoStats.DayProductivity?>(null) }
     val levelColors = listOf(
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f),
         DONE_GREEN.copy(alpha = 0.30f),
@@ -2698,11 +2688,16 @@ private fun TodoProductivityHeatmap(
         DONE_GREEN
     )
     val cellDescFmt = stringResource(R.string.todo_heatmap_cell_desc)
-    // Horizontal scroll: shared by the month-label row and the week columns so
-    // the labels can never drift away from the squares underneath them.
-    val scroll = rememberScrollState()
-    fun monthGap(column: HeatmapColumn): Dp =
-        if (column.monthLabel != null) HEATMAP_MONTH_GAP else 0.dp
+    val rangeMenuDesc = stringResource(R.string.todo_heatmap_range_menu)
+    val cellDescription = { date: LocalDate, day: TodoStats.DayProductivity ->
+        String.format(
+            Locale.US,
+            cellDescFmt,
+            historyDateFormat(locale).format(date),
+            day.completed,
+            (day.ratio * 100).toInt()
+        )
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -2710,120 +2705,96 @@ private fun TodoProductivityHeatmap(
         )
     ) {
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text(
-                text = stringResource(R.string.todo_heatmap_title),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = stringResource(R.string.todo_heatmap_subtitle),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2
-            )
-            Spacer(Modifier.height(10.dp))
-            Row(modifier = Modifier.fillMaxWidth()) {
-                // ── Weekday letters (fixed, outside the scroll) ──
-                Column(
-                    modifier = Modifier.padding(top = HEATMAP_LABEL_ROW + HEATMAP_GAP),
-                    verticalArrangement = Arrangement.spacedBy(HEATMAP_GAP)
-                ) {
-                    repeat(7) { row ->
-                        Box(
-                            modifier = Modifier.size(HEATMAP_CELL),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (row % 2 == 0) {
-                                Text(
-                                    text = DAY_LETTERS[row],
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 9.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+            // ── Headline: what the window adds up to, and which window it is ──
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = when (val shown = range) {
+                        is HeatmapRange.PastYear -> stringResource(
+                            R.string.todo_heatmap_total_past_year,
+                            summary.completed
+                        )
+
+                        is HeatmapRange.Year -> stringResource(
+                            R.string.todo_heatmap_total_year,
+                            summary.completed,
+                            shown.year
+                        )
+                    },
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Box {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { menuOpen = true }
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                            .semantics {
+                                contentDescription = rangeMenuDesc
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = heatmapRangeLabel(range),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Icon(
+                            Icons.Filled.ArrowDropDown,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
-                }
-                Spacer(Modifier.width(6.dp))
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .horizontalScroll(scroll)
-                ) {
-                    // ── Month labels ──
-                    // Absolutely placed above the first column of each month: a
-                    // fixed-width cell would truncate "Sep" to "S…", so the
-                    // labels are offset instead of constrained.
-                    val labelOffsets = remember(columns) {
-                        var x = 0.dp
-                        columns.map { column ->
-                            val start = x + (if (column.monthLabel != null) HEATMAP_MONTH_GAP else 0.dp)
-                            x = start + HEATMAP_CELL + HEATMAP_GAP
-                            start
-                        }
-                    }
-                    Box(Modifier.height(HEATMAP_LABEL_ROW)) {
-                        columns.forEachIndexed { index, column ->
-                            column.monthLabel?.let { label ->
-                                Text(
-                                    text = label,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1,
-                                    modifier = Modifier.offset(x = labelOffsets[index])
-                                )
-                            }
-                        }
-                    }
-                    Spacer(Modifier.height(HEATMAP_GAP))
-                    // ── One column per week, Monday at the top ──
-                    Row(horizontalArrangement = Arrangement.spacedBy(HEATMAP_GAP)) {
-                        columns.forEach { column ->
-                            Column(
-                                modifier = Modifier.padding(start = monthGap(column)),
-                                verticalArrangement = Arrangement.spacedBy(HEATMAP_GAP)
-                            ) {
-                                (0..6).forEach { row ->
-                                    val date = column.monday.plusDays(row.toLong())
-                                    val day = byDate[date]
-                                    val isFuture = date.isAfter(today)
-                                    val desc = day?.let {
-                                        String.format(
-                                            Locale.US,
-                                            cellDescFmt,
-                                            historyDateFormat(locale).format(date),
-                                            it.completed,
-                                            (it.ratio * 100).toInt()
-                                        )
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .size(HEATMAP_CELL)
-                                            .clip(RoundedCornerShape(3.dp))
-                                            .background(
-                                                // Days still ahead are left
-                                                // empty: a future schedule is
-                                                // info, never progress.
-                                                if (isFuture) Color.Transparent
-                                                else levelColors[day?.level?.coerceIn(0, 4) ?: 0]
-                                            )
-                                            .clickable(enabled = day != null) { selected = day }
-                                            .then(
-                                                if (desc != null) {
-                                                    Modifier.semantics {
-                                                        contentDescription = desc
-                                                    }
-                                                } else Modifier
-                                            )
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        rangeOptions.forEach { option ->
+                            val isSelected = option == range
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        text = heatmapRangeLabel(option),
+                                        fontWeight = if (isSelected) FontWeight.Bold
+                                        else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurface
                                     )
+                                },
+                                onClick = {
+                                    range = option
+                                    menuOpen = false
                                 }
-                            }
+                            )
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.todo_heatmap_active_days, summary.activeDays),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.width(16.dp))
+                Text(
+                    text = stringResource(R.string.todo_heatmap_max_streak, summary.maxStreak),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            HeatmapGrid(
+                columns = columns,
+                byDate = byDate,
+                today = today,
+                monthLabels = monthLabels,
+                levelColors = levelColors,
+                onSelect = { selected = it },
+                cellDescription = cellDescription,
+                anchorColumn = heatmapAnchorColumn(columns, range, today)
+            )
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -2881,6 +2852,13 @@ private fun TodoProductivityHeatmap(
             }
         }
     }
+}
+
+/** The menu's own name for a window: "Past year" or the year itself. */
+@Composable
+private fun heatmapRangeLabel(range: HeatmapRange): String = when (range) {
+    is HeatmapRange.PastYear -> stringResource(R.string.todo_heatmap_range_past_year)
+    is HeatmapRange.Year -> range.year.toString()
 }
 
 /** "45m", "1h", "1h 30m" for a minutes count. */
@@ -3074,68 +3052,54 @@ private fun CalendarLegend(color: Color, label: String) {
 }
 
 /**
- * The minimal per-day bar graph with Completed / Incomplete / Total toggle.
- * Days that haven't arrived are empty (the stats carry zero for them), so a
- * future schedule never renders as a completion bar. Tapping a bar opens that
- * day's todos filtered to the current slice — see [DayTodosDialog].
+ * The per-day bar graph: one bar per day of the week, each STACKED from what
+ * actually happened — green completed, amber attempted, red still incomplete,
+ * all measured against the week's busiest day. There is no metric to switch
+ * between: the stacked bar answers "how did this day go?" in one look, while
+ * Completed / Attempted / Incomplete / Total tabs made the reader pick a view
+ * before they could see anything — and hid two thirds of the week's story
+ * behind a tap. Days that haven't arrived are empty (the stats carry zero for
+ * them), so a future schedule never renders as a completion bar. Tapping a bar
+ * opens that day's todos — see [DayTodosDialog].
  */
 @Composable
 private fun WeeklyBarGraph(
     stats: TodoStats.WeekStats,
     items: List<TodoItem>,
-    onBarTap: (LocalDate, BarMode) -> Unit
+    onBarTap: (LocalDate) -> Unit
 ) {
-    var mode by remember { mutableStateOf(BarMode.COMPLETED) }
-    // Attempted per day (marked attempted, not completed) — the third segment
+    // Attempted per day (marked attempted, not completed) — the middle segment
     // alongside completed and incomplete.
     val attemptedByDay = remember(items, stats) {
         stats.days.associate { it.date to items.count { item -> TodoCodec.isAttemptedOn(item, it.date) } }
     }
-    // One shared scale per mode: completed / attempted / incomplete counts, or
-    // the total (due) count for the stacked bars.
-    val max = stats.days.map { day ->
-        when (mode) {
-            BarMode.COMPLETED -> day.completed
-            BarMode.ATTEMPTED -> attemptedByDay[day.date] ?: 0
-            BarMode.INCOMPLETE -> (day.due - day.completed).coerceAtLeast(0)
-            BarMode.TOTAL -> day.due
-        }
-    }.maxOrNull()?.coerceAtLeast(1) ?: 1
+    // One shared scale for the whole week: the busiest day is the full bar.
+    val max = stats.days.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(16.dp))
-        // Title on its OWN line, chips on the next: sharing one Row squeezed the
-        // title to a sliver on phones, so "Completed Todos" wrapped one letter
-        // per line (the layout looked broken). FlowRow lets the chips wrap too.
         Text(
-            text = stringResource(
-                when (mode) {
-                    BarMode.COMPLETED -> R.string.todo_graph_completed
-                    BarMode.ATTEMPTED -> R.string.todo_graph_attempted
-                    BarMode.INCOMPLETE -> R.string.todo_graph_incomplete
-                    BarMode.TOTAL -> R.string.todo_graph_total
-                }
-            ),
+            text = stringResource(R.string.todo_graph_total),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.Bold
         )
         Spacer(Modifier.height(6.dp))
-        FlowRow(
+        // Every bar carries all three outcomes, so the colours are named once
+        // here instead of making the reader discover them by tapping.
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf(
-                BarMode.COMPLETED to R.string.todo_filter_completed,
-                BarMode.ATTEMPTED to R.string.todo_filter_attempted,
-                BarMode.INCOMPLETE to R.string.todo_filter_incomplete,
-                BarMode.TOTAL to R.string.todo_filter_all
-            ).forEach { (option, label) ->
-                FilterChip(
-                    selected = mode == option,
-                    onClick = { mode = option },
-                    label = { Text(stringResource(label), maxLines = 1) }
-                )
-            }
+            CalendarLegend(color = DONE_GREEN, label = stringResource(R.string.todo_calendar_done))
+            Spacer(Modifier.width(12.dp))
+            CalendarLegend(
+                color = ATTEMPT_AMBER,
+                label = stringResource(R.string.todo_filter_attempted)
+            )
+            Spacer(Modifier.width(12.dp))
+            CalendarLegend(
+                color = MISSED_RED.copy(alpha = 0.7f),
+                label = stringResource(R.string.todo_filter_incomplete)
+            )
         }
         Spacer(Modifier.height(10.dp))
         Row(
@@ -3151,7 +3115,7 @@ private fun WeeklyBarGraph(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { onBarTap(day.date, mode) }
+                        .clickable { onBarTap(day.date) }
                         .padding(vertical = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -3159,67 +3123,43 @@ private fun WeeklyBarGraph(
                         modifier = Modifier.fillMaxWidth().height(64.dp),
                         contentAlignment = Alignment.BottomCenter
                     ) {
-                        if (mode == BarMode.TOTAL) {
-                            // Stacked mix: green (completed) on top of amber
-                            // (attempted) on top of red (incomplete), all scaled
-                            // to the shared max.
-                            if (day.due <= 0) {
-                                BarStub()
-                            } else {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(64.dp)
-                                        .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp)),
-                                    verticalArrangement = Arrangement.Bottom
-                                ) {
-                                    if (incomplete > 0) {
-                                        Box(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .height(64.dp * incomplete / max)
-                                                .background(MISSED_RED.copy(alpha = 0.7f))
-                                        )
-                                    }
-                                    if (attempted > 0) {
-                                        Box(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .height(64.dp * attempted / max)
-                                                .background(ATTEMPT_AMBER)
-                                        )
-                                    }
-                                    if (completed > 0) {
-                                        Box(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .height(64.dp * completed / max)
-                                                .background(DONE_GREEN)
-                                        )
-                                    }
-                                }
-                            }
+                        // Stacked mix: green (completed) on top of amber
+                        // (attempted) on top of red (incomplete), all scaled
+                        // to the shared max.
+                        if (day.due <= 0) {
+                            BarStub()
                         } else {
-                            val value = when (mode) {
-                                BarMode.COMPLETED -> completed
-                                BarMode.ATTEMPTED -> attempted
-                                else -> incomplete
-                            }
-                            val color = when (mode) {
-                                BarMode.COMPLETED -> MaterialTheme.colorScheme.primary
-                                BarMode.ATTEMPTED -> ATTEMPT_AMBER
-                                else -> MISSED_RED.copy(alpha = 0.7f)
-                            }
-                            if (value <= 0) {
-                                BarStub()
-                            } else {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .height((64.dp * value / max).coerceAtLeast(6.dp))
-                                        .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp))
-                                        .background(color)
-                                )
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(64.dp)
+                                    .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp)),
+                                verticalArrangement = Arrangement.Bottom
+                            ) {
+                                if (incomplete > 0) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(64.dp * incomplete / max)
+                                            .background(MISSED_RED.copy(alpha = 0.7f))
+                                    )
+                                }
+                                if (attempted > 0) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(64.dp * attempted / max)
+                                            .background(ATTEMPT_AMBER)
+                                    )
+                                }
+                                if (completed > 0) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .height(64.dp * completed / max)
+                                            .background(DONE_GREEN)
+                                    )
+                                }
                             }
                         }
                     }
@@ -3256,7 +3196,6 @@ private fun BarStub() {
 @Composable
 private fun DayTodosDialog(
     day: LocalDate,
-    mode: BarMode,
     items: List<TodoItem>,
     today: LocalDate,
     nowMillis: Long,
@@ -3268,23 +3207,12 @@ private fun DayTodosDialog(
     // Same date rule as the list: only today is editable, and a strict-interval
     // todo whose window has already closed today is LOCKED ("can't redo").
     val editable = day == today
-    val list = when {
-        isFuture -> active
-        mode == BarMode.COMPLETED -> active.filter { TodoCodec.completedOn(it, day) }
-        mode == BarMode.ATTEMPTED -> active.filter { TodoCodec.isAttemptedOn(it, day) }
-        mode == BarMode.INCOMPLETE -> active.filterNot { TodoCodec.completedOn(it, day) }
-        else -> active
-    }
+    // The day's whole plan, never a slice of it: the bar graph shows every
+    // outcome, so the dialog behind it has to as well.
+    val list = active
     val locale = LocalConfiguration.current.locales[0]
     val modeLabel = if (isFuture) stringResource(R.string.todo_calendar_scheduled)
-    else stringResource(
-        when (mode) {
-            BarMode.COMPLETED -> R.string.todo_filter_completed
-            BarMode.ATTEMPTED -> R.string.todo_filter_attempted
-            BarMode.INCOMPLETE -> R.string.todo_filter_incomplete
-            BarMode.TOTAL -> R.string.todo_filter_all
-        }
-    )
+    else stringResource(R.string.todo_filter_all)
     val title = day.dayOfWeek.getDisplayName(TextStyle.FULL, locale)
     AlertDialog(
         onDismissRequest = onDismiss,

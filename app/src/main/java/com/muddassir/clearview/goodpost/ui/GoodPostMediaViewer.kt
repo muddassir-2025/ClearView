@@ -126,6 +126,17 @@ internal fun MediaViewer(
      */
     onDeleted: () -> Unit = {},
     /**
+     * The file was dropped from this device, told to the VIEW MODEL rather than
+     * only to the cache (§6, §13).
+     *
+     * Null where there is no tab behind the viewer to keep in step. A viewer that
+     * forgets the bytes on its own leaves the post that owns them still drawing
+     * them, because a picture already decoded is held by the composable that drew
+     * it and not by the cache — which is why the deleted image stayed in the feed
+     * until the channel was reopened.
+     */
+    onDeleteFromDevice: (() -> Unit)? = null,
+    /**
      * Where playback starts: the playhead the feed's card had reached.
      *
      * Zero for anything opened from a grid or a strip, which have nothing to
@@ -202,6 +213,7 @@ internal fun MediaViewer(
             onToggleStar = onToggleStar,
             shareCaption = shareCaption,
             onDeleted = onDeleted,
+            onDeleteFromDevice = onDeleteFromDevice,
             onClose = onClose
         )
     }
@@ -600,6 +612,7 @@ private fun ViewerBar(
     onToggleStar: () -> Unit,
     shareCaption: String?,
     onDeleted: () -> Unit,
+    onDeleteFromDevice: (() -> Unit)?,
     onClose: () -> Unit
 ) {
     Row(
@@ -633,7 +646,8 @@ private fun ViewerBar(
                 starred = starred,
                 onToggleStar = onToggleStar,
                 shareCaption = shareCaption,
-                onDeleted = onDeleted
+                onDeleted = onDeleted,
+                onDeleteFromDevice = onDeleteFromDevice
             )
         }
     }

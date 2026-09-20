@@ -26,8 +26,6 @@ import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +53,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
 import com.muddassir.clearview.media.playback.AudioPlayback
@@ -69,7 +69,7 @@ import java.io.File
  * screen: a blurred album-art backdrop, large rounded artwork, a bold
  * left-aligned title/channel, an elegant seek slider (elapsed left, time
  * remaining right), a clean transport row (previous / ‑10s / play‑pause /
- * +10s / next) and a playback-speed pill (0.5x–2x) pinned to the bottom
+ * +10s / next) and a playback-speed pill pinned to the bottom
  * corner. Plays the locally downloaded file through [AudioPlayback] — no
  * network, no WebView. Fully functional in airplane mode.
  *
@@ -326,7 +326,7 @@ fun AudioPlayerScreen(
                 )
                 Box {
                     Surface(
-                        onClick = { showSpeedMenu = true },
+                        onClick = { showSpeedMenu = !showSpeedMenu },
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
                     ) {
@@ -349,21 +349,34 @@ fun AudioPlayerScreen(
                             )
                         }
                     }
-                    DropdownMenu(
-                        expanded = showSpeedMenu,
-                        onDismissRequest = { showSpeedMenu = false }
-                    ) {
-                        SPEED_OPTIONS.forEach { rate ->
-                            DropdownMenuItem(
-                                text = { Text(formatRate(rate)) },
-                                trailingIcon = if (rate == speed.toDouble()) {
-                                    { Icon(Icons.Filled.Check, contentDescription = null) }
-                                } else null,
-                                onClick = {
-                                    AudioPlayback.setSpeed(context, rate.toFloat())
-                                    showSpeedMenu = false
-                                }
-                            )
+                    // The same speed BAR the video player shows: one slider,
+                    // applied as it moves so the new rate is heard while
+                    // dragging it. A list of presets made the reader guess at
+                    // the number they wanted and then hunt for "Custom".
+                    if (showSpeedMenu) {
+                        Popup(
+                            alignment = Alignment.BottomCenter,
+                            onDismissRequest = { showSpeedMenu = false },
+                            properties = PopupProperties(focusable = true)
+                        ) {
+                            Surface(
+                                modifier = Modifier.width(280.dp),
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.surface,
+                                tonalElevation = 6.dp,
+                                shadowElevation = 8.dp
+                            ) {
+                                SpeedBar(
+                                    rate = speed.toDouble(),
+                                    onRateChange = { rate ->
+                                        AudioPlayback.setSpeed(context, rate.toFloat())
+                                    },
+                                    // Speech, not film: past 3× a podcast is
+                                    // noise, and below 0.5× it drags.
+                                    minRate = MIN_AUDIO_SPEED,
+                                    maxRate = MAX_AUDIO_SPEED
+                                )
+                            }
                         }
                     }
                 }
@@ -463,6 +476,17 @@ private fun AudioBackdrop(item: DownloadItem) {
         )
     }
 }
+
+/**
+ * Bounds for the AUDIO speed bar.
+ *
+ * Narrower than the video bar on purpose: this player is for speech — a
+ * podcast at 5× is noise, and below 0.5× it drags. Both ends are whole
+ * multiples of [CUSTOM_SPEED_STEP], so the slider's stops stay on the 0.05
+ * grid the video bar uses.
+ */
+internal const val MIN_AUDIO_SPEED = 0.5
+internal const val MAX_AUDIO_SPEED = 3.0
 
 /** "12:34", or "1:02:34" past an hour. */
 private fun formatClock(seconds: Long): String {

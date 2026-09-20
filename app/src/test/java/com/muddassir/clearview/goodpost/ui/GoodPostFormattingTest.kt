@@ -1,7 +1,6 @@
 package com.muddassir.clearview.goodpost.ui
 
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -36,8 +35,16 @@ class GoodPostFormattingTest {
         spanStyles.filter { it.item.textDecoration == TextDecoration.LineThrough }
             .map { it.start to it.end }
 
+    /**
+     * A monospace span, as this app defines one (§17).
+     *
+     * Against [WaPostFont] and NOT `FontFamily.Monospace`: the tab's words are set
+     * in a face the app bundles, because the platform's `monospace` family can be
+     * remapped to a proportional one by a device's own font settings — which is
+     * the bug this assertion exists to keep from coming back.
+     */
     private fun AnnotatedString.mono(): List<Pair<Int, Int>> =
-        spanStyles.filter { it.item.fontFamily == FontFamily.Monospace }.map { it.start to it.end }
+        spanStyles.filter { it.item.fontFamily == WaPostFont }.map { it.start to it.end }
 
     @Test
     fun `plain text is left exactly as it is`() {

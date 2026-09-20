@@ -242,6 +242,20 @@ class TodoStore(context: Context) {
         if (map.size != sizeBefore) saveSnoozedReminders(map)
     }
 
+    /**
+     * Forgets every pending snooze (the progress reset).
+     *
+     * A snooze record is the one piece of "what happened" that does not live
+     * inside the items, so resetting the items alone would leave a card still
+     * advertising "Today: 9:54 PM → 10:04 PM" — a reminder pushed from a day
+     * whose record the reader just wiped. The alarms themselves are re-armed by
+     * [TodoScheduler.rescheduleAll] from the normal schedule, so dropping these
+     * records cannot silence a reminder that is still due.
+     */
+    fun clearSnoozedReminders() {
+        if (getSnoozedReminders().isNotEmpty()) saveSnoozedReminders(emptyMap())
+    }
+
     private fun saveSnoozedReminders(map: Map<String, SnoozedReminder>) {
         val o = JSONObject()
         map.forEach { (key, s) ->

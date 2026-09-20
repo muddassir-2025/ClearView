@@ -6,6 +6,7 @@ import android.content.Intent
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -96,7 +97,11 @@ class TodoAlarmService : Service() {
             notificationId,
             TodoNotifier.buildReminderNotification(this, item, epochDay, index)
         )
-        startRingtone()
+        // The ring is WHAT and HOW LONG the todo asked for: the sound it picked
+        // off the device (or the system alarm), for the minutes it chose. Both
+        // are read from the item just loaded, so editing either takes effect on
+        // the very next ring without rescheduling an alarm.
+        startRingtone(soundUri = item.reminder?.alarmUri)
         // Show the full-screen alarm screen even while the phone is being used:
         // Android only launches a notification's full-screen intent over a
         // LOCKED / OFF screen — when the screen is on and unlocked it degrades
@@ -107,14 +112,26 @@ class TodoAlarmService : Service() {
         // intent takes over (the lock-screen path). singleInstance + the
         // extras make a concurrent FSI launch a no-op, never a stack.
         showAlarmScreen()
-        handler.postDelayed(stopRing, RING_DURATION_MS)
+        // The todo's own ring length, or the pre-setting default for data
+        // written before it was configurable.
+        handler.postDelayed(stopRing, item.reminder?.alarmDurationMs ?: RING_DURATION_MS)
         return START_NOT_STICKY
     }
 
-    /** The looping alarm ringtone + repeating vibration. */
-    private fun startRingtone() {
-        val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+    /**
+     * The looping alarm ringtone + repeating vibration.
+     *
+     * [soundUri] is the audio file the reader picked off the device, or null for
+     * the system alarm. A device pick is a `content://` URI the app holds a
+     * persistable permission for, so it plays straight through [setDataSource] —
+     * and if that file has since been deleted or its permission revoked, the
+     * system alarm is used instead: an alarm that rings quietly is worse than an
+     * alarm that rings in the wrong voice.
+     */
+    private fun startRingtone(soundUri: String? = null) {
+        val systemUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val uri = soundUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: systemUri
         try {
             player = MediaPlayer().apply {
                 setAudioAttributes(
@@ -128,6 +145,7 @@ class TodoAlarmService : Service() {
                 prepare()
                 start()
             }
+            Log.d(TAG, "ALARM_SOUND uri=$uri")
             vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
             val pattern = longArrayOf(0, 500, 400, 500, 400, 500)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -138,7 +156,15 @@ class TodoAlarmService : Service() {
             }
             Log.d(TAG, "ALARM_RINGING todoId=$ringingTodoId uri=$uri")
         } catch (t: Throwable) {
-            Log.e(TAG, "ALARM_RINGTONE_FAILED", t)
+            // The device file could not be played (deleted, permission revoked,
+            // an unsupported format): fall back to the system alarm rather than
+            // letting the alarm ring silent.
+            Log.e(TAG, "ALARM_RINGTONE_FAILED uri=$uri", t)
+            if (uri != systemUri) {
+                runCatching { player?.release() }
+                player = null
+                startRingtone(soundUri = null)
+            }
         }
     }
 
@@ -198,7 +224,13 @@ class TodoAlarmService : Service() {
     companion object {
         private const val TAG = "TodoAlarmService"
 
-        /** How long the alarm rings: one full minute, then quiet. */
+        /**
+         * How long the alarm rings by default: one full minute, then quiet.
+         *
+         * Each todo overrides this — see [ReminderConfig.alarmMinutes] — and
+         * this is only the value used when a todo carries no ring length at all
+         * (data written before the setting existed).
+         */
         const val RING_DURATION_MS = 60_000L
 
         /** Starts the ringing alarm service for an alarm-style occurrence. */

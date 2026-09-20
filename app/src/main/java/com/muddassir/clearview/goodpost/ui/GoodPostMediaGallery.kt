@@ -141,11 +141,13 @@ internal fun GoodPostMediaGallery(
                 WaSelectionBar(
                     count = state.selectedMediaIds.size,
                     onClose = viewModel::clearMediaSelection,
+                    busy = state.selectionBusy,
                     actions = {
                         WaIconAction(
                             icon = Icons.Filled.Delete,
                             description = stringResource(R.string.goodpost_delete),
                             tint = if (canManage) Wa.Danger else Wa.Text,
+                            enabled = !state.selectionBusy,
                             onClick = { confirmingDelete = true }
                         )
                     }
@@ -260,7 +262,15 @@ internal fun GoodPostMediaGallery(
                 shareCaption = state.shareCaptionFor(viewingItem.postId),
                 // No resumeKey: nothing behind this is playing. A grid cell is a
                 // thumbnail, so there is no playhead to hand back to it.
-                onDeleted = { viewing = null }
+                onDeleted = { viewing = null },
+                // Deleting from here goes through the same device-delete the
+                // selection bar uses (§6, §13), so the tile leaves the grid AND
+                // the post leaves the feed in one state write. Clearing the
+                // viewer alone left the tile drawn from a decode still in memory
+                // until the channel was reopened.
+                onDeleteFromDevice = {
+                    viewModel.deleteMediaFromDevice(viewingItem.postId, viewingItem.id, viewingItem.url)
+                }
             )
         }
 

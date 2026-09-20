@@ -155,14 +155,56 @@ enum class TodoPriority(val weight: Int) {
  * times while its alarms are switched off. [asAlarm] chooses HOW the reminder
  * fires: a real system ALARM (AlarmManager.setAlarmClock — exact, full-screen
  * ring, shown in the Clock app) instead of the default notification.
+ *
+ * [alarmMinutes] and [alarmUri] apply to the ALARM style only, and both are
+ * read by [com.muddassir.clearview.todo.data.TodoAlarmService] when it rings —
+ * so changing either takes effect on the next ring without rescheduling
+ * anything.
  */
 data class ReminderConfig(
     val timesMinutes: List<Int>,
     val repeat: Boolean,
     val enabled: Boolean = true,
     /** True = ring the system alarm clock; false = post a notification. */
-    val asAlarm: Boolean = false
-)
+    val asAlarm: Boolean = false,
+    /**
+     * How long an alarm-style reminder rings before going quiet, in minutes.
+     *
+     * The notification stays in the shade afterwards either way — the ring
+     * ends, the reminder does not. One minute is the old hardcoded default, so
+     * an existing todo keeps the behaviour it had.
+     */
+    val alarmMinutes: Int = DEFAULT_ALARM_MINUTES,
+    /**
+     * An audio file the reader picked off the DEVICE to ring with, as a
+     * persisted `content://` URI — or null for the system alarm sound.
+     *
+     * A string rather than a [android.net.Uri] so the model stays plain data
+     * (and JSON-encodable); the service parses it when it rings.
+     */
+    val alarmUri: String? = null
+) {
+    companion object {
+        /** The ring length used before it became a setting, in minutes. */
+        const val DEFAULT_ALARM_MINUTES = 1
+
+        /** Offered ring lengths, in minutes — the editor's chips. */
+        val ALARM_MINUTE_CHOICES = listOf(1, 3, 5, 10, 15, 30)
+
+        /** Longest ring a single alarm can run: a longer one is a mistake. */
+        const val MAX_ALARM_MINUTES = 60
+    }
+
+    /**
+     * [alarmMinutes] as milliseconds, clamped to a sane window (1–60 minutes).
+     *
+     * The single place the ring length is turned into a duration, so the alarm
+     * service, any future preview and the tests all agree — including for data
+     * written by a build that allowed a different range.
+     */
+    val alarmDurationMs: Long
+        get() = alarmMinutes.coerceIn(1, MAX_ALARM_MINUTES) * 60_000L
+}
 
 
 

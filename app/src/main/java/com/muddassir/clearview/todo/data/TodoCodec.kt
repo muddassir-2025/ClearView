@@ -51,6 +51,8 @@ object TodoCodec {
                     .put("repeat", it.repeat)
                     .put("enabled", it.enabled)
                     .put("asAlarm", it.asAlarm)
+                    .put("alarmMinutes", it.alarmMinutes)
+                    .put("alarmUri", it.alarmUri ?: JSONObject.NULL)
             }
             arr.put(
                 JSONObject()
@@ -178,7 +180,12 @@ object TodoCodec {
                         .takeIf { it.isNotEmpty() } ?: listOf(20 * 60),
                     repeat = r.optBoolean("repeat", false),
                     enabled = r.optBoolean("enabled", true),
-                    asAlarm = r.optBoolean("asAlarm", false)
+                    asAlarm = r.optBoolean("asAlarm", false),
+                    // Absent in data written before the ring length was a
+                    // setting: the old hardcoded minute is the honest answer.
+                    alarmMinutes = r.optInt("alarmMinutes", ReminderConfig.DEFAULT_ALARM_MINUTES)
+                        .coerceIn(1, ReminderConfig.MAX_ALARM_MINUTES),
+                    alarmUri = r.optString("alarmUri", "").takeIf { it.isNotBlank() }
                 )
             },
             priority = runCatching { TodoPriority.valueOf(o.optString("priority", "NORMAL")) }
@@ -367,6 +374,78 @@ object TodoCodec {
      */
     fun canCompleteOn(item: TodoItem, day: LocalDate, nowMillis: Long): Boolean =
         isActiveOn(item, day) && !completedOn(item, day) && intervalOpen(item, day, nowMillis)
+
+    /** Why a completion was refused. */
+    enum class CompletionRefusal {
+        /** The day has not arrived yet. */
+        FUTURE_DAY,
+
+        /** The todo is not scheduled for that day at all. */
+        NOT_ACTIVE_DAY,
+
+        /** It is already ticked off for that day. */
+        ALREADY_COMPLETED,
+
+        /** A strict time range whose window has already closed: locked as missed. */
+        WINDOW_CLOSED
+    }
+
+    /**
+     * WHY [day] cannot be completed right now, or null when it can.
+     *
+     * [canCompleteOn] answers yes/no and every caller treats "no" as a silent
+     * no-op — which is how a refused completion (a snoozed alarm that rang past
+     * a strict window's close, say) came to look like a broken button. The
+     * reason exists so the surfaces that CAN speak — the alarm screen, the in-app
+     * checkbox, the reminder notification — say which rule refused them instead
+     * of doing nothing.
+     */
+    fun completionRefusal(
+        item: TodoItem,
+        day: LocalDate,
+        nowMillis: Long,
+        today: LocalDate = LocalDate.now()
+    ): CompletionRefusal? = when {
+        day.isAfter(today) -> CompletionRefusal.FUTURE_DAY
+        !isActiveOn(item, day) -> CompletionRefusal.NOT_ACTIVE_DAY
+        completedOn(item, day) -> CompletionRefusal.ALREADY_COMPLETED
+        !intervalOpen(item, day, nowMillis) -> CompletionRefusal.WINDOW_CLOSED
+        else -> null
+    }
+
+    /**
+     * Why a REMINDER's Complete action was refused, or null when it can be.
+     *
+     * A reminder is the app's own alarm being answered, and it is answered for
+     * the occurrence it rang for — never for "today" standing in for it. Two
+     * things follow from that, and both were bugs before they were rules:
+     *
+     *  - The strict-window lock that guards the in-app checkbox does NOT apply.
+     *    The reader set the reminder, was reminded, may have snoozed it, and is
+     *    answering it NOW; refusing because "the window closed while you were
+     *    being reminded" is a dead end they cannot get out of. (Answering a
+     *    long-missed day from the app stays locked — that is a deliberate redo,
+     *    not an answer to a reminder.)
+     *  - The completion lands on [day], the occurrence's OWN day. A reminder
+     *    answered the next morning — a snooze over midnight, or a phone that was
+     *    asleep when it fired — therefore still completes the occurrence it
+     *    belongs to. Rolling it forward used to push a one-off todo outside the
+     *    days it applies on, which refused the completion outright.
+     *
+     * The rules that remain are the ones about the todo itself: the occurrence
+     * must not be in the future, must be an applicable day, and must not already
+     * be ticked off.
+     */
+    fun reminderCompletionRefusal(
+        item: TodoItem,
+        day: LocalDate,
+        today: LocalDate = LocalDate.now()
+    ): CompletionRefusal? = when {
+        day.isAfter(today) -> CompletionRefusal.FUTURE_DAY
+        !isActiveOn(item, day) -> CompletionRefusal.NOT_ACTIVE_DAY
+        completedOn(item, day) -> CompletionRefusal.ALREADY_COMPLETED
+        else -> null
+    }
 
     /**
      * The next date strictly after [today] on which [item] is active (its

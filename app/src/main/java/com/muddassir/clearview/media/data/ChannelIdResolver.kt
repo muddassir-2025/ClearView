@@ -6,68 +6,47 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-/**
- * Resolves a user-provided channel reference to a YouTube channel id (UC…):
- *  - bare channel ids ("UC2cX3SmsdWsrRS8t_5zvzEw") are accepted as-is,
- *  - `/channel/UC…` (and `/c/` `/user/`) URLs are parsed directly,
- *  - `@handles` are resolved by fetching the channel page and extracting the
- *    channel id from the embedded `"channelId":"UC…"` JSON (no API key needed).
- *
- * [extractChannelId] is a pure function (no network) and is unit-testable.
- */
+/** Resolves a YouTube channel reference to its stable UC… channel id. */
 object ChannelIdResolver {
-
-    private const val TAG = "ChannelIdResolver"
-
     private val BARE_ID = Regex("^UC[0-9A-Za-z_-]{22}$")
-    private val CHANNEL_PATH = Regex("(?:youtube\\.com|youtu\\.be)/(?:channel|c)/(UC[0-9A-Za-z_-]{22})")
-    // Unicode-friendly: YouTube handles may contain Arabic and other non-ASCII
-    // characters (e.g. @الفلاح-هدف). Only whitespace and the URL delimiters
-    // / ? # terminate a handle — never an ASCII-only character class (the old
-    // `[0-9A-Za-z._-]` rejected every non-Latin handle as "invalid").
+    private val CHANNEL_PATH = Regex(
+        "(?:youtube\\.com|youtu\\.be)/channel/(UC[0-9A-Za-z_-]{22})",
+        RegexOption.IGNORE_CASE
+    )
     private val HANDLE = Regex("@([^/?#\\s]+)")
+    private val META_CHANNEL_ID = Regex(
+        "<meta\\s+[^>]*itemprop=[\\\"']channelId[\\\"'][^>]*content=[\\\"'](UC[0-9A-Za-z_-]{22})[\\\"']",
+        RegexOption.IGNORE_CASE
+    )
+    private val META_IDENTIFIER = Regex(
+        "<meta\\s+[^>]*itemprop=[\\\"']identifier[\\\"'][^>]*content=[\\\"'](UC[0-9A-Za-z_-]{22})[\\\"']",
+        RegexOption.IGNORE_CASE
+    )
+    private val CANONICAL_CHANNEL = Regex(
+        "<link\\s+[^>]*rel=[\\\"']canonical[\\\"'][^>]*href=[\\\"'][^\\\"']*/channel/(UC[0-9A-Za-z_-]{22})",
+        RegexOption.IGNORE_CASE
+    )
+    private val CANONICAL_HANDLE = Regex(
+        "<link\\s+[^>]*rel=[\\\"']canonical[\\\"'][^>]*href=[\\\"'][^\\\"']*/@([^/\\\"'?]+)",
+        RegexOption.IGNORE_CASE
+    )
 
-    /**
-     * Pure extraction step. Returns:
-     *  - the UC… id when [input] is a channel URL or bare id,
-     *  - the normalized handle ("@Name") when [input] is a handle,
-     *  - null when [input] looks like neither (callers surface this as an
-     *    "invalid channel" error).
-     */
     fun extractChannelId(input: String): String? {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) return null
         BARE_ID.find(trimmed)?.let { return it.value }
         CHANNEL_PATH.find(trimmed)?.let { return it.groupValues[1] }
-        // The regex match value already includes the "@" ("@SafinaSociety"),
-        // which is exactly what resolveHandle() needs for the fetch URL.
         HANDLE.find(trimmed)?.let { return it.value }
         return null
     }
 
-    /**
-     * Percent-encodes a @handle for the YouTube path segment ([resolveHandle]).
-     * Raw non-ASCII bytes in an HTTP request line are invalid, so Arabic (and
-     * other Unicode) handle characters must be UTF-8 percent-encoded. Java's
-     * URLEncoder uses '+' for spaces — wrong for a path — so it is swapped to
-     * %20. A handle already percent-encoded (pasted from an encoded URL) is
-     * passed through untouched. Pure, unit-tested.
-     */
     fun encodeHandlePath(handle: String): String =
         if ('%' in handle) handle
         else "@" + URLEncoder.encode(handle.removePrefix("@"), "UTF-8").replace("+", "%20")
 
-    /**
-     * Full resolution: returns a UC… id, or null when the input is invalid or
-     * the handle page can't be fetched/parsed.
-     */
     suspend fun resolve(input: String): String? {
         val extracted = extractChannelId(input) ?: return null
-        return if (BARE_ID.matches(extracted)) {
-            extracted
-        } else {
-            resolveHandle(extracted)
-        }
+        return if (BARE_ID.matches(extracted)) extracted else resolveHandle(extracted)
     }
 
     private suspend fun resolveHandle(handle: String): String? = withContext(Dispatchers.IO) {
@@ -83,14 +62,40 @@ object ChannelIdResolver {
             }
             if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
             val html = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            // ytInitialData embeds "channelId":"UC…"; meta itemprop also works.
-            val jsonMatch = Regex("\"channelId\"\\s*:\\s*\"(UC[0-9A-Za-z_-]{22})\"").find(html)
-            val metaMatch = Regex("<meta\\s+itemprop=\"identifier\"\\s+content=\"(UC[0-9A-Za-z_-]{22})\"").find(html)
-            (jsonMatch?.groupValues?.get(1) ?: metaMatch?.groupValues?.get(1))
-        } catch (e: Exception) {
+
+            // Never use the first channelId in the document: recommendations and
+            // related channels are embedded in the same page. Page-level metadata
+            // belongs to the requested channel.
+            extractResolvedChannelId(html, handle)
+        } catch (_: Exception) {
             null
         } finally {
             connection?.disconnect()
         }
+    }
+
+    /** Pure page-identity extraction, kept visible for regression tests. */
+    internal fun extractResolvedChannelId(html: String, requestedHandle: String): String? {
+        val canonicalId = CANONICAL_CHANNEL.find(html)?.groupValues?.get(1)
+        val metaId = META_CHANNEL_ID.find(html)?.groupValues?.get(1)
+            ?: META_IDENTIFIER.find(html)?.groupValues?.get(1)
+        val canonicalHandle = CANONICAL_HANDLE.find(html)?.groupValues?.get(1)
+        if (canonicalHandle != null &&
+            !requestedHandle.removePrefix("@").equals(canonicalHandle, ignoreCase = true)
+        ) return null
+        return canonicalId ?: metaId ?: channelIdNearCanonicalHandle(html, canonicalHandle)
+    }
+
+    /** Fallback for page variants that expose only canonicalBaseUrl + channelId. */
+    private fun channelIdNearCanonicalHandle(html: String, canonicalHandle: String?): String? {
+        if (canonicalHandle.isNullOrBlank()) return null
+        val marker = Regex(
+            "\\\"canonicalBaseUrl\\\"\\s*:\\s*\\\"/@" +
+                Regex.escape(canonicalHandle) + "\\\""
+        ).find(html) ?: return null
+        val end = minOf(html.length, marker.range.last + 4000)
+        return Regex("\\\"channelId\\\"\\s*:\\s*\\\"(UC[0-9A-Za-z_-]{22})\\\"")
+            .find(html.substring(marker.range.first, end))
+            ?.groupValues?.get(1)
     }
 }

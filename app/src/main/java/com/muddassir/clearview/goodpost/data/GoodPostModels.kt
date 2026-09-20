@@ -113,16 +113,24 @@ data class GoodPostFollow(
 /** The channel a post came from, as a single-post payload names it. */
 data class GoodPostChannelRef(val id: String, val slug: String, val name: String)
 
-/** One stored asset on a post: an image, a video or an audio clip. */
+/** One stored asset on a post: an image, a video or a document. */
 data class GoodPostMedia(
     val id: String,
-    /** `image`, `video` or `audio`. */
+    /** `image`, `video` or `document`. */
     val kind: String,
     val contentType: String,
     val byteSize: Long,
     val width: Int?,
     val height: Int?,
     val durationMs: Long?,
+    /**
+     * The name the sender's file had, for a document.
+     *
+     * Null for an image or a clip: a reader sees the picture rather than what it
+     * was called on disk. For a document it is the whole card — there is no
+     * preview to draw — so the server refuses a document without one (§21).
+     */
+    val fileName: String?,
     val position: Int,
     /**
      * A short-lived signed read URL, or null when this deployment has no bucket
@@ -133,6 +141,16 @@ data class GoodPostMedia(
 ) {
     val isImage: Boolean get() = kind == "image"
     val isVideo: Boolean get() = kind == "video"
+
+    /**
+     * A file the app hands to another app rather than drawing.
+     *
+     * Its card is a name and a size, and a tap opens it in whatever the device
+     * has registered for a PDF (§21). Nothing here renders a page of one — an
+     * in-app reader is a screen of its own, and a document that is worth keeping
+     * is worth opening where it can be zoomed, searched and printed.
+     */
+    val isDocument: Boolean get() = kind == "document"
 }
 
 /** One item in a channel's "Media and links" gallery (§13). */
@@ -144,10 +162,14 @@ data class GoodPostMediaItem(
     val width: Int?,
     val height: Int?,
     val durationMs: Long?,
+    /** The sender's file name, for a document. Null for the other kinds. */
+    val fileName: String?,
     val createdAt: String,
     val url: String?
 ) {
+    val isImage: Boolean get() = kind == "image"
     val isVideo: Boolean get() = kind == "video"
+    val isDocument: Boolean get() = kind == "document"
 }
 
 /** A post, as the channel feed renders it (§9). */
@@ -338,6 +360,7 @@ internal object GoodPostCodec {
             width = json.optIntOrNull("width"),
             height = json.optIntOrNull("height"),
             durationMs = json.optLongOrNull("durationMs"),
+            fileName = json.nullableString("fileName"),
             position = json.optInt("position", 0),
             url = json.nullableString("url")
         )
@@ -435,6 +458,7 @@ internal object GoodPostCodec {
             width = json.optIntOrNull("width"),
             height = json.optIntOrNull("height"),
             durationMs = json.optLongOrNull("durationMs"),
+            fileName = json.nullableString("fileName"),
             createdAt = json.optString("createdAt"),
             url = json.nullableString("url")
         )
@@ -460,7 +484,22 @@ internal object GoodPostCodec {
 
     fun postPage(body: JSONObject): GoodPostPage<GoodPostPost> = page(body, ::post)
 
-    fun mediaPage(body: JSONObject): GoodPostPage<GoodPostMediaItem> = page(body, ::mediaItem)
+    /**
+     * A page of a channel's media, for the gallery and the media strip.
+     *
+     * Documents are dropped HERE rather than in the grid that draws them. Both
+     * surfaces are a wall of PREVIEWS — a tile is the picture, or a poster frame
+     * and a play badge — and a document has neither: it would be a tile with
+     * nothing in it, whose tap opened a viewer for a file it cannot show. Its card
+     * on the post it came from is where it is opened, so it is not in the wall.
+     *
+     * The server still sends it. This is a decision about a grid, not about what a
+     * channel contains, so it is made at the point the grid consumes the page.
+     */
+    fun mediaPage(body: JSONObject): GoodPostPage<GoodPostMediaItem> =
+        page(body, ::mediaItem).let { parsed ->
+            parsed.copy(items = parsed.items.filterNot { it.isDocument })
+        }
 
     /** Parse a `{ channel: {...} }` body. */
     fun singleChannel(body: JSONObject): GoodPostChannel? =

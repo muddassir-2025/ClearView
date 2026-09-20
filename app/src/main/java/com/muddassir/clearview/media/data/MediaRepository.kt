@@ -1,6 +1,7 @@
 package com.muddassir.clearview.media.data
 
 import android.content.Context
+import android.media.MediaMetadataRetriever
 import android.util.Log
 import com.muddassir.clearview.media.model.FeedFilter
 import com.muddassir.clearview.media.model.InstagramMediaType
@@ -81,7 +82,10 @@ class MediaRepository(context: Context) {
      * Supports both YouTube channels and Instagram public profiles — if both
      * are found for the same handle/query, both are added.
      */
-    suspend fun addChannel(input: String): AddChannelResult = withContext(Dispatchers.IO) {
+    suspend fun addChannel(
+        input: String,
+        platform: MediaPlatform = MediaPlatform.YOUTUBE
+    ): AddChannelResult = withContext(Dispatchers.IO) {
         val trimmed = input.trim()
         if (trimmed.isEmpty()) {
             return@withContext AddChannelResult.Error("Enter a channel id, URL or @handle")
@@ -90,9 +94,42 @@ class MediaRepository(context: Context) {
         val existing = getSavedChannels()
         val toAdd = mutableListOf<SavedChannel>()
 
-        // 1. Try resolving YouTube channel
-        val isExplicitInstagram = trimmed.contains("instagram.com/") || trimmed.contains("instagr.am/")
-        if (!isExplicitInstagram) {
+        // The UI chooses the platform for bare handles. Explicit URLs still
+        // override the choice so a pasted Instagram URL cannot be sent to the
+        // YouTube resolver (or vice versa).
+        val explicitInstagram = trimmed.contains("instagram.com/", ignoreCase = true) ||
+            trimmed.contains("instagr.am/", ignoreCase = true)
+        val selectedPlatform = when {
+            explicitInstagram -> MediaPlatform.INSTAGRAM
+            trimmed.contains("youtube.com/", ignoreCase = true) ||
+                trimmed.contains("youtu.be/", ignoreCase = true) -> MediaPlatform.YOUTUBE
+            trimmed.contains("x.com/", ignoreCase = true) ||
+                trimmed.contains("twitter.com/", ignoreCase = true) -> MediaPlatform.X
+            else -> platform
+        }
+
+        // 1. Resolve exactly the selected platform.
+        if (selectedPlatform == MediaPlatform.X) {
+            // RSS bridges are optional content providers, not identity
+            // resolvers. They can be temporarily unavailable or return an
+            // empty feed for a valid/new account. Save the validated profile
+            // immediately and let the normal refresh retry its posts later.
+            val username = XSource.extractUsername(trimmed)
+            if (username != null) {
+                val channelId = "x_${username.lowercase()}"
+                if (existing.none { it.channelId == channelId }) {
+                    toAdd.add(
+                        SavedChannel(
+                            channelId = channelId,
+                            displayName = "@$username",
+                            sourceRef = trimmed,
+                            addedAtEpochMillis = System.currentTimeMillis(),
+                            platform = MediaPlatform.X
+                        )
+                    )
+                }
+            }
+        } else if (selectedPlatform == MediaPlatform.YOUTUBE) {
             val ytChannelId = ChannelIdResolver.resolve(trimmed)
             if (ytChannelId != null && existing.none { it.channelId == ytChannelId } && toAdd.none { it.channelId == ytChannelId }) {
                 toAdd.add(
@@ -107,27 +144,29 @@ class MediaRepository(context: Context) {
             }
         }
 
-        // 2. Try resolving Instagram profile
-        val igUsername = InstagramResolver.extractUsername(trimmed)
+        // 2. Resolve Instagram profile
+        val igUsername = if (selectedPlatform == MediaPlatform.INSTAGRAM) {
+            InstagramResolver.extractUsername(trimmed)
+        } else null
         if (igUsername != null) {
-            val igProfile = InstagramResolver.resolve(trimmed)
-            if (igProfile != null) {
-                val igChannelId = "ig_${igProfile.username.lowercase()}"
-                if (existing.none { it.channelId == igChannelId } && toAdd.none { it.channelId == igChannelId }) {
-                    toAdd.add(
-                        SavedChannel(
-                            channelId = igChannelId,
-                            displayName = if (igProfile.fullName.isNotBlank()) igProfile.fullName else "@${igProfile.username}",
-                            sourceRef = "@${igProfile.username}",
-                            avatarUrl = igProfile.avatarUrl?.takeIf { InstagramRssParser.isRealAvatarUrl(it) },
-                            addedAtEpochMillis = System.currentTimeMillis(),
-                            platform = MediaPlatform.INSTAGRAM
-                        )
+            // Provider access is best-effort. Instagram frequently blocks
+            // unauthenticated profile requests, but that must not prevent a
+            // valid profile URL/handle from being subscribed. Save the exact
+            // requested username now; the feed refresh can populate posts
+            // whenever a provider becomes reachable.
+            val resolvedUsername = igUsername
+            val igChannelId = "ig_${resolvedUsername.lowercase()}"
+            if (existing.none { it.channelId == igChannelId } && toAdd.none { it.channelId == igChannelId }) {
+                toAdd.add(
+                    SavedChannel(
+                        channelId = igChannelId,
+                        displayName = "@$resolvedUsername",
+                        sourceRef = "@$resolvedUsername",
+                        avatarUrl = null,
+                        addedAtEpochMillis = System.currentTimeMillis(),
+                        platform = MediaPlatform.INSTAGRAM
                     )
-                    if (igProfile.posts.isNotEmpty()) {
-                        writeCache(igChannelId, igProfile.posts)
-                    }
-                }
+                )
             }
         }
 
@@ -140,7 +179,9 @@ class MediaRepository(context: Context) {
             return@withContext if (already) {
                 AddChannelResult.Error("That channel / profile is already saved")
             } else {
-                AddChannelResult.Error("Couldn't find that channel or Instagram profile. Check the handle or paste the URL.")
+                AddChannelResult.Error(
+                    "Couldn't find that channel or profile. Check the handle or paste the URL."
+                )
             }
         }
 
@@ -153,6 +194,7 @@ class MediaRepository(context: Context) {
                     refreshVideos(channel.channelId, enrich = false)?.let { fresh ->
                         if (fresh.isNotEmpty()) {
                             markVideosNotified(getNotifiedVideoIds() + fresh.map { it.videoId })
+                            markNotificationBaselineComplete(channel.channelId)
                         }
                     }
                 }
@@ -202,6 +244,7 @@ class MediaRepository(context: Context) {
                     .put("addedAt", c.addedAtEpochMillis)
                     .put("platform", c.platform.name)
                     .put("instagramType", c.instagramType?.name ?: JSONObject.NULL)
+                    .put("notificationsMuted", c.notificationsMuted)
             )
         }
         prefs.edit().putString(KEY_CHANNELS, arr.toString()).apply()
@@ -229,7 +272,10 @@ class MediaRepository(context: Context) {
                     platform = platform,
                     instagramType = o.optString("instagramType", "").takeIf { it.isNotBlank() }?.let {
                         runCatching { InstagramMediaType.valueOf(it) }.getOrNull()
-                    }
+                    },
+                    // Absent on channels saved by older builds → false → ON,
+                    // which is exactly how they behaved before muting existed.
+                    notificationsMuted = o.optBoolean("notificationsMuted", false)
                 )
             }
         } catch (e: Exception) {
@@ -246,11 +292,18 @@ class MediaRepository(context: Context) {
         var changed = false
         val updated = channels.map { c ->
             if (c.avatarUrl == null) {
-                val url = if (c.platform == MediaPlatform.INSTAGRAM) {
-                    val user = c.channelId.removePrefix("ig_")
-                    InstagramResolver.fetchProfile(user)?.avatarUrl?.takeIf { InstagramRssParser.isRealAvatarUrl(it) }
-                } else {
-                    ChannelAvatarResolver.fetchAvatar(c.channelId)
+                val url = when (c.platform) {
+                    MediaPlatform.INSTAGRAM -> {
+                        val user = c.channelId.removePrefix("ig_")
+                        InstagramResolver.fetchProfile(user)?.avatarUrl
+                            ?.takeIf { InstagramRssParser.isRealAvatarUrl(it) }
+                    }
+                    // An X channel id is "x_<handle>", so the prefix comes off
+                    // before resolving — and the avatar comes from the profile
+                    // API, never from youtube.com/channel/ (which only ever
+                    // answered with an empty page for an X handle).
+                    MediaPlatform.X -> XSource.fetchAvatar(c.channelId.removePrefix("x_"))
+                    MediaPlatform.YOUTUBE -> ChannelAvatarResolver.fetchAvatar(c.channelId)
                 }
                 if (url != null) {
                     changed = true
@@ -263,6 +316,30 @@ class MediaRepository(context: Context) {
             }
         }
         if (!changed) return null
+        saveChannels(updated)
+        return updated
+    }
+
+    /**
+     * Silences (or un-silences) [channelId]'s notifications.
+     *
+     * Works for EVERY source — YouTube, Instagram and X are all just saved
+     * channels to this layer, so a channel is muted independently of which
+     * platform it came from, and of every other channel. Returns the updated
+     * list for the caller to drop into its state, or null when nothing changed
+     * (an unknown channel, or the flag already held this value) so the caller
+     * can skip a needless recomposition.
+     *
+     * Cancelling what is already in the shade is the CALLER's job (it holds the
+     * Context and the notifier), which keeps this class free of any dependency
+     * on the notification worker.
+     */
+    fun setChannelNotificationsMuted(channelId: String, muted: Boolean): List<SavedChannel>? {
+        val channels = getSavedChannels()
+        val index = channels.indexOfFirst { it.channelId == channelId }
+        if (index < 0 || channels[index].notificationsMuted == muted) return null
+        val updated = channels.toMutableList()
+        updated[index] = updated[index].copy(notificationsMuted = muted)
         saveChannels(updated)
         return updated
     }
@@ -397,16 +474,51 @@ class MediaRepository(context: Context) {
         channelId: String,
         enrich: Boolean = true
     ): List<MediaVideo>? = withContext(Dispatchers.IO) {
+        if (channelId.startsWith("x_")) {
+            val username = channelId.removePrefix("x_")
+            val fresh = XSource.fetchProfile(username)
+            val cached = getCachedVideos(channelId)?.first.orEmpty()
+            if (fresh != null && fresh.isNotEmpty()) {
+                val normalized = fresh.map { it.copy(channelId = channelId) }
+                val merged = (normalized + cached.filter { old -> normalized.none { it.videoId == old.videoId } })
+                    .sortedByDescending { it.publishedAtEpochMillis }
+                writeCache(channelId, merged)
+                return@withContext merged
+            }
+            return@withContext cached.ifEmpty { null }
+        }
         if (channelId.startsWith("ig_")) {
             val username = channelId.removePrefix("ig_")
             val cachedRaw = getCachedVideos(channelId)?.first ?: emptyList()
             val cached = cachedRaw.filterNot { it.videoId.endsWith("_reels") || it.videoId.endsWith("_posts") }
             val profile = try { InstagramResolver.fetchProfile(username) } catch (e: Exception) { null }
+            if (profile == null) {
+                MediaSourceStatusStore.markFailing(MediaPlatform.INSTAGRAM)
+            } else {
+                MediaSourceStatusStore.markOk(MediaPlatform.INSTAGRAM)
+            }
             if (profile != null && profile.posts.isNotEmpty()) {
-                val cleanPosts = profile.posts.filterNot { it.videoId.endsWith("_reels") || it.videoId.endsWith("_posts") }
-                // Merge: fresh items take priority, then cached items not in fresh set
-                val freshIds = cleanPosts.map { it.videoId }.toSet()
-                val merged = cleanPosts + cached.filter { it.videoId !in freshIds }
+                val cleanPosts = profile.posts
+                    .filterNot { it.videoId.endsWith("_reels") || it.videoId.endsWith("_posts") }
+                    // Providers sometimes build items with a feed title-derived
+                    // id. The saved subscription id is authoritative, otherwise
+                    // notifications and channel filtering can lose the post.
+                    .map { it.copy(channelId = channelId) }
+                // Carry over known durations first, then enrich this channel's
+                // fresh Instagram videos too. The All Feed often already had a
+                // duration from another refresh, while a direct channel view
+                // exposed the missing value because the old Instagram path never
+                // ran duration enrichment.
+                val knownDurations = cached.associate { it.videoId to it.durationSeconds }
+                val withKnownDurations = cleanPosts.map { post ->
+                    knownDurations[post.videoId]?.takeIf { it > 0L }?.let {
+                        post.copy(durationSeconds = it)
+                    } ?: post
+                }
+                val enrichedPosts = if (enrich) enrichInstagramDurations(withKnownDurations) else withKnownDurations
+                // Merge: fresh items take priority, then cached items not in fresh set.
+                val freshIds = enrichedPosts.map { it.videoId }.toSet()
+                val merged = enrichedPosts + cached.filter { it.videoId !in freshIds }
                 val sorted = merged.sortedByDescending { it.publishedAtEpochMillis }
                 writeCache(channelId, sorted)
                 return@withContext sorted
@@ -425,8 +537,12 @@ class MediaRepository(context: Context) {
                 setRequestProperty("Accept", "application/atom+xml")
                 setRequestProperty("User-Agent", "Mozilla/5.0")
             }
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) return@withContext null
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                MediaSourceStatusStore.markFailing(MediaPlatform.YOUTUBE)
+                return@withContext null
+            }
             val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            MediaSourceStatusStore.markOk(MediaPlatform.YOUTUBE)
             // Classify Shorts from the channel's /shorts tab (many Shorts omit
             // the #shorts hashtag, so title-only detection misses most of them).
             // Best-effort: an empty set degrades to hashtag detection.
@@ -447,10 +563,17 @@ class MediaRepository(context: Context) {
             // path skips enrichment so the dialog stays fast — the feed effect
             // enriches on its own refresh right after.
             val videos = if (enrich) enrichDurations(withKnown) else withKnown
+            val cachedVideos = getCachedVideos(channelId)?.first.orEmpty()
+            val freshIds = videos.map { it.videoId }.toSet()
+            // YouTube RSS exposes a rolling latest window. Keep older entries
+            // already learned so repeated refreshes build a growing local
+            // channel history instead of throwing older uploads away.
+            val accumulated = (videos + cachedVideos.filter { it.videoId !in freshIds })
+                .sortedByDescending { it.publishedAtEpochMillis }
             // Trace every feed item straight from the parsed RSS so we can
             // confirm the videoId handed to the embedded player belongs to
             // this exact RSS entry (no stale/mixed/hardcoded ids).
-            videos.forEach { v ->
+            accumulated.forEach { v ->
                 Log.d(
                     TAG,
                     "RSS_VIDEO channelId=$channelId videoId=${v.videoId} " +
@@ -462,12 +585,12 @@ class MediaRepository(context: Context) {
             // deliberately as old content). Baseline it alongside the RSS items.
             val manualIds = MediaLibraryStore(appContext)
                 .getManuallyAddedVideos().map { it.videoId }.toSet()
-            val baseline = videos.filter { it.videoId in manualIds }.map { it.videoId }
+            val baseline = accumulated.filter { it.videoId in manualIds }.map { it.videoId }
             if (baseline.isNotEmpty()) {
                 markVideosNotified(getNotifiedVideoIds() + baseline)
             }
-            if (videos.isNotEmpty()) writeCache(channelId, videos)
-            videos
+            if (accumulated.isNotEmpty()) writeCache(channelId, accumulated)
+            accumulated
         } catch (e: CancellationException) {
             // Never report a cancelled refresh as a channel failure — the caller
             // (the feed effect) restarts and refetches anyway. Rethrowing keeps
@@ -478,6 +601,73 @@ class MediaRepository(context: Context) {
             null
         } finally {
             connection?.disconnect()
+        }
+    }
+
+    /**
+     * Instagram providers frequently omit duration even for playable Reels.
+     * Resolve the public stream only for the newest missing video posts, then
+     * read the container duration locally. This is intentionally capped and
+     * bounded: channel refresh should remain useful even when Meta is slow.
+     */
+    private suspend fun enrichInstagramDurations(
+        videos: List<MediaVideo>,
+        top: Int = 10,
+        concurrency: Int = 2
+    ): List<MediaVideo> {
+        val missing = videos.filter {
+            it.isInstagramVideo && it.durationSeconds <= 0L
+        }.take(top)
+        if (missing.isEmpty()) return videos
+
+        val byId = videos.associateBy { it.videoId }.toMutableMap()
+        missing.chunked(concurrency).forEach { batch ->
+            val results = coroutineScope {
+                batch.map { video ->
+                    async(Dispatchers.IO) {
+                        val stream = runCatching {
+                            val direct = video.mediaUrl
+                            if (InstagramStreamResolver.isPlayableVideoUrl(direct)) {
+                                InstagramStreamResolver.ResolvedStream(direct!!, null)
+                            } else {
+                                val permalink = video.instagramUrl ?: video.videoId.removePrefix("ig_")
+                                InstagramStreamResolver.resolvePlayableStream(
+                                    appContext,
+                                    permalink,
+                                    fresh = false
+                                )
+                            }
+                        }.getOrNull()
+                        video.videoId to streamDurationSeconds(stream?.videoUrl)
+                    }
+                }.awaitAll()
+            }
+            results.forEach { (videoId, seconds) ->
+                if (seconds > 0L) {
+                    byId[videoId]?.let { byId[videoId] = it.copy(durationSeconds = seconds) }
+                }
+            }
+        }
+        return videos.map { byId[it.videoId] ?: it }
+    }
+
+    private fun streamDurationSeconds(url: String?): Long {
+        if (url.isNullOrBlank()) return 0L
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(
+                url,
+                mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Android)",
+                    "Referer" to "https://www.instagram.com/"
+                )
+            )
+            retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull()?.div(1000L) ?: 0L
+        } catch (_: Exception) {
+            0L
+        } finally {
+            runCatching { retriever.release() }
         }
     }
 
@@ -566,6 +756,21 @@ class MediaRepository(context: Context) {
     /** Video ids already notified about (dedup — never re-notify the same video). */
     fun getNotifiedVideoIds(): Set<String> =
         prefs.getStringSet(KEY_NOTIFIED_VIDEOS, emptySet()) ?: emptySet()
+
+    /**
+     * Whether the first successful refresh has baselined this subscription.
+     * It is separate from the video-id set because the Media tab may refresh a
+     * newly added channel before WorkManager gets its first notification check.
+     */
+    fun isNotificationBaselineComplete(channelId: String): Boolean =
+        prefs.getStringSet(KEY_NOTIFICATION_BASELINED_CHANNELS, emptySet())?.contains(channelId) == true
+
+    fun markNotificationBaselineComplete(channelId: String) {
+        val current = prefs.getStringSet(KEY_NOTIFICATION_BASELINED_CHANNELS, emptySet()).orEmpty()
+        prefs.edit()
+            .putStringSet(KEY_NOTIFICATION_BASELINED_CHANNELS, current + channelId)
+            .apply()
+    }
 
     /** Persists the notified-video id set (capped so it can't grow unbounded). */
     fun markVideosNotified(ids: Set<String>) {
@@ -704,6 +909,44 @@ class MediaRepository(context: Context) {
             .sortedByDescending { it.publishedAtEpochMillis }
 
     /**
+     * The last merged All Feed, kept in memory for the lifetime of the process.
+     *
+     * The Media tab is torn down when the user switches tabs, so every return
+     * to it used to start from an empty list and sit on a skeleton while all
+     * feeds were fetched again. This is what the tab paints from instead: the
+     * feed reappears instantly and the network refresh happens behind it (and
+     * only when [isFeedRefreshDue]).
+     */
+    fun getMemoizedAllFeed(): List<MediaVideo>? = memoizedFeed
+
+    /** Records the merged All Feed shown to the user. */
+    fun memoizeAllFeed(videos: List<MediaVideo>) {
+        if (videos.isEmpty()) return
+        memoizedFeed = videos
+    }
+
+    /**
+     * Whether the merged All Feed is due for a network refresh. The Media tab
+     * asks this when it opens, so re-entering the tab right after a refresh
+     * shows the feed instead of re-fetching every channel; pull-to-refresh
+     * bypasses the interval entirely.
+     */
+    fun isFeedRefreshDue(now: Long = System.currentTimeMillis()): Boolean =
+        now - prefs.getLong(KEY_LAST_FEED_REFRESH, 0L) >= FEED_REFRESH_INTERVAL_MS
+
+    /** Records that the merged All Feed was refreshed over the network. */
+    fun markFeedRefreshed(atEpochMillis: Long = System.currentTimeMillis()) {
+        prefs.edit().putLong(KEY_LAST_FEED_REFRESH, atEpochMillis).apply()
+    }
+
+    /**
+     * When the merged All Feed was last refreshed (0 = never). Persisted, so
+     * the Media tab's "Updated Xm ago" hint survives a tab switch and a
+     * restart instead of resetting with the composable's own state.
+     */
+    fun lastFeedRefreshAt(): Long = prefs.getLong(KEY_LAST_FEED_REFRESH, 0L)
+
+    /**
      * Refreshes EVERY channel's RSS feed and merges the results, newest
      * first. Channels are refreshed CONCURRENTLY with [concurrency] feeds in
      * flight at once (each channel's own duration enrichment is already
@@ -799,6 +1042,8 @@ class MediaRepository(context: Context) {
                     .put("instagramType", v.instagramType?.name ?: JSONObject.NULL)
                     .put("mediaUrl", v.mediaUrl ?: JSONObject.NULL)
                     .put("instagramUrl", v.instagramUrl ?: JSONObject.NULL)
+                    .put("sourceUrl", v.sourceUrl ?: JSONObject.NULL)
+                    .put("bodyText", v.bodyText)
             )
         }
         val obj = JSONObject()
@@ -818,6 +1063,8 @@ class MediaRepository(context: Context) {
                 val igType = igTypeStr?.let { runCatching { InstagramMediaType.valueOf(it) }.getOrNull() }
                 val mediaUrl = o.optString("mediaUrl", "").takeIf { it.isNotBlank() }
                 val instagramUrl = o.optString("instagramUrl", "").takeIf { it.isNotBlank() }
+                val sourceUrl = o.optString("sourceUrl", "").takeIf { it.isNotBlank() }
+                val bodyText = o.optString("bodyText", "")
                 val videoId = o.getString("videoId")
                 // Instagram thumbnails are RE-DERIVED on every read: a
                 // feed-supplied CDN URL dies with its signature (403), so a
@@ -847,7 +1094,9 @@ class MediaRepository(context: Context) {
                     platform = platform,
                     instagramType = igType,
                     mediaUrl = mediaUrl,
-                    instagramUrl = instagramUrl
+                    instagramUrl = instagramUrl,
+                    sourceUrl = sourceUrl,
+                    bodyText = bodyText
                 )
             } catch (e: Exception) {
                 null
@@ -1199,10 +1448,28 @@ class MediaRepository(context: Context) {
         const val KEY_PLAYLISTS = "saved_playlists"
         const val KEY_MEDIA_NOTIFICATIONS_ENABLED = "media_notifications_enabled"
         const val KEY_NOTIFIED_VIDEOS = "notified_video_ids"
+        const val KEY_NOTIFICATION_BASELINED_CHANNELS = "notification_baselined_channels"
         const val KEY_UPDATES_HISTORY = "updates_history"
         const val KEY_SEEN_UPDATE_IDS = "seen_update_ids"
         const val KEY_FEED_FILTER = "feed_filter"
+        const val KEY_LAST_FEED_REFRESH = "last_feed_refresh"
         const val MAX_NOTIFIED_VIDEOS = 200
+
+        /**
+         * Minimum gap between automatic All Feed refreshes. The Media tab is
+         * opened and left constantly; without this every return re-fetched
+         * every channel (which is also what got X's syndication endpoint to
+         * rate-limit the install). Pull-to-refresh is never throttled.
+         */
+        const val FEED_REFRESH_INTERVAL_MS = 10 * 60 * 1000L
+
+        /**
+         * Process-wide memo of the last merged All Feed. Static because the
+         * repository instance itself lives (and dies) with the Media tab — the
+         * one thing that must survive a tab switch is the feed it showed.
+         */
+        @Volatile
+        private var memoizedFeed: List<MediaVideo>? = null
         // Safety cap on continuation pages (~100 videos each → up to 10 000
         // videos, far beyond YouTube's 5 000-video playlist maximum).
         const val MAX_PLAYLIST_PAGES = 100

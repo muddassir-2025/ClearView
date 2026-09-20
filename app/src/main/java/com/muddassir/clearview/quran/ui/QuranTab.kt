@@ -1,10 +1,13 @@
 package com.muddassir.clearview.quran.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -12,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -35,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -215,32 +220,67 @@ private fun VerseDisplay(
         )
     }
     Spacer(Modifier.height(8.dp))
+    // ONE reference line, with the reader's position inside the surah folded
+    // into it.
+    //
+    // It used to be two: "Surah 97 · Ayah 2" with "2 / 5 ayahs" underneath,
+    // which said the ayah number twice in two different weights — the second
+    // line was there to answer "how far through is this?" and answered it by
+    // repeating what was already on the line above. Folding the total into the
+    // reference and drawing the position as a bar says the same thing once.
+    //
+    // The total comes from the downloaded edition, so it appears with the first
+    // verse and is absent in the rare pre-migration case where the persisted
+    // verse predates the surah counts and the cache is not loaded yet — in which
+    // case the bar is simply not drawn, rather than drawn empty.
+    val hasProgress = v.totalAyahs > 0
+    // Resolved outside the semantics{} lambda — that lambda is not a composable
+    // context, so stringResource() cannot be called inside it.
+    val progressDesc = if (hasProgress) {
+        stringResource(R.string.quran_ayah_progress_desc, v.ayahNumber, v.totalAyahs)
+    } else {
+        null
+    }
     Text(
-        text = "Surah ${v.surahNumber} · Ayah ${v.ayahNumber}",
+        text = if (hasProgress) {
+            stringResource(
+                R.string.quran_ayah_reference_of,
+                v.surahNumber,
+                v.ayahNumber,
+                v.totalAyahs
+            )
+        } else {
+            stringResource(R.string.quran_ayah_reference, v.surahNumber, v.ayahNumber)
+        },
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.primary,
-        textAlign = TextAlign.Center
+        textAlign = TextAlign.Center,
+        modifier = if (progressDesc != null) {
+            Modifier.semantics { contentDescription = progressDesc }
+        } else {
+            Modifier
+        }
     )
-    // How far through the surah the reader is (e.g. "91 / 118 ayahs"). The
-    // total comes from the downloaded edition, so it appears with the first
-    // verse — and stays hidden in the rare pre-migration case where the
-    // persisted verse predates the surah counts and the cache isn't loaded yet.
-    if (v.totalAyahs > 0) {
-        // Resolved outside the semantics{} lambda — that lambda is not a
-        // composable context, so stringResource() cannot be called inside it.
-        val progressDesc = stringResource(
-            R.string.quran_ayah_progress_desc,
-            v.ayahNumber,
-            v.totalAyahs
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = stringResource(R.string.quran_ayah_progress, v.ayahNumber, v.totalAyahs),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.semantics { contentDescription = progressDesc }
-        )
+
+    if (hasProgress) {
+        Spacer(Modifier.height(9.dp))
+        Box(
+            modifier = Modifier
+                .width(132.dp)
+                .height(3.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(
+                        (v.ayahNumber.toFloat() / v.totalAyahs.toFloat()).coerceIn(0f, 1f)
+                    )
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
     }
 
     Spacer(Modifier.height(24.dp))

@@ -196,7 +196,9 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                 }
 
                 if (state.tabChannels.isEmpty() && state.tabLoading) {
-                    item(key = "loading") { CenteredProgress(Modifier.height(160.dp)) }
+                    // §22: the list's own shape, held open under a slow sheen,
+                    // rather than a spinner in the middle of an empty screen.
+                    item(key = "loading") { WaChannelListSkeleton() }
                 }
 
                 if (state.tabChannels.isEmpty() && !state.tabLoading &&

@@ -3,6 +3,7 @@ package com.muddassir.clearview.goodpost.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -114,7 +115,7 @@ internal fun GoodPostChannelSearch(
             )
 
             if (state.channelSearchLoading && state.channelSearchResults.isEmpty()) {
-                CenteredProgress(Modifier.height(160.dp))
+                WaPostFeedSkeleton(Modifier.height(200.dp))
                 return@Column
             }
 
@@ -122,7 +123,11 @@ internal fun GoodPostChannelSearch(
                 WaErrorNotice(code)
             }
 
-            Box(modifier = Modifier.weight(1f)) {
+            // §18: results are post cards, so they are sized by the feed's own rule
+            // — the same room the feed would have given the post they came from.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val listWidth = maxWidth
+                val listHeight = maxHeight
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(start = 10.dp, end = 10.dp, top = 4.dp, bottom = 24.dp),
@@ -131,6 +136,8 @@ internal fun GoodPostChannelSearch(
                     items(state.channelSearchResults, key = { it.id }) { post ->
                         PostItem(
                             post = post,
+                            availableWidth = listWidth - POST_LIST_INSET * 2,
+                            availableHeight = listHeight,
                             // §22: results arrive per keystroke and per page.
                             modifier = Modifier.animateItem(),
                             selected = false,
@@ -209,7 +216,17 @@ internal fun GoodPostChannelSearch(
                 onExpired = { viewerPostId?.let { viewModel.refreshPost(it) } },
                 // The searched post's own words, out of this screen's results
                 // rather than the channel's page, and the channel's link (§15).
-                shareCaption = state.shareCaptionFor(viewerPostId)
+                shareCaption = state.shareCaptionFor(viewerPostId),
+                // A file deleted from here leaves THIS device and the row that
+                // owns it (§6, §13). Without this the search result stayed on
+                // screen drawing a picture that had just been removed.
+                onDeleteFromDevice = {
+                    val postId = viewerPostId
+                    val mediaId = viewerMediaId
+                    if (postId != null && mediaId != null) {
+                        viewModel.deleteMediaFromDevice(postId, mediaId, viewing.url)
+                    }
+                }
             )
         }
     }

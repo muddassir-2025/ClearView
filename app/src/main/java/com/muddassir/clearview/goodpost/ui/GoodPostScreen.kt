@@ -221,6 +221,25 @@ fun GoodPostTab(
         ChannelFormScreen(state = state, viewModel = viewModel)
     }
 
+    // §21: the posting page, up from the bottom like the form above and for the
+    // same reason — it is a step over the tab, not a destination in it. Full
+    // screen rather than a strip under the feed, because a channel update is a
+    // paragraph with a picture, not a chat reply.
+    AnimatedVisibility(
+        visible = state.composerOpen,
+        enter = slideInVertically(
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            initialOffsetY = { height -> height }
+        ),
+        exit = slideOutVertically(
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            targetOffsetY = { height -> height }
+        ),
+        label = "goodpost-composer"
+    ) {
+        GoodPostComposer(state = state, viewModel = viewModel)
+    }
+
     // §16: the longest wait in the product, and the only one the reader cannot
     // hurry along — the Google account exchange runs away from this screen
     // entirely. It covers the tab rather than the sign-in screen alone because
@@ -328,18 +347,20 @@ private fun NotConfigured() {
     }
 }
 
-/** Centred progress, for the first frame before any content exists. */
+/**
+ * Centred progress, for a screen whose shape is not a list to hold open.
+ *
+ * The dots rather than a spinner: a spinner is the same picture as a stalled
+ * one, and a staggered set of dots is unmistakably in motion. A list uses a
+ * skeleton of its own rows instead — see [WaChannelListSkeleton].
+ */
 @Composable
 internal fun CenteredProgress(modifier: Modifier = Modifier) {
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
     ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(28.dp),
-            strokeWidth = 2.dp,
-            color = Wa.Accent
-        )
+        WaLoadingDots()
     }
 }
 

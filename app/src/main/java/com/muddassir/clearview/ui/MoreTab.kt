@@ -10,19 +10,28 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -31,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
+import com.muddassir.clearview.ui.theme.ThemeMode
 
 /**
  * The More tab (§6–§8): ClearView's everyday utilities, and the way into
@@ -47,18 +57,26 @@ import com.muddassir.clearview.R
  *
  * ## Cards, not a dashboard
  *
- * Four rows, one line each, the same card the rest of ClearView draws: icon,
- * title, one-line note, chevron. No counts, no charts, no shortcuts — the tab's
+ * A row each, one line apiece, the same card the rest of ClearView draws: icon,
+ * title, one-line note, chevron. The three groups are the utilities, Appearance
+ * (which repaints the whole app, so it belongs on a tab of its own rather than
+ * buried in a sub-screen) and Protection. No counts, no charts, no shortcuts —
+ * the tab's
  * job is to hand the reader to the feature, and a card that shows a summary of a
  * screen one tap away only invents a second place for it to be stale.
  */
 @Composable
 internal fun MoreTab(
+    /** The app-wide scheme currently in force, shown on the Theme card. */
+    themeMode: ThemeMode,
+    /** Switches the app-wide scheme; every tab repaints at once. */
+    onThemeModeChange: (ThemeMode) -> Unit,
     onOpenTodo: () -> Unit,
     onOpenPhoneLimit: () -> Unit,
     onOpenZikr: () -> Unit,
     onOpenProtection: () -> Unit
 ) {
+    var showThemeDialog by remember { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
@@ -96,6 +114,24 @@ internal fun MoreTab(
         }
 
         item {
+            SectionLabel(stringResource(R.string.more_section_appearance))
+        }
+        item {
+            // One line, like every other card: the current scheme, with the
+            // picker one tap away. This is the only appearance setting the app
+            // has — the scheme is app-wide, so there is nothing per tab to set.
+            MoreCard(
+                icon = Icons.Filled.DarkMode,
+                title = stringResource(R.string.theme_card_title),
+                note = stringResource(
+                    R.string.theme_note_format,
+                    stringResource(themeMode.labelRes())
+                ),
+                onClick = { showThemeDialog = true }
+            )
+        }
+
+        item {
             SectionLabel(stringResource(R.string.more_section_protection))
         }
         item {
@@ -107,6 +143,56 @@ internal fun MoreTab(
             )
         }
     }
+
+    if (showThemeDialog) {
+        AlertDialog(
+            onDismissRequest = { showThemeDialog = false },
+            title = { Text(stringResource(R.string.theme_dialog_title)) },
+            text = {
+                Column {
+                    ThemeMode.entries.forEach { mode ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onThemeModeChange(mode)
+                                    showThemeDialog = false
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // The whole row selects, not just the dot — a radio
+                            // button on its own is a 20dp tap target.
+                            RadioButton(
+                                selected = mode == themeMode,
+                                onClick = {
+                                    onThemeModeChange(mode)
+                                    showThemeDialog = false
+                                }
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                text = stringResource(mode.labelRes()),
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showThemeDialog = false }) {
+                    Text(stringResource(android.R.string.ok))
+                }
+            }
+        )
+    }
+}
+
+/** The string for each scheme's label, shared by the card's note and the picker. */
+private fun ThemeMode.labelRes(): Int = when (this) {
+    ThemeMode.SYSTEM -> R.string.theme_option_system
+    ThemeMode.LIGHT -> R.string.theme_option_light
+    ThemeMode.DARK -> R.string.theme_option_dark
 }
 
 /** The small uppercase heading that separates the tab's two groups. */

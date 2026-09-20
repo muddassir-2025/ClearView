@@ -17,16 +17,19 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +53,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.CheckCircle
@@ -91,6 +96,8 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -113,6 +120,8 @@ import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 import com.muddassir.clearview.goodpost.withDateSeparators
 import kotlinx.coroutines.launch
+import java.util.Locale
+import kotlin.math.roundToInt
 
 /**
  * A channel's feed (§8, §9, §10).
@@ -319,7 +328,14 @@ internal fun GoodPostFeed(
 
             if (state.postsStale) WaStaleBanner(onRetry = { viewModel.loadPosts(channelId) })
 
-            Box(modifier = Modifier.weight(1f)) {
+            // §18: the list owns the room its cards are drawn in. It is measured
+            // rather than inferred from the window, because the list is what
+            // knows — its own insets make a card narrower than the screen, and a
+            // tablet, a split screen and a landscape window are all just different
+            // numbers here.
+            BoxWithConstraints(modifier = Modifier.weight(1f)) {
+                val feedWidth = maxWidth
+                val feedHeight = maxHeight
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
@@ -374,6 +390,15 @@ internal fun GoodPostFeed(
 
                             is FeedEntry.Post -> PostItem(
                                 post = entry.post,
+                                // §18: the room this card gets. The width is what
+                                // the list's own insets leave, and the height is
+                                // the feed's — the two numbers a media card's size
+                                // is worked out from.
+                                availableWidth = feedWidth - POST_LIST_INSET * 2,
+                                availableHeight = feedHeight,
+                                // §5: a tap on a document opens the file, unless
+                                // the reader is picking posts instead.
+                                selectionActive = state.postSelectionActive,
                                 // §12, §22: a post that arrives over the poll, or
                                 // that is deleted while the feed is open, moves
                                 // its neighbours instead of snapping them.
@@ -422,7 +447,10 @@ internal fun GoodPostFeed(
                     }
 
                     if (state.posts.isEmpty() && state.postsLoading) {
-                        item(key = "loading") { CenteredProgress(Modifier.height(200.dp)) }
+                        // §22: bubbles the size of the ones that are coming, so
+                        // opening a channel shows the conversation it is about to
+                        // become instead of an empty screen and a spinner.
+                        item(key = "loading") { WaPostFeedSkeleton() }
                     }
 
                     if (state.posts.isEmpty() && !state.postsLoading && state.postsError == null) {
@@ -443,7 +471,9 @@ internal fun GoodPostFeed(
             }
 
             if (editable) {
-                ChannelInputBar(state = state, channelId = channelId, viewModel = viewModel)
+                // §21: the strip opens the posting page rather than being it. The
+                // editor needs the whole screen — a paragraph is not a chat reply.
+                ChannelComposeBar(state = state, viewModel = viewModel)
             }
         }
 
@@ -487,6 +517,16 @@ internal fun GoodPostFeed(
                     viewerMediaId = null
                     viewerFromMs = 0L
                     viewerDurationMs = 0L
+                },
+                // ...and the tab is told, not just the cache (§6, §13). The feed
+                // has no media page loaded, so the post and the URL travel with
+                // the id — they are what the row is found by.
+                onDeleteFromDevice = {
+                    val postId = viewerPostId
+                    val mediaId = viewerMediaId
+                    if (postId != null && mediaId != null) {
+                        viewModel.deleteMediaFromDevice(postId, mediaId, viewing.url)
+                    }
                 }
             )
         }
@@ -526,10 +566,15 @@ private fun PostSelectionBar(
     // selection (or acting on it) discards this composable, and with it the flag.
     var pickingReaction by remember { mutableStateOf(false) }
 
-    Box {
+    // A Column, not a Box: the emoji row is composited UNDER the bar so it can
+    // never cover the count and the actions the reader is reaching for. As a Box
+    // child aligned to the top centre it sat ON the bar, hiding the very controls
+    // it belongs to.
+    Column {
     WaSelectionBar(
         count = state.selectedPostIds.size,
         onClose = viewModel::clearPostSelection,
+        busy = state.selectionBusy,
         actions = {
             // §9: one emoji for the WHOLE selection. Offered before the editor
             // because it is the one action here that needs no permission:
@@ -644,13 +689,17 @@ private fun PostSelectionBar(
                     icon = Icons.Filled.Delete,
                     description = stringResource(R.string.goodpost_delete),
                     tint = Wa.Danger,
+                    // Withheld while the previous batch is in flight, so the bar
+                    // cannot open a second confirmation over a request that has
+                    // not been answered yet.
+                    enabled = !state.selectionBusy,
                     onClick = { confirmingDelete = true }
                 )
             }
         }
     )
 
-        // §9: the emoji row, on its own line above the action bar. It grows the
+        // §9: the emoji row, on its own line BELOW the action bar. It grows the
         // bar rather than floating over the feed, so the update the reader just
         // picked is never covered by the control that reacts to it.
         if (pickingReaction && state.reactionEmoji.isNotEmpty()) {
@@ -663,7 +712,7 @@ private fun PostSelectionBar(
                     pickingReaction = false
                     viewModel.reactToSelectedPosts(chosen)
                 },
-                modifier = Modifier.align(Alignment.TopCenter)
+                modifier = Modifier.align(Alignment.End).padding(end = 8.dp)
             )
         }
 
@@ -712,10 +761,25 @@ private data class Shareable(val url: String, val kind: String, val contentType:
 /**
  * What readers have put on one post (§9).
  *
- * A single row of chips, the reader's own drawn differently: an emoji with no
- * indication of whose it is leaves the reader tapping a control to find out what
- * they already chose. Tapping a chip toggles that emoji, which is the same
- * gesture the picker performs — one post at a time instead of a selection.
+ * The post's reactions, drawn the way a chat draws them (§9): one small pill of
+ * emoji and counts, hung on the BUBBLE'S BOTTOM EDGE rather than sitting inside
+ * it as a row of chips.
+ *
+ * ## Why the edge
+ *
+ * A reaction is not part of what the post says — it is what readers did to it,
+ * and the one thing its position has to say is which post it belongs to. Inside
+ * the bubble, above the timestamp, a row of chips read as another line the
+ * channel had written. On the edge, straddling the bubble's border, it reads as
+ * something stuck on that message and on no other, which is exactly what
+ * WhatsApp's does and why nothing here has to explain it.
+ *
+ * ## Why the pill wears the list's colour, not the bubble's
+ *
+ * The bubble is the same colour as the pill's container would be if it borrowed
+ * it, and a pill the colour of what it covers is invisible. Painting it in the
+ * list's own background (with one hairline edge) is what makes it look laid OVER
+ * the bubble — the same trick the chat wallpaper plays on a reaction there.
  *
  * No empty state: a post nobody has reacted to draws nothing at all, because a
  * "no reactions yet" line under every update in a channel is furniture that has
@@ -726,19 +790,26 @@ private fun ReactionRow(
     reactions: List<GoodPostReaction>,
     mine: String?,
     enabled: Boolean,
-    onReact: ((String) -> Unit)?
+    onReact: ((String) -> Unit)?,
+    modifier: Modifier = Modifier
 ) {
     val shown = reactions.filterNot { it.isEmpty }
     if (shown.isEmpty()) return
 
-    // §22: reactions arrive from OTHER phones (§12), so a chip appearing between
+    // §22: reactions arrive from OTHER phones (§12), so a pill appearing between
     // two glances at the same post should look like it was added rather than like
     // the row was redrawn.
     WaAppear(enter = WaMotion.chipEnter()) {
         Row(
-            modifier = Modifier
+            // Half the pill hangs below the bubble, so the row is offset up by
+            // half its own height: it stays in the normal flow of the card (the
+            // bubble keeps its own size and the next post keeps its distance)
+            // while DRAWING over the bubble's border. Only the y offset moves, so
+            // nothing is measured twice.
+            modifier = modifier
                 .fillMaxWidth()
-                .padding(top = 5.dp),
+                .offset(y = -REACTION_OVERLAP)
+                .padding(start = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
@@ -755,13 +826,20 @@ private fun ReactionRow(
     }
 }
 
+/** How far the pill hangs over the bubble's bottom edge. Half of its height. */
+private val REACTION_OVERLAP = 11.dp
+
 /**
  * One emoji and its count (§9).
  *
- * Rounded to a pill rather than a square chip, so it reads as an attachment to
- * the post the way a chat's reaction does. The count is compacted
- * ([waCompactCount]) like every other number in the tab: "1.2K" fits beside an
- * emoji where "1243" does not.
+ * Small, flat and fully rounded, the shape a chat uses: the emoji at 12sp with
+ * the count beside it, and the count shown only once more than one reader has
+ * chosen that emoji — "👍 1" on a single reaction is the number restating the
+ * emoji.
+ *
+ * The reader's OWN emoji is marked with the accent on the count and the border
+ * rather than with a filled background, so a post with four reactions reads as
+ * four equal pills with one of them edged in the app's colour.
  */
 @Composable
 private fun ReactionChip(
@@ -776,23 +854,25 @@ private fun ReactionChip(
     Row(
         modifier = Modifier
             .clip(shape)
-            .background(if (mine) Wa.Accent.copy(alpha = 0.18f) else Wa.Pressed)
-            .border(1.dp, if (mine) Wa.Accent else Color.Transparent, shape)
+            .background(Wa.List)
+            .border(1.dp, if (mine) Wa.Accent else Wa.Divider, shape)
             // §22: a chip is the smallest thing a finger has to hit in this tab,
             // so the press is answered on the chip itself.
             .waTappable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text = emoji, fontSize = 12.sp)
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = waCompactCount(count),
-            color = if (mine) Wa.Accent else Wa.BubbleTime,
-            fontSize = 11.sp,
-            fontWeight = if (mine) FontWeight.SemiBold else FontWeight.Normal,
-            maxLines = 1
-        )
+        if (count > 1) {
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = waCompactCount(count),
+                color = if (mine) Wa.Accent else Wa.BubbleTime,
+                fontSize = 11.sp,
+                fontWeight = if (mine) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1
+            )
+        }
     }
 }
 
@@ -851,10 +931,546 @@ private const val SHARE_FILE_LIMIT = 10
  * a strip, and the crop loses only the edges of a portrait shot, whose full frame
  * is one tap away in the viewer.
  */
+/**
+ * The box a post's picture gets when the server never measured the file.
+ *
+ * A file uploaded before the API carried dimensions, and nothing else. Everything
+ * uploaded since reports its own width and height, and those are what the box
+ * uses — see [postMediaAspect].
+ */
 private const val POST_PHOTO_ASPECT = 4f / 3f
 
-/** The same for video: 16:9, what a phone or a channel actually shoots in. */
-private const val POST_VIDEO_ASPECT = 16f / 9f
+/**
+ * The gap between a post's words and its media, and between one item of media and
+ * the next.
+ *
+ * One value for both, because there is no reason for the reader to find two: the
+ * words end and the picture begins at the same distance whether the picture is
+ * followed by another picture or by the meta row.
+ */
+private val MEDIA_GAP = 4.dp
+
+/**
+ * The tallest a media card may be, as a share of the room the feed has.
+ *
+ * This is the number that makes a card SMALL without cutting the picture. A chat
+ * does not draw a portrait photo as wide as the screen — that is a card taller than
+ * the phone, which is what a 9:16 photo becomes at full width. It caps the HEIGHT
+ * and lets the width follow from the file's own ratio, so a tall photo becomes a
+ * narrow card holding the whole frame: smaller, and still the entire picture.
+ *
+ * A share of the viewport rather than a fixed count of dp, so the same post looks
+ * right on a small phone, a tablet, and in landscape.
+ */
+internal const val POST_MEDIA_MAX_HEIGHT_FRACTION = 0.6f
+
+/**
+ * An absolute ceiling on the above, for a viewport tall enough that a share of it
+ * stops being a thumbnail: a foldable's inner screen, or a desktop window.
+ */
+internal val POST_MEDIA_MAX_HEIGHT = 460.dp
+
+/**
+ * A post list's own horizontal inset, which is what the card width is measured from.
+ *
+ * Shared with the channel search, so its results are sized by the same rule as the
+ * feed they were found in — a result and the post it came from are the same card.
+ */
+internal val POST_LIST_INSET = 10.dp
+
+/**
+ * How wide one post's media column is.
+ *
+ * ## The rule
+ *
+ * As wide as the room inside the bubble — unless that would make the tallest
+ * attachment of the post taller than [POST_MEDIA_MAX_HEIGHT_FRACTION] of the feed,
+ * in which case the width is pulled back exactly as far as it has to be.
+ *
+ *  * A landscape photo is wide: its ratio allows the full width inside the cap, so
+ *    a 16:9 still fills the card, as it should.
+ *  * A portrait photo is NOT: a 9:16 at full width is half again as tall as the
+ *    phone, so its width is pulled back to what the cap allows and the card gets
+ *    smaller around the whole picture.
+ *  * A square sits in between and usually keeps the full width.
+ *
+ * One number for the whole post, not one per attachment: several photos in one post
+ * are then a column of equal width, and the tightest of them decides it — so none of
+ * them is narrower than the bubble (which would show the bubble beside it) and none
+ * sticks out of it. The post's other content is measured against the same width, so
+ * the bubble can be made exactly as wide as this and no wider.
+ *
+ * ## The exception: several photos
+ *
+ * A SET of photos is drawn as an album rather than as a column of cards (§18), and
+ * an album is a grid: its tiles are cropped to their cells, so the pictures' own
+ * shapes no longer decide anything. Sizing it from them would only make it small for
+ * a reason that no longer applies — the grid gets the whole column, which is how a
+ * chat lays out the same set.
+ */
+internal fun postMediaWidth(
+    media: List<GoodPostMedia>,
+    contentWidth: Dp,
+    viewportHeight: Dp
+): Dp {
+    if (media.isEmpty()) return contentWidth
+
+    // Several PHOTOS are a grid, and a grid is as wide as the column (§18).
+    if (media.size >= 2 && media.all { it.isImage }) return contentWidth
+
+    // No viewport to measure against (a preview outside a list) means no cap: the
+    // media fills the bubble, which is how every card was drawn before this.
+    val cap: Dp? = if (viewportHeight == Dp.Unspecified || viewportHeight <= 0.dp) {
+        null
+    } else {
+        (viewportHeight * POST_MEDIA_MAX_HEIGHT_FRACTION).coerceAtMost(POST_MEDIA_MAX_HEIGHT)
+    }
+
+    return media.minOf { asset ->
+        // A file the server never measured has no ratio to keep, so it is not
+        // allowed to shrink the column: it fills the width and is cropped to a
+        // guess, exactly as it always was.
+        val ratio = aspectOf(asset.width, asset.height) ?: return@minOf contentWidth
+        (cap?.let { it * ratio } ?: contentWidth).coerceAtMost(contentWidth)
+    }
+}
+
+/**
+ * The proportions one attachment is drawn at: the FILE's own.
+ *
+ * ## What this replaced, and why it was the bug
+ *
+ * This used to be a single fixed box (4:3) that every photo was cropped to fill,
+ * and then — once that was reported — the same fixed box with the picture FITTED
+ * inside it, held inside a 3:4 … 16:9 band.
+ *
+ * Both were wrong in the same way: they decided the shape of a picture from the
+ * layout instead of from the picture. The crop threw away most of a portrait, and
+ * the band drew a 9:16 photo into a 3:4 box and left the difference over as two
+ * columns of the bubble's own green — the empty green areas that produced this
+ * fix. No amount of tuning the box could have removed them, because as long as the
+ * box disagrees with the file, SOMETHING has to fill the difference.
+ *
+ * Taking the file's own numbers ends the whole class of bug: a 16:9 clip is wide,
+ * a 9:16 photo is tall, a square is square. The box IS the picture's shape, so
+ * there is nothing to crop, nothing to stretch, and no leftover area for the
+ * bubble to show through — and the bubble hugs the media, because the media is
+ * what gives it its size.
+ *
+ * Cards therefore differ in height, which is what a chat does too: a post is as
+ * tall as the thing that was posted. [POST_PHOTO_ASPECT] is the only guess left,
+ * for a file the server never measured.
+ */
+internal fun postMediaAspect(asset: GoodPostMedia, fallback: Float): Float =
+    aspectOf(asset.width, asset.height) ?: fallback
+
+/**
+ * One attachment of a post, at the file's own proportions (§18).
+ *
+ * The width is whatever the bubble gives it (the bubble's width less its own
+ * padding — the same inset the words are aligned against, so a media post and a
+ * text post line up); the height follows from the ratio, so a portrait photo is
+ * tall and narrow-beside-nothing, and a panorama is a strip. Nothing is cropped:
+ * `Fit` into a box of the picture's own shape has nothing left over to letterbox,
+ * and it cannot crop even if a file's real dimensions disagree with the server's.
+ *
+ * ## The one guess
+ *
+ * A file the server never measured — an upload from before the picker started
+ * sending dimensions — has no shape to preserve, so its box is a guess (4:3) and
+ * its picture is CROPPED to fill it, which is what this tab has always done with
+ * those rows. The alternative was a letterboxed picture showing the bubble through
+ * the leftover, and every empty green area in this feed came from exactly that.
+ *
+ * Taps open the file full size; holds select the post, because the picture is the
+ * biggest part of a post to aim at.
+ */
+@Composable
+private fun PostMedia(
+    asset: GoodPostMedia,
+    fallbackAspect: Float,
+    /** The media column's width for this post — see [postMediaWidth]. */
+    width: Dp,
+    onOpenMedia: (GoodPostMedia) -> Unit,
+    onLongClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Measured by the server, i.e. there is a real shape to keep. Null means the
+    // box below is a guess, and see above for what a guess is filled with.
+    val measured = aspectOf(asset.width, asset.height) != null
+
+    // The shape the picture turns out to HAVE, once it has been decoded — which is
+    // the only shape that cannot leave a gap.
+    //
+    // The number above is metadata: it was measured somewhere else, by a version of
+    // this app that may have read a JPEG's orientation flag differently, or by a
+    // path that never read it at all. `Fit` into a box built from a wrong number
+    // draws the picture at its own proportions and shows the bubble through the
+    // difference — on both sides, which is exactly the "empty green beside the
+    // photo" this whole layout exists to remove. The decoded bitmap is ground
+    // truth; the metadata is a hint about how big to draw it before it arrives.
+    var trueAspect by remember(asset.id) { mutableStateOf<Float?>(null) }
+
+    RemoteImage(
+        url = asset.url,
+        contentScale = if (measured) ContentScale.Fit else ContentScale.Crop,
+        onDecoded = { decodedWidth, decodedHeight ->
+            // Null for a file that never loaded, which leaves the metadata's answer
+            // in place — that row keeps the shape it always had.
+            if (decodedWidth > 0 && decodedHeight > 0) {
+                trueAspect = decodedWidth.toFloat() / decodedHeight.toFloat()
+            }
+        },
+        // The picture sits against the LEFT edge of its card, not in the middle of
+        // it. `Fit` on its own centres, which is what split any leftover into two
+        // columns — one either side of a portrait photo — instead of leaving the
+        // picture where the post starts and the room it did not need on the side
+        // the text runs out towards.
+        //
+        // A chat does the same thing for the same reason: a post is read from its
+        // left edge, so that is the edge its content is anchored to.
+        alignment = Alignment.CenterStart,
+        modifier = modifier
+            // A set width rather than `fillMaxWidth`, because the width is the
+            // number that was chosen for this post: the card is as wide as its
+            // media, so this is what the bubble was sized around (§18).
+            //
+            // `Unspecified` is a screen that never told the card how much room it
+            // has (a preview outside a list): the picture fills the bubble there,
+            // which is how every card was drawn before sizing existed. It has to
+            // be `fillMaxWidth` rather than a width of nothing — `Dp.Unspecified`
+            // measured out is zero, which would collapse the picture entirely.
+            .then(if (width == Dp.Unspecified) Modifier.fillMaxWidth() else Modifier.width(width))
+            // The decoded shape when it is known, the measured one until then: the
+            // card may settle by a hair as the frame lands, and in exchange nothing
+            // is cropped and no bubble shows beside the picture.
+            .aspectRatio(trueAspect ?: postMediaAspect(asset, fallbackAspect))
+            // One radius for every attachment in the tab — the same shape the
+            // video card and the link chip wear. A photo used to round itself at
+            // 8dp, its own loader clipped again at 11dp, and a clip beside it was
+            // 10dp: three corners, one kind of thing (§6).
+            .clip(WaMediaShape)
+            // A photo opens full size in the app, and can be kept from there
+            // (§15). It used to do nothing at all, which read as a broken image
+            // rather than a picture that simply is not interactive.
+            //
+            // Holding it selects the post, because the picture is the biggest part
+            // of it to aim at: a tap it answers itself, a hold it passes back up
+            // to the bubble.
+            .combinedClickable(
+                enabled = !asset.url.isNullOrBlank(),
+                onClick = { onOpenMedia(asset) },
+                onLongClick = onLongClick
+            )
+    )
+}
+
+/**
+ * How many tiles an album shows before it starts counting the rest.
+ *
+ * Four, because four is the grid: the block is a square of two rows by two, and a
+ * fifth picture would make one of them the wrong size. WhatsApp stops at four and
+ * writes the remainder on the last tile for the same reason — the number is the
+ * part that matters, and every picture is one tap away in the viewer.
+ */
+private const val MEDIA_GRID_TILES = 4
+
+/** The seam between two tiles of an album. The bubble shows through it. */
+private val MEDIA_SEAM = 2.dp
+
+/**
+ * The shape of an album's block, for a given number of pictures.
+ *
+ *  * Two — two SQUARES side by side, so the block is twice as wide as it is tall.
+ *  * Three or four — a square: a 2x2 grid of squares, or a tall picture beside two
+ *    squares, which is what a chat draws for three.
+ *
+ * Extracted and tested because it is the half of the layout that can be wrong
+ * without a picture looking wrong: a block of the wrong shape crops every tile in
+ * it, and it crops them all in the same direction.
+ */
+internal fun postAlbumAspect(count: Int): Float = if (count == 2) 2f else 1f
+
+/** How many tiles an album of [count] pictures draws: at most [MEDIA_GRID_TILES]. */
+internal fun postAlbumTileCount(count: Int): Int = count.coerceAtMost(MEDIA_GRID_TILES)
+
+/**
+ * Several photos in one post, as one block (§18).
+ *
+ * ## What this replaced, and why
+ *
+ * Each photo used to be its own card at its own proportions, stacked. That is right
+ * for ONE picture — a portrait is tall and narrow, and the card should be shaped
+ * like it — but wrong for a SET: five photos became five full-height cards, which
+ * is five screens of scrolling for one update, and nothing on screen said the five
+ * belonged together. The set is the message, so the set is drawn as one thing.
+ *
+ * ## The layout
+ *
+ * ```
+ *   two             three            four (or more)
+ *   +-----+-----+   +-----+-----+    +-----+-----+
+ *   |     |     |   |     |  b  |    |  a  |  b  |
+ *   |  a  |  b  |   |  a  +-----+    +-----+-----+
+ *   |     |     |   |     |  c  |    |  c  |  d  |
+ *   +-----+-----+   +-----+-----+    +-----+-----+
+ * ```
+ *
+ * Tiles are CROPPED to fill their cell, and that is deliberate rather than a
+ * leftover: a grid whose tiles each kept their own shape could not be a grid — it
+ * would be a mosaic with holes in it, which is the column of full-height cards this
+ * replaced. The whole frame of any tile is one tap away in the viewer, and the
+ * viewer is where a picture is meant to be looked at properly.
+ *
+ * The block is as wide as the bubble's content, so an album needs no width rule of
+ * its own: [postMediaWidth] gives a post with several pictures the whole column.
+ */
+@Composable
+private fun PostMediaAlbum(
+    media: List<GoodPostMedia>,
+    width: Dp,
+    onOpenMedia: (GoodPostMedia) -> Unit,
+    onLongClick: () -> Unit
+) {
+    val tiles = media.take(MEDIA_GRID_TILES)
+    val hidden = media.size - tiles.size
+
+    // `Unspecified` is a caller with no constraints to give (a preview outside a
+    // list): the album then fills what it is given, like every other card there.
+    val sizing = if (width == Dp.Unspecified) Modifier.fillMaxWidth() else Modifier.width(width)
+
+    val tile: @Composable (Int, Modifier) -> Unit = { index, cellModifier ->
+        AlbumTile(
+            asset = tiles[index],
+            // Written on the fourth tile only, and only when there is something
+            // left over — see [MEDIA_GRID_TILES].
+            moreCount = if (index == tiles.lastIndex) hidden else 0,
+            modifier = cellModifier,
+            onOpenMedia = onOpenMedia,
+            onLongClick = onLongClick
+        )
+    }
+
+    Column(modifier = sizing.aspectRatio(postAlbumAspect(tiles.size))) {
+        when (tiles.size) {
+            2 -> Row(modifier = Modifier.fillMaxSize()) {
+                tile(0, Modifier.weight(1f).fillMaxHeight())
+                Spacer(Modifier.width(MEDIA_SEAM))
+                tile(1, Modifier.weight(1f).fillMaxHeight())
+            }
+
+            3 -> Row(modifier = Modifier.fillMaxSize()) {
+                // One tall beside two squares: the shape that fills a square
+                // without a hole, and the one a chat draws for three.
+                tile(0, Modifier.weight(1f).fillMaxHeight())
+                Spacer(Modifier.width(MEDIA_SEAM))
+                Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    tile(1, Modifier.weight(1f).fillMaxWidth())
+                    Spacer(Modifier.height(MEDIA_SEAM))
+                    tile(2, Modifier.weight(1f).fillMaxWidth())
+                }
+            }
+
+            else -> Column(modifier = Modifier.fillMaxSize()) {
+                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    tile(0, Modifier.weight(1f).fillMaxHeight())
+                    Spacer(Modifier.width(MEDIA_SEAM))
+                    tile(1, Modifier.weight(1f).fillMaxHeight())
+                }
+                Spacer(Modifier.height(MEDIA_SEAM))
+                Row(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    tile(2, Modifier.weight(1f).fillMaxHeight())
+                    Spacer(Modifier.width(MEDIA_SEAM))
+                    tile(3, Modifier.weight(1f).fillMaxHeight())
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One cell of an album.
+ *
+ * Cropped square-ish to whatever its cell is, because the cell is the shape the
+ * grid decided on; [moreCount] paints the "+n" a chat puts on the last tile when
+ * the set is bigger than the grid.
+ */
+@Composable
+private fun AlbumTile(
+    asset: GoodPostMedia,
+    moreCount: Int,
+    modifier: Modifier,
+    onOpenMedia: (GoodPostMedia) -> Unit,
+    onLongClick: () -> Unit
+) {
+    Box(
+        modifier = modifier
+            // A small radius per tile rather than the one media shape: tiles this
+            // size wearing a 10dp corner read as four separate cards, which is the
+            // look the block exists to avoid.
+            .clip(RoundedCornerShape(4.dp))
+            .combinedClickable(
+                enabled = !asset.url.isNullOrBlank(),
+                onClick = { onOpenMedia(asset) },
+                onLongClick = onLongClick
+            )
+    ) {
+        RemoteImage(
+            url = asset.url,
+            // Crop, and only here: an album tile is a cell of a grid, and a cell
+            // that kept its picture's own shape could not be one.
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+        )
+
+        if (moreCount > 0) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "+$moreCount",
+                    color = Color.White,
+                    fontFamily = WaPostFont,
+                    fontSize = 18.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A document on a post: its name, how big it is, and a way to open it (§21).
+ *
+ * ## Why this is not a preview
+ *
+ * An image card shows the picture because the picture IS what was sent. A PDF is
+ * the opposite: its contents are a page or two hundred of somebody else's layout,
+ * and what a reader needs before tapping is the NAME — "Timetable 2026" says
+ * whether to open it, and a rendered first page at bubble size says nothing. So the
+ * card is a file row, the same shape the link chip wears, and the file opens in
+ * whatever the device has registered for it.
+ *
+ * ## Why the tap downloads first
+ *
+ * The URL is a signed capability addressed to this app, so handing it to somebody
+ * else's viewer would give them a link that refuses them. The bytes are fetched
+ * into the app's own cache and passed over through the FileProvider, under a read
+ * grant for that one URI — the same path Share uses, for the same reason.
+ */
+@Composable
+private fun PostDocumentCard(
+    asset: GoodPostMedia,
+    openable: Boolean,
+    onLongClick: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    // A local flag rather than a spinner driven from state: opening is a few tens
+    // of milliseconds of download, and a second tap during it would fetch the file
+    // twice.
+    var opening by remember(asset.id) { mutableStateOf(false) }
+    val name = asset.fileName?.takeIf { it.isNotBlank() }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(WaMediaShape)
+            .background(Wa.Pressed)
+            .combinedClickable(
+                enabled = openable && asset.url != null,
+                onClick = {
+                    val url = asset.url ?: return@combinedClickable
+                    if (opening) return@combinedClickable
+                    opening = true
+                    scope.launch {
+                        val uri = GoodPostDownloads.shareFile(
+                            context = context,
+                            url = url,
+                            kind = asset.kind,
+                            contentType = asset.contentType,
+                            // The sender's own name, so what lands in the other
+                            // app is what the card said it was.
+                            name = name
+                        )
+                        val opened = uri != null &&
+                            GoodPostDownloads.openMediaFileExternally(context, uri, asset.contentType)
+                        // Nothing opened: either the bytes could not be fetched —
+                        // an expired lease, most likely — or no app on this device
+                        // claims a PDF. The former is fixed by a fresh URL and the
+                        // latter by nothing, so the retry is asked for either way
+                        // and costs one request.
+                        if (!opened) onRefresh()
+                        opening = false
+                    }
+                },
+                onLongClick = onLongClick
+            )
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (opening) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+                color = Wa.Accent
+            )
+        } else {
+            Icon(
+                Icons.Filled.PictureAsPdf,
+                contentDescription = stringResource(R.string.goodpost_document_open),
+                tint = Wa.Accent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name ?: stringResource(R.string.goodpost_document),
+                color = Wa.Text,
+                fontSize = 14.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = waFileSize(asset.byteSize),
+                color = Wa.BubbleTime,
+                fontSize = 11.sp
+            )
+        }
+        Icon(
+            Icons.Filled.OpenInNew,
+            contentDescription = null,
+            tint = Wa.TextDim,
+            modifier = Modifier.size(16.dp)
+        )
+    }
+}
+
+/**
+ * A byte count as a person reads it.
+ *
+ * Binary units (KB = 1024 B), because that is what a file manager shows for the
+ * same file — a card that said "1.0 MB" for something the device calls 1.2 MB
+ * would look like the wrong file.
+ */
+internal fun waFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val units = listOf("KB" to 1024.0, "MB" to 1024.0 * 1024, "GB" to 1024.0 * 1024 * 1024)
+    for ((suffix, scale) in units) {
+        val value = bytes / scale
+        // Above 10 the tenth does not help anybody; below it, a missing one makes
+        // 1 KB and 1.9 KB look identical.
+        if (value < 1024 || suffix == "GB") {
+            return if (value < 10) String.format(Locale.US, "%.1f %s", value, suffix)
+            else "${value.roundToInt()} $suffix"
+        }
+    }
+    return "${bytes / (1024.0 * 1024 * 1024)} GB"
+}
 
 /**
  * How strongly a selected post is tinted.
@@ -947,7 +1563,27 @@ internal fun PostItem(
      * the page loaded will refuse to play later. Asking for the post again is
      * the only retry that can succeed, so the card asks rather than failing.
      */
-    onRefreshMedia: () -> Unit = {}
+    onRefreshMedia: () -> Unit = {},
+    /**
+     * The room this post is drawn in, from the list that owns it (§18).
+     *
+     * The width a card gets, and the height the feed has — which is what a media
+     * card's size is worked out from. Passed in rather than read from the window
+     * because the list is what knows: its own insets make the card narrower than
+     * the screen, and a tablet, a split screen and a landscape window are all just
+     * different numbers here.
+     */
+    availableWidth: Dp = Dp.Unspecified,
+    availableHeight: Dp = Dp.Unspecified,
+    /**
+     * Whether the screen is picking posts rather than reading them (§5).
+     *
+     * Read by one thing on this card — a document's tap, which would otherwise
+     * open a file in the middle of a selection. Pictures and clips are told the
+     * same thing by their own call site, through the `onOpenMedia` lambda they are
+     * given; a document does its own opening, so it is told here.
+     */
+    selectionActive: Boolean = false
 ) {
     val context = LocalContext.current
 
@@ -987,59 +1623,32 @@ internal fun PostItem(
                 if (scrim > 0f) drawRect(color = Wa.Accent.copy(alpha = scrim))
             }
     ) {
-        WaPostContainer {
-            post.media.forEach { asset ->
-                if (asset.isImage) {
-                    RemoteImage(
-                        url = asset.url,
-                        // A fixed box, not the file's own proportions (§18). Every
-                        // post that carries a picture is then the same height, so
-                        // the feed does not step up and down it as the reader
-                        // scrolls, and one post's photo can never push the next
-                        // post's text off the screen. Cropped to fill, like the
-                        // preview in a chat; the full frame is one tap away.
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(POST_PHOTO_ASPECT)
-                            // One radius for every attachment in the tab — the
-                            // same shape the video card and the link chip wear.
-                            // A photo used to round itself at 8dp, its own loader
-                            // clipped again at 11dp, and a clip beside it was
-                            // 10dp: three corners, one kind of thing (§6).
-                            .clip(WaMediaShape)
-                            // A photo opens full size in the app, and can be kept
-                            // from there (§15). It used to do nothing at all,
-                            // which read as a broken image rather than a picture
-                            // that simply is not interactive.
-                            //
-                            // Holding it selects the post, because the picture is
-                            // the biggest part of it to aim at: a tap it answers
-                            // itself, a hold it passes back up to the bubble.
-                            .combinedClickable(
-                                enabled = !asset.url.isNullOrBlank(),
-                                onClick = { onOpenMedia(asset) },
-                                onLongClick = onLongClick
-                            )
-                    )
-                    Spacer(Modifier.height(4.dp))
-                } else {
-                    InlineVideoCard(
-                        url = asset.url.orEmpty(),
-                        // Fixed as well, and letterboxed rather than cropped when
-                        // the file disagrees: cropping a portrait clip hides the
-                        // half of it the channel shot.
-                        aspect = POST_VIDEO_ASPECT,
-                        onOpen = { from -> onOpenMediaAt(asset, from) },
-                        onRefreshUrl = onRefreshMedia,
-                        // §5: the card paints its own selection layer — see
-                        // the sheets inside [InlineVideoCard].
-                        selected = selected,
-                        onLongPress = onLongClick
-                    )
-                    Spacer(Modifier.height(4.dp))
-                }
-            }
+        // How wide this post's media is, and therefore how wide the bubble is.
+        //
+        // `Unspecified` means the caller had no constraints to give (a preview that
+        // is not in a list): the media then fills the bubble, which is how every
+        // card was drawn before media sizing existed.
+        val mediaWidth = if (availableWidth == Dp.Unspecified) {
+            Dp.Unspecified
+        } else {
+            postMediaWidth(
+                media = post.media,
+                contentWidth = (availableWidth - WaPostPadding * 2).coerceAtLeast(0.dp),
+                viewportHeight = availableHeight
+            )
+        }
 
+        WaPostContainer(
+            // The bubble is as wide as its media and no wider (§18). This is what
+            // makes a portrait photo a small card: the photo keeps the whole of
+            // itself, the card shrinks around it, and the green of the bubble is
+            // never on show beside a picture that could not fill it.
+            modifier = if (mediaWidth == Dp.Unspecified) {
+                Modifier.fillMaxWidth()
+            } else {
+                Modifier.width(mediaWidth + WaPostPadding * 2)
+            }
+        ) {
             val bodyText = post.body
             if (!bodyText.isNullOrBlank()) {
                 // §5: holding the bubble is the app's own gesture, and this is
@@ -1052,43 +1661,104 @@ internal fun PostItem(
                         // contains `<b>` simply says `<b>`.
                         text = parseGoodPostText(bodyText),
                         color = Wa.BubbleText,
-                        fontSize = 15.sp,
+                        // §17: every post's words are monospace, and the size is a
+                        // touch under the old proportional one because a monospace
+                        // glyph is wider — 15sp here wrapped most paragraphs a
+                        // line earlier for no gain in legibility.
+                        fontFamily = WaPostFont,
+                        fontSize = 14.sp,
                         // Looser than the default on purpose: a channel's update is
                         // a paragraph, and a paragraph set solid is the difference
                         // between a message and a block of text.
-                        lineHeight = 21.sp,
-                        // No inset of its own — the bubble owns the padding now, so
-                        // the first line starts where the picture above it starts.
-                        // A media caption gets one small gap instead.
-                        modifier = if (post.media.isNotEmpty()) {
-                            Modifier.padding(top = 3.dp)
-                        } else {
-                            Modifier
-                        }
+                        lineHeight = 20.sp,
+                        // No inset of its own — the bubble owns the padding now,
+                        // so the first line of a post and the media under it are
+                        // aligned against the same inset, which is what makes a
+                        // text post and a photo post line up in the feed.
+                        modifier = Modifier
                     )
                 }
             }
 
+            // The media, under the words.
+            //
+            // Inside the bubble's padding rather than edge-to-edge, for the reason
+            // the padding exists: the words and the pictures then start on the same
+            // line. A post carries one KIND of media (§17 — the server refuses a
+            // mix), so a clip and a photo never both appear here.
+            //
+            // Several photos are ONE album rather than a column of cards (§18): a
+            // grid is what a chat does with a set of pictures, and it is also the
+            // honest shape for a post whose pictures are a set — “here are four
+            // shots of the same thing” reads as one block, while four full-height
+            // cards read as four updates.
+            val album = post.media.size >= 2 && post.media.all { it.isImage }
+            if (album) {
+                PostMediaAlbum(
+                    media = post.media,
+                    width = mediaWidth,
+                    onOpenMedia = onOpenMedia,
+                    onLongClick = onLongClick
+                )
+                Spacer(Modifier.height(MEDIA_GAP))
+            } else {
+                post.media.forEach { asset ->
+                    if (asset.isImage) {
+                        PostMedia(
+                            asset = asset,
+                            fallbackAspect = POST_PHOTO_ASPECT,
+                            width = mediaWidth,
+                            onOpenMedia = onOpenMedia,
+                            onLongClick = onLongClick
+                        )
+                    } else if (asset.isDocument) {
+                        PostDocumentCard(
+                            asset = asset,
+                            // A tap in selection mode belongs to the selection, the
+                            // same rule the pictures and clips follow: opening a
+                            // file while picking posts to delete would lose the
+                            // picks.
+                            openable = !selectionActive,
+                            onLongClick = onLongClick,
+                            // The signature on the URL has run out. Asking for the
+                            // post again is the only retry that can succeed — the
+                            // file is fine, the lease on reading it is not.
+                            onRefresh = onRefreshMedia
+                        )
+                    } else {
+                        InlineVideoCard(
+                            url = asset.url.orEmpty(),
+                            // The clip's OWN proportions, straight from the
+                            // server's measurement. A 16:9 box around a portrait
+                            // clip is the same empty side areas the photos had; a
+                            // null (a file it never measured) is the one case the
+                            // card already knows how to draw, in its own
+                            // fixed-height box.
+                            aspect = aspectOf(asset.width, asset.height),
+                            onOpen = { from -> onOpenMediaAt(asset, from) },
+                            onRefreshUrl = onRefreshMedia,
+                            // §5: the card paints its own selection layer — see
+                            // the sheets inside [InlineVideoCard].
+                            selected = selected,
+                            onLongPress = onLongClick
+                        )
+                    }
+                    // One gap, whatever the media is: the words end, the picture
+                    // starts, and the next picture or the meta row follows the
+                    // same distance later.
+                    Spacer(Modifier.height(MEDIA_GAP))
+                }
+            }
+
+
             if (post.isLink) {
-                if (!post.body.isNullOrBlank()) Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(MEDIA_GAP))
                 LinkChip(
                     label = post.linkTitle?.takeIf { it.isNotBlank() } ?: post.linkUrl.orEmpty(),
                     url = post.linkUrl.orEmpty(),
                     // A LINK is the one thing here that does belong to the
                     // browser: it is a page, unlike a signed URL to a file.
                     onOpen = { openLink(context, post.linkUrl) }
-                )
-            }
-
-            // §9: what readers have put on this update. Inside the bubble and
-            // above the timestamp, which is where a chat shows a reaction — it
-            // belongs to the post it is on, not to the list around it.
-            if (post.reactions.isNotEmpty()) {
-                ReactionRow(
-                    reactions = post.reactions,
-                    mine = post.myReaction,
-                    enabled = onReact != null && !reacting,
-                    onReact = onReact
                 )
             }
 
@@ -1166,6 +1836,19 @@ internal fun PostItem(
                 )
             }
         }
+
+        // §9: the reactions hang off the bubble's bottom edge (see ReactionRow).
+        // A SIBLING of the bubble and not a child of it: the bubble clips to its
+        // own rounded rect, so a pill drawn inside it could never cross the
+        // border it exists to be stuck to.
+        if (post.reactions.isNotEmpty()) {
+            ReactionRow(
+                reactions = post.reactions,
+                mine = post.myReaction,
+                enabled = onReact != null && !reacting,
+                onReact = onReact
+            )
+        }
     }
 }
 
@@ -1177,9 +1860,46 @@ internal fun PostItem(
  * a fixed height so the list does not jump when the bitmap arrives — a feed that
  * re-lays itself out under the reader's thumb is the single most obvious way to
  * make a screen feel slow.
+ *
+ * The placeholder is drawn UNDER the picture only until the picture exists, and
+ * then it is gone. It used to stay for the length of the fade, which was right
+ * while every picture filled its box — but a picture whose proportions the box
+ * does not share (a story frame, a file the server never measured) is fitted
+ * inside it, and the part left over was showing the placeholder's grey as a
+ * frame around the photo. With the box now taking the FILE's proportions, the
+ * leftover is at most a sliver, and that sliver shows the bubble instead.
  */
 @Composable
-private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
+private fun RemoteImage(
+    url: String?,
+    modifier: Modifier = Modifier,
+    /**
+     * How the picture fills the box the caller gave it.
+     *
+     * `Fit` from the feed, because a post is a picture someone chose to send and
+     * the whole of it is the message: a 4:3 box with a portrait photo CROPPED to
+     * fill it shows the middle of a face and calls it the post. Fitted, the same
+     * box holds the entire frame, letterboxed against the placeholder colour —
+     * the card keeps one height for every post (which is what stops the feed
+     * stepping up and down as the reader scrolls) and no picture loses an edge.
+     */
+    contentScale: ContentScale = ContentScale.Crop,
+    /**
+     * Where the picture sits inside the box, when the two are not the same shape.
+     *
+     * Centred by default — what a letterboxed video wants — and set to the start
+     * by the feed, where a post's content is read from its left edge (§18).
+     */
+    alignment: Alignment = Alignment.Center,
+    /**
+     * The decoded frame's real pixel size, once there is one.
+     *
+     * Handed out so a caller can size its box from the picture rather than from
+     * metadata about it — see [PostMedia]. Fired for a cached frame and a fetched
+     * one alike, and once per frame rather than once per recomposition.
+     */
+    onDecoded: ((width: Int, height: Int) -> Unit)? = null
+) {
     var bitmap by remember(url) { mutableStateOf(GoodPostImages.peek(url)) }
 
     LaunchedEffect(url) {
@@ -1187,6 +1907,11 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
     }
 
     val current = bitmap
+
+    LaunchedEffect(current) {
+        current?.let { onDecoded?.invoke(it.width, it.height) }
+    }
+
     // ONE call site for the fade, above the branch, and that is the whole reason
     // this is a Box rather than an if/else (§22): a composable that is replaced
     // by another one starts its animation from the new value, so a picture that
@@ -1196,22 +1921,24 @@ private fun RemoteImage(url: String?, modifier: Modifier = Modifier) {
     val alpha = waImageFade(loaded = current != null)
 
     Box(modifier = modifier) {
-        // The placeholder stays UNDER the picture for the length of the fade, so
-        // the box is never briefly empty — which is the one thing worse than a
-        // picture arriving late.
-        WaMediaPlaceholder(
-            modifier = Modifier.matchParentSize(),
-            icon = Icons.Filled.Link,
-            label = if (url.isNullOrBlank()) {
-                stringResource(R.string.goodpost_media_unavailable)
-            } else null
-        )
+        // Empty until the frame has been decoded — which is what the placeholder
+        // is for, and the one moment the box would otherwise be blank.
+        if (current == null) {
+            WaMediaPlaceholder(
+                modifier = Modifier.matchParentSize(),
+                icon = Icons.Filled.Link,
+                label = if (url.isNullOrBlank()) {
+                    stringResource(R.string.goodpost_media_unavailable)
+                } else null
+            )
+        }
 
         if (current != null) {
             Image(
                 bitmap = current.asImageBitmap(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = contentScale,
+                alignment = alignment,
                 // No clip of its own: the caller decides the shape, because the
                 // caller is the one that knows what it is drawing (§6).
                 modifier = Modifier
@@ -1246,14 +1973,6 @@ private fun LinkChip(label: String, url: String, onOpen: () -> Unit) {
 }
 
 /**
- * How many files one post may carry.
- *
- * Mirrors the server's own `MAX_POST_MEDIA` (4 by default), and is a client-side
- * courtesy rather than a rule: the server refuses a longer list with
- * `too_many_media`, which the composer words. Setting it here is what keeps the
- * picker from offering a selection that would be rejected at the end.
- */
-/**
  * How much of a freshly-loaded page is fetched in advance (§24).
  *
  * The newest [PREFETCH_POSTS] updates are the ones a reader is about to scroll
@@ -1264,358 +1983,6 @@ private fun LinkChip(label: String, url: String, onOpen: () -> Unit) {
  */
 private const val PREFETCH_POSTS = 8
 private const val PREFETCH_LIMIT = 8
-
-private const val COMPOSER_MAX_ATTACHMENTS = 4
-
-/**
- * The WhatsApp Channel input bar for publishing and editing updates (§21).
- *
- * Text, an optional link, and files attached to the post. A file is uploaded the
- * moment it is picked — see [GoodPostViewModel.attachMedia] — so by the time
- * "Post" is tapped there is nothing left to do but send the ids.
- *
- * Publishing is refused while a file is still uploading or has failed. That is
- * the honest behaviour rather than a convenience: the alternative is a post that
- * appears to have been published with a picture, and does not.
- */
-@Composable
-internal fun ChannelInputBar(
-    state: GoodPostUiState,
-    channelId: String,
-    viewModel: GoodPostViewModel
-) {
-    val context = LocalContext.current
-    // Scoped to the channel this bar belongs to, rather than to a bare "is
-    // anything being edited" (§19 Bug 3): the latter let one channel's editing
-    // strip appear over another channel's feed.
-    val editing = state.isEditingIn(channelId)
-
-    // The caret and anchor live here, while the text itself lives in the
-    // ViewModel. That split is what lets the formatting toolbar act on exactly
-    // what is highlighted without keeping a second copy of the body in step.
-    val body = state.composerBody
-    var selection by remember { mutableStateOf(TextRange(body.length)) }
-
-    // Clamped on every read: the body can shrink under the caret (a format
-    // toggle, a publish that clears it), and a TextRange past the end of the
-    // text is an exception rather than a caret at the end.
-    val selectionStart = selection.start.coerceIn(0, body.length)
-    val selectionEnd = selection.end.coerceIn(0, body.length)
-    val selectedText = body.substring(
-        minOf(selectionStart, selectionEnd),
-        maxOf(selectionStart, selectionEnd)
-    )
-    // The body is parsed for display as it is typed, so a format shows up where
-    // the reader applied it instead of only after the post is published.
-    //
-    // This matters most for monospace, which is the one format whose whole point
-    // is how it LOOKS: a reader who taps it and sees nothing change cannot tell
-    // the control from a broken one. The stored string is untouched — the markers
-    // are still in it, which is what keeps the round trip lossless — and the
-    // spans are rebuilt from that string on every edit.
-    val fieldValue = TextFieldValue(
-        annotatedString = parseGoodPostText(body),
-        selection = TextRange(selectionStart, selectionEnd)
-    )
-
-    /**
-     * Whether anything is actually highlighted (§7).
-     *
-     * A caret is a zero-width selection, so a collapsed range is the "nothing
-     * selected" case — which is what gates the formatting controls now that they
-     * are not permanent.
-     */
-    val hasSelection = selectionStart != selectionEnd
-
-    /**
-     * What Android's selection menu would have offered (§7).
-     *
-     * Compose hands these to a [TextToolbar] when it wants to SHOW that menu.
-     * Our toolbar captures them instead of displaying anything, and this bar
-     * invokes them, so Cut / Copy / Paste / Select all still work while the
-     * platform's own bubble is gone. Null until the platform first offers them —
-     * which is also the state a field with no clipboard content is in, and the
-     * reason the clipboard row hides itself rather than drawing dead buttons.
-     */
-    var clipboardActions by remember { mutableStateOf<List<GoodPostContextMenuAction>>(emptyList()) }
-
-    // Remembered so the field is not given a new provider on every recomposition:
-    // Compose compares the local's identity, and a fresh instance each frame would
-    // install itself again mid-selection.
-    val selectionMenu = remember {
-        GoodPostTextContextMenuProvider { offered -> clipboardActions = offered }
-    }
-
-    // Opening an edit puts the caret at the end of what was published, which is
-    // where someone adding a correction wants it.
-    LaunchedEffect(state.editingPostId) {
-        selection = TextRange(body.length)
-    }
-
-    fun applyFormat(format: GoodPostFormat) {
-        val edit = applyGoodPostFormat(body, selectionStart, selectionEnd, format)
-        viewModel.onComposerBodyChange(edit.text)
-        selection = TextRange(edit.selectionStart, edit.selectionEnd)
-    }
-
-    val picker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(COMPOSER_MAX_ATTACHMENTS)
-    ) { uris ->
-        uris.forEach { uri ->
-            val attachment = readGoodPostAttachment(context, uri)
-            if (attachment == null) {
-                viewModel.reportUnsupportedMedia()
-            } else {
-                viewModel.attachMedia(attachment)
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Wa.Canvas)
-    ) {
-        // If editing an existing post, show an "Editing update" header strip
-        if (editing) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Wa.Bar)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Filled.Edit,
-                    contentDescription = null,
-                    tint = Wa.StampRecent,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.goodpost_edit_post),
-                    color = Wa.StampRecent,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = stringResource(R.string.goodpost_cancel),
-                    tint = Wa.TextDim,
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clickable(onClick = viewModel::cancelCompose)
-                )
-            }
-        }
-
-        // If media attached, show thumbnail preview strip directly above the input bar
-        if (state.composerAttachments.isNotEmpty()) {
-            LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Wa.Bar)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(state.composerAttachments, key = { it.uri }) { attachment ->
-                    Box(
-                        modifier = Modifier
-                            .animateItem()
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Wa.Pressed),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            if (attachment.kind == "video") Icons.Filled.PlayArrow else Icons.Filled.Image,
-                            contentDescription = null,
-                            tint = Wa.TextDim,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .size(20.dp)
-                                .clip(CircleShape)
-                                .background(Wa.Canvas)
-                                .clickable { viewModel.removeMedia(attachment.uri) },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Filled.Close,
-                                contentDescription = null,
-                                tint = Wa.TextDim,
-                                modifier = Modifier.size(12.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // §7: the controls appear WITH a selection, and only then.
-        //
-        // They used to be on screen whenever the field had focus, which made a
-        // row of buttons a permanent part of the composer whether or not anybody
-        // was formatting anything — a control strip you look past on every
-        // message. Now the gesture is the one people already know from WhatsApp:
-        // highlight a word, the controls for it appear, collapse the selection
-        // and they are gone. The composer is otherwise just an input field.
-        //
-        // Android's own menu — Cut / Copy / Paste / Select all / Read aloud — is
-        // SUPPRESSED here rather than left alone (see [GoodPostSelectionToolbar]).
-        // It was a light bubble over the line being edited, in an app that is
-        // otherwise dark, and it appeared for every selection including the ones
-        // this bar exists for. Its operations are not lost: the callbacks it
-        // would have invoked are captured and offered by the second half of this
-        // bar, in this app's own colours and in the layout rather than on top of
-        // the text.
-        //
-        // The bar is in the layout rather than floating over the feed, so it can
-        // never cover the line being edited. The post list gives up its height
-        // for as long as a selection exists, which is the only moment it shows.
-        if (hasSelection) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Wa.Canvas)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                GoodPostFormatMenu(
-                    // A selection is the only thing an entry can act on, so its
-                    // active state is a fact about the highlighted text: the
-                    // entry reads as a toggle that is already on, not as an
-                    // action still waiting to happen.
-                    isActive = { format -> format.wraps(selectedText) },
-                    onToggle = ::applyFormat
-                )
-
-                GoodPostMenuDivider()
-
-                // No weight here: the row scrolls, so "fill the rest" has no
-                // rest to fill — the clipboard actions sit after the words and
-                // move into view with them.
-                GoodPostClipboardBar(clipboardActions)
-            }
-        }
-
-        // Input pill row + Send button
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(24.dp))
-                    .background(Wa.Bar)
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // The field itself is where Compose installs the selection
-                // menu, so the replacement has to be provided around it (§7).
-                //
-                // Both locals, because Compose picks between them by gesture:
-                // a long press and a right click are different providers, and
-                // overriding only one would leave the other gesture raising
-                // Android's own bubble.
-                CompositionLocalProvider(
-                    LocalTextContextMenuToolbarProvider provides selectionMenu,
-                    LocalTextContextMenuDropdownProvider provides selectionMenu
-                ) {
-                    BasicTextField(
-                        value = fieldValue,
-                        onValueChange = { updated ->
-                            selection = updated.selection
-                            viewModel.onComposerBodyChange(updated.text)
-                        },
-                        modifier = Modifier.weight(1f),
-                        textStyle = TextStyle(
-                            color = Wa.Text,
-                            fontSize = 16.sp
-                        ),
-                        cursorBrush = SolidColor(Wa.StampRecent),
-                        maxLines = 5,
-                        decorationBox = { innerTextField ->
-                            if (body.isEmpty()) {
-                                Text(
-                                    text = if (editing) stringResource(R.string.goodpost_edit_post)
-                                    else stringResource(R.string.goodpost_write_update),
-                                    color = Wa.TextDim,
-                                    fontSize = 16.sp
-                                )
-                            }
-                            innerTextField()
-                        }
-                    )
-                }
-
-                if (!editing && state.composerMediaAvailable) {
-                    Spacer(Modifier.width(8.dp))
-                    Icon(
-                        Icons.Filled.AttachFile,
-                        contentDescription = stringResource(R.string.goodpost_add_media),
-                        tint = Wa.TextDim,
-                        modifier = Modifier
-                            .size(24.dp)
-                            .clickable(
-                                enabled = !state.composerBusy && state.composerAttachments.size < COMPOSER_MAX_ATTACHMENTS,
-                                onClick = {
-                                    picker.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
-                                    )
-                                }
-                            )
-                    )
-                }
-            }
-
-            Spacer(Modifier.width(6.dp))
-
-            val canSubmit = (body.isNotBlank() || state.composerAttachments.isNotEmpty()) &&
-                !state.composerBusy &&
-                (editing || state.composerAttachments.all { it.mediaId != null })
-
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(if (canSubmit) Wa.StampRecent else Wa.Bar)
-                    .clickable(enabled = canSubmit, onClick = viewModel::publish),
-                contentAlignment = Alignment.Center
-            ) {
-                if (state.composerBusy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = Wa.OnAccent
-                    )
-                } else if (editing) {
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = stringResource(R.string.goodpost_save),
-                        tint = if (canSubmit) Wa.OnAccent else Wa.TextDim,
-                        modifier = Modifier.size(24.dp)
-                    )
-                } else {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = stringResource(R.string.goodpost_publish),
-                        tint = if (canSubmit) Wa.OnAccent else Wa.TextDim,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
-            }
-        }
-    }
-}
 
 /** Hand a channel's link to whatever the device shares with (§11). */
 internal fun shareChannel(

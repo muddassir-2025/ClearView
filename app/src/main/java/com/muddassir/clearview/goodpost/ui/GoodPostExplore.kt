@@ -143,7 +143,7 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
             }
 
             if (state.exploreLoading && state.explore.isEmpty()) {
-                CenteredProgress()
+                WaChannelListSkeleton()
             }
         }
     }

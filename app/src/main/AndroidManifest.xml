@@ -33,6 +33,30 @@
          The user is guided to grant this from the Todo editor when they pick
          the Alarm style; without it, reminders fall back to inexact timing. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- No advertising identifier.
+
+         ClearView carries no ad SDK and runs no ads, so the advertising ID is
+         something it would be collecting without using. It is not written here:
+         `com.google.firebase:firebase-analytics` merges these three in
+         transitively, which is why they have to be removed rather than simply
+         left out — a `uses-permission` of the same name has to be present for
+         `tools:node="remove"` to strike a library's declaration, so these lines
+         are the exclusion, not a permission the app requests.
+
+         The Play Console advertising-ID declaration says "No" to match. Were
+         the permission to reappear, an artifact would collect a device
+         identifier the listing says it does not, which is the mismatch Play
+         reports in the other direction. Analytics is unaffected: sessions,
+         events, retention and audiences all work without the ID — only the
+         Google Ads integration, which this app has no use for, does not. -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID"
+        tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_ATTRIBUTION"
+        tools:node="remove" />
+
     <!-- Package visibility (Android 11+): the block overlay resolves the HOME
          intent to return the user to their launcher after a block. Without
          this <queries> declaration the resolution can return null on newer

@@ -12,6 +12,7 @@ import com.muddassir.clearview.goodpost.data.ApiResult
 import com.muddassir.clearview.goodpost.data.CachedChannels
 import com.muddassir.clearview.goodpost.data.CachedPosts
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
+import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.GoodPostHidden
@@ -28,6 +29,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.goodpost.data.GoodPostVideoCache
 import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
+import com.muddassir.clearview.goodpost.data.GoodPostViewed
 import android.app.Activity
 import com.muddassir.clearview.goodpost.data.CreatorSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostRepository
@@ -36,19 +38,32 @@ import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.ui.waDayLabel
 import com.muddassir.clearview.goodpost.ui.waSameDay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 /**
- * How many post ids this process remembers having had counted (§9).
+ * How many post ids this device remembers having had counted (§9).
  *
  * High enough that a reader paging through a channel's thirty days never sees a
  * post counted twice, low enough that the set cannot be the largest thing the
- * tab holds.
+ * tab holds. The same ceiling is the store's own cap, so the memory mirror and
+ * the file on disk evict together rather than drifting apart.
  */
 private const val VIEW_REPORT_LIMIT = 500
+
+/**
+ * How many starred messages one pass looks up the picture for (§11).
+ *
+ * The list is drawn from the device, so opening it is instant; this is the part
+ * that costs a request, and it is deliberately a few at a time rather than one per
+ * row. A reader scrolling forty bookmarks fetches the ones they can see and the
+ * ones just below, and the rest arrive as the list moves.
+ */
+private const val STARRED_MEDIA_PER_PASS = 6
 
 /**
  * How long typing has to stop before a search is sent (§7).
@@ -181,6 +196,18 @@ data class GoodPostUiState(
     /** Posts selected by long press in a channel's feed (§5). */
     val selectedPostIds: Set<String> = emptySet(),
 
+    /**
+     * True while a bulk action on a selection is on its way to the server (§5).
+     *
+     * The selection bar draws a spinner and withholds its actions while this is
+     * set, which is the difference between "the tap landed and something is
+     * happening" and a bar that looks frozen: a delete of several posts is a
+     * round trip, and during it the bar is exactly where the reader's thumb is.
+     * It also makes a second tap on Delete impossible, so one selection cannot
+     * send two bulk requests.
+     */
+    val selectionBusy: Boolean = false,
+
     // ── Search inside one channel (§9) ───────────────────────────────────
     /** What is in the search box. */
     val channelSearchQuery: String = "",
@@ -226,6 +253,19 @@ data class GoodPostUiState(
     val starredPostIds: Set<String> = emptySet(),
     /** The starred rows belonging to the channel whose information page is open. */
     val starred: List<GoodPostStarredEntry> = emptyList(),
+    /**
+     * The picture behind a starred message, keyed by post id (§11).
+     *
+     * Fetched, not stored. A star is written down on the device and outlives the
+     * post it points at — the server keeps a post's assets for a bounded window,
+     * and a signed URL expires in an hour — so the one thing a bookmark could not
+     * usefully keep is a URL. What it keeps is the post id, and this is where a
+     * fresh URL for it lands while the list is on screen.
+     *
+     * A post that is gone, or one whose asset could not be signed, simply has no
+     * entry: the row then shows the label it always did.
+     */
+    val starredMedia: Map<String, GoodPostMedia> = emptyMap(),
 
     /**
      * The emoji this deployment offers (§9).
@@ -570,6 +610,16 @@ class GoodPostViewModel : ViewModel() {
      * the gallery either.
      */
     private var hiddenStore: GoodPostHidden? = null
+
+    /**
+     * The posts this device has already had counted (§9).
+     *
+     * Kept on disk rather than in memory for the reason it exists at all: a set
+     * that starts empty on every cold start makes the app re-report every post it
+     * opens, so a channel's view counts climb just because the reader restarted
+     * their phone.
+     */
+    private var viewedStore: GoodPostViewed? = null
     private var appContext: Context? = null
 
     /**
@@ -599,6 +649,11 @@ class GoodPostViewModel : ViewModel() {
         val stars = GoodPostStarred(context.applicationContext)
         starredStore = stars
         hiddenStore = GoodPostHidden(context.applicationContext)
+        // §9: what this device has already had counted. Primed before any read
+        // goes out, so the first page of a cold start is not reported again.
+        viewedStore = GoodPostViewed(context.applicationContext).also { store ->
+            reportedViews.addAll(store.ids())
+        }
 
         val cached = repo.cachedChannels()
         if (cached != null) showCachedChannels(cached)
@@ -1271,19 +1326,18 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
-     * Post ids this run of the app has already had counted (§9).
+     * Post ids this device has already had counted (§9).
+     *
+     * An in-memory mirror of [viewedStore], primed from it at [initialize]. The
+     * mirror is what keeps a page load from touching Preferences on every post,
+     * and the store is what makes the memory survive a cold start — the missing
+     * half that used to make a restart re-count every post on the first page.
      *
      * Outside the UI state on purpose: nothing draws it, and putting it there
      * would make every render of a view count recompose the screen. It is scoped
-     * to the process rather than to a channel because a post's identity is a
+     * to the DEVICE rather than to a channel because a post's identity is a
      * server id — the same post opened from a search and from the feed is one
      * read, not two.
-     *
-     * Bounded by clearing it when it grows past [VIEW_REPORT_LIMIT], which is a
-     * crude eviction and knowingly so: the cost of forgetting an id is one extra
-     * count on a post somebody is reading for the second time in a very long
-     * session, and the cost of not bounding it is a set that grows for as long as
-     * the app is open.
      */
     private val reportedViews = mutableSetOf<String>()
 
@@ -1306,7 +1360,20 @@ class GoodPostViewModel : ViewModel() {
         val fresh = posts.map { it.id }.filter { reportedViews.add(it) }
         if (fresh.isEmpty()) return
 
-        if (reportedViews.size > VIEW_REPORT_LIMIT) reportedViews.clear()
+        // Written to the device BEFORE the request goes out, so a report that is
+        // in flight when the app is killed is not repeated on the next start.
+        // The alternative — persist only after the server answers — re-counts
+        // every time a launch happens to be interrupted.
+        viewedStore?.mark(fresh)
+
+        // The store caps its own file; the mirror follows it rather than clearing
+        // outright, because clearing would make the next page load re-report
+        // everything that was evicted-and-still-on-screen.
+        if (reportedViews.size > VIEW_REPORT_LIMIT) {
+            val retained = viewedStore?.ids()
+            reportedViews.clear()
+            if (retained != null) reportedViews.addAll(retained)
+        }
 
         viewModelScope.launch { repo.reportPostViews(channelId, fresh) }
     }
@@ -1403,7 +1470,11 @@ class GoodPostViewModel : ViewModel() {
     }
 
     fun clearMediaSelection() {
-        uiState = uiState.copy(selectedMediaIds = emptySet(), messageCode = null)
+        uiState = uiState.copy(
+            selectedMediaIds = emptySet(),
+            selectionBusy = false,
+            messageCode = null
+        )
     }
 
     /**
@@ -1425,30 +1496,91 @@ class GoodPostViewModel : ViewModel() {
     fun deleteSelectedMediaFromDevice() {
         val selected = uiState.selectedMediaIds
         if (selected.isEmpty()) return
-
         val items = uiState.media.filter { selected.contains(it.id) }
-        // The post is what "deleted" means to a reader: a grid item whose post is
-        // still in the feed has not gone anywhere, it has just stopped drawing a
-        // thumbnail. Hiding the post is what makes the deletion visible in both
-        // places, and it is the same set the feed reads.
-        val postIds = items.map { it.postId }
+        if (items.isEmpty()) return
+        dropMediaFromDevice(
+            ids = items.map { it.id }.toSet(),
+            postIds = items.map { it.postId }.toSet(),
+            urls = items.mapNotNull { it.url }
+        )
+    }
+
+    /**
+     * Drop ONE file from THIS DEVICE (§6, §13).
+     *
+     * The same act as [deleteSelectedMediaFromDevice], reached from the one place
+     * a single file is deleted: the full-screen viewer, opened from either the
+     * feed or the gallery. It used to be handled entirely inside that viewer's
+     * menu — the menu deleted the cached files and closed the viewer, and nothing
+     * told the tab. So the post behind it kept drawing the bitmap it had already
+     * decoded, and the picture only left when the channel was closed and reopened
+     * and every row was built again. Deleting has to go through the state the
+     * lists are drawn from, not just the cache underneath them.
+     *
+     * [postId] and [url] are passed by the caller because a feed has no media
+     * page loaded: the gallery owns that list, and a viewer opened from the feed
+     * knows its post and its URL without one.
+     */
+    fun deleteMediaFromDevice(postId: String, mediaId: String, url: String? = null) {
+        val known = uiState.media.firstOrNull { it.id == mediaId }
+        dropMediaFromDevice(
+            ids = setOf(mediaId),
+            // The gallery's own record wins when there is one, because it is the
+            // page the row actually belongs to.
+            postIds = setOf(known?.postId?.takeIf { it.isNotBlank() } ?: postId),
+            urls = listOfNotNull(known?.url ?: url?.takeIf { it.isNotBlank() })
+        )
+    }
+
+    /**
+     * The one place a device-delete is carried out.
+     *
+     * ## Why the post goes with the file
+     *
+     * The post is what "deleted" means to a reader: a grid item whose post is
+     * still in the feed has not gone anywhere, it has just stopped drawing a
+     * thumbnail. Hiding the post is what makes the deletion visible in both
+     * places, and it is the same set the feed reads.
+     *
+     * ## Why the cache is forgotten off this thread
+     *
+     * `GoodPostVideoCache.evict` removes a cache span and rewrites its index
+     * synchronously, so a selection of several clips was a visible stall on the
+     * screen the reader was still looking at.
+     */
+    private fun dropMediaFromDevice(ids: Set<String>, postIds: Set<String>, urls: List<String>) {
+        if (ids.isEmpty()) return
+
         hiddenStore?.hide(postIds)
         forgetStars(postIds)
 
+        // Everything the lists draw from moves in ONE state write, so a row and
+        // its gallery tile can never disagree about whether it is still here.
+        //
+        // ALL of them, not just the two the reader deleted from: the channel
+        // search keeps its own copy of the posts it found, and the bookmarks
+        // keep their own list of the posts they point at. A copy left behind is
+        // exactly how a deleted picture stayed on screen — in a screen nobody
+        // had scrolled, until the channel was closed and opened again.
         uiState = uiState.copy(
-            media = uiState.media.filterNot { selected.contains(it.id) },
+            media = uiState.media.filterNot { ids.contains(it.id) },
             posts = uiState.posts.filterNot { postIds.contains(it.id) },
-            selectedMediaIds = emptySet(),
+            // Re-asked with the same rule every list is filtered by, now that
+            // the store knows these posts are gone.
+            channelSearchResults = uiState.channelSearchResults.visibleToMe(),
+            selectedMediaIds = uiState.selectedMediaIds - ids,
             messageCode = null
         )
 
         viewModelScope.launch {
-            val urls = items.mapNotNull { it.url }
-            GoodPostImages.forget(urls)
-            // A clip's still is part of what this device holds for it: leaving it
-            // behind would keep drawing the deleted video's frame in the grid.
-            GoodPostVideoPoster.forget(urls)
-            urls.forEach { GoodPostVideoCache.evict(it) }
+            withContext(Dispatchers.IO) {
+                GoodPostImages.forget(urls)
+                // A clip's still is part of what this device holds for it: leaving
+                // it behind would keep drawing the deleted video's frame in the
+                // grid.
+                GoodPostVideoPoster.forget(urls)
+                urls.forEach { GoodPostVideoCache.evict(it) }
+            }
             uiState = uiState.copy(messageCode = "deleted_from_device")
         }
     }
@@ -1480,14 +1612,22 @@ class GoodPostViewModel : ViewModel() {
             // Every media URL of every hidden post, so the phone stops holding the
             // bytes as well as the row.
             val urls = posts.flatMap { post -> post.media.mapNotNull { it.url } }
-            GoodPostImages.forget(urls)
-            GoodPostVideoPoster.forget(urls)
-            urls.forEach { GoodPostVideoCache.evict(it) }
+            // Off the main thread for the same reason the media selection is:
+            // evicting N videos is N synchronous cache-index writes, and N is as
+            // large as the selection.
+            withContext(Dispatchers.IO) {
+                GoodPostImages.forget(urls)
+                GoodPostVideoPoster.forget(urls)
+                urls.forEach { GoodPostVideoCache.evict(it) }
+            }
         }
 
         uiState = uiState.copy(
             posts = uiState.posts.filterNot { selected.contains(it.id) },
             media = uiState.media.filterNot { selected.contains(it.postId) },
+            // The same sweep as a media delete: the search's copy of a post and
+            // the bookmark pointing at it go when the post does.
+            channelSearchResults = uiState.channelSearchResults.visibleToMe(),
             selectedPostIds = emptySet(),
             messageCode = "deleted_from_device"
         )
@@ -1505,6 +1645,7 @@ class GoodPostViewModel : ViewModel() {
     fun deleteSelectedMedia() {
         val repo = repository ?: return
         if (uiState.admin == null) return
+        if (uiState.selectionBusy) return
         val selected = uiState.selectedMediaIds
         if (selected.isEmpty()) return
 
@@ -1514,6 +1655,7 @@ class GoodPostViewModel : ViewModel() {
             .distinct()
         if (postIds.isEmpty()) return
 
+        uiState = uiState.copy(selectionBusy = true)
         viewModelScope.launch {
             when (val result = repo.adminDeletePosts(postIds)) {
                 is ApiResult.Ok -> {
@@ -1523,7 +1665,8 @@ class GoodPostViewModel : ViewModel() {
                     uiState = uiState.copy(
                         media = uiState.media.filterNot { selected.contains(it.id) },
                         posts = uiState.posts.filterNot { postIds.contains(it.id) },
-                        selectedMediaIds = emptySet()
+                        selectedMediaIds = emptySet(),
+                        selectionBusy = false
                     )
                     // Reloaded rather than trusted: the gallery's page boundary
                     // moves when rows in the middle of it disappear, exactly as
@@ -1539,11 +1682,13 @@ class GoodPostViewModel : ViewModel() {
 
                 is ApiResult.Failed -> uiState = uiState.copy(
                     selectedMediaIds = emptySet(),
+                    selectionBusy = false,
                     messageCode = adminFailureCode(result)
                 )
 
                 ApiResult.Unreachable -> uiState = uiState.copy(
                     selectedMediaIds = emptySet(),
+                    selectionBusy = false,
                     messageCode = "unreachable"
                 )
             }
@@ -1635,7 +1780,11 @@ class GoodPostViewModel : ViewModel() {
     }
 
     fun clearPostSelection() {
-        uiState = uiState.copy(selectedPostIds = emptySet(), messageCode = null)
+        uiState = uiState.copy(
+            selectedPostIds = emptySet(),
+            selectionBusy = false,
+            messageCode = null
+        )
     }
 
     /**
@@ -1760,6 +1909,64 @@ class GoodPostViewModel : ViewModel() {
     fun openStarred(channelId: String) {
         refreshStars(channelId)
         open(GoodPostScreen.Starred(channelId))
+        // Both cleared, so opening the list asks again rather than trusting URLs
+        // signed during a previous visit: a signed URL is an hour's lease, and a
+        // bookmark list opened tomorrow would otherwise draw broken pictures for
+        // every row it had already fetched.
+        starredMediaAsked.clear()
+        uiState = uiState.copy(starredMedia = emptyMap())
+        loadStarredMedia()
+    }
+
+    /**
+     * The post ids whose media has already been asked for, successfully or not.
+     *
+     * Kept so a list of bookmarks cannot become a request on every recomposition,
+     * and so a post the server no longer keeps is asked for once rather than every
+     * time the list is scrolled. Reset with the list itself — see [refreshStars].
+     */
+    private val starredMediaAsked = mutableSetOf<String>()
+
+    /**
+     * Give the starred rows their pictures (§11).
+     *
+     * A bookmark keeps the post id, its words and what kind of file it was — not
+     * a URL, which expires, and not a copy of the image, which would be a second
+     * cache of the reader's own bookmarks. So a row that describes a photo is
+     * given its photo here, by reading the post on its own (the same public read a
+     * share link uses) and taking the asset's fresh signed URL.
+     *
+     * Bounded twice, because this is the reader's phone: a handful per pass and
+     * once per post, so a list of forty bookmarks is a few small reads rather than
+     * forty at once. A post that answers nothing — deleted, or past the retention
+     * window — is simply marked as asked and keeps the label it had.
+     */
+    fun loadStarredMedia() {
+        val repo = repository ?: return
+
+        val wanted = uiState.starred
+            .filter { it.kind == "image" || it.kind == "video" }
+            .filterNot { starredMediaAsked.contains(it.postId) }
+            .take(STARRED_MEDIA_PER_PASS)
+        if (wanted.isEmpty()) return
+
+        wanted.forEach { entry ->
+            starredMediaAsked.add(entry.postId)
+            viewModelScope.launch {
+                val media = when (val result = repo.post(entry.postId)) {
+                    is ApiResult.Ok -> result.value.media.firstOrNull()
+                    else -> null
+                }
+                // Checked against the CURRENT screen as well as the result: the
+                // reader may have left the list while this was in the air, and a
+                // URL for a row nobody is looking at is a URL nobody needs.
+                if (media != null && uiState.screen is GoodPostScreen.Starred) {
+                    uiState = uiState.copy(
+                        starredMedia = uiState.starredMedia + (entry.postId to media)
+                    )
+                }
+            }
+        }
     }
 
     /**
@@ -1780,6 +1987,9 @@ class GoodPostViewModel : ViewModel() {
             starred = store.all()
                 .filter { channelId == null || it.channelId == channelId }
                 .filterNot { entry -> hidden?.isHidden(entry.postId) == true },
+            // The row is gone, so its picture is too. Without this the map keeps a
+            // URL for every message ever unstarred in the session.
+            starredMedia = uiState.starredMedia - postId,
             messageCode = "unstarred"
         )
     }
@@ -1857,10 +2067,19 @@ class GoodPostViewModel : ViewModel() {
     fun deleteSelectedPosts() {
         val repo = repository ?: return
         if (uiState.admin == null) return
+        // One batch at a time: a second tap while the first is in flight would
+        // send the same ids again, and the server's answer to the second would
+        // arrive after the list had already been emptied.
+        if (uiState.selectionBusy) return
 
         val selected = uiState.selectedPostIds.toList()
         if (selected.isEmpty()) return
 
+        // §5: the bar says it is working while the batch is in flight, and stops
+        // accepting taps. Without this the bar looked untouched for the length of
+        // the round trip — which is exactly what "the delete is stuck" looks
+        // like — and a second tap could send a second batch of the same ids.
+        uiState = uiState.copy(selectionBusy = true)
         viewModelScope.launch {
             when (val result = repo.adminDeletePosts(selected)) {
                 is ApiResult.Ok -> {
@@ -1872,7 +2091,8 @@ class GoodPostViewModel : ViewModel() {
                     uiState = uiState.copy(
                         posts = uiState.posts.filterNot { selected.contains(it.id) },
                         media = uiState.media.filterNot { selected.contains(it.postId) },
-                        selectedPostIds = emptySet()
+                        selectedPostIds = emptySet(),
+                        selectionBusy = false
                     )
                     // Reloaded rather than trusted: a page boundary can shift when
                     // rows in the middle of the list disappear.
@@ -1883,11 +2103,13 @@ class GoodPostViewModel : ViewModel() {
 
                 is ApiResult.Failed -> uiState = uiState.copy(
                     selectedPostIds = emptySet(),
+                    selectionBusy = false,
                     messageCode = adminFailureCode(result)
                 )
 
                 ApiResult.Unreachable -> uiState = uiState.copy(
                     selectedPostIds = emptySet(),
+                    selectionBusy = false,
                     messageCode = "unreachable"
                 )
             }
@@ -1928,6 +2150,7 @@ class GoodPostViewModel : ViewModel() {
         postsError = null,
         postsStale = false,
         selectedPostIds = emptySet(),
+        selectionBusy = false,
         media = emptyList(),
         mediaLoading = false,
         mediaCursor = null,
@@ -2997,6 +3220,24 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
+     * Open the posting page with the draft the feed's strip already holds (§21).
+     *
+     * The strip is an editable field now, so the pencil beside it is not a way IN
+     * from nothing — it is the same draft given the whole screen. That is why this
+     * is not [startCompose]: that one starts a NEW post and clears the body, and
+     * tapping the pencil after typing a line would have deleted the line.
+     */
+    fun openFullComposer() {
+        uiState = uiState.copy(
+            composerOpen = true,
+            editingPostId = null,
+            editingPostChannelId = null,
+            composerBusy = false,
+            messageCode = null
+        )
+    }
+
+    /**
      * Edit an existing post (§21).
      *
      * The body is the stored text with its formatting markers intact, which is
@@ -3059,14 +3300,59 @@ class GoodPostViewModel : ViewModel() {
             messageCode = null
         )
 
+        startUpload(repo, attachment)
+    }
+
+    /**
+     * Send a failed attachment again.
+     *
+     * A failed file leaves the draft unsendable — publishing would attach a file
+     * the server never stored — and the only way out used to be to take it off and
+     * pick it again. That is the wrong shape for the two ways an upload actually
+     * fails: a presigned URL that expired while a large file was going up, and a
+     * connection that dropped mid-PUT. Both are fixed by sending it again, and
+     * neither is the sender's mistake.
+     *
+     * Only a FAILED attachment may be retried: a second attempt at one that is
+     * still uploading would put two PUTs behind one draft slot, and the slower
+     * answer would overwrite the faster one's media id.
+     */
+    fun retryMedia(attachment: GoodPostAttachment) {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        val current = uiState.composerAttachments.firstOrNull { it.uri == attachment.uri } ?: return
+        if (current.state !is GoodPostUploadState.Failed) return
+
+        uiState = uiState.copy(messageCode = null)
+        updateAttachment(attachment.uri, GoodPostUploadState.Uploading)
+        startUpload(repo, current)
+    }
+
+    /**
+     * The upload itself: presign, PUT, confirm (see the repository).
+     *
+     * One implementation for the first attempt and for a retry, so a retry cannot
+     * skip a step the first attempt had to pass.
+     */
+    private fun startUpload(repo: GoodPostRepository, attachment: GoodPostAttachment) {
         viewModelScope.launch {
             when (val result = repo.adminUploadMedia(attachment)) {
-                is ApiResult.Ok -> updateAttachment(
-                    attachment.uri,
-                    GoodPostUploadState.Ready(result.value.id)
-                )
+                is ApiResult.Ok -> {
+                    updateAttachment(
+                        attachment.uri,
+                        GoodPostUploadState.Ready(result.value.id)
+                    )
+                }
                 is ApiResult.Failed -> {
                     updateAttachment(attachment.uri, GoodPostUploadState.Failed(result.code))
+                    // SAID, not just shown on the tile. A refusal used to leave a
+                    // red square and a send button that never came back, with
+                    // nothing anywhere saying why — and the two likeliest reasons
+                    // (`unsupported_media_type` on a deployment that does not take
+                    // this kind of file yet, `media_too_large` on one that does)
+                    // need different things from the person holding the phone.
+                    uiState = uiState.copy(messageCode = result.code)
                     // `media_unavailable` is an answer about the DEPLOYMENT rather
                     // than about the file, so the composer stops offering the
                     // picker for the rest of the session (§22).
@@ -3074,8 +3360,10 @@ class GoodPostViewModel : ViewModel() {
                         uiState = uiState.copy(composerMediaAvailable = false)
                     }
                 }
-                ApiResult.Unreachable ->
+                ApiResult.Unreachable -> {
                     updateAttachment(attachment.uri, GoodPostUploadState.Failed("unreachable"))
+                    uiState = uiState.copy(messageCode = "unreachable")
+                }
             }
         }
     }
@@ -3123,7 +3411,21 @@ class GoodPostViewModel : ViewModel() {
      * nothing behind.
      */
     fun cancelCompose() {
-        resetComposer()
+        // An edit is not a draft: its body is the post being edited, which the
+        // strip under the feed never wrote. Discard it as before.
+        if (uiState.editingPostId != null) {
+            resetComposer()
+            return
+        }
+        // A NEW post's words are kept. The strip under the feed draws the same
+        // body, so closing the page on a half-written line and finding an empty
+        // field would be the app eating what the reader typed.
+        uiState = uiState.copy(
+            composerOpen = false,
+            composerBusy = false,
+            editingPostChannelId = null,
+            messageCode = null
+        )
     }
 
     /**

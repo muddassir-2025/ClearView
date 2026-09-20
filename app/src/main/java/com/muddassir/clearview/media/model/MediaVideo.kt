@@ -52,7 +52,16 @@ data class MediaVideo(
     val platform: MediaPlatform = MediaPlatform.YOUTUBE,
     val instagramType: InstagramMediaType? = null,
     val mediaUrl: String? = null,
-    val instagramUrl: String? = null
+    val instagramUrl: String? = null,
+    /** Original permalink for non-YouTube sources such as X. */
+    val sourceUrl: String? = null,
+    /**
+     * The post's FULL text — the whole tweet body or Instagram caption, never
+     * truncated. [title] is only the short label a feed card shows, so a post
+     * used to be readable up to that label and no further. Empty for videos,
+     * which have a title instead.
+     */
+    val bodyText: String = ""
 ) {
 
     // ── Platform / content-type helpers ───────────────────────────────
@@ -87,6 +96,30 @@ data class MediaVideo(
     /** A still Instagram post (photo or carousel) — shown as a square tile. */
     val isInstagramImage: Boolean
         get() = isInstagram && !isInstagramVideo
+
+    /** True when [mediaUrl] is a directly playable progressive stream. */
+    val hasPlayableVideo: Boolean
+        get() {
+            val url = mediaUrl ?: return false
+            val lower = url.lowercase()
+            return lower.contains(".mp4") || lower.contains(".m3u8") ||
+                lower.contains(".webm") || lower.contains(".m4v")
+        }
+
+    /**
+     * A text/photo POST rather than playable media: an X tweet with no video
+     * attached, or an Instagram photo/carousel. Posts render as post cards and
+     * open the full-post viewer; everything else opens a player.
+     *
+     * Rendering every non-YouTube item as a video card is what made X and
+     * Instagram posts look like videos with a broken thumbnail.
+     */
+    val isPost: Boolean
+        get() = when {
+            isInstagramImage -> true
+            platform == MediaPlatform.X -> !hasPlayableVideo
+            else -> false
+        }
 
     /**
      * True when this item belongs in the Shorts row / viewer. Shorts are a

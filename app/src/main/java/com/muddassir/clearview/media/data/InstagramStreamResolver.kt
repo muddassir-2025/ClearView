@@ -292,7 +292,7 @@ object InstagramStreamResolver {
         val lower = url.lowercase()
         if (lower.contains("instagram.com/p/") || lower.contains("instagram.com/reel/")) return false
         return lower.contains(".mp4") || lower.contains(".m4v") ||
-            lower.contains(".webm") || lower.contains(".mov") ||
+            lower.contains(".webm") || lower.contains(".mov") || lower.contains(".m3u8") ||
             lower.contains("/video/") || lower.contains("video_url")
     }
 }

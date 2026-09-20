@@ -22,7 +22,7 @@ class NotificationDismissReceiver : BroadcastReceiver() {
         // The system already removed the notification; cancel() is idempotent
         // and also clears the deterministic per-channel id should a stale copy
         // still be present.
-        MediaNotifier.cancelChannelNotification(context, channelId)
+        MediaNotifier.cancelPostNotification(context, channelId, videoId)
     }
 
     companion object {

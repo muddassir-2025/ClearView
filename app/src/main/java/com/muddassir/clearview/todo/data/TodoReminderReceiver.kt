@@ -3,6 +3,7 @@ package com.muddassir.clearview.todo.data
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import com.muddassir.clearview.todo.model.TodoItem
 import java.time.LocalDate
 
@@ -27,6 +28,10 @@ import java.time.LocalDate
  * here — it opens [TodoSnoozeActivity], which reschedules the reminder.)
  */
 class TodoReminderReceiver : BroadcastReceiver() {
+
+    private companion object {
+        const val TAG = "TodoReminderReceiver"
+    }
 
     override fun onReceive(context: Context, intent: Intent) {
         when (intent.action) {
@@ -77,20 +82,30 @@ class TodoReminderReceiver : BroadcastReceiver() {
                     TodoNotifier.EXTRA_EPOCH_DAY,
                     LocalDate.now().toEpochDay()
                 )
-                val day = LocalDate.ofEpochDay(epochDay)
+                val occurrenceDay = LocalDate.ofEpochDay(epochDay)
+                // The reminder is answered for ITS occurrence; see
+                // TodoCodec.reminderCompletionRefusal for why the day is never
+                // rolled forward, and why a snoozed reminder is not locked out
+                // by a window that closed while it was ringing.
+                val day = occurrenceDay
                 val store = TodoStore(context)
-                val items = store.getItems()
-                val item = items.firstOrNull { it.id == todoId } ?: return
-                // Date rule (same as the UI): a todo can only be completed on
-                // its own applicable day — never a future day, and never a day
-                // it wasn't due on. A strict-interval todo whose window has
-                // already closed is LOCKED as missed ("can't redo") — its
-                // Complete action is rejected exactly like the checkbox.
-                if (day.isAfter(LocalDate.now())) return
-                if (!TodoCodec.canCompleteOn(item, day, System.currentTimeMillis())) return
-                store.saveItems(
-                    TodoCodec.completed(items, todoId, day, System.currentTimeMillis())
-                )
+                val item = store.getItems().firstOrNull { it.id == todoId } ?: return
+                // The rules that remain are the todo's own. A refused completion
+                // is REPORTED rather than swallowed: a background receiver
+                // cannot toast, so the notification is rewritten with the reason.
+                val refusal = TodoCodec.reminderCompletionRefusal(item, day)
+                if (refusal != null) {
+                    Log.w(TAG, "Complete refused for ${item.title}: $refusal")
+                    TodoNotifier.postCompletionRefused(
+                        context,
+                        item,
+                        epochDay,
+                        completionRefusalMessage(context, refusal)
+                    )
+                    return
+                }
+                val now = System.currentTimeMillis()
+                store.saveItems(TodoCodec.completed(store.getItems(), todoId, day, now))
                 // Completed FIRST (saveItems above), then cancel EVERY reminder
                 // for this occurrence — so a range-based todo can never ring
                 // again today — and re-schedule the remaining future ones.

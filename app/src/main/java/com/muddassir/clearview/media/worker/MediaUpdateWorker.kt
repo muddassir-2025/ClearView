@@ -11,8 +11,10 @@ import com.muddassir.clearview.media.data.MediaRepository
  * media notification ("… has an update") for each channel with something new.
  *
  * No-ops fast when the media-notifications toggle is off or no channels are
- * saved. A video is only ever notified once, guarded by TWO independent
- * conditions:
+ * saved. A channel the user muted (per channel, per source — see
+ * [com.muddassir.clearview.media.model.SavedChannel.notificationsMuted]) is
+ * refreshed but never notified about, so silence is real. A video is only ever
+ * notified once, guarded by TWO independent conditions:
  *
  *  1. The persisted notified-id set — a video id is baselined when its channel
  *     is added (and after every notification), so re-fetches of the same RSS
@@ -37,34 +39,89 @@ class MediaUpdateWorker(
         val channels = repository.getSavedChannels()
         if (channels.isEmpty()) return Result.success()
 
+        // A channel the user silenced in the View all channels list produces
+        // NOTHING here: no notification, no entry in the in-app updates list
+        // and no launcher badge. It is still refreshed below, so its feed and
+        // its cache stay current — muting is about being pinged, not about
+        // dropping the subscription. Per channel and per source: the flag lives
+        // on the SavedChannel, so a muted X profile does not touch Instagram.
+        val notifyChannels = channels.filterNot { it.notificationsMuted }
+        if (notifyChannels.isEmpty()) {
+            // Still worth one refresh so a muted channel's feed is not stale the
+            // moment the user un-mutes it.
+            repository.refreshAllVideos(channels)
+            return Result.success()
+        }
+
+        // A profile can be saved before its provider is reachable. On the first
+        // successful refresh of an uncached Instagram/X channel, treat the
+        // currently visible backlog as the subscription baseline. Otherwise the
+        // first worker run would notify every old post as if it were new.
+        val unbaselinedChannelIds = channels
+            .filterNot { repository.isNotificationBaselineComplete(it.channelId) }
+            .map { it.channelId }
+            .toSet()
+
         // Refresh every feed. null = every channel failed (offline etc.) — the
         // next periodic run retries; a partial failure keeps the successes.
         val fresh = repository.refreshAllVideos(channels) ?: return Result.success()
 
         val alreadyNotified = repository.getNotifiedVideoIds()
+        val firstRefreshBaseline = fresh
+            .filter { it.channelId in unbaselinedChannelIds }
+            .map { it.videoId }
+            .toSet()
+        val baselineIds = alreadyNotified + firstRefreshBaseline
+        fresh.map { it.channelId }
+            .filter { it in unbaselinedChannelIds }
+            .distinct()
+            .forEach(repository::markNotificationBaselineComplete)
+        if (firstRefreshBaseline.isNotEmpty()) {
+            repository.markVideosNotified(baselineIds)
+        }
         // Videos only count as new when they were published at/after the moment
         // the channel was subscribed AND their id was never seen before.
         val addedAtByChannel = channels.associate { it.channelId to it.addedAtEpochMillis }
+        val notifiedChannelIds = notificationChannelIds(channels)
         val newVideos = fresh.filter { v ->
-            isNotificationEligible(
-                videoId = v.videoId,
-                publishedAtEpochMillis = v.publishedAtEpochMillis,
-                addedAtEpochMillis = addedAtByChannel[v.channelId] ?: 0L,
-                alreadyNotified = alreadyNotified
-            )
+            v.channelId in notifiedChannelIds &&
+                isNotificationEligible(
+                    videoId = v.videoId,
+                    publishedAtEpochMillis = v.publishedAtEpochMillis,
+                    addedAtEpochMillis = addedAtByChannel[v.channelId] ?: 0L,
+                    alreadyNotified = baselineIds
+                )
         }
         if (newVideos.isEmpty()) return Result.success()
 
-        // One update per channel with a new video, newest channel first.
-        val updates = repository.buildChannelUpdates(newVideos)
-        MediaNotifier.notifyUpdates(applicationContext, updates)
+        // One notification per new post, across YouTube, Instagram and X.
+        // Do not group by channel here: a channel can publish several posts
+        // between checks and the user asked to receive every one.
+        val updates = newVideos
+            .sortedByDescending { it.publishedAtEpochMillis }
+            .map { video ->
+                com.muddassir.clearview.media.model.MediaChannelUpdate(
+                    channelId = video.channelId,
+                    channelName = video.channelName.ifBlank { video.channelId },
+                    latestVideoId = video.videoId,
+                    latestVideoTitle = video.title,
+                    publishedAtEpochMillis = video.publishedAtEpochMillis
+                )
+            }
+        val postedCount = MediaNotifier.notifyUpdates(applicationContext, updates)
 
-        // Store what was notified in the in-app "Latest Updates" feed (home
+        // Store what was detected in the in-app "Latest Updates" feed (home
         // tab) so every notification also appears there — even when the OS
         // blocks the notification itself, the update is still recorded.
         repository.recordChannelUpdates(updates)
 
-        repository.markVideosNotified(alreadyNotified + newVideos.map { it.videoId })
+        // If Android notification permission is denied, do not consume the
+        // ids: after the user grants permission, the next check must still be
+        // able to deliver these updates. A notification that was actually
+        // posted is safe to deduplicate.
+        if (postedCount > 0) {
+            repository.markVideosNotified(baselineIds + newVideos.map { it.videoId })
+        }
 
         // New uploads detected → the launcher badge should show them (the
         // in-app unread count is recomputed from the same persisted history).
@@ -84,6 +141,20 @@ class MediaUpdateWorker(
  * backlog must still never notify. Legacy channels carry [addedAtEpochMillis]
  * == 0, which admits every video — exactly their pre-feature behavior.
  */
+/**
+ * The channels that may be notified about: every saved channel except the ones
+ * the user silenced, whichever source they came from.
+ *
+ * A separate function so the per-channel/per-source muting rule is testable on
+ * its own — it is the one thing standing between a muted channel and a ping.
+ */
+internal fun notificationChannelIds(
+    channels: List<com.muddassir.clearview.media.model.SavedChannel>
+): Set<String> = channels
+    .filterNot { it.notificationsMuted }
+    .map { it.channelId }
+    .toSet()
+
 internal fun isNotificationEligible(
     videoId: String,
     publishedAtEpochMillis: Long,

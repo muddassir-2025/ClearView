@@ -677,6 +677,46 @@ object TodoStats {
         nowMillis: Long = System.currentTimeMillis()
     ): List<DayProductivity> = days.map { dayProductivity(items, it, nowMillis) }
 
+    /**
+     * The headlines above the heatmap: how much was completed, how many days
+     * were worked on, and the longest run of consecutive working days — all
+     * WITHIN the window the graph is showing.
+     */
+    data class HeatmapSummary(
+        val completed: Int,
+        /** Days the reader actually did something on (the days the grid shades). */
+        val activeDays: Int,
+        /** Longest run of consecutive active days inside the window. */
+        val maxStreak: Int
+    )
+
+    /**
+     * The heatmap's headline numbers, read off the very day list the squares
+     * are drawn from — so the summary can never disagree with the grid it sits
+     * on, and a streak can never be credited to a day the reader is not looking
+     * at (which matters at a calendar year's edges).
+     *
+     * "Active" is the grid's own test for ink: the day earned something. A day
+     * nobody worked on stays blank and breaks the run.
+     */
+    fun heatmapSummary(days: List<DayProductivity>): HeatmapSummary {
+        var completed = 0
+        var active = 0
+        var streak = 0
+        var best = 0
+        days.forEach { day ->
+            completed += day.completed
+            if (day.earnedPoints > 0f) {
+                active++
+                streak++
+                if (streak > best) best = streak
+            } else {
+                streak = 0
+            }
+        }
+        return HeatmapSummary(completed, active, best)
+    }
+
     // ── Consolidated productivity summary ──────────────────────────
 
     /** Everything the unified Productivity dashboard renders. */

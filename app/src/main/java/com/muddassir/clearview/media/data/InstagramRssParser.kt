@@ -152,7 +152,9 @@ object InstagramRssParser {
                     platform = MediaPlatform.INSTAGRAM,
                     instagramType = igType,
                     mediaUrl = directMediaUrl,
-                    instagramUrl = originalUrl.takeIf { it.isNotBlank() }
+                    instagramUrl = originalUrl.takeIf { it.isNotBlank() },
+                    // The card shows one line; the viewer shows the whole caption.
+                    bodyText = caption.trim()
                 )
             )
         }
@@ -232,7 +234,8 @@ object InstagramRssParser {
                     platform = MediaPlatform.INSTAGRAM,
                     instagramType = igType,
                     mediaUrl = directMediaUrl,
-                    instagramUrl = originalUrl.takeIf { it.isNotBlank() }
+                    instagramUrl = originalUrl.takeIf { it.isNotBlank() },
+                    bodyText = caption.trim()
                 )
             )
         }
@@ -271,8 +274,13 @@ object InstagramRssParser {
 
     private fun extractVideoFromHtml(html: String): String? {
         if (html.isBlank()) return null
-        val regex = Regex("""<video[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-        return regex.find(html)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+        val patterns = listOf(
+            Regex("""<video[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+            Regex("""<source[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        )
+        return patterns.asSequence()
+            .mapNotNull { it.find(html)?.groupValues?.get(1) }
+            .firstOrNull { it.isNotBlank() && it.startsWith("http") }
     }
 
     private fun cleanHtmlCaption(html: String): String {

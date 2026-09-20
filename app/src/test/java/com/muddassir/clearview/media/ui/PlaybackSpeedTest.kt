@@ -5,36 +5,50 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The playback-speed surface shared by the YouTube and Instagram players:
- * preset options must reach at least 5×, the custom slider bounds must be valid
- * and match the step, and [formatRate] must render a clean, locale-independent
- * label (no floating-point noise, no locale comma).
+ * The playback-speed surface shared by the video, Shorts and audio players.
+ *
+ * There are no presets any more: every surface is ONE custom bar, so what must
+ * hold is that the bar's bounds are valid, that the range divides evenly into
+ * the 0.05 step grid (the slider's `steps` math depends on it), and that
+ * [formatRate] / [formatBound] render clean, locale-independent labels.
  */
 class PlaybackSpeedTest {
 
     @Test
-    fun `presets reach at least 5x and are strictly ascending`() {
-        assertTrue("presets must offer at least 5x", SPEED_OPTIONS.max() >= 5.0)
-        assertEquals("1x must be a preset", 1.0, SPEED_OPTIONS.first { it == 1.0 }, 0.0)
-        assertTrue("no non-positive preset", SPEED_OPTIONS.all { it > 0.0 })
-        assertEquals(
-            "presets must be strictly ascending",
-            SPEED_OPTIONS.sorted(),
-            SPEED_OPTIONS
-        )
-    }
-
-    @Test
-    fun `custom speed bounds are valid and cover the presets`() {
+    fun `custom speed bounds are valid`() {
         assertTrue(MIN_CUSTOM_SPEED > 0.0)
         assertTrue("custom range must reach at least 5x", MAX_CUSTOM_SPEED >= 5.0)
         assertTrue(MAX_CUSTOM_SPEED > MIN_CUSTOM_SPEED)
         assertTrue(CUSTOM_SPEED_STEP > 0.0)
-        // Every preset must be reachable inside the custom range.
-        assertTrue(SPEED_OPTIONS.all { it in MIN_CUSTOM_SPEED..MAX_CUSTOM_SPEED })
-        // The range must divide evenly into whole steps (slider `steps` math).
-        val steps = (MAX_CUSTOM_SPEED - MIN_CUSTOM_SPEED) / CUSTOM_SPEED_STEP
-        assertEquals(steps, Math.round(steps).toDouble(), 1e-9)
+        // 1x — the rate everyone expects to be reachable — sits inside the bar.
+        assertTrue(1.0 in MIN_CUSTOM_SPEED..MAX_CUSTOM_SPEED)
+    }
+
+    @Test
+    fun `the audio bar is narrower than the video bar`() {
+        // Speech, not film: the audio bar stops short of the video bar's ends.
+        assertTrue(MIN_AUDIO_SPEED > MIN_CUSTOM_SPEED)
+        assertTrue(MAX_AUDIO_SPEED < MAX_CUSTOM_SPEED)
+        assertTrue(1.0 in MIN_AUDIO_SPEED..MAX_AUDIO_SPEED)
+    }
+
+    @Test
+    fun `range divides evenly into whole steps for every bar`() {
+        listOf(MIN_CUSTOM_SPEED to MAX_CUSTOM_SPEED, MIN_AUDIO_SPEED to MAX_AUDIO_SPEED)
+            .forEach { (min, max) ->
+                val steps = (max - min) / CUSTOM_SPEED_STEP
+                assertEquals(
+                    "range $min..$max must divide evenly into $CUSTOM_SPEED_STEP steps",
+                    steps,
+                    Math.round(steps).toDouble(),
+                    1e-9
+                )
+                // Material's `steps` excludes the two ends; it must be sane.
+                assertTrue(
+                    "step count for $min..$max must be positive",
+                    speedBarSteps(min, max) > 0
+                )
+            }
     }
 
     @Test
@@ -62,5 +76,16 @@ class PlaybackSpeedTest {
         // Locale independence: a dot, never a comma.
         assertTrue(formatRate(1.35).contains("."))
         assertTrue(!formatRate(1.35).contains(","))
+    }
+
+    @Test
+    fun `formatBound never shows trailing zeros and stays locale-independent`() {
+        assertEquals("0.5", formatBound(0.5))
+        assertEquals("3", formatBound(3.0))
+        assertEquals("0.25", formatBound(0.25))
+        // Both ends of both bars are what the axis labels show.
+        assertEquals("0.25", formatBound(MIN_CUSTOM_SPEED))
+        assertEquals("5", formatBound(MAX_CUSTOM_SPEED))
+        assertTrue(!formatBound(MIN_AUDIO_SPEED).contains(","))
     }
 }

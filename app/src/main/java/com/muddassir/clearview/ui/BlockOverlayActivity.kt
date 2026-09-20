@@ -92,7 +92,7 @@ class BlockOverlayActivity : ComponentActivity() {
         Log.i(TAG, "Block overlay shown: $blockedItem ($blockedType)")
 
         setContent {
-            UrlblockerTheme(darkTheme = true) {
+            UrlblockerTheme(forcedDarkTheme = true) {
                 BlockOverlayScreen(
                     blockedItem = blockedItem,
                     blockedType = blockedType,

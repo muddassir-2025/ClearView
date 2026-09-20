@@ -511,7 +511,12 @@ internal class GoodPostRepository(
                     byteSize = attachment.byteSize,
                     width = attachment.width,
                     height = attachment.height,
-                    durationMs = attachment.durationMs
+                    durationMs = attachment.durationMs,
+                    // Sent for a document and for nothing else. The name IS the
+                    // document's card, so a server that had to guess one would be
+                    // inventing the only part of it a reader can see — and for an
+                    // image it is a client string stored for no purpose.
+                    fileName = attachment.fileName.takeIf { attachment.isDocument }
                 )
             }
         ) {

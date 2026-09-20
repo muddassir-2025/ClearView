@@ -1,7 +1,9 @@
 package com.muddassir.clearview.goodpost.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -14,15 +16,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +35,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
@@ -43,7 +51,10 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.GoodPostImages
+import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostStarredEntry
+import com.muddassir.clearview.goodpost.data.GoodPostVideoPoster
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 
 /**
@@ -83,6 +94,16 @@ internal fun GoodPostStarredScreen(
     viewModel: GoodPostViewModel
 ) {
     var query by remember { mutableStateOf("") }
+
+    // The pictures behind the rows (§11). Asked for once per post as the list is
+    // drawn, because a bookmark keeps a post's words rather than its URL: a signed
+    // URL expires, so the thumbnail has to be fetched each time the list is opened.
+    //
+    // Keyed on how many have ARRIVED as well as on the list itself, because the
+    // pass is bounded: each batch that lands asks for the next one, so a list
+    // longer than a single pass fills in as it goes and stops when there is nothing
+    // left to ask for.
+    LaunchedEffect(state.starred, state.starredMedia.size) { viewModel.loadStarredMedia() }
 
     val entries = remember(state.starred, query) {
         val term = query.trim().lowercase()
@@ -152,6 +173,7 @@ internal fun GoodPostStarredScreen(
             items(entries, key = { it.postId }) { entry ->
                 StarredRow(
                     entry = entry,
+                    media = state.starredMedia[entry.postId],
                     // §22: unstarring a message removes it from this list, which
                     // is the list's whole purpose — the rest close the gap.
                     modifier = Modifier.animateItem(),
@@ -170,10 +192,19 @@ internal fun GoodPostStarredScreen(
  * A row rather than a card: it is a message somebody chose to keep, and the
  * channel feed already draws messages as bubbles — a second, prettier frame for
  * the same words would be the beginning of a second design language.
+ *
+ * ## The thumbnail
+ *
+ * A bookmarked PHOTO showed as the word "Photo", because the row drew the
+ * message's text and a photo-only post has none — so the one thing a reader keeps
+ * a picture for was the one thing the list would not show them. [media] is that
+ * picture, fetched while the list is on screen, at the trailing edge where a
+ * bookmark list puts it: after the words, before the control that removes the row.
  */
 @Composable
 private fun StarredRow(
     entry: GoodPostStarredEntry,
+    media: GoodPostMedia?,
     modifier: Modifier = Modifier,
     highlight: String,
     onOpen: () -> Unit,
@@ -202,6 +233,10 @@ private fun StarredRow(
             Text(
                 text = highlightStarred(text, highlight),
                 color = Wa.Text,
+                // §17: a starred message is a post's own words, so it wears the
+                // post's face. The fallback label for a media-only bookmark is a
+                // description rather than a post, and keeps the platform's.
+                fontFamily = if (entry.body.isNullOrBlank()) null else WaPostFont,
                 fontSize = 14.sp,
                 lineHeight = 19.sp,
                 maxLines = 4,
@@ -213,6 +248,14 @@ private fun StarredRow(
                 color = Wa.TextDim,
                 fontSize = 12.sp
             )
+        }
+
+        // The picture, when there is one to show. Absent while it is still being
+        // fetched, and absent for a post the server no longer keeps — the row then
+        // reads exactly as it did before, which is the honest fallback.
+        if (media?.url != null && !media.isDocument) {
+            Spacer(Modifier.width(10.dp))
+            StarredThumb(media = media)
         }
 
         // The way back off the list. An icon rather than a menu: there is exactly
@@ -235,11 +278,85 @@ private fun StarredRow(
     }
 }
 
+/**
+ * A starred message's picture, at the size a row can hold.
+ *
+ * The same two caches the gallery draws from — decoded bitmaps for a photo, an
+ * extracted poster frame for a clip — so a picture already seen in the feed is not
+ * downloaded again here.
+ */
+@Composable
+private fun StarredThumb(media: GoodPostMedia) {
+    val url = media.url ?: return
+    var bitmap by remember(url) {
+        mutableStateOf(if (media.isVideo) GoodPostVideoPoster.peek(url) else GoodPostImages.peek(url))
+    }
+
+    LaunchedEffect(url, media.isVideo) {
+        if (bitmap != null) return@LaunchedEffect
+        bitmap = if (media.isVideo) {
+            GoodPostVideoPoster.load(url, widthPx = STARRED_THUMB_PX)
+        } else {
+            GoodPostImages.load(url, maxWidthPx = STARRED_THUMB_PX)
+        }
+    }
+
+    val current = bitmap
+    Box(
+        modifier = Modifier
+            .size(STARRED_THUMB)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Wa.Pressed),
+        contentAlignment = Alignment.Center
+    ) {
+        if (current != null) {
+            Image(
+                bitmap = current.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // A clip says so, because a poster frame on its own is indistinguishable
+        // from a photo of the same scene — the same rule the gallery follows.
+        if (media.isVideo) {
+            Box(
+                modifier = Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.45f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(14.dp)
+                )
+            }
+        }
+    }
+}
+
+/** The thumbnail's edge in the starred list. */
+private val STARRED_THUMB = 56.dp
+
+/**
+ * How wide the decode is asked for.
+ *
+ * Twice the tile, so the picture is sharp on a 3x screen without decoding a
+ * full-size image to fill 56dp — the difference between a list that scrolls and
+ * one that stutters.
+ */
+private const val STARRED_THUMB_PX = 168
+
 /** The word a media-only starred message is described by. */
 private fun starredMediaLabel(kind: String): Int = when (kind) {
     "image" -> R.string.goodpost_posted_photo
     "video" -> R.string.goodpost_posted_video
     "link" -> R.string.goodpost_posted_link
+    "document" -> R.string.goodpost_posted_document
     else -> R.string.goodpost_posted_something
 }
 

@@ -48,6 +48,26 @@ class MediaLibraryStore(context: Context) {
         prefs.edit().putString(KEY_HIDDEN, MediaVideos.encode(videos)).apply()
     }
 
+    // ── Hidden channels ───────────────────────────────────────────
+
+    fun isChannelHidden(channelId: String): Boolean =
+        getHiddenChannelIds().contains(channelId)
+
+    fun hideChannel(channelId: String) {
+        prefs.edit().putStringSet(KEY_HIDDEN_CHANNELS, getHiddenChannelIds() + channelId).apply()
+    }
+
+    fun unhideChannel(channelId: String) {
+        prefs.edit().putStringSet(KEY_HIDDEN_CHANNELS, getHiddenChannelIds() - channelId).apply()
+    }
+
+    fun getHiddenChannelIds(): Set<String> =
+        prefs.getStringSet(KEY_HIDDEN_CHANNELS, emptySet()).orEmpty()
+
+    fun unhideAllChannels() {
+        prefs.edit().remove(KEY_HIDDEN_CHANNELS).apply()
+    }
+
     // ── Manually added videos (added by URL, not from RSS) ─────────
 
     fun isManuallyAdded(videoId: String): Boolean =
@@ -77,5 +97,6 @@ class MediaLibraryStore(context: Context) {
         const val PREFS_NAME = "media_library"
         const val KEY_HIDDEN = "hidden"
         const val KEY_MANUAL = "manual"
+        const val KEY_HIDDEN_CHANNELS = "hidden_channels"
     }
 }

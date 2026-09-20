@@ -1,5 +1,8 @@
 package com.muddassir.clearview.media.worker
 
+import com.muddassir.clearview.media.model.MediaPlatform
+import com.muddassir.clearview.media.model.SavedChannel
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -71,5 +74,54 @@ class NotificationEligibilityTest {
         assertFalse(
             isNotificationEligible("new1", 2_000L, 1_000L, setOf("new1"))
         )
+    }
+
+    // ── Per-channel muting ──────────────────────────────────────────
+
+    private fun channel(
+        id: String,
+        platform: MediaPlatform,
+        muted: Boolean = false
+    ) = SavedChannel(
+        channelId = id,
+        displayName = id,
+        sourceRef = id,
+        platform = platform,
+        notificationsMuted = muted
+    )
+
+    @Test
+    fun `a muted channel can never be notified, on any source`() {
+        val ids = notificationChannelIds(
+            listOf(
+                channel("UC1", MediaPlatform.YOUTUBE),
+                channel("ig_nasa", MediaPlatform.INSTAGRAM, muted = true),
+                channel("x_openai", MediaPlatform.X, muted = true),
+                channel("UC2", MediaPlatform.YOUTUBE, muted = true),
+                channel("x_github", MediaPlatform.X)
+            )
+        )
+        assertEquals(setOf("UC1", "x_github"), ids)
+    }
+
+    @Test
+    fun `unmuting a channel restores it`() {
+        val muted = listOf(channel("x_openai", MediaPlatform.X, muted = true))
+        assertTrue(notificationChannelIds(muted).isEmpty())
+
+        val unmuted = listOf(channel("x_openai", MediaPlatform.X, muted = false))
+        assertEquals(setOf("x_openai"), notificationChannelIds(unmuted))
+    }
+
+    /** Channels saved by older builds carry no flag — they must stay ON. */
+    @Test
+    fun `a channel with no muting flag notifies`() {
+        val legacy = SavedChannel(
+            channelId = "UC9",
+            displayName = "Legacy",
+            sourceRef = "@legacy"
+        )
+        assertFalse(legacy.notificationsMuted)
+        assertEquals(setOf("UC9"), notificationChannelIds(listOf(legacy)))
     }
 }

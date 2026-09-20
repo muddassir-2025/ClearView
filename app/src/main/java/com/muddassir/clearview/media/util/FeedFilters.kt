@@ -57,6 +57,7 @@ fun applyFeedFilter(
             com.muddassir.clearview.media.model.FeedPlatformFilter.ALL -> true
             com.muddassir.clearview.media.model.FeedPlatformFilter.YOUTUBE -> v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
             com.muddassir.clearview.media.model.FeedPlatformFilter.INSTAGRAM -> v.platform == com.muddassir.clearview.media.model.MediaPlatform.INSTAGRAM
+            com.muddassir.clearview.media.model.FeedPlatformFilter.X -> v.platform == com.muddassir.clearview.media.model.MediaPlatform.X
         }
         val typeOk = when (filter.content) {
             FeedContentFilter.ALL -> true

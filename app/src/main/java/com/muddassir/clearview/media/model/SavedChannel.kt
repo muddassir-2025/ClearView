@@ -17,8 +17,17 @@ package com.muddassir.clearview.media.model
  *                      notifications, even if the add-time baseline fetch
  *                      failed. 0 for channels added before this field existed
  *                      (guard inactive — their behavior is unchanged).
+ * @property notificationsMuted  True when the user silenced this channel in
+ *                      the View all channels list. Muting is PER CHANNEL and
+ *                      works the same for every source (YouTube, Instagram, X):
+ *                      the background worker skips a muted channel entirely, so
+ *                      it produces no notification, no entry in the in-app
+ *                      updates list and no launcher badge. The channel's feed
+ *                      keeps refreshing either way — muting is about being
+ *                      pinged, not about losing the subscription. Defaults to
+ *                      false, so channels saved by older builds decode as ON.
  */
-enum class MediaPlatform { YOUTUBE, INSTAGRAM }
+enum class MediaPlatform { YOUTUBE, INSTAGRAM, X }
 enum class InstagramMediaType { REEL, IMAGE, VIDEO, CAROUSEL }
 data class SavedChannel(
     val channelId: String,
@@ -27,5 +36,6 @@ data class SavedChannel(
     val avatarUrl: String? = null,
     val addedAtEpochMillis: Long = 0L,
     val platform: MediaPlatform = MediaPlatform.YOUTUBE,
-    val instagramType: InstagramMediaType? = null
+    val instagramType: InstagramMediaType? = null,
+    val notificationsMuted: Boolean = false
 )

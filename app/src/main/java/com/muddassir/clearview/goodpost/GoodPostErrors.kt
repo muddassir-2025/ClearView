@@ -230,7 +230,11 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     "attachment_uploading", "media_not_ready", "media_not_uploaded",
     "media_size_mismatch" -> GoodPostError.AttachmentUploading
     "attachment_failed", "unknown_media", "media_already_used", "media_not_found",
-    "too_many_media", "duplicate_media", "mixed_media" -> GoodPostError.AttachmentFailed
+    "too_many_media", "duplicate_media", "mixed_media",
+    // A document the server would not store without a name. The card IS the name,
+    // so there is nothing to show and nothing to retry with — the file has to be
+    // picked again, which is what the attachment message asks for.
+    "missing_file_name" -> GoodPostError.AttachmentFailed
 
     // A status this client has no name for and a body that named no code. A
     // proxy's HTML 502 lands here, and it is a server-side condition however it

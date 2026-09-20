@@ -671,7 +671,9 @@ class GoodPostApi(
         byteSize: Long,
         width: Int? = null,
         height: Int? = null,
-        durationMs: Long? = null
+        durationMs: Long? = null,
+        /** What the file was called, for a document. Required for that kind. */
+        fileName: String? = null
     ): ApiResult<GoodPostUpload> =
         parsedCall(
             method = "POST",
@@ -682,6 +684,7 @@ class GoodPostApi(
                 width?.let { put("width", it) }
                 height?.let { put("height", it) }
                 durationMs?.let { put("durationMs", it) }
+                fileName?.let { put("fileName", it) }
             },
             bearer = token,
             parse = { body ->

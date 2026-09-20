@@ -18,7 +18,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -95,7 +94,9 @@ private fun styleOf(format: GoodPostFormat): SpanStyle = when (format) {
     // The one format that changes the face rather than the weight. The body's
     // own font is the platform default, which is what makes monospace worth
     // having as a choice at all.
-    GoodPostFormat.Monospace -> SpanStyle(fontFamily = FontFamily.Monospace)
+    // The tab's own bundled mono face, not the platform's: a code span inside a
+    // post has to match the paragraph it sits in (§17).
+    GoodPostFormat.Monospace -> SpanStyle(fontFamily = WaPostFont)
 }
 
 /**

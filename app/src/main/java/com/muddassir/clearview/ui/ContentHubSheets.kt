@@ -1746,7 +1746,7 @@ internal fun arabicDigits(value: Int): String =
     }.joinToString("")
 
 /** The two kinds of thing a reader can save: a passage, or a whole surah. */
-private enum class QuranBookmarkTab { VERSE, SURAH }
+private enum class QuranBookmarkTab { SURAH, VERSE }
 
 /**
  * The Bookmarks tab (§3, §10): everything saved, in the two kinds it can be.
@@ -1777,7 +1777,10 @@ private fun BookmarksTab(
     onRemove: (QuranVerse) -> Unit,
     onRemoveSurah: (Int) -> Unit
 ) {
-    var tab by remember { mutableStateOf(QuranBookmarkTab.VERSE) }
+    // Surahs first, and that is the order the reader reads in: a saved surah is a
+    // place to return to and belongs at the top of the reader's own shelf, with
+    // the saved verses under it.
+    var tab by remember { mutableStateOf(QuranBookmarkTab.SURAH) }
     val starred = remember(state.surahBookmarkKeys) { state.starredSurahs }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1786,20 +1789,10 @@ private fun BookmarksTab(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             QuranSegment(
-                selected = tab == QuranBookmarkTab.VERSE,
+                selected = tab == QuranBookmarkTab.SURAH,
                 // The count belongs ON the tab: it is the answer to "did I save
                 // anything", and under the segments it took a line of height to
                 // say what the label could say for free.
-                label = pluralStringResource(
-                    R.plurals.quran_bookmarks_count,
-                    bookmarks?.size ?: 0,
-                    bookmarks?.size ?: 0
-                ),
-                modifier = Modifier.weight(1f),
-                onClick = { tab = QuranBookmarkTab.VERSE }
-            )
-            QuranSegment(
-                selected = tab == QuranBookmarkTab.SURAH,
                 label = pluralStringResource(
                     R.plurals.quran_surah_bookmarks_count,
                     starred.size,
@@ -1807,6 +1800,16 @@ private fun BookmarksTab(
                 ),
                 modifier = Modifier.weight(1f),
                 onClick = { tab = QuranBookmarkTab.SURAH }
+            )
+            QuranSegment(
+                selected = tab == QuranBookmarkTab.VERSE,
+                label = pluralStringResource(
+                    R.plurals.quran_bookmarks_count,
+                    bookmarks?.size ?: 0,
+                    bookmarks?.size ?: 0
+                ),
+                modifier = Modifier.weight(1f),
+                onClick = { tab = QuranBookmarkTab.VERSE }
             )
         }
 
