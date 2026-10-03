@@ -103,6 +103,13 @@ class LongVideoBlockCoordinator(
     private val service: AccessibilityService,
     private val repository: BlockRepository,
     private val keywordMatcher: KeywordMatcher,
+    /**
+     * The user's YouTube-ONLY keyword list (managed under YouTube Protection).
+     * Matched against long-video titles/descriptions IN ADDITION to the
+     * everywhere keywords and the built-in sets — never merged into the global
+     * blocked-keywords list. Null keeps the previous behavior (no YT-only list).
+     */
+    private val youtubeKeywords: YoutubeTestKeywordRepository? = null,
     /** Optional shared-backend channel blocking. Null keeps the existing
      *  keyword-only behavior (no network, no behavior change). */
     private val channelBlockRepository: ChannelBlockRepository? = null,
@@ -231,6 +238,22 @@ class LongVideoBlockCoordinator(
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val contentExtractor = ContentExtractor()
 
+    /**
+     * Fired whenever the blocked lists change. The channel check is single-shot
+     * per video, so a channel blocked WHILE its video is playing (e.g. from the
+     * "Not interested" flow) would otherwise never be enforced on the video
+     * already on screen. Clear the mark and re-scan now.
+     */
+    private val blockRefreshListener: () -> Unit = {
+        longVideoChannelChecked = false
+        Log.i(TAG, "LONG_VIDEO_CHANNEL_RECHECK_QUEUED")
+        runCatching { scope.launch { scan("block-refresh", force = true) } }
+    }
+
+    init {
+        com.muddassir.clearview.brainrot.BrainRotRefreshBus.addListener(blockRefreshListener)
+    }
+
     private var pollJob: Job? = null
     private var rescanJob: Job? = null
     private var replayFinalizeJob: Job? = null
@@ -353,6 +376,7 @@ class LongVideoBlockCoordinator(
 
     /** Called from the service on destroy / interrupt. */
     fun stop() {
+        com.muddassir.clearview.brainrot.BrainRotRefreshBus.removeListener(blockRefreshListener)
         scope.cancel()
         pollJob = null
         rescanJob = null
@@ -557,7 +581,11 @@ class LongVideoBlockCoordinator(
         longVideoClassificationDone = true
         Log.i(TAG, "LONG_VIDEO_CONTENT_READY videoId=${longVideoId ?: "unknown"} title=\"$title\"")
 
-        val result = keywordMatcher.checkLongVideoContent(title, description)
+        val result = keywordMatcher.checkLongVideoContent(
+            title,
+            description,
+            youtubeKeywords?.getKeywords() ?: emptySet()
+        )
         if (result is MatchResult.Blocked) {
             longVideoMatchedKeyword = result.matchedItem
             longVideoBlocked = true
@@ -641,7 +669,11 @@ class LongVideoBlockCoordinator(
         val key = "$title|${content.description ?: ""}"
         if (key == lastContentKey) return
         lastContentKey = key
-        val result = keywordMatcher.checkLongVideoContent(title, content.description)
+        val result = keywordMatcher.checkLongVideoContent(
+            title,
+            content.description,
+            youtubeKeywords?.getKeywords() ?: emptySet()
+        )
         if (result is MatchResult.Blocked) {
             longVideoTitle = title
             longVideoDescription = content.description

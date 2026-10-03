@@ -879,6 +879,10 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_notifications_on">Updates from this channel are announced</string>
     <string name="goodpost_notifications_follow_first">Follow this channel to set its notifications</string>
     <string name="goodpost_notifications_off">Updates from this channel are muted</string>
+    <string name="block_notification_channel">Content blocking</string>
+    <string name="block_notification_channel_desc">Tells you when ClearView blocks a channel or keyword for you</string>
+    <string name="block_notification_channel_title">Channel blocked</string>
+    <string name="block_notification_keyword_title">Keyword blocked</string>
     <string name="goodpost_notification_channel">Good Post updates</string>
     <string name="goodpost_notification_channel_desc">New posts from the channels you follow</string>
 

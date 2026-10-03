@@ -1,6 +1,7 @@
 package com.muddassir.clearview.brainrot
 
 import android.content.Context
+import com.muddassir.clearview.R
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import java.util.UUID
@@ -82,13 +83,20 @@ class BlockAction(context: Context) {
         // to re-read rather than waiting for a rebuild.
         BrainRotRefreshBus.notifyChanged()
         if (notify) {
+            val message = notificationMessage ?: "Channel ${name ?: normalized} is now blocked."
             notifications.add(
                 id = notificationId ?: "blocked:${normalized}:${System.currentTimeMillis()}",
                 kind = NotificationStore.Kind.BLOCKED,
                 value = normalized,
                 displayName = name,
-                message = notificationMessage
-                    ?: "Channel ${name ?: normalized} is now blocked."
+                message = message
+            )
+            // Also a real system notification (status bar), so a block ClearView
+            // made on the user's behalf is visible outside the app.
+            BlockNotifications.notifyBlocked(
+                appContext,
+                appContext.getString(R.string.block_notification_channel_title),
+                message
             )
         }
         return true
@@ -121,13 +129,18 @@ class BlockAction(context: Context) {
         meta.record(trimmed, resolvedReason, source)
         BrainRotRefreshBus.notifyChanged()
         if (notify) {
+            val message = notificationMessage ?: "Keyword \"$trimmed\" is now blocked."
             notifications.add(
                 id = notificationId ?: "blocked:$trimmed:${System.currentTimeMillis()}",
                 kind = NotificationStore.Kind.BLOCKED,
                 value = trimmed,
                 displayName = null,
-                message = notificationMessage
-                    ?: "Keyword \"$trimmed\" is now blocked."
+                message = message
+            )
+            BlockNotifications.notifyBlocked(
+                appContext,
+                appContext.getString(R.string.block_notification_keyword_title),
+                message
             )
         }
         return true

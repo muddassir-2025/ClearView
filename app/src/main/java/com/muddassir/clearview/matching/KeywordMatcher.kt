@@ -130,6 +130,19 @@ class KeywordMatcher(
     private val repository: BlockRepository
 ) {
 
+    /**
+     * Provider for the user's YouTube-ONLY keyword list (managed under the
+     * Blocking tab's YouTube Protection section). Consulted ONLY by the
+     * YouTube surfaces — [checkYouTube] (the YouTube app) and
+     * [checkLongVideoContent] (long videos watched in Chrome) — and NEVER by
+     * the Chrome/web/Google paths: a keyword added as YouTube-only must not
+     * block an ordinary web page. Defaults to empty, so every other caller
+     * keeps the previous behavior. Volatile: set once on service start, read
+     * on the main thread and on background analysis.
+     */
+    @Volatile
+    var youtubeOnlyKeywords: () -> Set<String> = { emptySet() }
+
     companion object {
         private const val TAG = "KeywordMatcher"
 
@@ -567,16 +580,28 @@ class KeywordMatcher(
      * the normal Chrome pipeline, unaffected by this method). Returns
      * Blocked with MatchSource.TITLE / .DESCRIPTION naming the exact keyword,
      * or Allowed.
+     *
+     * [youtubeKeywords] are the user's YouTube-ONLY keywords (the separate
+     * list managed under YouTube Protection, matched by the Shorts overlay).
+     * They are tantamount to user keywords for THIS check only — they apply
+     * to YouTube content and are deliberately NOT merged into the global
+     * blocked-keywords list (a YouTube-only word must not block a Chrome web
+     * page). The everywhere-user keywords and the built-in adult/Brain Rot
+     * sets still apply, so long videos keep the always-on protection.
      */
-    fun checkLongVideoContent(title: String?, description: String?): MatchResult {
+    fun checkLongVideoContent(
+        title: String?,
+        description: String?,
+        youtubeKeywords: Set<String> = emptySet()
+    ): MatchResult {
         if (!title.isNullOrBlank()) {
-            val titleRes = checkString(title, isUrl = false)
+            val titleRes = checkString(title, isUrl = false, extraUserKeywords = youtubeKeywords)
             if (titleRes is MatchResult.Blocked) {
                 return titleRes.copy(matchSource = MatchSource.TITLE)
             }
         }
         if (!description.isNullOrBlank()) {
-            val descRes = checkString(description, isUrl = false)
+            val descRes = checkString(description, isUrl = false, extraUserKeywords = youtubeKeywords)
             if (descRes is MatchResult.Blocked) {
                 return descRes.copy(matchSource = MatchSource.DESCRIPTION)
             }
@@ -962,6 +987,11 @@ class KeywordMatcher(
      * - YouTube has no URL bar, so URL extraction is not an alternative
      */
     private fun checkYouTube(snapshot: ContentSnapshot): MatchResult {
+        // YouTube-ONLY keywords apply to YouTube CONTENT (title/description/
+        // signal), never to a website URL opened in YouTube's embedded browser
+        // — hence the extra set is passed to the content checks only.
+        val ytKeywords = youtubeOnlyKeywords()
+
         // 0. In-app browser URL (websites opened from inside the YouTube app).
         //    When a link is tapped in a video description or comment, YouTube
         //    renders the site in its own embedded browser — the package stays
@@ -978,7 +1008,7 @@ class KeywordMatcher(
 
         // 1. Check video title (primary signal)
         if (!snapshot.title.isNullOrBlank()) {
-            val titleRes = checkString(snapshot.title, isUrl = false)
+            val titleRes = checkString(snapshot.title, isUrl = false, extraUserKeywords = ytKeywords)
             if (titleRes is MatchResult.Blocked) {
                 val finalRes = titleRes.copy(matchSource = MatchSource.TITLE)
                 Log.i(TAG, buildBlockLog("YOUTUBE_TITLE", snapshot.title, finalRes))
@@ -990,7 +1020,7 @@ class KeywordMatcher(
         //    matches when ContentExtractor surfaced a description, so a page
         //    without an exposed description is unaffected.
         if (!snapshot.description.isNullOrBlank()) {
-            val descRes = checkString(snapshot.description, isUrl = false)
+            val descRes = checkString(snapshot.description, isUrl = false, extraUserKeywords = ytKeywords)
             if (descRes is MatchResult.Blocked) {
                 val finalRes = descRes.copy(matchSource = MatchSource.DESCRIPTION)
                 Log.i(TAG, buildBlockLog("YOUTUBE_DESCRIPTION", snapshot.description, finalRes))
@@ -1000,7 +1030,7 @@ class KeywordMatcher(
 
         // 3. Check extracted signals (Shorts, hashtags)
         if (!snapshot.query.isNullOrBlank()) {
-            val queryRes = checkString(snapshot.query, isUrl = false)
+            val queryRes = checkString(snapshot.query, isUrl = false, extraUserKeywords = ytKeywords)
             if (queryRes is MatchResult.Blocked) {
                 val finalRes = queryRes.copy(matchSource = MatchSource.QUERY)
                 Log.i(TAG, buildBlockLog("YOUTUBE_SIGNAL", snapshot.query, finalRes))
@@ -1146,7 +1176,8 @@ class KeywordMatcher(
     private fun checkString(
         text: String,
         isUrl: Boolean,
-        builtInKeywords: Set<String> = repository.activeBuiltInKeywords
+        builtInKeywords: Set<String> = repository.activeBuiltInKeywords,
+        extraUserKeywords: Set<String> = emptySet()
     ): MatchResult {
         // Text normalization runs BEFORE all matching (NFKC + homoglyphs +
         // leetspeak + separator collapsing — see normalizeForMatching); the
@@ -1167,7 +1198,16 @@ class KeywordMatcher(
             return MatchResult.Blocked(matchedBuiltIn, MatchType.BUILT_IN_KEYWORD, MatchSource.NONE)
         }
 
-        val matchedUser = checkKeywords(normalized, repository.getUserKeywords())
+        // YouTube-only keywords (e.g. long-video titles) are treated as user
+        // keywords for this check only; union with the everywhere list. The
+        // union builds a fresh set, which the KeywordMatcher cache keys by
+        // identity — cheap and safe (the everywhere set alone stays cached).
+        val userKeywords = if (extraUserKeywords.isEmpty()) {
+            repository.getUserKeywords()
+        } else {
+            repository.getUserKeywords() + extraUserKeywords
+        }
+        val matchedUser = checkKeywords(normalized, userKeywords)
         if (matchedUser != null) {
             return MatchResult.Blocked(matchedUser, MatchType.USER_KEYWORD, MatchSource.NONE)
         }

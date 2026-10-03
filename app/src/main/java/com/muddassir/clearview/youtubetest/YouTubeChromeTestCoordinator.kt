@@ -34,6 +34,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.muddassir.clearview.backend.ChannelBlockRepository
+import com.muddassir.clearview.brainrot.BrainRotRefreshBus
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -128,6 +131,13 @@ class YouTubeChromeTestCoordinator(
     private val service: AccessibilityService,
     private val repository: BlockRepository,
     private val testKeywordRepository: YoutubeTestKeywordRepository,
+    /**
+     * Shared-backend channel blocking. Null keeps the previous behavior
+     * (keyword-only). WITH it, a Short whose channel the user has blocked is
+     * paused and covered exactly like a keyword match — without this, a blocked
+     * channel's Shorts played untouched, which is the gap this closes.
+     */
+    private val channelBlockRepository: ChannelBlockRepository? = null,
     /**
      * Reports a confirmed block for the Activity dashboard. Called once per
      * blocked video instance (not per enforcement tick). Optional and
@@ -275,6 +285,35 @@ class YouTubeChromeTestCoordinator(
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+
+    /** Video instance whose channel has already been checked (single-shot). */
+    private var lastChannelCheckVideoId: String? = null
+
+    /**
+     * True when the ACTIVE block came from a blocked channel rather than a
+     * keyword. Such a block must survive scans that find no keyword — otherwise
+     * the "keyword no longer matches" release fires on the very next scan and
+     * the overlay disappears the instant it appears.
+     */
+    private var blockedByChannel = false
+
+    /**
+     * Fired whenever the blocked lists change (a block added or removed
+     * anywhere). The "Not interested" flow blocks the channel of the video on
+     * screen, and the per-instance channel check may already have run and found
+     * it ALLOWED — so clear that mark and re-scan now, rather than waiting for a
+     * new video instance that never comes while the user stares at the video.
+     */
+    private val blockRefreshListener: () -> Unit = {
+        lastChannelCheckVideoId = null
+        Log.i(TAG, "YT_CHANNEL_RECHECK_QUEUED")
+        runCatching { scope.launch { scan("block-refresh", force = true) } }
+    }
+
+    init {
+        BrainRotRefreshBus.addListener(blockRefreshListener)
+    }
+
     private val contentExtractor = ContentExtractor()
 
     private var pollJob: Job? = null
@@ -479,6 +518,7 @@ class YouTubeChromeTestCoordinator(
 
     /** Called from the service on destroy / interrupt. */
     fun stop() {
+        BrainRotRefreshBus.removeListener(blockRefreshListener)
         scope.cancel()
         pollJob = null
         rescanJob = null
@@ -682,6 +722,7 @@ class YouTubeChromeTestCoordinator(
                 // video id transitioned, so this runs at most once per
                 // instance: repeated scans of the SAME Short can never restart
                 // the pause sequence.
+                blockedByChannel = false
                 blockVideo(stateId, videoId, matched)
             } else if (blockedVideoId == stateId) {
                 // Same visible instance, already blocked — the enforcement loop
@@ -692,10 +733,53 @@ class YouTubeChromeTestCoordinator(
         } else {
             lastMatchedTestKeyword = null
             Log.i(TAG, "YT_TEST_KEYWORD_MATCH none")
-            if (blockState != YoutubeBlockState.NORMAL && blockedVideoId == stateId) {
+            if (blockState != YoutubeBlockState.NORMAL && blockedVideoId == stateId &&
+                !blockedByChannel
+            ) {
                 // The keyword no longer matches this video → release enforcement.
+                // A CHANNEL-based block has no keyword, so it must NOT be released
+                // here — that release is why a blocked channel's Short flashed the
+                // overlay and then immediately vanished.
                 releaseBlock(videoId, "keyword no longer matches")
             }
+            // No keyword matched — the channel may still be blocked. A blocked
+            // CHANNEL must protect its Shorts exactly like a keyword does.
+            maybeCheckChannel(stateId, videoId, texts)
+        }
+    }
+
+    /**
+     * Async, single-shot-per-instance channel check. A blocked channel enters
+     * the SAME pause + overlay flow a keyword match uses; a backend failure NEVER
+     * blocks (it simply leaves the existing keyword protection in force).
+     */
+    private fun maybeCheckChannel(stateId: String, videoId: String?, texts: List<String>) {
+        val repo = channelBlockRepository ?: return
+        if (lastChannelCheckVideoId == stateId) return
+        val handle = YouTubeNodeRules.channelHandleFrom(texts) ?: return
+        lastChannelCheckVideoId = stateId
+        Log.i(TAG, "YT_TEST_CHANNEL_CHECK videoId=${videoId ?: "unknown"} handle=$handle")
+        scope.launch {
+            // NAMED argument: isChannelBlocked(channelId, handle, videoId) —
+            // passing the handle positionally lands it in channelId and silently
+            // never matches.
+            val blocked = withContext(Dispatchers.IO) {
+                runCatching { repo.isChannelBlocked(handle = handle) }.getOrDefault(false)
+            }
+            if (!blocked) {
+                Log.i(TAG, "YT_TEST_CHANNEL_ALLOWED handle=$handle")
+                return@launch
+            }
+            if (blockState != YoutubeBlockState.NORMAL || currentVideoId != stateId) {
+                Log.i(TAG, "YT_TEST_CHANNEL_STALE handle=$handle")
+                return@launch
+            }
+            val matched = "channel:$handle"
+            lastMatchedTestKeyword = matched
+            blockedByChannel = true
+            Log.w(TAG, "YT_TEST_CHANNEL_MATCH handle=$handle")
+            Log.w(TAG, "YT_TEST_MATCHED_KEYWORD $matched")
+            blockVideo(stateId, videoId, matched)
         }
     }
 
@@ -726,6 +810,7 @@ class YouTubeChromeTestCoordinator(
             )
             removePlayerOverlay("video changed")
             blockedVideoId = newStateId
+            blockedByChannel = false
             transitionBlockState(YoutubeBlockState.NORMAL, videoId)
             pauseAttempts = 0
             lastPauseAttemptAt = 0L
@@ -785,6 +870,7 @@ class YouTubeChromeTestCoordinator(
         Log.i(TAG, "YT_BLOCK_RELEASED videoId=${videoId ?: "unknown"} — $reason")
         removePlayerOverlay("$reason")
         transitionBlockState(YoutubeBlockState.NORMAL, videoId)
+        blockedByChannel = false
         pauseAttempts = 0
         noControlTicks = 0
         resetPausePhase()

@@ -73,8 +73,13 @@ class MainViewModel : ViewModel() {
         // A background refresh so the global rules are current shortly after the
         // app opens. Failure is a no-op: the previous snapshot (or the empty
         // first-run state) stays in force, and local protection is unaffected.
+        // MAIN, not IO. Every network call already hops to Dispatchers.IO
+        // internally (BrainRotClient/GlobalRulesStore), but the completion and
+        // the callbacks run on THIS dispatcher: a submit's onResult shows a
+        // Toast and mutates Compose state, and doing that from an IO thread
+        // crashes (Toast needs a Looper) and corrupts the UI snapshot.
         viewModelScopeRef = kotlinx.coroutines.CoroutineScope(
-            kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()
+            kotlinx.coroutines.Dispatchers.Main.immediate + kotlinx.coroutines.SupervisorJob()
         )
         viewModelScopeRef?.launch {
             runCatching { globalRulesStore?.sync() }

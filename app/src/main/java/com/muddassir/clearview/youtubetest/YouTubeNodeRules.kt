@@ -100,6 +100,25 @@ internal object YouTubeNodeRules {
     }
 
     /**
+     * True for YouTube's POST-ACTION confirmation, e.g. "You'll see fewer
+     * videos like this".
+     *
+     * This is the reliable signal that the user actually TOOK the "Not
+     * interested" / "Don't recommend" action. It matters because, in Chrome's
+     * web content, (a) the menu merely being OPEN is not an action, and (b) the
+     * menu item's click event carries no readable label (`text`/`content-desc`
+     * are empty on the clicked node). The confirmation toast, by contrast, only
+     * appears AFTER a real tap, and the channel handle is still on the page at
+     * that moment. Observed live on m.youtube.com/shorts in Chrome.
+     */
+    fun isNotInterestedConfirmation(s: String?): Boolean {
+        val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false
+        return lower.contains("fewer videos like this") ||
+            lower.contains("fewer videos from this channel") ||
+            lower.contains("you'll see fewer")
+    }
+
+    /**
      * True for YouTube's "Don't recommend this video" menu item.
      *
      * This is the item that OPENS the submenu; the channel action lives inside
@@ -122,6 +141,46 @@ internal object YouTubeNodeRules {
         val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false
         return isDontRecommendLabel(lower) && lower.contains("channel")
     }
+
+    /**
+     * The first channel @handle found in a set of labels, or null.
+     *
+     * Used to identify WHICH channel a surface is showing (Shorts, watch pages,
+     * the "Not interested" flow) so a blocked channel can be enforced even when
+     * no keyword matched. Preference order, most to least ambiguous:
+     *  1. an explicit "Go to channel @handle" description;
+     *  2. a label that is EXACTLY one @handle;
+     *  3. a @handle inside a short label ("Subscribe to @name").
+     * Long labels are ignored so a handle mentioned in a description or comment
+     * cannot be mistaken for the channel being watched.
+     */
+    fun channelHandleFrom(labels: List<String>): String? {
+        for (t in labels) {
+            if (t.trim().lowercase(Locale.ROOT).startsWith("go to channel @")) {
+                return ("@" + t.trim().substringAfter('@')).trimEnd('.', '_', '-')
+            }
+        }
+        for (t in labels) {
+            val trimmed = t.trim()
+            if (trimmed.length <= MAX_HANDLE_LABEL_LEN && STANDALONE_HANDLE_REGEX.matches(trimmed)) {
+                return trimmed
+            }
+        }
+        for (t in labels) {
+            if (t.length > MAX_HANDLE_LABEL_LEN) continue
+            val m = CHANNEL_HANDLE_REGEX.find(t) ?: continue
+            // YouTube writes "Subscribe to @name." — the handle character class
+            // includes '.', so a trailing sentence period is matched too. Strip
+            // trailing punctuation that is never the end of a real handle.
+            return m.value.trimEnd('.', '_', '-')
+        }
+        return null
+    }
+
+    private const val MAX_HANDLE_LABEL_LEN = 60
+    private val STANDALONE_HANDLE_REGEX = Regex("^@[A-Za-z0-9._-]{2,100}$")
+    private val CHANNEL_HANDLE_REGEX =
+        Regex("@(?=[A-Za-z0-9._-]*[A-Za-z0-9])[A-Za-z0-9._-]{2,100}")
 
     /** True for labels like "Pause" / "Pause video" (case-insensitive). */
     fun isPauseLabel(s: String?): Boolean {

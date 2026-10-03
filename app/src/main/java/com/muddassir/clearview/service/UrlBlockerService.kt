@@ -241,12 +241,15 @@ class UrlBlockerService : AccessibilityService() {
         instance = this
         repository = BlockRepository(applicationContext)
         keywordMatcher = KeywordMatcher(repository)
-        // Reporting/statistics store for the Blocking tab's Activity section.
-        // Separate test-only keyword list for the YouTube-in-Chrome Shorts
-        // experiment — never touches the normal blocked keywords. The
+        // Separate YouTube-ONLY keyword list (managed under YouTube Protection)
+        // — never touches the normal (everywhere) blocked keywords. The Shorts
         // coordinator matches ONLY against this list with its own simple
-        // matcher (the normal KeywordMatcher is deliberately not used).
+        // matcher; the long-video coordinator and the YouTube-app path receive
+        // it as an extra content-only set via the matcher's youtubeOnlyKeywords
+        // provider. It is NEVER handed to the Chrome/web paths, so a
+        // YouTube-only word can never block an ordinary web page.
         val testKeywordRepository = YoutubeTestKeywordRepository(applicationContext)
+        keywordMatcher.youtubeOnlyKeywords = { testKeywordRepository.getKeywords() }
         brainRotRepository = BrainRotRepository(applicationContext)
         // The global rule set, refreshed in the background. A failure is a no-op
         // — the previous rules stay in force and local protection is untouched.
@@ -255,15 +258,6 @@ class UrlBlockerService : AccessibilityService() {
             runCatching { globalRulesStore?.sync() }
             pushGlobalRulesIntoMatcher()
         }
-        youtubeChromeTest = YouTubeChromeTestCoordinator(
-            this,
-            repository,
-            testKeywordRepository,
-            // A blocked Short is Brain Rot protection doing its job.
-            onBlocked = { keyword, channel ->
-                brainRotRepository?.recordBlock("Brain Rot", keyword = keyword, channel = channel)
-            }
-        )
         // Shared-backend channel blocking (best-effort; a dead backend keeps
         // the existing keyword-only protection — never blocks on the network).
         val channelBlockRepository = ChannelBlockRepository(applicationContext)
@@ -272,10 +266,22 @@ class UrlBlockerService : AccessibilityService() {
         // Without this the list would be managed in the Blocking tab and never
         // consulted by the blocker — the exact gap the spec called out.
         channelBlockRepository.userChannelRepository = brainRotRepository
+        youtubeChromeTest = YouTubeChromeTestCoordinator(
+            this,
+            repository,
+            testKeywordRepository,
+            // A blocked CHANNEL protects its Shorts too, not just a keyword match.
+            channelBlockRepository,
+            // A blocked Short is Brain Rot protection doing its job.
+            onBlocked = { keyword, channel ->
+                brainRotRepository?.recordBlock("Brain Rot", keyword = keyword, channel = channel)
+            }
+        )
         longVideoBlock = LongVideoBlockCoordinator(
             this,
             repository,
             keywordMatcher,
+            testKeywordRepository,
             channelBlockRepository,
             // A blocked long video is Brain Rot protection doing its job.
             onBlocked = { keyword, channel ->

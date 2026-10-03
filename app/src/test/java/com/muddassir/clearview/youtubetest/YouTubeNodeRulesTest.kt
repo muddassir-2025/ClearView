@@ -1,5 +1,6 @@
 package com.muddassir.clearview.youtubetest
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -196,6 +197,86 @@ class YouTubeNodeRulesTest {
             assertFalse(label, YouTubeNodeRules.isNotInterestedLabel(label))
         }
         assertFalse(YouTubeNodeRules.isNotInterestedLabel(null))
+    }
+
+    // ── The post-action confirmation (the reliable "the tap happened" signal) ──
+
+    @Test
+    fun `youtube's not-interested confirmation is recognised`() {
+        // Observed live: m.youtube.com/shorts in Chrome, after tapping
+        // three dots -> Not interested.
+        assertTrue(
+            YouTubeNodeRules.isNotInterestedConfirmation(
+                "You'll see fewer videos like this"
+            )
+        )
+        assertTrue(
+            YouTubeNodeRules.isNotInterestedConfirmation(
+                "You'll see fewer videos from this channel"
+            )
+        )
+        assertTrue(YouTubeNodeRules.isNotInterestedConfirmation("You'll see fewer"))
+    }
+
+    @Test
+    fun `the menu item alone is not the confirmation`() {
+        // An OPEN menu is not a decision: acting on these would block the
+        // channel merely because the user opened the menu.
+        listOf(
+            "Not interested",
+            "Don't recommend this channel",
+            "Tell us why you're not interested",
+            "You'll see this again",
+            "Related videos",
+            null
+        ).forEach { label ->
+            assertFalse(label ?: "null", YouTubeNodeRules.isNotInterestedConfirmation(label))
+        }
+    }
+
+    // ── Channel-handle extraction (which channel a surface is showing) ────
+
+    @Test
+    fun `a channel handle is picked from the labels YouTube exposes`() {
+        // The explicit "Go to channel" description wins.
+        assertEquals(
+            "@WonderTold",
+            YouTubeNodeRules.channelHandleFrom(
+                listOf("She Was Not Expecting That!", "Go to channel @WonderTold")
+            )
+        )
+        // A standalone handle is picked when there is no "Go to channel".
+        assertEquals(
+            "@WonderTold",
+            YouTubeNodeRules.channelHandleFrom(listOf("@WonderTold", "Subscribe"))
+        )
+        // A handle embedded in a short label is picked last.
+        assertEquals(
+            "@WonderTold",
+            YouTubeNodeRules.channelHandleFrom(listOf("Subscribe to @WonderTold."))
+        )
+    }
+
+    @Test
+    fun `no handle is invented from ordinary labels`() {
+        assertEquals(
+            null,
+            YouTubeNodeRules.channelHandleFrom(
+                listOf("Share", "Not interested", "New tab", "m.youtube.com/shorts/bS--8LdQ6O0")
+            )
+        )
+    }
+
+    @Test
+    fun `a handle mentioned in a long description is ignored`() {
+        // A long comment/description mentioning another channel must not be
+        // mistaken for the channel being watched.
+        assertEquals(
+            null,
+            YouTubeNodeRules.channelHandleFrom(
+                listOf("Watch more from @SomeoneElse by clicking this very long link in the description")
+            )
+        )
     }
 
     @Test
