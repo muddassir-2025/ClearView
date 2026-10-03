@@ -439,7 +439,6 @@ private fun DhikrPage(
                 fontSize = 34.sp,
                 lineHeight = (34 * QURAN_LINE_HEIGHT_RATIO).sp,
                 fontFamily = QuranFontFamily,
-                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
         }
@@ -1120,7 +1119,6 @@ private fun ManageRow(
                         fontSize = 16.sp,
                         lineHeight = (16 * QURAN_LINE_HEIGHT_RATIO).sp,
                         fontFamily = QuranFontFamily,
-                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1452,7 +1450,6 @@ private fun DhikrSearchSheet(
                                     fontSize = 15.sp,
                                     lineHeight = (15 * QURAN_LINE_HEIGHT_RATIO).sp,
                                     fontFamily = QuranFontFamily,
-                                    fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )

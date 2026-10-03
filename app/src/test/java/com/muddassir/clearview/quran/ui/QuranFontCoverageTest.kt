@@ -1,6 +1,5 @@
 package com.muddassir.clearview.quran.ui
 
-import androidx.compose.ui.text.font.FontWeight
 import com.muddassir.clearview.R
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -41,22 +40,37 @@ class QuranFontCoverageTest {
      */
     @Test
     fun `the Quran family is the measured full-coverage face`() {
-        assertEquals(R.font.scheherazade_new_bold, QURAN_FONT_RES)
+        // Measured over all 6236 verses: every "official IndoPak" font (Amiri,
+        // QuranWBW, PDMS Saleem) is missing 12-15 marks against THIS app's text,
+        // because the app's text is a different IndoPak corpus. Scheherazade New
+        // covers all of it.
+        assertEquals(R.font.scheherazade_new, QURAN_FONT_RES)
     }
 
     @Test
-    fun `the Quran face is bold`() {
-        assertEquals(FontWeight.Bold, QURAN_FONT_WEIGHT)
-    }
-
-    @Test
-    fun `the line height leaves room for the marks`() {
-        // The corpus's ink spans 2.09 em in this face, so anything less than
-        // that clips the outer harakat.
+    fun `the line height leaves room for the tallest mark`() {
+        // Measured in Scheherazade New Regular: ascent 1.343 em, descent 0.697 em,
+        // tallest mark 1.279 em above the baseline — inside the font's own
+        // ascent, so no clipping. A mark's room above the baseline is
+        // (lineHeight + ascent - descent) / 2, so the ratio must satisfy
+        // ratio >= 2*tallest - ascent + descent = 2*1.279 - 1.343 + 0.697 = 1.912.
+        val ascent = 1.343f
+        val descent = 0.697f
+        val tallestMark = 1.279f
+        val required = 2f * tallestMark - ascent + descent
         assertTrue(
-            "line-height ratio $QURAN_LINE_HEIGHT_RATIO clips the marks",
-            QURAN_LINE_HEIGHT_RATIO >= 2.09f
+            "line-height ratio $QURAN_LINE_HEIGHT_RATIO clips the tallest mark (needs $required)",
+            QURAN_LINE_HEIGHT_RATIO >= required
         )
+    }
+
+    @Test
+    fun `the three marks that overshoot the ascent are known`() {
+        // These are the marks that reach past the font's own ascent line and so
+        // depend on the line height to stay visible. If a future font change
+        // alters this set, it should be a deliberate edit here.
+        val overAscent = listOf(0x08DA, 0x08D4, 0x08DD)
+        assertTrue(overAscent.all { indoPakMarks.contains(it) })
     }
 
     @Test

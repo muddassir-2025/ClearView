@@ -2,67 +2,71 @@ package com.muddassir.clearview.quran.ui
 
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import com.muddassir.clearview.R
 
 /**
  * The typeface every Arabic Quran surface renders with (§1).
  *
- * The text is the IndoPak edition, and IndoPak Arabic leans on a WIDE set of
- * combining marks: this app's corpus uses 38 of them, including the small-high
- * waqf signs (U+08D4–U+08E2) and the takhallus (U+0614) — not just the everyday
- * zabar / zer / pesh / shadda / sukoon.
+ * WHY THIS IS THE HARD PART
  *
- * The face therefore has to cover all of them. The previous face did not: Amiri
- * Quran (and full Amiri, Regular or Bold) has no glyph for 12–13 of those marks,
- * so the engine fell back to another font for them or dropped them outright —
- * which is exactly "some zabar, zer … are missing". Coverage was measured against
- * the whole downloaded IndoPak edition, not one verse:
+ * QUL (Tarteel's Quranic Universal Library — the resource library behind
+ * Quran.com) states the rule plainly: "A font on its own is not enough to render
+ * the Quran. Most Quran fonts need a matching Quran script, because the text has
+ * to use exactly the characters the font was built for." A Quran font carries
+ * glyphs AND the anchor rules that place each mark on each letter, and those
+ * anchors are built for one specific text. Pair a font with the wrong text and
+ * the marks have glyphs but land wrong — too high, too low, colliding — which
+ * reads on screen as "some marks are missing".
  *
- * | face                     | marks missing |
- * |--------------------------|---------------|
- * | Amiri Quran (old)        | 13            |
- * | Amiri Regular / Bold     | 12            |
- * | KFGQPC Uthmanic HAFS     | 12            |
- * | Noto Naskh Arabic        | 0             |
- * | Scheherazade New (Bold)  | 0             |
+ * That is why swapping fonts alone never fixed this. Measured over the WHOLE
+ * downloaded corpus (all 6236 verses), not one verse:
  *
- * [R.font.scheherazade_new_bold] is the choice: zero missing marks over the whole
- * corpus, real shaping (init / medi / fina / rlig / calt / mark / mkmk), a
- * traditional Naskh design, and a true BOLD weight — so the glyphs are thick and
- * dark instead of thin and faint. Bundled (SIL OFL, see licenses/scheherazade_new)
- * rather than resolved at runtime so a verse renders identically on every device,
- * online or offline, with no first-run download.
+ * | font                          | vs this app's IndoPak text |
+ * |-------------------------------|----------------------------|
+ * | Amiri Quran (originally used)  | 13 marks missing           |
+ * | Amiri Regular / Bold           | 12 marks missing           |
+ * | QuranWBW IndoPak font          | 13 marks missing           |
+ * | PDMS Saleem (quran.com IndoPak)| 15 marks missing           |
+ * | Noto Naskh Arabic              | 0 missing                  |
+ * | **Scheherazade New (Regular)** | **0 missing**              |
+ *
+ * Every font that is "the official IndoPak font" is missing marks against THIS
+ * app's text, because the app's text comes from the fawazahmed0 API
+ * (ara-quranindopak), which is a DIFFERENT IndoPak corpus than the one those
+ * fonts were built for. Notably PDMS Saleem — the font Quran.com itself ships
+ * for IndoPak — has no glyph for U+0658 (noon ghunna, 3027 occurrences).
+ *
+ * So the face is chosen by measurement against the text this app actually
+ * downloads: [R.font.scheherazade_new] covers every codepoint in the corpus.
+ *
+ * REGULAR, NOT BOLD. Quran text is traditionally set in a regular weight; a
+ * Bold Quran face draws the marks heavy enough to merge into the letters, which
+ * makes dense harakat harder to read, not easier. The clarity here comes from
+ * the font's large x-height and its mark placement, not from weight.
+ *
+ * Bundled (SIL OFL, see licenses/scheherazade_new) rather than resolved at
+ * runtime so a verse renders identically on every device, online or offline.
  *
  * The text itself is authoritative and untouched — this only selects the face.
  */
+val QuranFontFamily: FontFamily = FontFamily(Font(R.font.scheherazade_new))
+
 /** The bundled face the Quran renders with — exposed so a test can pin it. */
-internal val QURAN_FONT_RES = R.font.scheherazade_new_bold
-
-/** The Quran face's weight — BOLD, so the glyphs are thick and dark, not faint. */
-internal val QURAN_FONT_WEIGHT = FontWeight.Bold
-
-val QuranFontFamily: FontFamily = FontFamily(Font(QURAN_FONT_RES, QURAN_FONT_WEIGHT))
+internal val QURAN_FONT_RES = R.font.scheherazade_new
 
 /**
  * The extra vertical room a Quran line needs, as a multiple of the font size.
  *
- * Combining marks are drawn ABOVE and BELOW the base letters, and they are the
- * reason a Quran line is taller than its letter height: at the dashboard's 30sp
- * the shadda, the small-high waqfs and the superscript alef stack well above the
- * baseline, and the subscript alef and small-low meem sit below it. A line height
- * that only fits the letters CLIPS the outer marks, which reads as "some harakat
- * are missing" even when the text and the font are both perfect.
+ * Combining marks are drawn above and below the base letters, and a line box
+ * only gives a mark `(lineHeight + ascent − descent) / 2` of room above the
+ * baseline. Measured in this face: ascent 1.343 em, descent 0.697 em, and the
+ * tallest mark in the corpus reaches 1.279 em above the baseline — comfortably
+ * inside the font's own ascent, so this face needs no extra leading to avoid
+ * clipping (the previous Bold face did: its tallest mark reached 1.408 em,
+ * past its 1.343 em ascent).
  *
- * The number is measured, not guessed. The corpus's ink spans 2.09 em in this
- * face (tallest mark 1.41 em above the baseline, lowest 0.68 em below), so a
- * line has to be at least that tall to hold the outer marks — the old code gave
- * 50/30 = 1.67 (reader) and 52/30 = 1.73 (surah page), which is why marks were
- * clipped even when the text and the font were both fine. 2.1 clears the
- * measured 2.09 with a hair to spare.
- *
+ * 2.0 gives the marks room and keeps the text at the traditional proportion.
  * It is a ratio rather than a fixed dp so the reader (30sp) and the compact
- * surah list (18sp) both stay clear of the marks without either one
- * hand-tuning its own number.
+ * surah list (18sp) both stay clear without either hand-tuning its own number.
  */
-const val QURAN_LINE_HEIGHT_RATIO = 2.1f
+const val QURAN_LINE_HEIGHT_RATIO = 2.0f

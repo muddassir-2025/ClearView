@@ -1606,9 +1606,9 @@ private fun SurahHead(surahNumber: Int, mode: QuranReadMode, basmala: String) {
         fontSize = 24.sp,
         lineHeight = (24 * QURAN_LINE_HEIGHT_RATIO).sp,
         // Arabic scripture (opens every surah but At-Tawba): the Quran face, so
-        // the basmala's harakat render exactly as the verses' do.
+        // the basmala's harakat render exactly as the verses' do. No synthetic
+        // bold — it merges dense marks into the letters.
         fontFamily = QuranFontFamily,
-        fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.fillMaxWidth()
@@ -1659,10 +1659,9 @@ private fun ArabicVerse(
         text = text,
         fontSize = 30.sp,
         lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
-        // Bold Quran face so every harakat in the authoritative text renders
-        // thick and unclipped (§1).
+        // Quran face so every harakat in the authoritative text renders (§1).
+        // No synthetic bold: it merges dense marks into the letters.
         fontFamily = QuranFontFamily,
-        fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center,
         // RTL is the script's own direction — the paragraph direction is taken
         // from the first strong character, so the Arabic lays itself out from the
@@ -2164,7 +2163,6 @@ private fun VerseSearchRow(
                     // Arabic verse preview: the Quran face, so harakat survive
                     // even at this small size.
                     fontFamily = QuranFontFamily,
-                    fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )

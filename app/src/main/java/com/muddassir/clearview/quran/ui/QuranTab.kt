@@ -294,10 +294,10 @@ private fun VerseDisplay(
             // Room for the marks above and below the letters — a line height that
             // only fits the glyphs clips the outer harakat (§1).
             lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
-            // Bold Quran face so every harakat in the authoritative text renders
-            // thick, dark and unclipped (§1).
+            // Quran face so every harakat in the authoritative text renders (§1).
+            // NO synthetic bold: on a dense Quran text it merges the marks into
+            // the letters, which is what made them look wrong/missing.
             fontFamily = QuranFontFamily,
-            fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(28.dp))
