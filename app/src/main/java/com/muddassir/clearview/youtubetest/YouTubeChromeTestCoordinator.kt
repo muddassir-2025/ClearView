@@ -1020,33 +1020,24 @@ class YouTubeChromeTestCoordinator(
                 }
             }
             PausePhase.OBSERVE -> {
+                // EXACTLY ONE tap was sent for this visible instance. A second
+                // tap would toggle playback straight back on, which is what
+                // made the video play-pause-play. So this phase never taps
+                // again: it only observes, and then protects.
+                //
                 // A Short exposes no Play/Pause control in the accessibility
-                // tree, so playback state cannot be read from the tree. The
-                // device's own audio output can be read, and it is the thing
-                // that matters here: while Chrome is still producing sound the
-                // pause has not taken effect. Silence (or a system that does
-                // not report media audio) is treated as paused.
+                // tree, so the tree cannot say whether the tap worked. The
+                // device's audio output can: silence means the pause took.
                 if (!chromeAudioActive()) {
                     Log.i(TAG, "YT_BLOCK_PAUSE_CONFIRMED_AUDIO videoId=$videoId — Chrome audio silent")
                     Log.i(TAG, "YT_BLOCK_PAUSE_CONFIRMED videoId=$videoId")
-                    playbackUnknown(videoId, root)
-                } else if (now - pausePhaseSince >= PAUSE_OBSERVE_MS) {
-                    if (pauseAttempts < MAX_PAUSE_ATTEMPTS) {
-                        // The tap evidently did not reach the player (audio is
-                        // still playing). Send another centre tap — bounded, and
-                        // it stops the moment the audio goes quiet.
-                        pauseAttempts++
-                        Log.i(TAG, "YT_BLOCK_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — retry tap attempt=$pauseAttempts")
-                        requestPhysicalPause(videoId, root, lastKnownPlayerBounds)
-                        pausePhaseSince = now
-                    } else {
-                        Log.i(
-                            TAG,
-                            "YT_BLOCK_PAUSE_OBSERVE_TIMEOUT videoId=$videoId — audio still playing after $pauseAttempts taps, protecting"
-                        )
-                        playbackUnknown(videoId, root)
-                    }
+                } else if (now - pausePhaseSince < PAUSE_OBSERVE_MS) {
+                    return
+                } else {
+                    Log.i(TAG, "YT_BLOCK_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — single tap sent, not retrying")
                 }
+                // Paused, or unknowable: cover the video and stop touching it.
+                playbackUnknown(videoId, root)
             }
         }
     }
@@ -1872,12 +1863,6 @@ class YouTubeChromeTestCoordinator(
     /** True for labels like "Play" / "Play video" (case-insensitive). */
     private fun isPlayLabel(s: String?): Boolean = YouTubeNodeRules.isPlayLabel(s)
 
-    /** True for the media element's own id (`player` / `movie_player`). */
-    private fun isPlayerElementId(viewId: String?): Boolean {
-        val id = viewId?.substringAfterLast('/')?.trim()?.lowercase(Locale.ROOT) ?: return false
-        return id == "player" || id == "movie_player"
-    }
-
     /** A player/playback-related node with its key properties (diagnostics). */
     private class PlayerNode(
         val node: AccessibilityNodeInfo,
@@ -1943,13 +1928,13 @@ class YouTubeChromeTestCoordinator(
         } catch (e: Exception) {
             null
         }
-        // Prefer the actual media element (`player` / `movie_player`) over the
-        // full-screen shells the Shorts page wraps around it — the shells share
-        // the same bounds, but only the media element answers a reveal click.
-        // A node with no bounds is useless as a click target, so it is only
-        // eligible for the named-player tiers when it is actually on screen.
+        // Prefer a node with real bounds, and among those the full-screen
+        // SHELL over the media element. The shell is a plain container, so the
+        // reveal click on it does nothing; the media element is clickable and
+        // clicking it TOGGLES play/pause, which turned the reveal step into an
+        // extra pause-then-play cycle on top of the actual pause tap.
         fun usable(p: PlayerNode) = boundsOf(p.node) != null
-        val selected = players.firstOrNull { isPlayerElementId(it.viewId) && usable(it) }
+        val selected = players.firstOrNull { it.isVideoPlayer && !it.clickable && usable(it) }
             ?: players.firstOrNull { it.isVideoPlayer && usable(it) }
             ?: players.firstOrNull {
                 usable(it) && (isPlayLabel(it.text) || isPlayLabel(it.desc) ||

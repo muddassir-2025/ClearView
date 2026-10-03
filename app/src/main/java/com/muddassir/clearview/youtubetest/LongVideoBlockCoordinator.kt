@@ -120,9 +120,6 @@ class LongVideoBlockCoordinator(
         private const val ENFORCEMENT_INTERVAL_MS = 400L
         private const val PAUSE_OBSERVE_MS = 1200L
         private const val CONTROLS_WAIT_MS = 500L
-        // Bounded extra centre taps when the tree exposes no Play/Pause control
-        // and Chrome's audio is still playing (pause has not taken effect).
-        private const val MAX_PAUSE_RETRIES = 4
         // While a watch page is loading, Chrome may briefly expose no watch
         // signal (bare-domain address bar, title not rendered). Only reset the
         // long-video state after this grace window with no watch signal — a
@@ -258,8 +255,6 @@ class LongVideoBlockCoordinator(
     /** True once the SINGLE pause action (control click or physical tap) has
      *  been sent for this generation. Cleared only by a new instance. */
     private var longVideoPauseAttempted = false
-    /** Bounded retry count for the audio-based pause confirmation. */
-    private var longVideoPauseRetries = 0
     /** True only when a visible Play control confirmed the paused state. */
     private var longVideoPauseConfirmed = false
     private var longVideoOverlayActive = false
@@ -470,7 +465,6 @@ class LongVideoBlockCoordinator(
         longVideoBlocked = false
         longVideoChannelChecked = false
         longVideoPauseAttempted = false
-        longVideoPauseRetries = 0
         longVideoPauseConfirmed = false
         pauseObserveSince = 0L
         controlsRevealGeneration = -1L
@@ -508,7 +502,6 @@ class LongVideoBlockCoordinator(
         longVideoBlocked = false
         longVideoChannelChecked = false
         longVideoPauseAttempted = false
-        longVideoPauseRetries = 0
         longVideoPauseConfirmed = false
         longVideoOverlayActive = false
         pauseObserveSince = 0L
@@ -861,6 +854,10 @@ class LongVideoBlockCoordinator(
             }
             else -> {
                 recycleIfNotRoot(button.node, root)
+                // EXACTLY ONE pause action was sent for this instance. A second
+                // tap would toggle playback back on, so this phase never taps
+                // again — it observes, then protects.
+                //
                 // No Play/Pause control to read the state from: fall back to the
                 // audio output, which is what the user actually hears.
                 if (!chromeAudioActive()) {
@@ -869,21 +866,10 @@ class LongVideoBlockCoordinator(
                     transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
                     enableOverlay()
                 } else if (now - pauseObserveSince >= PAUSE_OBSERVE_MS) {
-                    if (longVideoPauseRetries < MAX_PAUSE_RETRIES) {
-                        longVideoPauseRetries++
-                        Log.i(TAG, "LONG_VIDEO_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — retry tap attempt=$longVideoPauseRetries")
-                        if (requestPhysicalPause(root)) {
-                            pauseObserveSince = now
-                        } else {
-                            Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
-                            transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
-                            enableOverlay()
-                        }
-                    } else {
-                        Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
-                        transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
-                        enableOverlay()
-                    }
+                    Log.i(TAG, "LONG_VIDEO_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — single pause already sent, not retrying")
+                    Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
+                    transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
+                    enableOverlay()
                 } else {
                     Log.i(TAG, "LONG_VIDEO_PAUSE_OBSERVE videoId=$videoId — waiting for visible Play control")
                 }
