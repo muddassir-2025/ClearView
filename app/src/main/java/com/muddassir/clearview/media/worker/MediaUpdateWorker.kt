@@ -5,6 +5,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.muddassir.clearview.media.data.MediaBadge
 import com.muddassir.clearview.media.data.MediaRepository
+import com.muddassir.clearview.media.data.WatchProgressStore
 
 /**
  * Background job that checks every saved channel for new uploads and posts a
@@ -66,70 +67,97 @@ class MediaUpdateWorker(
         // next periodic run retries; a partial failure keeps the successes.
         val fresh = repository.refreshAllVideos(channels) ?: return Result.success()
 
-        val alreadyNotified = repository.getNotifiedVideoIds()
-        val firstRefreshBaseline = fresh
-            .filter { it.channelId in unbaselinedChannelIds }
-            .map { it.videoId }
-            .toSet()
-        val baselineIds = alreadyNotified + firstRefreshBaseline
-        fresh.map { it.channelId }
-            .filter { it in unbaselinedChannelIds }
-            .distinct()
-            .forEach(repository::markNotificationBaselineComplete)
-        if (firstRefreshBaseline.isNotEmpty()) {
-            repository.markVideosNotified(baselineIds)
-        }
-        // Videos only count as new when they were published at/after the moment
-        // the channel was subscribed AND their id was never seen before.
-        val addedAtByChannel = channels.associate { it.channelId to it.addedAtEpochMillis }
-        val notifiedChannelIds = notificationChannelIds(channels)
-        val newVideos = fresh.filter { v ->
-            v.channelId in notifiedChannelIds &&
-                isNotificationEligible(
-                    videoId = v.videoId,
-                    publishedAtEpochMillis = v.publishedAtEpochMillis,
-                    addedAtEpochMillis = addedAtByChannel[v.channelId] ?: 0L,
-                    alreadyNotified = baselineIds
-                )
-        }
-        if (newVideos.isEmpty()) return Result.success()
+        // The device's watch state: a video the reader has already played is
+        // CONSUMED and must never be announced afterwards (§5).
+        val watchProgress = WatchProgressStore(applicationContext)
 
-        // One notification per new post, across YouTube, Instagram and X.
-        // Do not group by channel here: a channel can publish several posts
-        // between checks and the user asked to receive every one.
-        val updates = newVideos
-            .sortedByDescending { it.publishedAtEpochMillis }
-            .map { video ->
-                com.muddassir.clearview.media.model.MediaChannelUpdate(
-                    channelId = video.channelId,
-                    channelName = video.channelName.ifBlank { video.channelId },
-                    latestVideoId = video.videoId,
-                    latestVideoTitle = video.title,
-                    publishedAtEpochMillis = video.publishedAtEpochMillis
-                )
+        // §5: everything from READING the notified set to WRITING it back is one
+        // critical section. A periodic run and a "check now" run are separate
+        // WorkManager unique names, so they can overlap; without this, both could
+        // read the same stale set, both decide the same video is new, and both
+        // post it. The lock makes that impossible within the process, and the
+        // persisted set covers process death.
+        synchronized(RUN_LOCK) {
+            val alreadyNotified = repository.getNotifiedVideoIds()
+            val firstRefreshBaseline = fresh
+                .filter { it.channelId in unbaselinedChannelIds }
+                .map { it.videoId }
+                .toSet()
+            val baselineIds = alreadyNotified + firstRefreshBaseline
+            fresh.map { it.channelId }
+                .filter { it in unbaselinedChannelIds }
+                .distinct()
+                .forEach(repository::markNotificationBaselineComplete)
+            if (firstRefreshBaseline.isNotEmpty()) {
+                repository.markVideosNotified(baselineIds)
             }
-        val postedCount = MediaNotifier.notifyUpdates(applicationContext, updates)
+            // Videos only count as new when they were published at/after the
+            // moment the channel was subscribed, their id was never seen before,
+            // and this device has not already played them.
+            val addedAtByChannel = channels.associate { it.channelId to it.addedAtEpochMillis }
+            val notifiedChannelIds = notificationChannelIds(channels)
+            val newVideos = fresh
+                // Deduped by content id, so a feed merged from several sources
+                // can never contribute the same video twice.
+                .distinctBy { it.videoId }
+                .filter { v ->
+                    v.channelId in notifiedChannelIds &&
+                        isNotificationEligible(
+                            videoId = v.videoId,
+                            publishedAtEpochMillis = v.publishedAtEpochMillis,
+                            addedAtEpochMillis = addedAtByChannel[v.channelId] ?: 0L,
+                            alreadyNotified = baselineIds,
+                            viewed = watchProgress.get(v.videoId) != null
+                        )
+                }
+            if (newVideos.isEmpty()) return@synchronized
 
-        // Store what was detected in the in-app "Latest Updates" feed (home
-        // tab) so every notification also appears there — even when the OS
-        // blocks the notification itself, the update is still recorded.
-        repository.recordChannelUpdates(updates)
+            // One notification per new post, across YouTube, Instagram and X.
+            // Do not group by channel here: a channel can publish several posts
+            // between checks and the user asked to receive every one.
+            val updates = newVideos
+                .sortedByDescending { it.publishedAtEpochMillis }
+                .map { video ->
+                    com.muddassir.clearview.media.model.MediaChannelUpdate(
+                        channelId = video.channelId,
+                        channelName = video.channelName.ifBlank { video.channelId },
+                        latestVideoId = video.videoId,
+                        latestVideoTitle = video.title,
+                        publishedAtEpochMillis = video.publishedAtEpochMillis
+                    )
+                }
+            val postedCount = MediaNotifier.notifyUpdates(applicationContext, updates)
 
-        // If Android notification permission is denied, do not consume the
-        // ids: after the user grants permission, the next check must still be
-        // able to deliver these updates. A notification that was actually
-        // posted is safe to deduplicate.
-        if (postedCount > 0) {
-            repository.markVideosNotified(baselineIds + newVideos.map { it.videoId })
+            // Store what was detected in the in-app "Latest Updates" feed (home
+            // tab) so every notification also appears there — even when the OS
+            // blocks the notification itself, the update is still recorded.
+            repository.recordChannelUpdates(updates)
+
+            // If Android notification permission is denied, do not consume the
+            // ids: after the user grants permission, the next check must still be
+            // able to deliver these updates. A notification that was actually
+            // posted is safe to deduplicate.
+            if (postedCount > 0) {
+                repository.markVideosNotified(baselineIds + newVideos.map { it.videoId })
+            }
+
+            // New uploads detected → the launcher badge should show them (the
+            // in-app unread count is recomputed from the same persisted history).
+            MediaBadge.setBadge(
+                applicationContext,
+                repository.countUnreadUpdates(repository.getUpdatesHistory())
+            )
         }
-
-        // New uploads detected → the launcher badge should show them (the
-        // in-app unread count is recomputed from the same persisted history).
-        MediaBadge.setBadge(
-            applicationContext,
-            repository.countUnreadUpdates(repository.getUpdatesHistory())
-        )
         return Result.success()
+    }
+
+    private companion object {
+        /**
+         * Serializes overlapping worker runs in this process (§5). WorkManager
+         * runs its workers in the app process, so a monitor here is enough to
+         * stop a periodic tick and a "check now" request racing each other.
+         */
+        val RUN_LOCK = Any()
     }
 }
 
@@ -159,7 +187,14 @@ internal fun isNotificationEligible(
     videoId: String,
     publishedAtEpochMillis: Long,
     addedAtEpochMillis: Long,
-    alreadyNotified: Set<String>
+    alreadyNotified: Set<String>,
+    /**
+     * True when this device has already PLAYED the video (§5). A consumed video
+     * is never announced, even if the notified-id set lost track of it — viewing
+     * is the stronger signal, and it must survive the cap on that set.
+     */
+    viewed: Boolean = false
 ): Boolean =
     videoId !in alreadyNotified &&
+        !viewed &&
         publishedAtEpochMillis >= addedAtEpochMillis.coerceAtLeast(0L)

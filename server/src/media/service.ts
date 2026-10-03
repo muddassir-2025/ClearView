@@ -346,6 +346,8 @@ export async function lockMediaForClaim(
         -- the channel would be left pointing at an object that belongs to a
         -- post the administrator could then delete.
         AND m.channel_id IS NULL
+        -- A card's image is not a post attachment either.
+        AND m.advertisement_id IS NULL
       FOR UPDATE`,
     [adminId, ...mediaIds]
   );
@@ -436,14 +438,16 @@ export async function sweepAbandonedUploads(
 ): Promise<{ readonly removed: number; readonly failed: number }> {
   if (!store.configured) return { removed: 0, failed: 0 };
 
-  // `post_id IS NULL AND channel_id IS NULL` is what "claimed by nobody"
-  // means: a row is either attached to a post or it is a channel's profile
-  // image, and only a row that is neither is abandoned.
+  // `post_id IS NULL AND channel_id IS NULL AND advertisement_id IS NULL` is
+  // what "claimed by nobody" means: a row is attached to a post, is a channel's
+  // profile image, or is an advertisement's card image, and only a row that is
+  // none of those is abandoned.
   const rows = await database.query<{ id: string; object_key: string }>(
     `SELECT id, object_key
        FROM post_media
       WHERE post_id IS NULL
         AND channel_id IS NULL
+        AND advertisement_id IS NULL
         AND created_at < now() - ($1 || ' minutes')::interval
       ORDER BY created_at
       LIMIT $2`,
@@ -457,7 +461,8 @@ export async function sweepAbandonedUploads(
     try {
       await store.remove(r.object_key);
       await database.query(
-        `DELETE FROM post_media WHERE id = $1 AND post_id IS NULL AND channel_id IS NULL`,
+        `DELETE FROM post_media
+          WHERE id = $1 AND post_id IS NULL AND channel_id IS NULL AND advertisement_id IS NULL`,
         [r.id]
       );
       removed += 1;
@@ -572,6 +577,110 @@ export async function releaseChannelIcon(
       WHERE channel_id = $1 AND post_id IS NULL
       FOR UPDATE`,
     [channelId]
+  );
+  if (!row) return null;
+
+  await database.query(`DELETE FROM post_media WHERE id = $1`, [row.id]);
+  return row.object_key;
+}
+
+/**
+ * Claim a confirmed upload as an advertisement's card image (§11).
+ *
+ * The same lifecycle as [claimChannelIcon] — a picture uploaded through the
+ * existing media handshake — with the same transaction/removal split: the
+ * replaced object's key is returned rather than removed here, because deleting
+ * it before the commit could leave an ad whose image is a row pointing at
+ * nothing. A card image must be an image the claiming administrator uploaded
+ * (owner check in SQL), must be `ready`, and must not already belong to a post
+ * or a channel.
+ */
+export async function claimAdvertisementImage(
+  database: Queryable,
+  adminId: string,
+  advertisementId: string,
+  mediaId: string
+): Promise<{
+  readonly mediaId: string;
+  readonly objectKey: string;
+  readonly previousObjectKey: string | null;
+}> {
+  if (!isUuid(mediaId)) throw badRequest('unknown_media', 'That file is not available to attach.');
+
+  const row = await database.queryOne<{
+    id: string;
+    object_key: string;
+    status: string;
+    kind: string;
+    post_id: string | null;
+    channel_id: string | null;
+    advertisement_id: string | null;
+  }>(
+    `SELECT id, object_key, status, kind, post_id, channel_id, advertisement_id
+       FROM post_media
+      WHERE id = $1 AND owner_id = $2
+      FOR UPDATE`,
+    [mediaId, adminId]
+  );
+
+  // One answer for "no such row" and "somebody else's row".
+  if (!row) throw badRequest('unknown_media', 'That file is not available to attach.');
+  if (row.status !== 'ready') {
+    throw conflict('media_not_ready', 'That file has not finished uploading yet.');
+  }
+  if (row.post_id !== null) {
+    throw conflict('media_already_used', 'That file is already part of a post.');
+  }
+  if (row.channel_id !== null) {
+    throw conflict('media_already_used', 'That file is already a channel image.');
+  }
+  if (row.kind !== 'image') {
+    throw badRequest('icon_must_be_image', 'An advertisement image has to be a picture.');
+  }
+  if (row.advertisement_id !== null && row.advertisement_id !== advertisementId) {
+    throw conflict('media_already_used', 'That file is already another advertisement’s image.');
+  }
+
+  const previous = await database.queryOne<{ id: string; object_key: string }>(
+    `SELECT id, object_key
+       FROM post_media
+      WHERE advertisement_id = $1 AND id <> $2
+      FOR UPDATE`,
+    [advertisementId, mediaId]
+  );
+  if (previous) {
+    await database.query(`DELETE FROM post_media WHERE id = $1`, [previous.id]);
+  }
+
+  await database.query(
+    `UPDATE post_media SET advertisement_id = $2, position = 0 WHERE id = $1`,
+    [mediaId, advertisementId]
+  );
+
+  return {
+    mediaId,
+    objectKey: row.object_key,
+    previousObjectKey: previous?.object_key ?? null,
+  };
+}
+
+/**
+ * Release an advertisement's card image, returning the object to remove.
+ *
+ * Called when an image ad is deleted or an image is cleared. The row is deleted
+ * rather than left dangling: a released card image has no purpose and only the
+ * owner could adopt it.
+ */
+export async function releaseAdvertisementImage(
+  database: Queryable,
+  advertisementId: string
+): Promise<string | null> {
+  const row = await database.queryOne<{ id: string; object_key: string }>(
+    `SELECT id, object_key
+       FROM post_media
+      WHERE advertisement_id = $1
+      FOR UPDATE`,
+    [advertisementId]
   );
   if (!row) return null;
 

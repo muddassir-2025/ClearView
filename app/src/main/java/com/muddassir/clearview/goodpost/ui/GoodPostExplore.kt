@@ -50,6 +50,13 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
             }
         )
 
+        // §12: the Explore placement, above the results and below the search
+        // field. A separate list from the Channels carousel, because a card can
+        // be placed on one surface, the other, or both.
+        if (state.exploreAds.isNotEmpty()) {
+            AdCarousel(ads = state.exploreAds)
+        }
+
 
 
         if (state.categories.isNotEmpty()) {

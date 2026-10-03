@@ -481,15 +481,6 @@ object TodoCodec {
         )
     }
 
-    fun withEvent(item: TodoItem, event: TodoEvent): TodoItem =
-        item.copy(events = item.events + event)
-
-    fun validSnoozeTimes(item: TodoItem, nowMinutes: Int): List<Int> {
-        val start = item.timeStartMinutes ?: 0
-        val end = item.timeEndMinutes ?: 1439
-        return listOf(15, 30, 45, 60).mapNotNull { d -> (nowMinutes + d).takeIf { it in start..end } }
-    }
-
     /**
      * Replaces the todo's PLAN with the same id. History is IMMUTABLE: the
      * completion record, the attempts/time events and the created-at stamp are
@@ -555,9 +546,6 @@ object TodoCodec {
                 it
             }
         }
-
-    /** Alias of [removed] — archives the todo by marking it deleted. */
-    fun deletedOnly(items: List<TodoItem>, id: String): List<TodoItem> = removed(items, id)
 
     /**
      * Deletes [id] **together with its history** — the item leaves the store
@@ -991,11 +979,17 @@ object TodoCodec {
             else -> "${start.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH)}, ${SCHEDULE.format(start)}"
         }
         if (item.type == TodoType.PERMANENT) {
+            // A permanent todo is defined by the days it REPEATS on, never by the
+            // day it was created. When [scheduledDays] names the days, print
+            // them; when it is null (or all seven) the todo is due every day, and
+            // saying so is the honest label. Returning [startText] here was the
+            // bug: "Every day" todos showed "Mon, Aug 10" — the day they were
+            // created — on a card that is due today, and the date never moved.
             if (item.scheduledDays != null && item.scheduledDays.size < 7) {
                 val names = item.scheduledDays.sorted().joinToString(" • ") { DAY_NAMES[it] }
                 return names
             }
-            return startText
+            return EVERY_DAY_LABEL
         }
         val end = item.endDateEpochDay?.let { LocalDate.ofEpochDay(it) } ?: return startText
         return if (end == start) startText
@@ -1058,6 +1052,13 @@ object TodoCodec {
     }
 
     private val DAY_NAMES = arrayOf("", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+    /**
+     * The label for a permanent todo that repeats on no particular day (every
+     * day). English, matching the other labels this object prints — the app has
+     * no runtime locale switching.
+     */
+    private const val EVERY_DAY_LABEL = "Every day"
 }
 
 /** The list filters offered by the Todo screen (in the exact UI order). */

@@ -11,11 +11,14 @@ import com.muddassir.clearview.goodpost.data.AdminSession
 import com.muddassir.clearview.goodpost.data.ApiResult
 import com.muddassir.clearview.goodpost.data.CachedChannels
 import com.muddassir.clearview.goodpost.data.CachedPosts
+import com.muddassir.clearview.goodpost.data.GoodPostAd
+import com.muddassir.clearview.goodpost.data.GoodPostAdPlacement
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.GoodPostHidden
+import com.muddassir.clearview.goodpost.data.GoodPostHiddenChannel
 import com.muddassir.clearview.goodpost.data.GoodPostCodec
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
@@ -131,6 +134,15 @@ sealed interface GoodPostScreen {
     data object AdminLogin : GoodPostScreen
 
     /**
+     * Advertisement cards, as their manager sees them (§15, §16).
+     *
+     * A destination rather than an overlay: it is a list an administrator goes to,
+     * works through and leaves, and editing one card is a step over THIS screen —
+     * the same shape the channel list has with its channel form.
+     */
+    data object Ads : GoodPostScreen
+
+    /**
      * One channel, as its administrator sees it (§19, §21).
      *
      * There is no separate administrator home screen any more. An account's
@@ -183,6 +195,18 @@ data class GoodPostUiState(
      * set, because the two lists can be on screen in different states.
      */
     val selectedChannelIds: Set<String> = emptySet(),
+
+    /**
+     * The channels THIS DEVICE hides (§8).
+     *
+     * Read from the reader's own store, so it survives a restart and applies to
+     * every feed — the home list, Explore, a channel's posts, a search — rather
+     * than to the one screen a card was hidden from.
+     */
+    val hiddenChannelIds: Set<String> = emptySet(),
+
+    /** The hidden channels, by label, for the management surface (§8). */
+    val hiddenChannels: List<GoodPostHiddenChannel> = emptyList(),
 
     // ── A channel's feed (§8, §9, §10) ───────────────────────────────────
     val channel: GoodPostChannel? = null,
@@ -318,6 +342,21 @@ data class GoodPostUiState(
     val exploreCursor: String? = null,
     val exploreError: String? = null,
 
+    // ── Advertisements a reader sees (§12) ───────────────────────────────
+    //
+    // Two lists rather than one, because the two surfaces ask the server for
+    // different placements and a card can be placed on either, both or neither.
+    // Held apart so a card taken off Channels cannot linger above Explore until
+    // the next reload, and so a failure on one screen cannot blank the other.
+    //
+    // Nothing is cached and nothing is reported as an error: an advertisement is
+    // supplementary, and a screen with no card is still a working screen.
+
+    /** Active cards for the top of the Channels list (§12). */
+    val ads: List<GoodPostAd> = emptyList(),
+    /** Active cards for the top of Explore (§12). */
+    val exploreAds: List<GoodPostAd> = emptyList(),
+
     // ── Administrator (§16, §19, §21) ────────────────────────────────────
     val admin: AdminSession? = null,
     val adminEmail: String = "",
@@ -383,6 +422,53 @@ data class GoodPostUiState(
      */
     val adminChannels: List<GoodPostChannel> = emptyList(),
     val adminChannelsLoading: Boolean = false,
+
+    // ── Advertisements, administrator (§15, §16) ────────────────────────
+    //
+    // The list is every card, active or not, so the manager can see and fix the
+    // ones that are currently doing nothing — which is the whole reason the admin
+    // read exists beside the public one.
+
+    /** Every card, enabled or not, for the management list (§15). */
+    val adminAds: List<GoodPostAd> = emptyList(),
+    val adminAdsLoading: Boolean = false,
+    /**
+     * True from the moment a card is drawn over the list until it is closed (§16).
+     *
+     * An overlay rather than a destination, matching the channel form: editing one
+     * card is a step over the manager list, not a place in the back stack.
+     */
+    val adFormOpen: Boolean = false,
+    /**
+     * The card being edited, or null while a new one is being written.
+     *
+     * Null is the CREATE case and not "no form": [adFormOpen] is what says a form
+     * is on screen, so a new card and a failed load of an existing one cannot be
+     * confused with each other.
+     */
+    val adFormId: String? = null,
+    /** `text` or `image`. */
+    val adFormContentType: String = "text",
+    val adFormText: String = "",
+    val adFormTargetUrl: String = "",
+    val adFormShowInChannels: Boolean = true,
+    val adFormShowInExplore: Boolean = true,
+    val adFormEnabled: Boolean = true,
+    /** Kept as text so a half-typed number is a field not yet finished. */
+    val adFormPriority: String = "100",
+    /** ISO-8601, or blank for "no bound". */
+    val adFormStartsAt: String = "",
+    val adFormExpiresAt: String = "",
+    /**
+     * The picture being uploaded for this card.
+     *
+     * The same attachment shape the composer and the channel form use, so the
+     * upload handshake is the existing one — request, PUT, confirm — and no third
+     * way to move bytes into the product exists.
+     */
+    val adFormImage: GoodPostAttachment? = null,
+    /** The image an existing card already has, for the form's preview. */
+    val adFormExistingImageUrl: String? = null,
 
     /** A message code from the last failed action, worded by [goodPostErrorFor]. */
     val messageCode: String? = null,
@@ -648,7 +734,15 @@ class GoodPostViewModel : ViewModel() {
         appContext = context.applicationContext
         val stars = GoodPostStarred(context.applicationContext)
         starredStore = stars
-        hiddenStore = GoodPostHidden(context.applicationContext)
+        hiddenStore = GoodPostHidden(context.applicationContext).also { store ->
+            // Primed before any list loads, so the very first render already
+            // respects what this device has hidden (§8).
+            val hidden = store.channels()
+            uiState = uiState.copy(
+                hiddenChannelIds = hidden.keys.toSet(),
+                hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) }
+            )
+        }
         // §9: what this device has already had counted. Primed before any read
         // goes out, so the first page of a cold start is not reported again.
         viewedStore = GoodPostViewed(context.applicationContext).also { store ->
@@ -671,6 +765,7 @@ class GoodPostViewModel : ViewModel() {
         )
 
         refreshChannels()
+        loadAds()
         if (uiState.categories.isEmpty()) loadCategories()
 
         // The background check is enqueued unconditionally and reads the switch
@@ -755,7 +850,7 @@ class GoodPostViewModel : ViewModel() {
 
     private fun showCachedChannels(cached: CachedChannels) {
         uiState = uiState.copy(
-            channels = cached.channels,
+            channels = cached.channels.visibleChannelsToMe(),
             channelsLoading = false,
             channelsStale = true
         )
@@ -783,7 +878,7 @@ class GoodPostViewModel : ViewModel() {
             when (val follows = repo.following()) {
                 is ApiResult.Ok -> {
                     uiState = uiState.copy(
-                        channels = follows.value.items,
+                        channels = follows.value.items.visibleChannelsToMe(),
                         followedIds = follows.value.items.map { it.id }.toSet(),
                         // The channel switches on the information page draw from
                         // the server's own answer, so they are right on a device
@@ -939,7 +1034,7 @@ class GoodPostViewModel : ViewModel() {
     private suspend fun loadPublicChannels(repo: GoodPostRepository) {
         when (val result = repo.channels()) {
             is ApiResult.Ok -> uiState = uiState.copy(
-                channels = result.value.items,
+                channels = result.value.items.visibleChannelsToMe(),
                 channelsLoading = false,
                 channelsStale = false,
                 channelsError = null
@@ -957,6 +1052,40 @@ class GoodPostViewModel : ViewModel() {
                 channelsStale = uiState.channels.isNotEmpty(),
                 channelsError = if (uiState.channels.isEmpty()) "unreachable" else null
             )
+        }
+    }
+
+    // ── Advertisements a reader sees (§12) ───────────────────────────────
+
+    /**
+     * Fetch the active cards for the top of the Channels list (§12).
+     *
+     * Best-effort on purpose: an advertisement is supplementary content and a
+     * failure leaves the carousel empty rather than reporting an error over a
+     * list that still works. Fetched once per open and NOT on the refresh timer,
+     * because which card is active is decided by the server against the clock, so
+     * a minute-old answer is not meaningfully stale.
+     */
+    fun loadAds() {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val result = repo.ads(GoodPostAdPlacement.Channels)
+            if (result is ApiResult.Ok) uiState = uiState.copy(ads = result.value)
+        }
+    }
+
+    /**
+     * Fetch the active cards for the top of Explore (§12).
+     *
+     * A separate read from the Channels one because the placements are separate: a
+     * card can run on one surface, the other, or both, and the server filters by
+     * the placement it was asked for.
+     */
+    fun loadExploreAds() {
+        val repo = repository ?: return
+        viewModelScope.launch {
+            val result = repo.ads(GoodPostAdPlacement.Explore)
+            if (result is ApiResult.Ok) uiState = uiState.copy(exploreAds = result.value)
         }
     }
 
@@ -1052,7 +1181,17 @@ class GoodPostViewModel : ViewModel() {
      */
     private fun List<GoodPostPost>.visibleToMe(): List<GoodPostPost> {
         val hidden = hiddenStore ?: return this
-        return filterNot { hidden.isHidden(it.id) }
+        return filterNot { hidden.isHidden(it.id) || hidden.isChannelHidden(it.channelId) }
+    }
+
+    /**
+     * The same rule for the channel list (§8): a hidden channel leaves the home
+     * list and Explore, and comes back only when it is unhidden.
+     */
+    private fun List<GoodPostChannel>.visibleChannelsToMe(): List<GoodPostChannel> {
+        val hiddenIds = uiState.hiddenChannelIds
+        if (hiddenIds.isEmpty()) return this
+        return filterNot { it.id in hiddenIds }
     }
 
     /**
@@ -1065,6 +1204,63 @@ class GoodPostViewModel : ViewModel() {
     private fun List<GoodPostMediaItem>.visibleMediaToMe(): List<GoodPostMediaItem> {
         val hidden = hiddenStore ?: return this
         return filterNot { hidden.isHidden(it.postId) }
+    }
+
+    /**
+     * Hide a whole channel on this device (§8).
+     *
+     * The same operation Media offers on one of its videos, at the channel level:
+     * the channel leaves every feed, every one of its posts leaves with it, future
+     * posts are covered by the same rule, and the state is persisted so a restart
+     * does not bring it back. If the reader is inside the channel (or its
+     * information page) when they hide it, they are returned to the list rather
+     * than left looking at a channel they just removed.
+     */
+    fun hideChannel(channelId: String, name: String) {
+        val store = hiddenStore ?: return
+        store.hideChannel(channelId, name)
+        val hidden = store.channels()
+        val screen = uiState.screen
+        val leaving = (screen is GoodPostScreen.Channel && screen.channelId == channelId) ||
+            (screen is GoodPostScreen.ChannelInfo && screen.channelId == channelId) ||
+            (screen is GoodPostScreen.ChannelMedia && screen.channelId == channelId) ||
+            (screen is GoodPostScreen.ChannelSearch && screen.channelId == channelId)
+        uiState = uiState.copy(
+            hiddenChannelIds = hidden.keys.toSet(),
+            hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) },
+            channels = uiState.channels.filterNot { it.id == channelId },
+            posts = if (leaving) emptyList() else uiState.posts,
+            media = if (leaving) emptyList() else uiState.media,
+            channelSearchResults = uiState.channelSearchResults.filterNot { it.channelId == channelId },
+            selectedPostIds = emptySet(),
+            backStack = if (leaving) listOf(GoodPostScreen.Home) else uiState.backStack,
+            messageCode = "channel_hidden"
+        )
+    }
+
+    /** Bring a hidden channel back (§8): its posts can appear again. */
+    fun unhideChannel(channelId: String) {
+        val store = hiddenStore ?: return
+        store.unhideChannel(channelId)
+        val hidden = store.channels()
+        uiState = uiState.copy(
+            hiddenChannelIds = hidden.keys.toSet(),
+            hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) },
+            messageCode = "channel_unhidden"
+        )
+        refreshChannels()
+    }
+
+    /** Show every hidden channel again (§8). */
+    fun unhideAllChannels() {
+        val store = hiddenStore ?: return
+        store.clearChannels()
+        uiState = uiState.copy(
+            hiddenChannelIds = emptySet(),
+            hiddenChannels = emptyList(),
+            messageCode = "channel_unhidden"
+        )
+        refreshChannels()
     }
 
     fun loadPosts(channelId: String) {
@@ -1893,7 +2089,10 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             starredPostIds = store.all().map { it.postId }.toSet(),
             starred = store.forChannel(channelId)
-                .filterNot { entry -> hidden?.isHidden(entry.postId) == true }
+                .filterNot {
+                    entry -> hidden?.isHidden(entry.postId) == true ||
+                        hidden?.isChannelHidden(entry.channelId) == true
+                }
         )
     }
 
@@ -1986,7 +2185,10 @@ class GoodPostViewModel : ViewModel() {
             starredPostIds = store.all().map { it.postId }.toSet(),
             starred = store.all()
                 .filter { channelId == null || it.channelId == channelId }
-                .filterNot { entry -> hidden?.isHidden(entry.postId) == true },
+                .filterNot { entry ->
+                    hidden?.isHidden(entry.postId) == true ||
+                        hidden?.isChannelHidden(entry.channelId) == true
+                },
             // The row is gone, so its picture is too. Without this the map keeps a
             // URL for every message ever unstarred in the session.
             starredMedia = uiState.starredMedia - postId,
@@ -2182,6 +2384,9 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(query = query, explore = emptyList(), exploreCursor = null)
         open(GoodPostScreen.Explore)
         search()
+        // §12: the Explore placement is fetched on the way in, alongside the
+        // search. Best-effort, like the Channels one — see [loadExploreAds].
+        loadExploreAds()
     }
 
     /**
@@ -2833,6 +3038,300 @@ class GoodPostViewModel : ViewModel() {
                     adminChannelsLoading = false,
                     messageCode = adminFailureCode(result)
                 )
+            }
+        }
+    }
+
+    // ── Advertisement management (§15, §16) ──────────────────────────────
+    //
+    // Only a super administrator holds `ads.read`/`ads.manage`, and the server
+    // re-checks that on every one of these calls. The app gates the entry so a
+    // channel administrator is never offered a screen that would fail, but the
+    // authority is never the app's.
+
+    /**
+     * Open the advertisement manager (§15).
+     *
+     * Gated on the role this session reports, which is a convenience and not a
+     * permission: the server refuses every ad route to anyone else regardless of
+     * what this draws.
+     */
+    fun openAds() {
+        if (uiState.admin?.isSuperAdmin != true) return
+        open(GoodPostScreen.Ads)
+        loadAdminAds()
+    }
+
+    /** Every card, active or not, for the manager list (§15). */
+    fun loadAdminAds() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        uiState = uiState.copy(adminAdsLoading = true)
+        viewModelScope.launch {
+            val result = repo.adminAds()
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    adminAds = result.value,
+                    adminAdsLoading = false
+                )
+                // Never silently empty: an empty list here would read as "there
+                // are no cards", which is a statement about the platform rather
+                // than a failed request.
+                else -> uiState.copy(
+                    adminAdsLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+        }
+    }
+
+    /**
+     * Open the editor for a card, or a blank one to create (§16).
+     *
+     * Everything the form draws comes from what is passed in, so tapping a row
+     * never sends a second read to render the same data the list already holds.
+     */
+    fun openAdForm(ad: GoodPostAd?) {
+        uiState = uiState.copy(
+            adFormOpen = true,
+            adFormId = ad?.id,
+            adFormContentType = ad?.contentType ?: "text",
+            adFormText = ad?.text.orEmpty(),
+            adFormTargetUrl = ad?.targetUrl.orEmpty(),
+            adFormShowInChannels = ad?.showInChannels ?: true,
+            adFormShowInExplore = ad?.showInExplore ?: true,
+            adFormEnabled = ad?.enabled ?: true,
+            adFormPriority = (ad?.priority ?: 100).toString(),
+            adFormStartsAt = ad?.startsAt.orEmpty(),
+            adFormExpiresAt = ad?.expiresAt.orEmpty(),
+            adFormImage = null,
+            adFormExistingImageUrl = ad?.imageUrl,
+            messageCode = null
+        )
+    }
+
+    fun onAdContentTypeChange(value: String) {
+        uiState = uiState.copy(adFormContentType = value, messageCode = null)
+    }
+
+    fun onAdTextChange(value: String) {
+        uiState = uiState.copy(adFormText = value, messageCode = null)
+    }
+
+    fun onAdTargetUrlChange(value: String) {
+        uiState = uiState.copy(adFormTargetUrl = value, messageCode = null)
+    }
+
+    fun onAdPriorityChange(value: String) {
+        // Digits only: a priority is a small non-negative integer, and letting
+        // letters into the box would only be refused later at save time.
+        uiState = uiState.copy(adFormPriority = value.filter { it.isDigit() }, messageCode = null)
+    }
+
+    fun onAdStartsAtChange(value: String) {
+        uiState = uiState.copy(adFormStartsAt = value, messageCode = null)
+    }
+
+    fun onAdExpiresAtChange(value: String) {
+        uiState = uiState.copy(adFormExpiresAt = value, messageCode = null)
+    }
+
+    fun toggleAdShowInChannels() {
+        uiState = uiState.copy(adFormShowInChannels = !uiState.adFormShowInChannels)
+    }
+
+    fun toggleAdShowInExplore() {
+        uiState = uiState.copy(adFormShowInExplore = !uiState.adFormShowInExplore)
+    }
+
+    fun toggleAdEnabled() {
+        uiState = uiState.copy(adFormEnabled = !uiState.adFormEnabled)
+    }
+
+    /**
+     * Which pick the in-flight card-image upload belongs to — its uri.
+     *
+     * The same guard the channel form's avatar uses, for the same reason: two
+     * picks can be travelling at once and one field holds the answer, so an older
+     * upload's reply must not overwrite a newer choice.
+     */
+    private var adImagePick: String? = null
+
+    /**
+     * Attach a picture to the card being written (§11).
+     *
+     * Uploaded through the EXISTING handshake — request, PUT, confirm — exactly as
+     * a channel icon or a post attachment is, so an advertisement image is not a
+     * second way for bytes to enter the product. The kind check refuses a video:
+     * the card draws a picture, and a video has no meaning in one.
+     */
+    fun onAdImagePicked(attachment: GoodPostAttachment) {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        if (attachment.kind != "image") {
+            uiState = uiState.copy(messageCode = "unsupported_media_type")
+            return
+        }
+
+        adImagePick = attachment.uri
+        uiState = uiState.copy(adFormImage = attachment, messageCode = null)
+
+        viewModelScope.launch {
+            val result = repo.adminUploadMedia(attachment)
+            val stillChosen = adImagePick == attachment.uri
+
+            when (result) {
+                is ApiResult.Ok -> if (stillChosen) {
+                    uiState = uiState.copy(
+                        adFormImage = uiState.adFormImage?.copy(
+                            state = GoodPostUploadState.Ready(result.value.id)
+                        )
+                    )
+                }
+
+                is ApiResult.Failed -> uiState = uiState.copy(
+                    composerMediaAvailable = uiState.composerMediaAvailable &&
+                        result.code != "media_unavailable",
+                    adFormImage = if (stillChosen) {
+                        uiState.adFormImage?.copy(state = GoodPostUploadState.Failed(result.code))
+                    } else {
+                        uiState.adFormImage
+                    }
+                )
+
+                ApiResult.Unreachable -> if (stillChosen) {
+                    uiState = uiState.copy(
+                        adFormImage = uiState.adFormImage?.copy(
+                            state = GoodPostUploadState.Failed("unreachable")
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    /** Drop the picture chosen for this card. */
+    fun removeAdImage() {
+        adImagePick = null
+        uiState = uiState.copy(adFormImage = null, messageCode = null)
+    }
+
+    /** Leave the editor without saving. */
+    fun cancelAdForm() {
+        adImagePick = null
+        uiState = uiState.copy(adFormOpen = false, adFormImage = null, messageCode = null)
+    }
+
+    /**
+     * Save the card being written (§11).
+     *
+     * The same field checks the channel form makes, and for the same reason: a
+     * card that cannot be valid is refused here in words rather than sent to be
+     * refused by the server after a round trip.
+     */
+    fun submitAdForm() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        val contentType = uiState.adFormContentType
+        val text = uiState.adFormText.trim()
+        if (contentType == "text" && text.isBlank()) {
+            uiState = uiState.copy(messageCode = "ad_content_required")
+            return
+        }
+
+        val image = uiState.adFormImage
+        if (image != null && image.mediaId == null) {
+            uiState = uiState.copy(
+                messageCode = if (image.state is GoodPostUploadState.Failed) {
+                    "attachment_failed"
+                } else {
+                    "attachment_uploading"
+                }
+            )
+            return
+        }
+        // A new image card needs a picture; an EDIT may keep the one it has.
+        if (contentType == "image" &&
+            image?.mediaId == null &&
+            uiState.adFormExistingImageUrl == null
+        ) {
+            uiState = uiState.copy(messageCode = "ad_image_required")
+            return
+        }
+
+        val body = JSONObject().apply {
+            put("contentType", contentType)
+            put("text", if (contentType == "text") text else JSONObject.NULL)
+            put("targetUrl", uiState.adFormTargetUrl.trim().ifBlank { null } ?: JSONObject.NULL)
+            put("showInChannels", uiState.adFormShowInChannels)
+            put("showInExplore", uiState.adFormShowInExplore)
+            put("enabled", uiState.adFormEnabled)
+            put("priority", uiState.adFormPriority.toIntOrNull() ?: 100)
+            put("startsAt", uiState.adFormStartsAt.trim().ifBlank { null } ?: JSONObject.NULL)
+            put("expiresAt", uiState.adFormExpiresAt.trim().ifBlank { null } ?: JSONObject.NULL)
+            // Sent only when a NEW picture is being claimed; omitted on an edit
+            // that keeps the existing one, which the server reads as "leave it".
+            image?.mediaId?.let { put("mediaId", it) }
+        }
+
+        val editingId = uiState.adFormId
+        uiState = uiState.copy(adminBusy = true, messageCode = null)
+
+        viewModelScope.launch {
+            val result = if (editingId == null) {
+                repo.adminCreateAd(body)
+            } else {
+                repo.adminUpdateAd(editingId, body)
+            }
+
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    adminBusy = false,
+                    adFormOpen = false,
+                    adFormImage = null
+                )
+                is ApiResult.Failed -> uiState.copy(
+                    adminBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+                ApiResult.Unreachable -> uiState.copy(adminBusy = false, messageCode = "unreachable")
+            }
+
+            if (result is ApiResult.Ok) {
+                adImagePick = null
+                loadAdminAds()
+                // The reader-facing carousels are refetched too, so a card an
+                // administrator has just enabled or disabled is reflected without
+                // leaving and reopening the tab.
+                loadAds()
+                loadExploreAds()
+            }
+        }
+    }
+
+    /** Delete a card, and its picture, for good (§11). */
+    fun deleteAd(adId: String) {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        uiState = uiState.copy(adminBusy = true, messageCode = null)
+        viewModelScope.launch {
+            val result = repo.adminDeleteAd(adId)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(adminBusy = false)
+                is ApiResult.Failed -> uiState.copy(
+                    adminBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+                ApiResult.Unreachable -> uiState.copy(adminBusy = false, messageCode = "unreachable")
+            }
+            if (result is ApiResult.Ok) {
+                loadAdminAds()
+                loadAds()
+                loadExploreAds()
             }
         }
     }

@@ -1751,6 +1751,17 @@ internal fun goodPostErrorText(code: String): String {
         "starred" -> return stringResource(R.string.goodpost_starred_added)
         "unstarred" -> return stringResource(R.string.goodpost_starred_removed)
         "deleted_from_device" -> return stringResource(R.string.goodpost_deleted_from_device)
+        "channel_hidden" -> return stringResource(R.string.goodpost_channel_hidden)
+        "channel_unhidden" -> return stringResource(R.string.goodpost_channel_unhidden)
+        // Advertisements (§15). Their own wording rather than a generic "invalid
+        // input": each names a card the manager is looking at and the one field
+        // that has to change.
+        "ad_not_found", "invalid_ad_id" ->
+            return stringResource(R.string.goodpost_error_ad_not_found)
+        "ad_content_required" ->
+            return stringResource(R.string.goodpost_error_ad_content_required)
+        "ad_image_required", "ad_image_must_be_image" ->
+            return stringResource(R.string.goodpost_error_ad_image_required)
         // §9: a reaction that did not save, and reactions this deployment cannot
         // take at all. The second is not the reader's fault and not worth a
         // retry, so it says so instead of blaming the network.

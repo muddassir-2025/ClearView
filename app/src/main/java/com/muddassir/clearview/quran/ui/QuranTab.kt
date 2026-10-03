@@ -291,7 +291,8 @@ private fun VerseDisplay(
             text = v.arabicText,
             fontSize = 30.sp,
             lineHeight = 50.sp,
-            fontFamily = FontFamily.Serif,
+            // Quran font so every harakat in the authoritative text renders (§1).
+            fontFamily = QuranFontFamily,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(28.dp))

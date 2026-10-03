@@ -319,6 +319,15 @@ internal fun GoodPostFeed(
                                         onClick = { shareChannel(context, known.name, known.shareLink) }
                                     )
                                 )
+                                // §8: hide the whole channel from this device,
+                                // exactly as Media lets a reader hide a channel
+                                // from a video. Its posts leave every feed with it.
+                                add(
+                                    WaMenuItem(
+                                        label = stringResource(R.string.goodpost_hide_channel),
+                                        onClick = { viewModel.hideChannel(known.id, known.name) }
+                                    )
+                                )
                             }
                         }
                     )

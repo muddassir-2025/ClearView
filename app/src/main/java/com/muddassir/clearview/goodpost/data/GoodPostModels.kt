@@ -113,6 +113,14 @@ data class GoodPostFollow(
 /** The channel a post came from, as a single-post payload names it. */
 data class GoodPostChannelRef(val id: String, val slug: String, val name: String)
 
+/**
+ * A channel the reader hid on this device (§8), for the management surface.
+ *
+ * Just the id and a label: the row exists so the reader can FIND it again, not
+ * to render the channel's feed.
+ */
+data class GoodPostHiddenChannel(val id: String, val name: String)
+
 /** One stored asset on a post: an image, a video or a document. */
 data class GoodPostMedia(
     val id: String,
@@ -256,6 +264,60 @@ data class GoodPostReactionResult(
 
 /** A category an Explore filter can offer (§7). */
 data class GoodPostCategory(val slug: String, val label: String)
+
+/**
+ * An advertisement card (§9–§17).
+ *
+ * Platform-controlled content shown at the top of Channels and Explore. It is
+ * NOT a third-party ad SDK: a super administrator writes it, uploads its picture
+ * and decides where and when it runs. This is the shape BOTH audiences receive —
+ * the public read and the admin list — because it describes one row, and the
+ * fields the admin editor needs (placement, enabled, schedule, priority) are the
+ * same ones that decide whether a reader is ever sent it.
+ *
+ * A text card and an image card share the type: [text] is what is drawn, and
+ * [imageUrl] is non-null only for an image card (and only when the deployment
+ * has a bucket to sign one from, §22). What is rendered is therefore a property
+ * of the card rather than of which screen fetched it.
+ */
+data class GoodPostAd(
+    val id: String,
+    /** `image` or `text`. */
+    val contentType: String,
+    /**
+     * A short-lived signed URL for the card's picture, or null.
+     *
+     * Null for a text card, and null for an image card on a deployment with no
+     * storage — the second is worded by the editor rather than by a reader, who
+     * is simply never shown an image card there.
+     */
+    val imageUrl: String?,
+    /** The words on a text card; null for an image card. */
+    val text: String?,
+    /** Where a tap goes: an `http(s):` page or a `mailto:` address (§12). */
+    val targetUrl: String?,
+    /** Placement: shown at the top of Channels. */
+    val showInChannels: Boolean,
+    /** Placement: shown at the top of Explore. */
+    val showInExplore: Boolean,
+    /** Admin only in effect — the public read never returns a disabled card. */
+    val enabled: Boolean,
+    /** ISO instant, or null. */
+    val startsAt: String?,
+    /** ISO instant, or null for a card that never expires. */
+    val expiresAt: String?,
+    /** Lower sorts first; ties fall back to newest. */
+    val priority: Int
+) {
+    val isImage: Boolean get() = contentType == "image"
+    val isText: Boolean get() = contentType == "text"
+}
+
+/** Where a card can appear (§12). One endpoint serves both surfaces. */
+enum class GoodPostAdPlacement(val wire: String) {
+    Channels("channels"),
+    Explore("explore")
+}
 
 /**
  * An ISO instant from the backend as epoch millis, or null.
@@ -508,6 +570,48 @@ internal object GoodPostCodec {
     /** Parse a `{ post: {...} }` body. */
     fun singlePost(body: JSONObject): GoodPostPost? =
         body.optJSONObject("post")?.let(::post)
+
+    /**
+     * One advertisement.
+     *
+     * `id` and `contentType` are required because a card without them cannot be
+     * acted on or drawn; the rest degrades to a default so a missing schedule is
+     * "none" rather than a blank screen. An unknown content type is dropped at
+     * [adList] rather than shown as a card with no content.
+     */
+    fun ad(json: JSONObject): GoodPostAd? {
+        val id = json.optString("id")
+        val contentType = json.optString("contentType")
+        if (id.isBlank() || contentType.isBlank()) return null
+        return GoodPostAd(
+            id = id,
+            contentType = contentType,
+            imageUrl = json.nullableString("imageUrl"),
+            text = json.nullableString("text"),
+            targetUrl = json.nullableString("targetUrl"),
+            showInChannels = json.optBoolean("showInChannels", false),
+            showInExplore = json.optBoolean("showInExplore", false),
+            enabled = json.optBoolean("enabled", false),
+            startsAt = json.nullableString("startsAt"),
+            expiresAt = json.nullableString("expiresAt"),
+            priority = json.optInt("priority", 100)
+        )
+    }
+
+    /** Parse a `{ ads: [...] }` body. */
+    fun adList(body: JSONObject): List<GoodPostAd> {
+        val items = body.optJSONArray("ads") ?: return emptyList()
+        val parsed = ArrayList<GoodPostAd>(items.length())
+        for (i in 0 until items.length()) {
+            val row = items.optJSONObject(i) ?: continue
+            ad(row)?.let(parsed::add)
+        }
+        return parsed
+    }
+
+    /** Parse a `{ ad: {...} }` body. */
+    fun singleAd(body: JSONObject): GoodPostAd? =
+        body.optJSONObject("ad")?.let(::ad)
 
     /** Parse a `{ categories: [...] }` body. */
     fun categories(body: JSONObject): List<GoodPostCategory> {

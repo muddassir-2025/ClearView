@@ -112,6 +112,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
 import com.muddassir.clearview.todo.data.TodoCodec
+import com.muddassir.clearview.todo.data.TodoCompletion
 import com.muddassir.clearview.todo.data.TodoFilter
 import com.muddassir.clearview.todo.data.TodoSort
 import com.muddassir.clearview.todo.data.TodoScheduler
@@ -269,55 +270,32 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     }
 
     fun toggle(item: TodoItem, day: LocalDate = today) {
-        // Date rule: a todo can only be toggled on a day it is applicable on
-        // (for the list that is always today — future todos show no
-        // checkbox). Strict-interval todos add a second rule: completion is
-        // only allowed while the window is OPEN, and a COMPLETED day is
-        // equally locked once the window closes ("can't redo" works both
-        // ways) — so un-completing is only possible while the window is still
-        // open. nowMillis (refreshed every minute) matches the checkbox state
-        // exactly, so the visible affordance and the enforcement can never
-        // disagree. The notification Complete path enforces the same rule
-        // with the real clock.
-        if (!TodoCodec.isActiveOn(item, day)) {
-            Toast.makeText(
-                context,
-                completionRefusalMessage(context, TodoCodec.CompletionRefusal.NOT_ACTIVE_DAY),
-                Toast.LENGTH_SHORT
-            ).show()
-            return
-        }
-        if (TodoCodec.completedOn(item, day)) {
-            // Un-complete — blocked once a strict window has closed (the day
-            // is locked as done, mirroring "can't redo" for missed days).
-            if (TodoCodec.intervalEnded(item, day, nowMillis)) {
+        // ONE authoritative completion (TodoCompletion). The checkbox runs the
+        // exact same rules, persistence and reminder cancellation as the
+        // reminder notification's Complete action, the widget and the alarm
+        // screen — so an action taken in one place can never record something
+        // different in another. This screen only decides how to SURFACE the
+        // result; it does not re-implement the state change.
+        when (val outcome = TodoCompletion.toggle(context, item.id, day, nowMillis)) {
+            is TodoCompletion.Outcome.Refused -> {
+                // A refused completion says WHY. Silently doing nothing is what
+                // made a snoozed reminder answered after its window closed look
+                // like a broken checkbox.
                 Toast.makeText(
                     context,
-                    completionRefusalMessage(context, TodoCodec.CompletionRefusal.WINDOW_CLOSED),
+                    completionRefusalMessage(context, outcome.refusal),
                     Toast.LENGTH_SHORT
                 ).show()
-                return
             }
-        } else {
-            // A refused completion says WHY. Silently doing nothing is what made
-            // a snoozed reminder answered after its window closed look like a
-            // broken checkbox.
-            TodoCodec.completionRefusal(item, day, nowMillis)?.let { refusal ->
-                Toast.makeText(
-                    context,
-                    completionRefusalMessage(context, refusal),
-                    Toast.LENGTH_SHORT
-                ).show()
-                return
+
+            is TodoCompletion.Outcome.Completed,
+            is TodoCompletion.Outcome.Uncompleted -> {
+                // Reflect the persisted change locally right away (the store
+                // also publishes it on itemsFlow).
+                items = store.getItems()
             }
-        }
-        val (updated, nowCompleted) = TodoCodec.toggled(items, item.id, day, nowMillis)
-        // Persist the completion FIRST, then cancel EVERY reminder for this
-        // occurrence (all index offsets) — so a concurrent reschedule can never
-        // revive an alarm for a day that is already completed.
-        save(updated)
-        if (nowCompleted) {
-            TodoScheduler.cancelAllRemindersForTodo(context, item.id, day.toEpochDay())
+
+            is TodoCompletion.Outcome.NotFound -> Unit
         }
     }
 

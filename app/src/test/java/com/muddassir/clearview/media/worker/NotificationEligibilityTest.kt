@@ -76,6 +76,34 @@ class NotificationEligibilityTest {
         )
     }
 
+    @Test
+    fun `a viewed video is never eligible even if never notified`() {
+        // §5: the reader has already played it. Viewing is the stronger signal,
+        // so it stays excluded even when the notified-id set lost track of it.
+        assertFalse(
+            isNotificationEligible(
+                videoId = "watched1",
+                publishedAtEpochMillis = 2_000L,
+                addedAtEpochMillis = 1_000L,
+                alreadyNotified = emptySet(),
+                viewed = true
+            )
+        )
+    }
+
+    @Test
+    fun `an unviewed video published after subscription is still eligible`() {
+        assertTrue(
+            isNotificationEligible(
+                videoId = "fresh1",
+                publishedAtEpochMillis = 2_000L,
+                addedAtEpochMillis = 1_000L,
+                alreadyNotified = emptySet(),
+                viewed = false
+            )
+        )
+    }
+
     // ── Per-channel muting ──────────────────────────────────────────
 
     private fun channel(

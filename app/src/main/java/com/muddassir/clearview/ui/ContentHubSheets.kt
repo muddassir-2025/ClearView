@@ -125,6 +125,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
+import com.muddassir.clearview.quran.ui.QuranFontFamily
 import com.muddassir.clearview.quran.data.verseReference
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.util.copyVerseToClipboard
@@ -1602,7 +1603,9 @@ private fun SurahHead(surahNumber: Int, mode: QuranReadMode, basmala: String) {
         text = basmala,
         fontSize = 24.sp,
         lineHeight = 44.sp,
-        fontFamily = FontFamily.Serif,
+        // Arabic scripture (opens every surah but At-Tawba): the Quran face, so
+        // the basmala's harakat render exactly as the verses' do.
+        fontFamily = QuranFontFamily,
         textAlign = TextAlign.Center,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.fillMaxWidth()
@@ -1633,7 +1636,14 @@ private fun ArabicVerse(
     val text = remember(verse, query, bookmarked, matching, ornament, accent) {
         buildAnnotatedString {
             if (verse.arabicText.isNotBlank()) {
-                append(highlightMatches(verse.arabicText, query.ifBlank { null }, accent))
+                append(
+                    highlightMatches(
+                        verse.arabicText,
+                        query.ifBlank { null },
+                        accent,
+                        bold = false
+                    )
+                )
                 append("  ")
             }
             withStyle(SpanStyle(color = ornament, fontWeight = FontWeight.SemiBold)) {
@@ -1646,7 +1656,8 @@ private fun ArabicVerse(
         text = text,
         fontSize = 30.sp,
         lineHeight = 52.sp,
-        fontFamily = FontFamily.Serif,
+        // Quran font so every harakat in the authoritative text renders (§1).
+        fontFamily = QuranFontFamily,
         textAlign = TextAlign.Center,
         // RTL is the script's own direction — the paragraph direction is taken
         // from the first strong character, so the Arabic lays itself out from the
@@ -2145,7 +2156,9 @@ private fun VerseSearchRow(
                     text = verse.arabicText,
                     fontSize = 18.sp,
                     lineHeight = 30.sp,
-                    fontFamily = FontFamily.Serif,
+                    // Arabic verse preview: the Quran face, so harakat survive
+                    // even at this small size.
+                    fontFamily = QuranFontFamily,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -2169,27 +2182,95 @@ private fun VerseSearchRow(
  * is blank or purely numeric/reference-shaped ("2:255" / "255" lookups match
  * verse numbers, so highlighting text would be noise).
  */
-private fun highlightMatches(text: String, query: String?, color: Color): AnnotatedString {
+private fun highlightMatches(
+    text: String,
+    query: String?,
+    color: Color,
+    /**
+     * Whether matched spans are drawn bold. FALSE for Arabic (§1): the Quran
+     * face ships Regular only, so a Bold span is a SYNTHETIC weight that
+     * re-shapes the run and can sit the harakat differently from the surrounding
+     * text — which is exactly the "highlighted words look different" complaint.
+     * Arabic marks the match with colour alone.
+     */
+    bold: Boolean = true
+): AnnotatedString {
     val q = query?.trim().orEmpty()
     if (q.isEmpty() || q.all { it.isDigit() || it == ':' || it == '.' || it.isWhitespace() }) {
         return AnnotatedString(text)
     }
+    val lowerText = text.lowercase()
+    val lowerQuery = q.lowercase()
+    // A case fold that changes LENGTH would misalign every index (the Turkish
+    // dotted I is the usual culprit). Rather than highlight the wrong span, pass
+    // the text through untouched.
+    if (lowerText.length != text.length || lowerQuery.length != q.length) {
+        return AnnotatedString(text)
+    }
+    val boundaries = graphemeBoundaries(text)
     return buildAnnotatedString {
         var index = 0
-        val lowerText = text.lowercase()
-        val lowerQuery = q.lowercase()
         while (index < text.length) {
             val match = lowerText.indexOf(lowerQuery, index)
             if (match < 0) {
                 append(text, index, text.length)
                 break
             }
-            append(text, index, match)
-            withStyle(SpanStyle(color = color, fontWeight = FontWeight.Bold)) {
-                append(text, match, match + q.length)
+            // Never split a grapheme cluster: an Arabic base letter and its
+            // harakat are ONE unit, and cutting between them either drops the
+            // mark or draws it on the wrong letter. Snapping both edges to
+            // cluster boundaries keeps the highlighted slice — and the plain
+            // slice before it — shaped exactly as the undivided text would be.
+            val start = snapToCluster(boundaries, match, forward = false)
+            val end = snapToCluster(boundaries, match + q.length, forward = true)
+            if (start > index) append(text, index, start)
+            if (end > start) {
+                val style = if (bold) {
+                    SpanStyle(color = color, fontWeight = FontWeight.Bold)
+                } else {
+                    SpanStyle(color = color)
+                }
+                withStyle(style) {
+                    append(text, start, end)
+                }
             }
-            index = match + q.length
+            index = maxOf(end, start + 1)
         }
+    }
+}
+
+/**
+ * The set of grapheme-cluster boundaries in [text] (character instance), used
+ * to keep highlighting from cutting through a combining sequence.
+ */
+private fun graphemeBoundaries(text: String): List<Int> {
+    val iterator = java.text.BreakIterator.getCharacterInstance()
+    iterator.setText(text)
+    val boundaries = ArrayList<Int>()
+    var at = iterator.first()
+    while (at != java.text.BreakIterator.DONE) {
+        boundaries.add(at)
+        at = iterator.next()
+    }
+    return boundaries
+}
+
+/** The nearest cluster boundary to [offset] in the given [direction]. */
+private fun snapToCluster(boundaries: List<Int>, offset: Int, forward: Boolean): Int {
+    if (boundaries.isEmpty()) return offset
+    var low = 0
+    var high = boundaries.size - 1
+    // The last boundary <= offset (the cluster start at or before it).
+    while (low < high) {
+        val mid = (low + high + 1) / 2
+        if (boundaries[mid] <= offset) low = mid else high = mid - 1
+    }
+    val atOrBefore = boundaries[low]
+    if (atOrBefore == offset) return offset
+    return if (forward) {
+        boundaries.getOrElse(low + 1) { atOrBefore }
+    } else {
+        atOrBefore
     }
 }
 

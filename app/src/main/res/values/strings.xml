@@ -401,6 +401,7 @@
     <string name="todo_snooze_1h">1 hour</string>
     <string name="todo_snooze_custom">Custom</string>
     <string name="todo_snooze_custom_minutes">Minutes</string>
+    <string name="todo_snooze_custom_range">1–1440 minutes (max 24 hours)</string>
     <string name="todo_weekly_progress">Weekly Progress</string>
     <!-- The noun agrees with the TOTAL (%2$d), not the completed count. -->
     <plurals name="todo_weekly_count">
@@ -907,6 +908,15 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_mute">Mute</string>
     <string name="goodpost_unmute">Unmute</string>
     <string name="goodpost_deleted_from_device">Removed from this device</string>
+    <string name="goodpost_channel_hidden">Channel hidden</string>
+    <string name="goodpost_channel_unhidden">Channel unhidden</string>
+    <string name="goodpost_hide_channel">Hide channel</string>
+    <string name="goodpost_hidden_channels">Hidden channels (%1$d)</string>
+    <string name="goodpost_hidden_channels_title">Hidden channels</string>
+    <string name="goodpost_hidden_channels_empty">No hidden channels</string>
+    <string name="goodpost_hidden_channels_note">Posts from these channels are hidden on this device. Unhide one to see it again.</string>
+    <string name="goodpost_unhide">Unhide</string>
+    <string name="goodpost_unhide_all">Unhide all</string>
 
     <!-- The confirmation every delete goes through (§5, §9, §17). Two different
          deletions live behind one gesture and one of them cannot be undone, so
@@ -1125,4 +1135,47 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_delete_channels_title">Delete these channels?</string>
     <string name="goodpost_delete_channels_note">Every channel in the selection and everything it published will be removed for everyone, including its posts, its media and the login that runs it. This cannot be undone.</string>
     <string name="goodpost_suspended">Suspended</string>
+
+    <!-- Advertisement cards (§12, §15, §16). Platform content a super
+         administrator creates, shown at the top of Channels and Explore. Not a
+         third-party ad SDK: the words, the picture, the target and the schedule
+         are all this deployment's own. -->
+    <string name="goodpost_ad_sponsored">Sponsored</string>
+    <string name="goodpost_ads">Advertisements</string>
+    <string name="goodpost_ad_new">New advertisement</string>
+    <string name="goodpost_ad_edit">Edit advertisement</string>
+    <string name="goodpost_ads_empty_title">No advertisements</string>
+    <string name="goodpost_ads_empty_note">Cards created here appear at the top of Channels and Explore.</string>
+    <string name="goodpost_ad_content_type">Card type</string>
+    <string name="goodpost_ad_type_text">Text</string>
+    <string name="goodpost_ad_type_image">Image</string>
+    <string name="goodpost_ad_text_label">Text</string>
+    <string name="goodpost_ad_text_hint">What the card says</string>
+    <string name="goodpost_ad_target_label">Tap link</string>
+    <string name="goodpost_ad_target_hint">https://… or mailto:…</string>
+    <string name="goodpost_ad_target_note">Where a tap on the card goes. Required for the default contact card.</string>
+    <string name="goodpost_ad_image_label">Picture</string>
+    <string name="goodpost_ad_image_add">Add a picture</string>
+    <string name="goodpost_ad_image_change">Change picture</string>
+    <string name="goodpost_ad_image_remove">Remove</string>
+    <string name="goodpost_ad_placement">Show it</string>
+    <string name="goodpost_ad_channel_placement">Channels</string>
+    <string name="goodpost_ad_explore_placement">Explore</string>
+    <string name="goodpost_ad_settings">Settings</string>
+    <string name="goodpost_ad_enabled">Enabled</string>
+    <string name="goodpost_ad_priority">Priority</string>
+    <string name="goodpost_ad_priority_hint">Lower shows first</string>
+    <string name="goodpost_ad_starts">Starts at</string>
+    <string name="goodpost_ad_expires">Expires at</string>
+    <string name="goodpost_ad_date_hint">YYYY-MM-DDTHH:MM:SSZ</string>
+    <string name="goodpost_ad_schedule_note">Times are UTC. Leave a field blank to start now or to never expire.</string>
+    <string name="goodpost_ad_status_on">On</string>
+    <string name="goodpost_ad_status_off">Off</string>
+    <string name="goodpost_ad_no_text">No text</string>
+    <string name="goodpost_ad_preview">Preview</string>
+    <string name="goodpost_ad_delete_title">Delete this advertisement?</string>
+    <string name="goodpost_ad_delete_note">It will be removed for everyone, along with its picture. This cannot be undone.</string>
+    <string name="goodpost_error_ad_not_found">That advertisement is gone.</string>
+    <string name="goodpost_error_ad_content_required">A text advertisement needs some text.</string>
+    <string name="goodpost_error_ad_image_required">An image advertisement needs a picture.</string>
 </resources>

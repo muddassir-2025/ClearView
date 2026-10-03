@@ -88,31 +88,34 @@ class TodoReminderReceiver : BroadcastReceiver() {
                 // rolled forward, and why a snoozed reminder is not locked out
                 // by a window that closed while it was ringing.
                 val day = occurrenceDay
-                val store = TodoStore(context)
-                val item = store.getItems().firstOrNull { it.id == todoId } ?: return
-                // The rules that remain are the todo's own. A refused completion
-                // is REPORTED rather than swallowed: a background receiver
-                // cannot toast, so the notification is rewritten with the reason.
-                val refusal = TodoCodec.reminderCompletionRefusal(item, day)
-                if (refusal != null) {
-                    Log.w(TAG, "Complete refused for ${item.title}: $refusal")
-                    TodoNotifier.postCompletionRefused(
-                        context,
-                        item,
-                        epochDay,
-                        completionRefusalMessage(context, refusal)
-                    )
-                    return
+                // ONE authoritative completion for the whole app (TodoCompletion):
+                // the notification Complete action runs the exact same rules,
+                // persistence and reminder cancellation as the in-app checkbox,
+                // the widget and the alarm screen. The receiver only decides how
+                // to surface the result — it cannot re-implement the state change.
+                when (val outcome = TodoCompletion.completeFromReminder(context, todoId, day)) {
+                    is TodoCompletion.Outcome.Refused -> {
+                        // A background receiver cannot toast, so the notification
+                        // is rewritten with the reason instead of doing nothing.
+                        val item = TodoStore(context).getItems().firstOrNull { it.id == todoId }
+                            ?: return
+                        Log.w(TAG, "Complete refused for ${item.title}: ${outcome.refusal}")
+                        TodoNotifier.postCompletionRefused(
+                            context,
+                            item,
+                            epochDay,
+                            completionRefusalMessage(context, outcome.refusal)
+                        )
+                    }
+
+                    is TodoCompletion.Outcome.Completed -> {
+                        // Visible feedback: the notification leaves the shade — done.
+                        TodoNotifier.cancelDayNotification(context, todoId, epochDay)
+                    }
+
+                    is TodoCompletion.Outcome.NotFound,
+                    is TodoCompletion.Outcome.Uncompleted -> Unit
                 }
-                val now = System.currentTimeMillis()
-                store.saveItems(TodoCodec.completed(store.getItems(), todoId, day, now))
-                // Completed FIRST (saveItems above), then cancel EVERY reminder
-                // for this occurrence — so a range-based todo can never ring
-                // again today — and re-schedule the remaining future ones.
-                TodoScheduler.cancelAllRemindersForTodo(context, todoId, epochDay)
-                TodoScheduler.rescheduleAll(context)
-                // Visible feedback: the notification leaves the shade — done.
-                TodoNotifier.cancelDayNotification(context, todoId, epochDay)
             }
 
             TodoNotifier.ACTION_DISMISS -> {

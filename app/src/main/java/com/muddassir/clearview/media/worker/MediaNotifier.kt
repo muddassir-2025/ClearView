@@ -71,9 +71,16 @@ object MediaNotifier {
         // A notification the user already swiped away must never be re-posted,
         // duplicated or stacked by a later run. The dismissal is keyed by
         // (channel, video), so a genuinely NEW upload still notifies.
-        val postable = updates.filterNot { update ->
-            NotificationStateStore.isDismissed(context, update.channelId, update.latestVideoId)
-        }
+        //
+        // Deduped by VIDEO id first: the same video can be returned more than
+        // once in a single pass (a feed merged from several sources, a retry),
+        // and posting the same content twice must be impossible by construction
+        // rather than because the notification id happens to collide.
+        val postable = updates
+            .distinctBy { it.latestVideoId }
+            .filterNot { update ->
+                NotificationStateStore.isDismissed(context, update.channelId, update.latestVideoId)
+            }
         // Do not cap by platform or source: every saved channel update is
         // posted. Updates are already collapsed to one newest item per channel
         // by the worker, so this cannot duplicate a channel in one run.
@@ -98,7 +105,7 @@ object MediaNotifier {
             // channel that published three times owns three of them).
             manager.notify(
                 update.channelId,
-                postNotificationId(update.channelId, update.latestVideoId),
+                postNotificationId(update.latestVideoId),
                 notification
             )
         }
@@ -155,7 +162,7 @@ object MediaNotifier {
 
     fun cancelPostNotification(context: Context, channelId: String, videoId: String) {
         NotificationManagerCompat.from(context)
-            .cancel(channelId, postNotificationId(channelId, videoId))
+            .cancel(channelId, postNotificationId(videoId))
     }
 
     /**
@@ -189,9 +196,18 @@ object MediaNotifier {
         manager.cancel(SUMMARY_ID)
     }
 
-    /** Stable per-post notification id, so one channel can show every update. */
-    private fun postNotificationId(channelId: String, videoId: String): Int =
-        ("$channelId|$videoId".hashCode() and 0x7FFFFFFF) % 100_000 + 1
+    /**
+     * Stable notification id for one video (§5).
+     *
+     * Keyed on the CONTENT id alone, not on the channel it arrived through: the
+     * same video must always map to the same slot, so a re-post replaces the
+     * existing notification instead of creating a second one, and cancelling it
+     * from anywhere in the app hits the right one. The channel id stays the
+     * notification's TAG (see [notifyUpdates]) because that is what the mute
+     * sweep matches on — identity and grouping are two different jobs.
+     */
+    private fun postNotificationId(videoId: String): Int =
+        ("video|$videoId".hashCode() and 0x7FFFFFFF) % 100_000 + 1
 
     /** Legacy per-channel id retained for cancelling notifications from older builds. */
     private fun channelNotificationId(channelId: String): Int =

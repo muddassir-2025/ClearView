@@ -78,30 +78,24 @@ object TodoNotifier {
         // by TodoAlarmService while the app is in the foreground, and the
         // full-screen intent covers the locked/off-screen path. The channel is
         // created ONCE and otherwise never deleted: notification channels are
-        // permanent user settings, and deleting+recreating them on every launch
-        // would wipe the user's customization (and re-create the channel
-        // repeatedly when the system refuses to store the sound — observed on
-        // Android 15, where the silent resource URI is dropped and the channel
-        // simply ends up silent). The only migration is a legacy LOUD channel
-        // (an old build set the alarm ringtone directly) — rebuilt once as
-        // silent so the service loop is never doubled; a rebuilt channel is
-        // silent again, so this can never repeat.
+        // permanent user settings, and deleting+recreating them would wipe the
+        // reader's customization.
         val silentUri = Uri.parse(
             "android.resource://${context.packageName}/${R.raw.todo_alarm_silent}"
         )
         val existingAlarm = manager.getNotificationChannel(CHANNEL_ALARM_ID)
-        // Rebuild ONLY when the channel is missing or carries a sound that is
-        // NOT the app's own silent tone (a legacy loud channel). Comparing
-        // against the silent tone explicitly is important: on devices where
-        // the system stores it, `sound` is non-null — a bare `!= null` check
-        // would rebuild the channel on EVERY launch (the very loop this is
-        // meant to prevent). On devices where the system drops the resource
-        // URI (Android 15), the rebuilt channel is silently null and this
-        // migration can never repeat.
-        if (existingAlarm == null ||
-            (existingAlarm.sound != null && existingAlarm.sound != silentUri)
-        ) {
-            if (existingAlarm != null) manager.deleteNotificationChannel(CHANNEL_ALARM_ID)
+        // Create ONLY when the channel is missing — NEVER delete one to migrate
+        // it. Deleting a notification channel is forbidden while the app has a
+        // ringing foreground service, and [TodoAlarmService] is running exactly
+        // when the reader answers an alarm: the system threw
+        // `SecurityException: Not allowed to delete channel todo_alarms with a
+        // foreground service` out of the alarm receiver and the full-screen
+        // alarm, killing the app on Complete (and, because the persisted list
+        // was written with an async apply(), sometimes losing the completion
+        // too — so the day then showed as missed). Channels are permanent user
+        // settings anyway; createNotificationChannel updates an existing
+        // channel in place, so a sound change does not need a delete.
+        if (existingAlarm == null) {
             manager.createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ALARM_ID,
@@ -307,8 +301,7 @@ object TodoNotifier {
             putExtra(EXTRA_REMINDER_INDEX, reminderIndex)
             putExtra(EXTRA_EPOCH_DAY, epochDay)
         }
-        // Distinct request code per action + todo so both buttons stay alive.
-        val code = (action.hashCode() * 31 + todoId.hashCode()) and 0x7FFFFFFF
+        val code = actionRequestCode(action, todoId, reminderIndex, epochDay)
         return PendingIntent.getBroadcast(
             context,
             code,
@@ -317,9 +310,29 @@ object TodoNotifier {
         )
     }
 
-    /** Stable per (todo, day) notification id so reminders never pile up for the same day. */
+    /**
+     * Stable request code for a reminder's Complete/Dismiss action. It is keyed
+     * on the FULL identity of the occurrence — action, todo, reminder index and
+     * epoch day — so two notifications can never share one PendingIntent. A
+     * code that stopped at (action, todo) let [PendingIntent.FLAG_UPDATE_CURRENT]
+     * rewrite an older notification's extras whenever a later occurrence was
+     * scheduled, which is how a Complete tap could answer for the wrong day.
+     */
+    internal fun actionRequestCode(
+        action: String,
+        todoId: String,
+        reminderIndex: Int,
+        epochDay: Long
+    ): Int = ("todo-action" + action + todoId + reminderIndex + epochDay)
+        .hashCode() and 0x7FFFFFFF
+
+    /**
+     * Stable per (todo, day) notification id so reminders never pile up for the
+     * same day. Hashed over the WHOLE epoch day (not `epochDay % 31`, where two
+     * occurrences exactly 31 days apart aliased onto the same id).
+     */
     fun notificationId(todoId: String, epochDay: Long): Int =
-        (((todoId.hashCode() and 0x7FFF) * 31) + (epochDay % 31).toInt() % 31) % 100_000 + 1
+        ("todo-notif" + todoId + epochDay).hashCode() and 0x7FFFFFFF
 
     /**
      * Rewrites a reminder's notification to say why its Complete action was

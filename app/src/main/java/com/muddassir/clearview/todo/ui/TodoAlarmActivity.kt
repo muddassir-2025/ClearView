@@ -1,6 +1,5 @@
 package com.muddassir.clearview.todo.ui
 
-import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import android.view.WindowManager
@@ -41,6 +40,7 @@ import com.muddassir.clearview.R
 import com.muddassir.clearview.todo.data.TodoAlarmService
 import com.muddassir.clearview.todo.data.TodoCodec
 import com.muddassir.clearview.todo.data.TodoNotifier
+import com.muddassir.clearview.todo.data.TodoCompletion
 import com.muddassir.clearview.todo.data.TodoScheduler
 import com.muddassir.clearview.todo.data.TodoStore
 import com.muddassir.clearview.todo.data.completionRefusalMessage
@@ -113,19 +113,20 @@ class TodoAlarmActivity : ComponentActivity() {
                 AlarmScreen(
                     item = item,
                     onComplete = {
-                        complete(store, item, day)
+                        complete(item, day)
                         finish()
                     },
-                    onSnooze = {
-                        startActivity(
-                            Intent(this, TodoSnoozeActivity::class.java).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                action = TodoNotifier.ACTION_SNOOZE
-                                putExtra(TodoNotifier.EXTRA_TODO_ID, todoId)
-                                putExtra(TodoNotifier.EXTRA_REMINDER_INDEX, reminderIndex)
-                                putExtra(TodoNotifier.EXTRA_EPOCH_DAY, epochDay)
-                            }
+                    onSnoozeChoice = { minutes ->
+                        // Snooze happens ENTIRELY inside the alarm overlay (§4):
+                        // the chosen delay is saved here, the ringing
+                        // notification is cancelled and the replacement alarms
+                        // are scheduled — the reader never has to unlock, open
+                        // ClearView, or navigate to To-Dos.
+                        TodoAlarmService.stop(this)
+                        TodoScheduler.snoozeFromNotification(
+                            this, todoId, reminderIndex, epochDay, minutes
                         )
+                        TodoNotifier.cancelDayNotification(this, todoId, epochDay)
                         finish()
                     }
                 )
@@ -133,34 +134,28 @@ class TodoAlarmActivity : ComponentActivity() {
         }
     }
 
-    private fun complete(store: TodoStore, item: TodoItem, occurrenceDay: LocalDate) {
-        // The reminder is answered for ITS occurrence: see
-        // TodoCodec.reminderCompletionRefusal for why the day is never rolled
-        // forward, and why a snoozed alarm is not locked out by a window that
-        // closed while it was ringing.
+    private fun complete(item: TodoItem, occurrenceDay: LocalDate) {
+        // ONE authoritative completion (TodoCompletion): the alarm answers for
+        // ITS occurrence with the same rules, persistence and reminder
+        // cancellation as the notification Complete action and the in-app
+        // checkbox. See TodoCodec.reminderCompletionRefusal for why the day is
+        // never rolled forward, and why a snoozed alarm is not locked out by a
+        // window that closed while it was ringing.
         val day = occurrenceDay
-        val now = System.currentTimeMillis()
-        // Re-read: the guard below must judge the todo as it is now, not as the
-        // screen saw it when it opened.
-        val fresh = store.getItems().firstOrNull { it.id == item.id } ?: item
-        val refusal = TodoCodec.reminderCompletionRefusal(fresh, day)
-        if (refusal == null) {
-            store.saveItems(
-                TodoCodec.completed(store.getItems(), item.id, day, now)
-            )
-            // Persist FIRST, then cancel every reminder for THIS occurrence
-            // (all index offsets), then re-schedule the remaining future ones
-            // — so no further alarm can ring for a day that is completed.
-            TodoScheduler.cancelAllRemindersForTodo(this, item.id, day.toEpochDay())
-            TodoScheduler.rescheduleAll(this)
-        } else {
-            // SAY SO. Degrading to a silent dismiss is what made this look like
-            // a broken button.
-            Toast.makeText(
-                this,
-                completionRefusalMessage(this, refusal),
-                Toast.LENGTH_LONG
-            ).show()
+        when (val outcome = TodoCompletion.completeFromReminder(this, item.id, day)) {
+            is TodoCompletion.Outcome.Refused -> {
+                // SAY SO. Degrading to a silent dismiss is what made this look
+                // like a broken button.
+                Toast.makeText(
+                    this,
+                    completionRefusalMessage(this, outcome.refusal),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+
+            is TodoCompletion.Outcome.Completed,
+            is TodoCompletion.Outcome.NotFound,
+            is TodoCompletion.Outcome.Uncompleted -> Unit
         }
         // Stop the ringing notification either way.
         TodoNotifier.cancelDayNotification(this, todoId, occurrenceDay.toEpochDay())
@@ -169,13 +164,18 @@ class TodoAlarmActivity : ComponentActivity() {
 
 /** The full-screen alarm UI: big clock, todo, and Complete / Snooze. There is
  * deliberately NO Dismiss — an alarm is either completed or snoozed; the
- * ringing service still stops on its own after a minute either way. */
+ * ringing service still stops on its own after a minute either way.
+ *
+ * Snooze opens the SAME picker the notification uses ([SnoozePickerContent])
+ * INLINE, right here in the overlay (§4) — tapping Snooze never navigates the
+ * reader into the app. */
 @Composable
 private fun AlarmScreen(
     item: TodoItem,
     onComplete: () -> Unit,
-    onSnooze: () -> Unit
+    onSnoozeChoice: (Long) -> Unit
 ) {
+    var snoozeOpen by remember { mutableStateOf(false) }
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -245,28 +245,36 @@ private fun AlarmScreen(
             Spacer(Modifier.weight(1f))
             Spacer(Modifier.height(24.dp))
             Column(modifier = Modifier.fillMaxWidth()) {
-                Button(
-                    onClick = onComplete,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = ALARM_GREEN)
-                ) {
-                    Text(
-                        text = stringResource(R.string.todo_notification_complete),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                if (snoozeOpen) {
+                    // The snooze options live inside the alarm overlay itself.
+                    SnoozePickerContent(
+                        onSnooze = onSnoozeChoice,
+                        onDismiss = { snoozeOpen = false }
                     )
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = onSnooze,
-                    modifier = Modifier.fillMaxWidth().height(52.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                ) {
-                    Text(
-                        text = stringResource(R.string.todo_notification_snooze),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                } else {
+                    Button(
+                        onClick = onComplete,
+                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ALARM_GREEN)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.todo_notification_complete),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = { snoozeOpen = true },
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.todo_notification_snooze),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                 }
             }
         }

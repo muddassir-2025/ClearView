@@ -8,6 +8,8 @@ import { buildPublicRouter } from './public/routes.js';
 import { buildShareRouter } from './public/share.js';
 import { buildReadersRouter } from './readers/routes.js';
 import { buildAdminRouter } from './admin/routes.js';
+import { buildAdsPublicRouter } from './ads/publicRoutes.js';
+import { buildAdsAdminRouter } from './ads/adminRoutes.js';
 import { createFirebaseVerifier, type IdentityVerifier } from './identity/verifier.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
 import { createPushSender, type PushSender } from './notifications/fcm.js';
@@ -274,6 +276,11 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // ── Public reads (§24) ────────────────────────────────────────────────
   // Anonymous, read-only, and the only surface a phone touches on cold start —
   // which is why it is mounted first (§26).
+  //
+  // Advertisement cards (§9–§17) are mounted on their own path first, so the
+  // `ads` segment is matched exactly rather than being read as a channel id by
+  // a later parameterised route.
+  app.use('/api/v1/ads', buildAdsPublicRouter(database, store));
   app.use('/api/v1', buildPublicRouter(database, store));
 
   // ── Reader state (§3–§6) ──
@@ -323,6 +330,10 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // limiting — and `/admin/api/auth/login` additionally takes the tighter auth
   // rule inside the router.
   app.use('/admin/api', rateLimit(limiter, rateLimits.global));
+  // Advertisement management (§10–§16) on its own path, mounted before the
+  // channel-administration router so `/admin/api/ads` is matched exactly. Its
+  // routes re-check the `ads.*` permission on every request (super admins only).
+  app.use('/admin/api/ads', buildAdsAdminRouter(database, store));
   app.use(
     '/admin/api',
     buildAdminRouter(database, store, limiter, rateLimits, verifier, pushSender)

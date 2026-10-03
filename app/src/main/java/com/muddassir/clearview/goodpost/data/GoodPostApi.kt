@@ -142,6 +142,24 @@ class GoodPostApi(
     suspend fun categories(): ApiResult<List<GoodPostCategory>> =
         parsedGet("$PUBLIC_PATH/categories", GoodPostCodec::categories)
 
+    /**
+     * The advertisement cards active for one placement (§12).
+     *
+     * Anonymous, like every other public read: a card is shown to readers who
+     * have no account at all. Which cards come back — enabled, started, not
+     * expired, placed here — is decided entirely by the server, so the app
+     * carries none of those rules and cannot show a card it should not.
+     *
+     * The placement travels as a query parameter because one endpoint serves
+     * both surfaces with one response shape; anything the server does not
+     * recognise is treated there as `channels`, the safe default.
+     */
+    suspend fun ads(placement: GoodPostAdPlacement): ApiResult<List<GoodPostAd>> =
+        parsedGet(
+            "$PUBLIC_PATH/ads?placement=" + encode(placement.wire),
+            GoodPostCodec::adList
+        )
+
     // ── A reader's own state (§3–§6) ────────────────────────────────────
     //
     // The token is a parameter rather than something this class fetches: the
@@ -587,6 +605,68 @@ class GoodPostApi(
         parsedCall(
             method = "DELETE",
             path = "$ADMIN_PATH/channels/${encode(channelId)}",
+            body = null,
+            bearer = token,
+            parse = { }
+        )
+
+    // ── Advertisements (admin, §11, §15, §16) ───────────────────────────
+    //
+    // A separate surface from the channel routes: an advertisement is a platform
+    // concern, not a channel one, and the server refuses every one of these to
+    // anybody who is not a super administrator — regardless of what the app
+    // draws. The app lists them only for an admin, but the authority is the
+    // server's.
+
+    /** Every card, active or not — the admin list (§15). */
+    suspend fun adminAds(token: String): ApiResult<List<GoodPostAd>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/ads",
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::adList
+        )
+
+    /** One card, for the editor (§15). */
+    suspend fun adminAd(token: String, adId: String): ApiResult<GoodPostAd> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/ads/${encode(adId)}",
+            body = null,
+            bearer = token,
+            parse = { GoodPostCodec.singleAd(it) ?: throw ContractBreak() }
+        )
+
+    /** Create a card (§11). The whole body is supplied by the editor. */
+    suspend fun adminCreateAd(token: String, body: JSONObject): ApiResult<GoodPostAd> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/ads",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singleAd(it) ?: throw ContractBreak() }
+        )
+
+    /** Edit a card, including switching its content type (§11). */
+    suspend fun adminUpdateAd(
+        token: String,
+        adId: String,
+        body: JSONObject
+    ): ApiResult<GoodPostAd> =
+        parsedCall(
+            method = "PATCH",
+            path = "$ADMIN_PATH/ads/${encode(adId)}",
+            body = body,
+            bearer = token,
+            parse = { GoodPostCodec.singleAd(it) ?: throw ContractBreak() }
+        )
+
+    /** Remove a card, and its picture, for good (§11). */
+    suspend fun adminDeleteAd(token: String, adId: String): ApiResult<Unit> =
+        parsedCall(
+            method = "DELETE",
+            path = "$ADMIN_PATH/ads/${encode(adId)}",
             body = null,
             bearer = token,
             parse = { }

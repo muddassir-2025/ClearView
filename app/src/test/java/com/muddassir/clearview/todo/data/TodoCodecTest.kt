@@ -572,6 +572,28 @@ class TodoCodecTest {
             "Mon • Wed • Fri",
             TodoCodec.scheduleLabel(item("a", type = TodoType.PERMANENT, start = TODAY, days = setOf(1, 3, 5)), TODAY)
         )
+        // A permanent "every day" todo is due TODAY, so its card must not print
+        // the day it was created (the old behaviour, and a bug the reader saw:
+        // "Mon, Aug 10" on a todo that repeats daily).
+        assertEquals(
+            "Every day",
+            TodoCodec.scheduleLabel(item("a", type = TodoType.PERMANENT, start = TODAY, days = null), TODAY)
+        )
+        assertEquals(
+            // ...and it stays "Every day" on every later day, never a stale date.
+            "Every day",
+            TodoCodec.scheduleLabel(
+                item("a", type = TodoType.PERMANENT, start = TODAY.minusDays(54), days = null),
+                TODAY
+            )
+        )
+        assertEquals(
+            "Every day",
+            TodoCodec.scheduleLabel(
+                item("a", type = TodoType.PERMANENT, start = TODAY, days = setOf(1, 2, 3, 4, 5, 6, 7)),
+                TODAY
+            )
+        )
         assertEquals("Today – Aug 16", TodoCodec.scheduleLabel(item("a", start = TODAY, end = TODAY.plusDays(6)), TODAY))
     }
 

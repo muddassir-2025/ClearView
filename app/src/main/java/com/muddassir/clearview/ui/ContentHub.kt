@@ -691,6 +691,19 @@ class ContentHubState(appContext: Context) {
         shortsIndex = index
         playingAudio = null
         playingVideo = video
+        // §5: opening a video CONSUMES its update. The notification (keyed by
+        // the video's content id) is cancelled now, and the id is persisted as
+        // notified so no later background run can resurrect it — even if the OS
+        // held the notification back and the notified set never got it. The
+        // watch state saved during playback is the other half of the same rule.
+        MediaNotifier.cancelPostNotification(appContext, video.channelId, video.videoId)
+        scope.launch {
+            withContext(Dispatchers.IO) {
+                mediaRepository.markVideosNotified(
+                    mediaRepository.getNotifiedVideoIds() + video.videoId
+                )
+            }
+        }
     }
 
     /**

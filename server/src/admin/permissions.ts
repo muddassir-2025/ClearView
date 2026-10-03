@@ -58,6 +58,8 @@ export type AdminAction =
   | 'media.upload'
   | 'admins.read'
   | 'admins.manage'
+  | 'ads.read'
+  | 'ads.manage'
   | 'audit.read';
 
 /**
@@ -95,6 +97,11 @@ const GRANTS: Readonly<Record<AdminRole, readonly AdminAction[]>> = {
     'media.upload',
     'admins.read',
     'admins.manage',
+    // §10: advertisement cards are platform-wide, so only the super
+    // administrator manages them — a channel administrator runs one channel and
+    // has no business changing what every reader sees at the top of the tab.
+    'ads.read',
+    'ads.manage',
     'audit.read',
   ],
 };
@@ -144,5 +151,7 @@ export const ACTION_LABELS: Readonly<Record<AdminAction, string>> = {
   'media.upload': 'Upload images and videos',
   'admins.read': 'View administrator accounts',
   'admins.manage': 'Create, disable and re-role administrators',
+  'ads.read': 'View advertisement cards',
+  'ads.manage': 'Create, edit and remove advertisement cards',
   'audit.read': 'Read the audit log',
 };

@@ -437,7 +437,7 @@ private fun DhikrPage(
                 text = item.arabic,
                 fontSize = 34.sp,
                 lineHeight = 44.sp,
-                fontFamily = FontFamily.Serif,
+                fontFamily = QuranFontFamily,
                 textAlign = TextAlign.Center
             )
         }
@@ -1116,7 +1116,7 @@ private fun ManageRow(
                     Text(
                         text = item.arabic,
                         fontSize = 16.sp,
-                        fontFamily = FontFamily.Serif,
+                        fontFamily = QuranFontFamily,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1446,7 +1446,7 @@ private fun DhikrSearchSheet(
                                 Text(
                                     text = item.arabic,
                                     fontSize = 15.sp,
-                                    fontFamily = FontFamily.Serif,
+                                    fontFamily = QuranFontFamily,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )

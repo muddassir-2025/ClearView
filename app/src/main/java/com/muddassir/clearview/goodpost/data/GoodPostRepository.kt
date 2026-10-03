@@ -270,6 +270,17 @@ internal class GoodPostRepository(
             if (result is ApiResult.Ok) cache.saveCategories(result.value)
         }
 
+    /**
+     * The active advertisement cards for one placement (§12).
+     *
+     * Not cached, and on purpose: which card is active is decided by the server
+     * against the clock, so a cached card is one that may already have expired.
+     * A failed read is not reported either — a missing card is not something a
+     * reader can act on, and the screen it sits above is still fully usable.
+     */
+    suspend fun ads(placement: GoodPostAdPlacement): ApiResult<List<GoodPostAd>> =
+        api.ads(placement)
+
     // ── Administrator session (§16) ─────────────────────────────────────
 
     /** The stored administrator session, or null. */
@@ -480,6 +491,25 @@ internal class GoodPostRepository(
      */
     suspend fun adminDeleteChannel(channelId: String): ApiResult<Unit> =
         authorized { token -> api.adminDeleteChannel(token, channelId) }
+
+    // ── Advertisements (admin, §11, §15, §16) ───────────────────────────
+
+    /** Every card, active or not, for the admin list (§15). */
+    suspend fun adminAds(): ApiResult<List<GoodPostAd>> =
+        authorized { token -> api.adminAds(token) }
+
+    /** One card, for the editor (§15). */
+    suspend fun adminAd(adId: String): ApiResult<GoodPostAd> =
+        authorized { token -> api.adminAd(token, adId) }
+
+    suspend fun adminCreateAd(body: JSONObject): ApiResult<GoodPostAd> =
+        authorized { token -> api.adminCreateAd(token, body) }
+
+    suspend fun adminUpdateAd(adId: String, body: JSONObject): ApiResult<GoodPostAd> =
+        authorized { token -> api.adminUpdateAd(token, adId, body) }
+
+    suspend fun adminDeleteAd(adId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteAd(token, adId) }
 
     // ── Media (§21, §22) ────────────────────────────────────────────────
 

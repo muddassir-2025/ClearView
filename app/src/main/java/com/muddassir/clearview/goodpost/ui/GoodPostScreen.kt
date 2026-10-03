@@ -198,6 +198,11 @@ fun GoodPostTab(
                     editable = true,
                     viewModel = viewModel
                 )
+
+                // §15: the advertisement manager. A super administrator's
+                // surface, reached from the tab's own menu — there is still no
+                // dashboard beside the product.
+                GoodPostScreen.Ads -> GoodPostAdsScreen(state = state, viewModel = viewModel)
             }
         }
     }
@@ -219,6 +224,24 @@ fun GoodPostTab(
         label = "goodpost-channel-form"
     ) {
         ChannelFormScreen(state = state, viewModel = viewModel)
+    }
+
+    // §15: the advertisement editor, up from the bottom for the same reason as
+    // the channel form — a card is edited as a step over the list, not as a place
+    // in the back stack.
+    AnimatedVisibility(
+        visible = state.adFormOpen,
+        enter = slideInVertically(
+            animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+            initialOffsetY = { height -> height }
+        ),
+        exit = slideOutVertically(
+            animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+            targetOffsetY = { height -> height }
+        ),
+        label = "goodpost-ad-form"
+    ) {
+        AdFormScreen(state = state, viewModel = viewModel)
     }
 
     // §21: the posting page, up from the bottom like the form above and for the

@@ -920,6 +920,7 @@ fun MediaTab(
                 filter = feedFilter,
                 resultCount = resultCount,
                 hiddenCount = contextHiddenVideos.size,
+                hiddenChannelCount = hiddenChannelIds.size,
                 // "Add video by URL" is available in the All Feed, when a
                 // channel is selected, and when viewing one of the user's own
                 // playlists (the added video then lands in that playlist too).
@@ -3129,6 +3130,8 @@ private fun FeedHeader(
     filter: FeedFilter,
     resultCount: Int,
     hiddenCount: Int,
+    /** Number of currently hidden channels, shown in the ⋮ menu (§6). */
+    hiddenChannelCount: Int = 0,
     canAddVideo: Boolean,
     /** Shows a pencil icon to open the user-playlist editor. */
     canEditPlaylist: Boolean = false,
@@ -3281,7 +3284,10 @@ private fun FeedHeader(
                         )
                         if (showHiddenChannelsManager) {
                             DropdownMenuItem(
-                                text = { Text("Hidden channels") },
+                                // The count is read from the live hidden-channel
+                                // collection, so it updates the moment a channel
+                                // is hidden or unhidden (§6).
+                                text = { Text("Hidden channels ($hiddenChannelCount)") },
                                 onClick = {
                                     showMenu = false
                                     onOpenHiddenChannels()

@@ -38,9 +38,21 @@ class TodoStore(context: Context) {
     fun getItems(): List<TodoItem> =
         TodoCodec.decode(prefs.getString(KEY_ITEMS, null))
 
-    /** Persists the full todo list and publishes it to every open screen. */
+    /**
+     * Persists the full todo list and publishes it to every open screen.
+     *
+     * COMMITTED synchronously ([SharedPreferences.Editor.commit], not `apply`).
+     * A completion is a small, user-visible change that must survive the process
+     * going away immediately afterwards — and it can: a reminder's Complete runs
+     * in a broadcast receiver that the system kills as soon as `onReceive`
+     * returns, and the alarm screen finishes right after. With an async `apply`
+     * the write is only queued, so a crash or an immediate kill could drop it
+     * and leave the day looking uncompleted (and then "missed") even though the
+     * reader saw the button work. The list is small and this is called on a
+     * mutation, not per frame, so the cost is not felt.
+     */
     fun saveItems(items: List<TodoItem>) {
-        prefs.edit().putString(KEY_ITEMS, TodoCodec.encode(items)).apply()
+        prefs.edit().putString(KEY_ITEMS, TodoCodec.encode(items)).commit()
         TodoStore.itemsFlow.value = items
         // The home-screen widget is a second view of this same list, and it has
         // no subscription of its own: a widget cannot observe anything while the
