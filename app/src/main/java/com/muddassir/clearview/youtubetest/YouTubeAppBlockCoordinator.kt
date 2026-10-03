@@ -124,12 +124,11 @@ class YouTubeAppBlockCoordinator(
             val handle = findChannelHandle(root)
             if (handle.isNullOrBlank()) {
                 // The action was taken, but the tree does not expose the handle
-                // (the submenu may have closed, or the channel is only named).
-                // Say so rather than staying silent — otherwise the tap looks
-                // like it did nothing, which is exactly the confusion this
-                // feature exists to remove.
-                Log.i(TAG, "YOUTUBE_APP_DONT_RECOMMEND_NO_HANDLE — offering the manager instead")
-                offer(null)
+                // (the submenu closed before the scan, or the channel is shown
+                // only by name). Nothing is offered: an action that cannot name
+                // what it would block is not an action, and a toast with no
+                // usable button is worse than silence.
+                Log.i(TAG, "YOUTUBE_APP_DONT_RECOMMEND_NO_HANDLE — nothing to offer")
                 return
             }
             offer(handle)
@@ -225,33 +224,29 @@ class YouTubeAppBlockCoordinator(
      * taps it. It auto-dismisses on its own if they do nothing — the decision
      * they made in YouTube is not overwritten by ClearView assuming anything.
      */
-    private fun offer(handle: String?) {
-        val normalized = handle?.let { BrainRotRepository.normalizeHandle(it) }
+    private fun offer(handle: String) {
+        val normalized = BrainRotRepository.normalizeHandle(handle) ?: return
         val now = System.currentTimeMillis()
-        if (normalized != null && normalized == lastOfferedHandle && now - lastOfferedAt < OFFER_COOLDOWN_MS) {
+        if (normalized == lastOfferedHandle && now - lastOfferedAt < OFFER_COOLDOWN_MS) {
             Log.i(TAG, "YOUTUBE_APP_OFFER_SUPPRESSED handle=$normalized (recent)")
             return
         }
         // Already blocked: nothing to offer, and saying nothing is correct —
         // ClearView is already doing what the user is asking for.
-        if (normalized != null && brainRotRepository.isChannelBlocked(normalized)) {
+        if (brainRotRepository.isChannelBlocked(normalized)) {
             Log.i(TAG, "YOUTUBE_APP_ALREADY_BLOCKED handle=$normalized")
             return
         }
         lastOfferedHandle = normalized
         lastOfferedAt = now
 
-        val message = if (normalized != null) {
-            service.getString(R.string.brainrot_offer_block_channel, normalized)
-        } else {
-            service.getString(R.string.brainrot_offer_block_channel_generic)
-        }
+        val message = service.getString(R.string.brainrot_offer_block_channel, normalized)
 
         val toast = Toast(service)
         toast.duration = Toast.LENGTH_LONG
         toast.view = buildOfferView(message, normalized) { toast.cancel() }
         toast.show()
-        Log.i(TAG, "YOUTUBE_APP_OFFER handle=${normalized ?: "null"}")
+        Log.i(TAG, "YOUTUBE_APP_OFFER handle=$normalized")
     }
 
     /**
@@ -259,7 +254,7 @@ class YouTubeAppBlockCoordinator(
      * resource. A "Block" action is present only when the tree named a
      * channel — an action that cannot name what it would block is not offered.
      */
-    private fun buildOfferView(message: String, normalized: String?, dismiss: () -> Unit): LinearLayout {
+    private fun buildOfferView(message: String, normalized: String, dismiss: () -> Unit): LinearLayout {
         val pad = dp(16)
         val root = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -276,22 +271,20 @@ class YouTubeAppBlockCoordinator(
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
-        if (normalized != null) {
-            root.addView(Button(service).apply {
-                text = service.getString(R.string.brainrot_offer_block_action)
-                setTextColor(Color.parseColor("#FF8AB4F8"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                isAllCaps = false
-                background = null
-                setOnClickListener {
-                    confirmBlock(normalized)
-                    dismiss()
-                }
-            }, LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ))
-        }
+        root.addView(Button(service).apply {
+            text = service.getString(R.string.brainrot_offer_block_action)
+            setTextColor(Color.parseColor("#FF8AB4F8"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            isAllCaps = false
+            background = null
+            setOnClickListener {
+                confirmBlock(normalized)
+                dismiss()
+            }
+        }, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
         return root
     }
 

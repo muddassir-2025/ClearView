@@ -1293,7 +1293,6 @@ This video cannot be played inside the app.</string>
 
     <!-- "Don't recommend this channel" offer (YouTube app) -->
     <string name="brainrot_offer_block_channel">You told YouTube not to recommend %1$s. Block it in ClearView too?</string>
-    <string name="brainrot_offer_block_channel_generic">You asked YouTube not to recommend that channel. Block it in ClearView too?</string>
     <string name="brainrot_offer_block_action">Block</string>
     <string name="brainrot_channel_blocked">%1$s is now blocked</string>
 </resources>
