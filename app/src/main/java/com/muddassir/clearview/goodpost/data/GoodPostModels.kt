@@ -302,15 +302,59 @@ data class GoodPostBrainRotSubmission(
     /** `keyword` or `channel`. */
     val kind: String,
     val value: String,
+    /** A channel's name as the user saw it. Null for keywords. */
+    val displayName: String?,
     val note: String?,
-    /** `pending`, `approved` or `rejected`. */
+    /** Where it came from: `youtube_not_interested`, `app` or `unknown`. */
+    val source: String,
+    /** `pending`, `approved`, `rejected` or `under_review`. */
     val status: String,
+    /** Distinct devices that reported the target. */
     val reports: Int,
+    /** Distinct devices that asked for it globally. */
+    val requesters: Int,
     val createdAt: String?
 ) {
     val isChannel: Boolean get() = kind == "channel"
-    val isPending: Boolean get() = status == "pending"
+
+    /**
+     * True while a decision is still open.
+     *
+     * "Under review" counts: it is an operator saying they are looking at it,
+     * not a decision, so the Approve/Reject actions stay available.
+     */
+    val isOpen: Boolean get() = status == "pending" || status == "under_review"
 }
+
+/**
+ * One target's demand, as the dashboard lists it.
+ *
+ * Two numbers, deliberately different: [usersBlocking] is how many devices
+ * reported it, [globalRequests] is how many asked for it to be blocked for
+ * everyone. An operator weighing a queue needs both, and collapsing them into
+ * one "popularity" number would hide which question the count answers.
+ */
+data class GoodPostBrainRotDemand(
+    val kind: String,
+    val value: String,
+    val displayName: String?,
+    val usersBlocking: Int,
+    val globalRequests: Int,
+    val status: String?
+) {
+    val isChannel: Boolean get() = kind == "channel"
+}
+
+/** The dashboard's totals and its two most-requested lists. */
+data class GoodPostBrainRotDashboard(
+    val pending: Int = 0,
+    val approved: Int = 0,
+    val rejected: Int = 0,
+    val underReview: Int = 0,
+    val total: Int = 0,
+    val topChannels: List<GoodPostBrainRotDemand> = emptyList(),
+    val topKeywords: List<GoodPostBrainRotDemand> = emptyList()
+)
 
 /**
  * An advertisement card (§9–§17).
@@ -1008,10 +1052,48 @@ internal object GoodPostCodec {
                     id = id,
                     kind = kind,
                     value = value,
+                    displayName = row.nullableString("displayName"),
                     note = row.nullableString("note"),
+                    source = row.optString("source").ifBlank { "unknown" },
                     status = row.optString("status").ifBlank { "pending" },
                     reports = row.optInt("reports", 0),
+                    requesters = row.optInt("requesters", 0),
                     createdAt = row.nullableString("createdAt")
+                )
+            )
+        }
+        return parsed
+    }
+
+    /** Parse a `{ totals: {...}, topChannels: [...], topKeywords: [...] }` body. */
+    fun brainRotDashboard(body: JSONObject): GoodPostBrainRotDashboard {
+        val totals = body.optJSONObject("totals")
+        return GoodPostBrainRotDashboard(
+            pending = totals?.optInt("pending", 0) ?: 0,
+            approved = totals?.optInt("approved", 0) ?: 0,
+            rejected = totals?.optInt("rejected", 0) ?: 0,
+            underReview = totals?.optInt("underReview", 0) ?: 0,
+            total = totals?.optInt("all", 0) ?: 0,
+            topChannels = brainRotDemandList(body.optJSONArray("topChannels")),
+            topKeywords = brainRotDemandList(body.optJSONArray("topKeywords"))
+        )
+    }
+
+    private fun brainRotDemandList(items: JSONArray?): List<GoodPostBrainRotDemand> {
+        if (items == null) return emptyList()
+        val parsed = ArrayList<GoodPostBrainRotDemand>(items.length())
+        for (i in 0 until items.length()) {
+            val row = items.optJSONObject(i) ?: continue
+            val value = row.optString("value")
+            if (value.isBlank()) continue
+            parsed.add(
+                GoodPostBrainRotDemand(
+                    kind = if (row.optString("kind") == "channel") "channel" else "keyword",
+                    value = value,
+                    displayName = row.nullableString("displayName"),
+                    usersBlocking = row.optInt("usersBlocking", 0),
+                    globalRequests = row.optInt("globalRequests", 0),
+                    status = row.nullableString("status")
                 )
             )
         }

@@ -13,6 +13,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.muddassir.clearview.R
+import com.muddassir.clearview.brainrot.BlockAction
+import com.muddassir.clearview.brainrot.BlockedItemMeta
 import com.muddassir.clearview.brainrot.BrainRotRepository
 import com.muddassir.clearview.brainrot.GlobalRulesStore
 import kotlinx.coroutines.CoroutineScope
@@ -21,57 +23,76 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 /**
- * Watches the native YouTube app for the moment a user taps **"Don't recommend
- * this channel"** and offers to add that channel to ClearView's blocked list.
+ * Turns YouTube's "Not interested" into a block ClearView keeps.
  *
- * ## Why this exists
+ * ## The idea
  *
- * The spec's insight is that this is the one moment when a user is already
- * telling YouTube they do not want a channel. The app can either forget that
- * decision, or keep it: ClearView's whole purpose is that a decision about what
- * you do not want to see should survive the app you made it in. So the tap is
- * treated as an intent to block, and the user is asked once — never forced.
+ * When somebody taps three dots → "Not interested" (or "Don't recommend this
+ * channel"), they have just made a decision about what they do not want to see.
+ * YouTube forgets it for that one video. ClearView's whole purpose is that a
+ * decision like that should survive the app it was made in, so this coordinator
+ * treats the tap as intent and acts on it — immediately, locally, with no
+ * administrator in the loop.
  *
- * ## Scope and safety
+ * ## What it does, in order
  *
- *  * **The YouTube app only.** Chrome is handled by
- *    [LongVideoBlockCoordinator] and [YouTubeChromeTestCoordinator]; this
- *    coordinator never touches a Chrome tree.
- *  * **Never blocks on its own.** It only OFFERS. A block is written solely
- *    when the user confirms the toast's action, and the writing goes through
- *    [BrainRotRepository.addBlockedChannel] — the same list the Blocking tab
- *    manages — plus an optional global suggestion.
- *  * **Cheap.** The event handler does a bounded tree walk for one known label;
- *    a channel already in the list is a no-op and is not offered again.
+ *  1. Sees the action in the accessibility tree (Chrome's YouTube pages and the
+ *     native YouTube app alike).
+ *  2. Works out WHICH channel it was, from the handle on screen.
+ *  3. Blocks that channel for this user **right now** — through [BlockAction],
+ *     so the reason and the source are recorded with it — and notifies them.
+ *  4. Offers, once, to submit the same channel to the global repository, where
+ *     an administrator can decide whether everybody should be protected from it.
  *
- * Log tag: `ClearViewYouTubeApp`.
+ * ## Two things it deliberately does NOT do
+ *
+ *  * **It never blocks a keyword automatically.** The channel is a precise,
+ *    reversible identity that "Not interested" unambiguously refers to. A word
+ *    scraped from a title is neither: auto-blocking the tokens of one video's
+ *    title would block every future video containing those words, which is a
+ *    much larger decision than the user made. The keyword path exists and is
+ *    offered, but a person has to choose it.
+ *  * **It never blocks silently.** Every block it makes produces a notification
+ *    in the centre, so the user can see what ClearView did on their behalf and
+ *    undo it from the same list.
+ *
+ * ## Cost
+ *
+ * The handler returns immediately for any package that is neither Chrome nor
+ * YouTube, and the tree walk is bounded. It is triggered by a click and a window
+ * transition only — never by the content-changed storm, which would walk the
+ * tree on every frame of a scrolling feed.
+ *
+ * Log tag: `ClearViewNotInterested`.
  */
-class YouTubeAppBlockCoordinator(
+class NotInterestedCoordinator(
     private val service: AccessibilityService,
+    private val blockAction: BlockAction,
     private val brainRotRepository: BrainRotRepository,
     private val globalRulesStore: GlobalRulesStore
 ) {
 
     companion object {
-        private const val TAG = "ClearViewYouTubeApp"
+        private const val TAG = "ClearViewNotInterested"
+        private const val CHROME_PACKAGE = "com.android.chrome"
 
-        /** The native app, and its music sibling, which shares the UI. */
-        private val YOUTUBE_PACKAGES = setOf(
+        private val WATCHED_PACKAGES = setOf(
+            CHROME_PACKAGE,
             "com.google.android.youtube",
             "com.google.android.apps.youtube.music"
         )
 
-        /** A label scan touches at most this many nodes. */
-        private const val NODE_BUDGET = 800
-        private const val MAX_DEPTH = 60
+        private const val NODE_BUDGET = 900
+        private const val MAX_DEPTH = 70
         private const val MAX_HANDLE_TEXT_LEN = 60
 
-        /** Throttle between label scans — the menu opens once, but trees storm. */
+        /** Throttle between label scans. */
         private const val SCAN_MIN_INTERVAL_MS = 400L
 
-        /** Don't offer twice for the same channel within this window. */
+        /** Do not offer the same channel twice within this window. */
         private const val OFFER_COOLDOWN_MS = 60_000L
 
         private val STANDALONE_HANDLE_REGEX = Regex("^@[A-Za-z0-9._-]{2,100}$")
@@ -83,16 +104,12 @@ class YouTubeAppBlockCoordinator(
     private var lastScanAt = 0L
     private var lastOfferedHandle: String? = null
     private var lastOfferedAt = 0L
+    private var lastHandledAt = 0L
 
     /** Called from the service for every accessibility event. Cheap. */
     fun onAccessibilityEvent(event: AccessibilityEvent) {
         val packageName = event.packageName?.toString() ?: return
-        if (packageName !in YOUTUBE_PACKAGES) return
-        // Only a tap opens the menu, and only a window transition renders it.
-        // Deliberately NOT TYPE_WINDOW_CONTENT_CHANGED: the YouTube feed storms
-        // that event, and a tree walk per storm would jank the app the user is
-        // looking at. The two events below are the ones the menu actually
-        // produces, so nothing is missed by leaving the storm out.
+        if (packageName !in WATCHED_PACKAGES) return
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_CLICKED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
@@ -102,7 +119,7 @@ class YouTubeAppBlockCoordinator(
         val now = System.currentTimeMillis()
         if (now - lastScanAt < SCAN_MIN_INTERVAL_MS) return
         lastScanAt = now
-        scan()
+        scan(packageName)
     }
 
     /** Called from the service on destroy / interrupt. */
@@ -113,25 +130,22 @@ class YouTubeAppBlockCoordinator(
         Log.i(TAG, "STOPPED")
     }
 
-    private fun scan() {
+    private fun scan(packageName: String) {
         val root = try { service.rootInActiveWindow } catch (e: Exception) { null } ?: return
         try {
             val rootPkg = try { root.packageName?.toString() } catch (e: Exception) { null }
-            if (rootPkg != null && rootPkg !in YOUTUBE_PACKAGES) return
-            val action = findDontRecommendChannel(root) ?: return
-            Log.i(TAG, "YOUTUBE_APP_DONT_RECOMMEND_FOUND text=${action.text} desc=${action.contentDescription}")
-            action.recycle()
+            if (rootPkg != null && rootPkg !in WATCHED_PACKAGES) return
+            if (!hasNotInterestedAction(root)) return
+            Log.i(TAG, "NOT_INTERESTED_FOUND package=$packageName")
             val handle = findChannelHandle(root)
             if (handle.isNullOrBlank()) {
-                // The action was taken, but the tree does not expose the handle
-                // (the submenu closed before the scan, or the channel is shown
-                // only by name). Nothing is offered: an action that cannot name
-                // what it would block is not an action, and a toast with no
-                // usable button is worse than silence.
-                Log.i(TAG, "YOUTUBE_APP_DONT_RECOMMEND_NO_HANDLE — nothing to offer")
+                // The action was taken but the tree does not name a channel. We
+                // cannot block what we cannot name, so nothing is offered rather
+                // than a toast whose button would do nothing.
+                Log.i(TAG, "NOT_INTERESTED_NO_HANDLE — nothing to block")
                 return
             }
-            offer(handle)
+            handleNotInterested(handle)
         } catch (e: Exception) {
             Log.e(TAG, "scan error: ${e.message}")
         } finally {
@@ -139,17 +153,14 @@ class YouTubeAppBlockCoordinator(
         }
     }
 
-    /**
-     * Find the "Don't recommend this channel" item. Bounded BFS, visible nodes
-     * only, so a hidden/offscreen menu is never matched.
-     */
-    private fun findDontRecommendChannel(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+    /** True when a visible "Not interested" / "Don't recommend" item is present. */
+    private fun hasNotInterestedAction(root: AccessibilityNodeInfo): Boolean {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
         var depth = 0
         var visited = 0
-        var found: AccessibilityNodeInfo? = null
-        while (queue.isNotEmpty() && depth < MAX_DEPTH && visited < NODE_BUDGET) {
+        var found = false
+        while (queue.isNotEmpty() && depth < MAX_DEPTH && visited < NODE_BUDGET && !found) {
             visited++
             val node = queue.removeFirst()
             val isRoot = node === root
@@ -157,13 +168,15 @@ class YouTubeAppBlockCoordinator(
             if (visible) {
                 val text = try { node.text?.toString() } catch (e: Exception) { null }
                 val desc = try { node.contentDescription?.toString() } catch (e: Exception) { null }
-                if (YouTubeNodeRules.isDontRecommendChannelLabel(text) ||
+                if (YouTubeNodeRules.isNotInterestedLabel(text) ||
+                    YouTubeNodeRules.isNotInterestedLabel(desc) ||
+                    YouTubeNodeRules.isDontRecommendChannelLabel(text) ||
                     YouTubeNodeRules.isDontRecommendChannelLabel(desc)
                 ) {
-                    found = AccessibilityNodeInfo.obtain(node)
+                    found = true
                 }
             }
-            if (found == null) {
+            if (!found) {
                 val count = try { node.childCount } catch (e: Exception) { 0 }
                 for (i in 0 until count) {
                     val child = try { node.getChild(i) } catch (e: Exception) { null } ?: continue
@@ -200,7 +213,6 @@ class YouTubeAppBlockCoordinator(
             if (!isRoot) try { node.recycle() } catch (e: Exception) {}
             depth++
         }
-        // Prefer a standalone handle (the strongest signal), then a short text.
         for (t in texts) {
             val trimmed = t.trim()
             if (trimmed.length <= MAX_HANDLE_TEXT_LEN && STANDALONE_HANDLE_REGEX.matches(trimmed)) {
@@ -216,45 +228,72 @@ class YouTubeAppBlockCoordinator(
     }
 
     /**
-     * Ask the user, once, whether to keep the decision ClearView just observed.
+     * Block the channel now, tell the user, and offer to make it global.
      *
-     * A toast rather than an overlay: this is not a block, it is an offer, and
-     * an overlay over the YouTube app would be a block in all but name. The
-     * toast carries its own action, so a block is written only when the user
-     * taps it. It auto-dismisses on its own if they do nothing — the decision
-     * they made in YouTube is not overwritten by ClearView assuming anything.
+     * The personal block happens FIRST and unconditionally. The global offer is a
+     * separate, optional step, and nothing about it can prevent or delay the
+     * block the user already asked for.
      */
-    private fun offer(handle: String) {
-        val normalized = BrainRotRepository.normalizeHandle(handle) ?: return
+    private fun handleNotInterested(rawHandle: String) {
+        val normalized = BrainRotRepository.normalizeHandle(rawHandle) ?: return
         val now = System.currentTimeMillis()
-        if (normalized == lastOfferedHandle && now - lastOfferedAt < OFFER_COOLDOWN_MS) {
-            Log.i(TAG, "YOUTUBE_APP_OFFER_SUPPRESSED handle=$normalized (recent)")
+        // One action, one block: the tree can carry the label for a few hundred
+        // milliseconds across several events.
+        if (now - lastHandledAt < OFFER_COOLDOWN_MS && normalized == lastOfferedHandle) {
+            Log.i(TAG, "NOT_INTERESTED_SUPPRESSED handle=$normalized (recent)")
             return
         }
-        // Already blocked: nothing to offer, and saying nothing is correct —
-        // ClearView is already doing what the user is asking for.
-        if (brainRotRepository.isChannelBlocked(normalized)) {
-            Log.i(TAG, "YOUTUBE_APP_ALREADY_BLOCKED handle=$normalized")
-            return
-        }
+        lastHandledAt = now
         lastOfferedHandle = normalized
-        lastOfferedAt = now
 
-        val message = service.getString(R.string.brainrot_offer_block_channel, normalized)
+        val alreadyBlocked = brainRotRepository.isChannelBlocked(normalized)
+        if (!alreadyBlocked) {
+            val reason = "Blocked from YouTube \"Not interested\" action"
+            blockAction.blockChannel(
+                handle = normalized,
+                reason = reason,
+                source = BlockedItemMeta.Source.YOUTUBE_NOT_INTERESTED,
+                notificationMessage = "Blocked $normalized — you chose \"Not interested\" in YouTube.",
+                notificationId = "ni:$normalized"
+            )
+            Log.i(TAG, "NOT_INTERESTED_BLOCKED handle=$normalized")
+        } else {
+            Log.i(TAG, "NOT_INTERESTED_ALREADY_BLOCKED handle=$normalized")
+        }
 
+        offerGlobal(normalized)
+    }
+
+    /**
+     * Offer, once, to submit the channel to the global repository.
+     *
+     * A toast with its own action rather than an overlay: this is an offer, not a
+     * block, and it auto-dismisses if the user does nothing. The block they asked
+     * for has already happened either way.
+     */
+    private fun offerGlobal(normalized: String) {
+        // No separate cooldown: [handleNotInterested] has already established
+        // that this is a new action for this channel, so reaching here once is
+        // what "once" means.
+        lastOfferedAt = System.currentTimeMillis()
+
+        val message = service.getString(R.string.brainrot_not_interested_blocked, normalized)
         val toast = Toast(service)
         toast.duration = Toast.LENGTH_LONG
         toast.view = buildOfferView(message, normalized) { toast.cancel() }
         toast.show()
-        Log.i(TAG, "YOUTUBE_APP_OFFER handle=$normalized")
+        Log.i(TAG, "NOT_INTERESTED_OFFER handle=$normalized")
     }
 
     /**
-     * The offer toast's view, built in code so the feature adds no layout
-     * resource. A "Block" action is present only when the tree named a
-     * channel — an action that cannot name what it would block is not offered.
+     * The toast's view: the confirmation, and a button to submit the same
+     * channel globally. Built in code so the feature adds no layout resource.
      */
-    private fun buildOfferView(message: String, normalized: String, dismiss: () -> Unit): LinearLayout {
+    private fun buildOfferView(
+        message: String,
+        normalized: String,
+        dismiss: () -> Unit
+    ): LinearLayout {
         val pad = dp(16)
         val root = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -272,13 +311,13 @@ class YouTubeAppBlockCoordinator(
         }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         root.addView(Button(service).apply {
-            text = service.getString(R.string.brainrot_offer_block_action)
+            text = service.getString(R.string.brainrot_submit_global_action)
             setTextColor(Color.parseColor("#FF8AB4F8"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
             isAllCaps = false
             background = null
             setOnClickListener {
-                confirmBlock(normalized)
+                submitGlobal(normalized)
                 dismiss()
             }
         }, LinearLayout.LayoutParams(
@@ -288,25 +327,25 @@ class YouTubeAppBlockCoordinator(
         return root
     }
 
-    /**
-     * The user confirmed. Write the channel to the local list (the source of
-     * truth for enforcement) and, best-effort, suggest it to the global
-     * repository so the decision can help everyone.
-     */
-    private fun confirmBlock(handle: String) {
-        val normalized = BrainRotRepository.normalizeHandle(handle) ?: return
-        val added = brainRotRepository.addBlockedChannel(normalized, reason = "don't recommend")
-        if (added) {
-            Log.i(TAG, "YOUTUBE_APP_CHANNEL_BLOCKED handle=$normalized")
-            Toast.makeText(
-                service,
-                service.getString(R.string.brainrot_channel_blocked, normalized),
-                Toast.LENGTH_SHORT
-            ).show()
-        }
+    private fun submitGlobal(normalized: String) {
         scope.launch {
             if (!isActive) return@launch
-            runCatching { globalRulesStore.suggestChannel(normalized) }
+            val ok = runCatching {
+                globalRulesStore.suggestChannel(
+                    normalized,
+                    name = null,
+                    source = "youtube_not_interested"
+                )
+            }.getOrDefault(false)
+            Log.i(TAG, "NOT_INTERESTED_GLOBAL_SUBMIT handle=$normalized ok=$ok")
+            Toast.makeText(
+                service,
+                service.getString(
+                    if (ok) R.string.brainrot_submit_global_queued
+                    else R.string.block_global_suggest_failed
+                ),
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 

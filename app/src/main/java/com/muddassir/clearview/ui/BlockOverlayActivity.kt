@@ -120,10 +120,13 @@ class BlockOverlayActivity : ComponentActivity() {
                     onRemoveKeyword = {
                         // Removing the rule is the whole point of the control: it
                         // must take effect immediately, so the next scan cannot
-                        // block the same thing again.
+                        // block the same thing again. Routed through BlockAction
+                        // so the provenance behind the item is dropped with it —
+                        // otherwise the reason would outlive the block and keep
+                        // explaining something that is no longer blocked.
                         try {
-                            com.muddassir.clearview.repository.BlockRepository(applicationContext)
-                                .removeUserKeyword(blockedItem)
+                            com.muddassir.clearview.brainrot.BlockAction(applicationContext)
+                                .unblockKeyword(blockedItem)
                             Log.i(TAG, "Removed user keyword from rules: $blockedItem")
                         } catch (e: Exception) {
                             Log.e(TAG, "Could not remove keyword: ${e.message}")

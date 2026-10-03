@@ -542,6 +542,9 @@ internal class GoodPostRepository(
     ): ApiResult<Unit> =
         authorized { token -> api.adminReviewBrainRotSubmission(token, submissionId, decision) }
 
+    suspend fun adminBrainRotDashboard(): ApiResult<GoodPostBrainRotDashboard> =
+        authorized { token -> api.adminBrainRotDashboard(token) }
+
     suspend fun adminCreateChannel(body: JSONObject): ApiResult<GoodPostChannel> =
         authorized { token -> api.adminCreateChannel(token, body) }
 

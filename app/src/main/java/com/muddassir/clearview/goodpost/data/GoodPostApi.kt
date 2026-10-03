@@ -821,6 +821,16 @@ class GoodPostApi(
             parse = { }
         )
 
+    /** The dashboard's totals and most-requested targets. */
+    suspend fun adminBrainRotDashboard(token: String): ApiResult<GoodPostBrainRotDashboard> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/brainrot/dashboard",
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::brainRotDashboard
+        )
+
     /** The URL segment for a rule kind, validated so a bad kind cannot build a path. */
     private fun brainRotKindPath(kind: String): String =
         if (kind == "channel") "channels" else "keywords"

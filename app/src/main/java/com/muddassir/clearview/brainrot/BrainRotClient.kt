@@ -126,8 +126,18 @@ class BrainRotClient(context: Context) {
      * Returns true when the server accepted it. The suggestion is inert until an
      * administrator approves it, so a success here means "queued for review",
      * not "now blocked everywhere" — the UI must word it that way.
+     *
+     * [source] and [displayName] travel with the request so a reviewer can tell a
+     * decision made inside YouTube ("Not interested") from one typed here, and so
+     * a channel is listed under the name the user recognised it by.
      */
-    suspend fun submitSuggestion(kind: String, value: String, note: String? = null): Boolean =
+    suspend fun submitSuggestion(
+        kind: String,
+        value: String,
+        note: String? = null,
+        source: String = "unknown",
+        displayName: String? = null
+    ): Boolean =
         withContext(Dispatchers.IO) {
             if (!isConfigured()) return@withContext false
             postJson(
@@ -136,10 +146,60 @@ class BrainRotClient(context: Context) {
                     put("kind", kind)
                     put("value", value)
                     put("anonymousId", AnonymousId.get(appContext))
+                    put("source", source)
                     note?.let { put("note", it) }
+                    displayName?.let { put("displayName", it) }
                 }
             )
         }
+
+    /** One of this device's own submissions, with its current status. */
+    data class SubmissionStatus(
+        val id: String,
+        val kind: String,
+        val value: String,
+        val displayName: String?,
+        val status: String,
+        val source: String,
+        val createdAt: String?
+    )
+
+    /**
+     * The submissions THIS device has made.
+     *
+     * The anonymous id is the only key: it is generated on the phone and nothing
+     * else can read this list, which is what lets the app show somebody the fate
+     * of their own request without an account. Returns null on any failure so the
+     * caller keeps whatever it had — an empty list would read as "you have
+     * requested nothing", which is a statement about the user rather than about
+     * a failed request.
+     */
+    suspend fun fetchSubmissions(): List<SubmissionStatus>? = withContext(Dispatchers.IO) {
+        if (!isConfigured()) return@withContext null
+        val path = "/api/v1/brainrot/submissions?anonymousId=" + AnonymousId.get(appContext)
+        val json = request("GET", path) ?: return@withContext null
+        try {
+            val arr = json.optJSONArray("submissions") ?: return@withContext emptyList()
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                val value = o.optString("value")
+                if (id.isBlank() || value.isBlank()) return@mapNotNull null
+                SubmissionStatus(
+                    id = id,
+                    kind = if (o.optString("kind") == "channel") "channel" else "keyword",
+                    value = value,
+                    displayName = o.optString("displayName").takeIf { it.isNotBlank() },
+                    status = o.optString("status").ifBlank { "pending" },
+                    source = o.optString("source").ifBlank { "unknown" },
+                    createdAt = o.optString("createdAt").takeIf { it.isNotBlank() }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "submissions parse error: ${e.message}")
+            null
+        }
+    }
 
     /**
      * Report a keyword or channel. Returns the resulting report count, or null

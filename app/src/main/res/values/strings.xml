@@ -1139,7 +1139,20 @@ This video cannot be played inside the app.</string>
 
     <!-- Global Brain Rot repository (admin review queue and rules) -->
     <string name="goodpost_brainrot">Global protection</string>
+    <string name="goodpost_brainrot_dashboard">Dashboard</string>
     <string name="goodpost_brainrot_queue">Review queue</string>
+    <string name="goodpost_brainrot_total">Total submissions</string>
+    <string name="goodpost_brainrot_under_review">Under review</string>
+    <string name="goodpost_brainrot_top_channels">MOST BLOCKED CHANNELS</string>
+    <string name="goodpost_brainrot_top_keywords">MOST BLOCKED KEYWORDS</string>
+    <string name="goodpost_brainrot_no_demand">No submissions yet.</string>
+    <string name="goodpost_brainrot_users_blocking">%1$d users blocking</string>
+    <string name="goodpost_brainrot_global_requests">%1$d global requests</string>
+    <string name="goodpost_brainrot_source_youtube">From YouTube \u201cNot interested\u201d</string>
+    <string name="goodpost_brainrot_source_app">Added in the app</string>
+    <string name="goodpost_brainrot_source_unknown">Source not recorded</string>
+    <string name="goodpost_brainrot_mark_review">Mark under review</string>
+    <string name="goodpost_brainrot_under_review_note">Under review</string>
     <string name="goodpost_brainrot_rules">Rules</string>
     <string name="goodpost_brainrot_pending">Pending</string>
     <string name="goodpost_brainrot_approved">Approved</string>
@@ -1269,6 +1282,9 @@ This video cannot be played inside the app.</string>
     <string name="block_channels_empty">No channels blocked yet. Add one below.</string>
     <string name="block_channel_add_label">Add a channel</string>
     <string name="block_channel_add_hint">@channelhandle</string>
+    <string name="block_youtube_keyword_hint">e.g. a phrase you keep seeing</string>
+    <string name="block_keyword_hint">e.g. instagram, tiktok</string>
+    <string name="block_domain_hint">e.g. youtube.com, reddit.com</string>
     <string name="block_channel_search_hint">Search blocked channels</string>
     <string name="block_channel_invalid">Enter a channel handle like @examplechannel.</string>
     <string name="block_channel_my_block">My block</string>
@@ -1291,8 +1307,40 @@ This video cannot be played inside the app.</string>
     <string name="block_global_suggest_failed">Could not reach the server. Nothing changed.</string>
     <string name="block_global_reports">%1$d reports</string>
 
-    <!-- "Don't recommend this channel" offer (YouTube app) -->
+    <!-- "Not interested" / "Don't recommend this channel" (Chrome + YouTube app) -->
     <string name="brainrot_offer_block_channel">You told YouTube not to recommend %1$s. Block it in ClearView too?</string>
     <string name="brainrot_offer_block_action">Block</string>
     <string name="brainrot_channel_blocked">%1$s is now blocked</string>
+    <string name="brainrot_not_interested_blocked">Blocked %1$s. Submit to the global repository?</string>
+    <string name="brainrot_submit_global_action">Submit</string>
+    <string name="brainrot_submit_global_queued">Queued for admin review</string>
+
+    <!-- Notification centre -->
+    <string name="block_notifications_title">Notifications</string>
+    <string name="block_notifications_empty">Nothing yet. Blocking something will show up here.</string>
+    <string name="block_notifications_clear">Clear all</string>
+    <string name="block_notifications_mark_read">Mark all read</string>
+    <string name="block_notifications_unread">%1$d unread</string>
+
+    <!-- Section structure -->
+    <string name="block_youtube_section">YOUTUBE PROTECTION</string>
+    <string name="block_my_items_section">MY BLOCKED ITEMS</string>
+    <string name="block_global_section">GLOBAL REPOSITORY</string>
+    <string name="block_my_items_note">Your own keywords and websites. These apply across Chrome and every site you visit through it.</string>
+    <string name="block_youtube_note">These rules apply to YouTube only \u2014 Shorts and long videos. Nothing here affects other websites.</string>
+
+    <!-- My submissions to the global repository -->
+    <string name="block_my_submissions_title">My requests</string>
+    <string name="block_my_submissions_empty">You have not submitted anything for global review.</string>
+    <string name="block_my_submissions_note">Requests you sent for everyone. An administrator reviews them before they apply to anyone.</string>
+    <string name="block_my_submission_pending">Pending review</string>
+    <string name="block_my_submission_under_review">Under review</string>
+    <string name="block_my_submission_approved">Approved \u2014 now global</string>
+    <string name="block_my_submission_rejected">Rejected</string>
+    <string name="block_my_submission_submit">Submit to global</string>
+
+    <!-- Reasons shown wherever a block is explained -->
+    <string name="block_reason_title">Why was this blocked?</string>
+    <string name="block_reason_channel">Channel %1$s is blocked</string>
+    <string name="block_reason_not_interested">Blocked from YouTube \u201cNot interested\u201d action\nChannel: %1$s</string>
 </resources>

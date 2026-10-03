@@ -56,13 +56,30 @@ export interface BrainRotRules {
   readonly channels: BrainRotChannel[];
 }
 
+export type BrainRotSubmissionStatus = 'pending' | 'approved' | 'rejected' | 'under_review';
+
+/**
+ * Where a submission came from.
+ *
+ * 'youtube_not_interested' is a decision the user made inside YouTube; 'app' is
+ * one they typed here. A reviewer weighing a request is entitled to know which,
+ * so the origin travels with the row rather than being guessed from the value.
+ */
+export type BrainRotSubmissionSource = 'youtube_not_interested' | 'app' | 'unknown';
+
 export interface BrainRotSubmission {
   readonly id: string;
   readonly kind: BrainRotTargetKind;
   readonly value: string;
+  /** The channel's name as the user saw it, for display. Null for keywords. */
+  readonly displayName: string | null;
   readonly note: string | null;
-  readonly status: 'pending' | 'approved' | 'rejected';
+  readonly source: BrainRotSubmissionSource;
+  readonly status: BrainRotSubmissionStatus;
+  /** Distinct devices that reported the same target. */
   readonly reports: number;
+  /** Distinct devices that submitted this target, across every status. */
+  readonly requesters: number;
   readonly createdAt: string | null;
 }
 
@@ -151,6 +168,26 @@ async function reportCounts(
     [kind]
   );
   return new Map(rows.map((r) => [r.value, Number(r.total)]));
+}
+
+/**
+ * How many distinct devices asked for each target GLOBALLY, keyed `kind:value`.
+ *
+ * A different number from [reportCounts] on purpose. A report is "this is bad"
+ * (the report button); a submission is "everyone should block this" (the submit
+ * button). The dashboard shows both, because "247 devices blocked it, 182 asked
+ * for it globally" is the sentence an operator needs to weigh a queue.
+ *
+ * Counted over EVERY status, not just pending: a target that was already
+ * approved and then asked for by four hundred more people is a strong signal,
+ * and a count that reset on approval would hide it.
+ */
+async function requesterCounts(database: Queryable): Promise<Map<string, number>> {
+  const rows = await database.query<{ kind: BrainRotTargetKind; value: string; total: number }>(
+    `SELECT kind, value, COUNT(DISTINCT anonymous_id)::int AS total
+       FROM brainrot_submissions GROUP BY kind, value`
+  );
+  return new Map(rows.map((r) => [`${r.kind}:${r.value}`, Number(r.total)]));
 }
 
 /** Every global keyword, for the phone to cache and the admin to manage. */
@@ -351,33 +388,87 @@ export async function submitSuggestion(
   anonymousId: string,
   kind: BrainRotTargetKind,
   rawValue: string,
-  note: string | null = null
+  note: string | null = null,
+  source: BrainRotSubmissionSource = 'unknown',
+  displayName: string | null = null
 ): Promise<{ readonly status: 'pending'; readonly value: string }> {
   const value = normalizeTarget(kind, rawValue);
   await touchDevice(database, anonymousId);
   await database.query(
-    `INSERT INTO brainrot_submissions (kind, value, note, anonymous_id)
-     VALUES ($1::brainrot_target_kind, $2, $3, $4)
-     ON CONFLICT (kind, value, anonymous_id) WHERE status = 'pending' DO NOTHING`,
-    [kind, value, note?.trim() || null, anonymousId]
+    `INSERT INTO brainrot_submissions (kind, value, note, anonymous_id, source, display_name)
+     VALUES ($1::brainrot_target_kind, $2, $3, $4, $5, $6)
+     ON CONFLICT (kind, value, anonymous_id) WHERE status IN ('pending', 'under_review') DO NOTHING`,
+    [kind, value, note?.trim() || null, anonymousId, source, displayName?.trim() || null]
   );
   return { status: 'pending', value };
+}
+
+/**
+ * The submissions one device has made, newest first.
+ *
+ * This is what lets the app show a user the fate of their own request —
+ * "pending", "approved", "rejected" — without an account. The anonymous id IS
+ * the identity here, which is why it is generated on the device and never
+ * derived from anything about the phone.
+ */
+export async function listDeviceSubmissions(
+  database: Queryable,
+  anonymousId: string
+): Promise<BrainRotSubmission[]> {
+  if (!isUuid(anonymousId)) {
+    throw badRequest('invalid_anonymous_id', 'That device id is not a valid identifier.');
+  }
+  const rows = await database.query<{
+    id: string;
+    kind: BrainRotTargetKind;
+    value: string;
+    display_name: string | null;
+    note: string | null;
+    source: BrainRotSubmissionSource;
+    status: BrainRotSubmissionStatus;
+    created_at: unknown;
+  }>(
+    `SELECT id, kind, value, display_name, note, source, status, created_at
+       FROM brainrot_submissions
+      WHERE anonymous_id = $1
+      ORDER BY created_at DESC
+      LIMIT 200`,
+    [anonymousId]
+  );
+  const keywordCounts = await reportCounts(database, 'keyword');
+  const channelCounts = await reportCounts(database, 'channel');
+  const requesters = await requesterCounts(database);
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    value: row.value,
+    displayName: row.display_name,
+    note: row.note,
+    source: row.source,
+    status: row.status,
+    reports: (row.kind === 'keyword' ? keywordCounts.get(row.value) : channelCounts.get(row.value)) ?? 0,
+    requesters: requesters.get(`${row.kind}:${row.value}`) ?? 0,
+    createdAt: isoOrNull(row.created_at),
+  }));
 }
 
 /** The review queue. Oldest first, which is the order an operator works through it. */
 export async function listSubmissions(
   database: Queryable,
-  status: 'pending' | 'approved' | 'rejected' | 'all' = 'pending'
+  status: BrainRotSubmissionStatus | 'all' = 'pending'
 ): Promise<BrainRotSubmission[]> {
   const rows = await database.query<{
     id: string;
     kind: BrainRotTargetKind;
     value: string;
+    display_name: string | null;
     note: string | null;
-    status: 'pending' | 'approved' | 'rejected';
+    source: BrainRotSubmissionSource;
+    status: BrainRotSubmissionStatus;
     created_at: unknown;
   }>(
-    `SELECT id, kind, value, note, status, created_at FROM brainrot_submissions
+    `SELECT id, kind, value, display_name, note, source, status, created_at
+       FROM brainrot_submissions
       ${status === 'all' ? '' : 'WHERE status = $1'}
       ORDER BY created_at ASC
       LIMIT 500`,
@@ -385,13 +476,17 @@ export async function listSubmissions(
   );
   const counts = await reportCounts(database, 'keyword');
   const channelCounts = await reportCounts(database, 'channel');
+  const requesters = await requesterCounts(database);
   return rows.map((row) => ({
     id: row.id,
     kind: row.kind,
     value: row.value,
+    displayName: row.display_name,
     note: row.note,
+    source: row.source,
     status: row.status,
     reports: (row.kind === 'keyword' ? counts.get(row.value) : channelCounts.get(row.value)) ?? 0,
+    requesters: requesters.get(`${row.kind}:${row.value}`) ?? 0,
     createdAt: isoOrNull(row.created_at),
   }));
 }
@@ -406,7 +501,7 @@ export async function listSubmissions(
 export async function reviewSubmission(
   database: Queryable,
   submissionId: string,
-  decision: 'approved' | 'rejected',
+  decision: 'approved' | 'rejected' | 'under_review',
   adminId: string | null
 ): Promise<{ readonly submission: BrainRotSubmission; readonly ruleId: string | null }> {
   if (!isUuid(submissionId)) throw notFound('submission_not_found');
@@ -416,15 +511,21 @@ export async function reviewSubmission(
       id: string;
       kind: BrainRotTargetKind;
       value: string;
+      display_name: string | null;
       note: string | null;
+      source: BrainRotSubmissionSource;
       status: string;
     }>(
-      `SELECT id, kind, value, note, status FROM brainrot_submissions
-        WHERE id = $1 FOR UPDATE`,
+      `SELECT id, kind, value, display_name, note, source, status
+         FROM brainrot_submissions WHERE id = $1 FOR UPDATE`,
       [submissionId]
     );
     if (!row) throw notFound('submission_not_found');
-    if (row.status !== 'pending') {
+    // Only a FINAL decision is refused on a decided row. Marking an
+    // already-under-review suggestion as under review again is a no-op, and a
+    // reviewer changing their mind from under-review to approved or rejected is
+    // the ordinary way a queue is worked.
+    if ((row.status === 'approved' || row.status === 'rejected') && row.status !== decision) {
       throw badRequest('submission_already_reviewed', 'That suggestion has already been reviewed.');
     }
 
@@ -465,14 +566,108 @@ export async function reviewSubmission(
         id: row.id,
         kind: row.kind,
         value: row.value,
+        displayName: row.display_name,
         note: row.note,
+        source: row.source,
         status: decision,
         reports: 0,
+        requesters: 0,
         createdAt: null,
       },
       ruleId,
     };
   });
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────
+
+/** One target's demand, as the dashboard lists it. */
+export interface BrainRotDemandRow {
+  readonly kind: BrainRotTargetKind;
+  readonly value: string;
+  readonly displayName: string | null;
+  /** Distinct devices that reported it (the "block" count). */
+  readonly usersBlocking: number;
+  /** Distinct devices that asked for it globally (the "request" count). */
+  readonly globalRequests: number;
+  /** The most recent status among its submissions. */
+  readonly status: BrainRotSubmissionStatus | null;
+}
+
+/**
+ * The counts and the demand list behind the admin dashboard.
+ *
+ * One call rather than five, because the dashboard draws them together and a
+ * number that arrived separately could disagree with the list beside it.
+ *
+ * The two counts are deliberately different and both are DERIVED:
+ *   * `usersBlocking` — distinct devices that reported the target.
+ *   * `globalRequests` — distinct devices that submitted it for global review.
+ * A materialised counter for either would be a second source of truth that can
+ * drift from the rows it counts, and this is a number an operator acts on.
+ */
+export async function getDashboard(database: Queryable): Promise<{
+  readonly totals: {
+    readonly pending: number;
+    readonly approved: number;
+    readonly rejected: number;
+    readonly underReview: number;
+    readonly all: number;
+  };
+  readonly topChannels: BrainRotDemandRow[];
+  readonly topKeywords: BrainRotDemandRow[];
+}> {
+  const statusRows = await database.query<{ status: string; total: number }>(
+    `SELECT status, COUNT(*)::int AS total FROM brainrot_submissions GROUP BY status`
+  );
+  const byStatus = new Map(statusRows.map((r) => [r.status, Number(r.total)]));
+
+  const demand = async (kind: BrainRotTargetKind): Promise<BrainRotDemandRow[]> => {
+    const rows = await database.query<{
+      value: string;
+      display_name: string | null;
+      requesters: number;
+      reporters: number;
+      status: string | null;
+    }>(
+      `SELECT s.value,
+              MAX(s.display_name) AS display_name,
+              COUNT(DISTINCT s.anonymous_id)::int AS requesters,
+              COALESCE(r.reporters, 0)::int AS reporters,
+              MAX(s.status) AS status
+         FROM brainrot_submissions s
+         LEFT JOIN (
+           SELECT value, COUNT(DISTINCT anonymous_id)::int AS reporters
+             FROM brainrot_reports WHERE kind = $1::brainrot_target_kind
+            GROUP BY value
+         ) r ON r.value = s.value
+        WHERE s.kind = $1::brainrot_target_kind
+        GROUP BY s.value, r.reporters
+        ORDER BY requesters DESC, s.value
+        LIMIT 50`,
+      [kind]
+    );
+    return rows.map((row) => ({
+      kind,
+      value: row.value,
+      displayName: row.display_name,
+      usersBlocking: Number(row.reporters),
+      globalRequests: Number(row.requesters),
+      status: (row.status as BrainRotSubmissionStatus | null) ?? null,
+    }));
+  };
+
+  return {
+    totals: {
+      pending: byStatus.get('pending') ?? 0,
+      approved: byStatus.get('approved') ?? 0,
+      rejected: byStatus.get('rejected') ?? 0,
+      underReview: byStatus.get('under_review') ?? 0,
+      all: statusRows.reduce((sum, r) => sum + Number(r.total), 0),
+    },
+    topChannels: await demand('channel'),
+    topKeywords: await demand('keyword'),
+  };
 }
 
 // ── Reports ──────────────────────────────────────────────────────────────

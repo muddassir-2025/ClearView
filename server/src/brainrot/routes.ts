@@ -3,7 +3,13 @@ import { z } from 'zod';
 import type { Queryable } from '../db.js';
 import { badRequest } from '../http/errors.js';
 import { parseBody } from '../http/validate.js';
-import { getGlobalRules, reportTarget, submitSuggestion, type BrainRotRules } from './service.js';
+import {
+  getGlobalRules,
+  listDeviceSubmissions,
+  reportTarget,
+  submitSuggestion,
+  type BrainRotRules,
+} from './service.js';
 
 /**
  * The anonymous Brain Rot surface, mounted at `/api/v1/brainrot`.
@@ -44,9 +50,17 @@ const SubmitSchema = z
     kind: z.enum(['keyword', 'channel']),
     value: z.string().trim().min(1).max(120),
     note: z.string().trim().max(500).nullable().optional(),
+    // Where the request came from. Bounded, and defaulted rather than required
+    // so an older client that sends nothing is recorded honestly as 'unknown'
+    // instead of having its suggestion refused.
+    source: z.enum(['youtube_not_interested', 'app', 'unknown']).optional(),
+    // A channel's name as the user saw it. Display only; the handle is identity.
+    displayName: z.string().trim().max(200).nullable().optional(),
     anonymousId: AnonymousId,
   })
   .strict();
+
+const DeviceQuerySchema = z.object({ anonymousId: AnonymousId });
 
 const ReportSchema = z
   .object({
@@ -137,8 +151,31 @@ export function buildBrainRotPublicRouter(database: Queryable): Router {
   /** Suggest a keyword or a channel for the global repository. Inert until approved. */
   router.post('/suggestions', async (req, res) => {
     const body = parseDeviceBody(SubmitSchema, req.body);
-    const result = await submitSuggestion(database, body.anonymousId, body.kind, body.value, body.note ?? null);
+    const result = await submitSuggestion(
+      database,
+      body.anonymousId,
+      body.kind,
+      body.value,
+      body.note ?? null,
+      body.source ?? 'unknown',
+      body.displayName ?? null
+    );
     res.status(202).json(result);
+  });
+
+  /**
+   * The submissions THIS device has made, newest first.
+   *
+   * Unauthenticated in the ordinary sense and deliberately so: the device id is
+   * the identity, it is generated on the phone, and it is the only key that can
+   * read this list. That is what lets the app show somebody the fate of their
+   * own request — pending, approved, rejected — without asking them to make an
+   * account, which is the whole privacy promise of this module.
+   */
+  router.get('/submissions', async (req, res) => {
+    const query = parseDeviceBody(DeviceQuerySchema, req.query);
+    const submissions = await listDeviceSubmissions(database, query.anonymousId);
+    res.status(200).json({ submissions });
   });
 
   /** Report a keyword or a channel. Counted, never acted on automatically. */

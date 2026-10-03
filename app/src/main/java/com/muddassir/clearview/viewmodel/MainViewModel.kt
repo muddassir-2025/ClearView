@@ -12,10 +12,15 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import com.muddassir.clearview.brainrot.BlockAction
+import com.muddassir.clearview.brainrot.BlockedItemMeta
+import com.muddassir.clearview.brainrot.BrainRotClient
+import com.muddassir.clearview.brainrot.BrainRotRefreshBus
 import com.muddassir.clearview.brainrot.BrainRotRepository
 import com.muddassir.clearview.brainrot.BrainRotStats
 import com.muddassir.clearview.brainrot.BrainRotSummary
 import com.muddassir.clearview.brainrot.GlobalRulesStore
+import com.muddassir.clearview.brainrot.NotificationStore
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import kotlinx.coroutines.launch
@@ -45,6 +50,10 @@ class MainViewModel : ViewModel() {
     private var youtubeTestKeywordRepository: YoutubeTestKeywordRepository? = null
     private var brainRotRepository: BrainRotRepository? = null
     private var globalRulesStore: GlobalRulesStore? = null
+    private var notificationStore: NotificationStore? = null
+    private var blockedItemMeta: BlockedItemMeta? = null
+    private var blockAction: BlockAction? = null
+    private var brainRotRefreshListener: (() -> Unit)? = null
     private var viewModelScopeRef: kotlinx.coroutines.CoroutineScope? = null
 
     fun initialize(context: Context) {
@@ -53,6 +62,9 @@ class MainViewModel : ViewModel() {
         youtubeTestKeywordRepository = YoutubeTestKeywordRepository(context.applicationContext)
         brainRotRepository = BrainRotRepository(context.applicationContext)
         globalRulesStore = GlobalRulesStore(context.applicationContext)
+        notificationStore = NotificationStore(context.applicationContext)
+        blockedItemMeta = BlockedItemMeta(context.applicationContext)
+        blockAction = BlockAction(context.applicationContext)
         globalRulesAvailable = globalRulesStore?.let { store ->
             com.muddassir.clearview.brainrot.BrainRotClient(context.applicationContext).isConfigured()
         } ?: false
@@ -75,6 +87,19 @@ class MainViewModel : ViewModel() {
         refreshBlockShorts()
         refreshYouTubeChromeTest()
         refreshYoutubeTestKeywords()
+        refreshNotifications()
+        refreshMySubmissions()
+        // A block made by the accessibility service (YouTube "Not interested")
+        // happens in this process but not through this ViewModel, so the lists
+        // are re-read when it says something changed — otherwise a channel
+        // blocked from YouTube would not show until the tab was rebuilt.
+        brainRotRefreshListener = {
+            refreshBrainRot()
+            refreshYoutubeTestKeywords()
+            refreshKeywords()
+            refreshNotifications()
+        }
+        brainRotRefreshListener?.let { BrainRotRefreshBus.addListener(it) }
         ensureLauncherEnabled(context)   // cleanup stale disabled state first
         checkDeviceAdminStatus(context)  // then apply correct hide/show based on admin status
         // Auto-lock if password is set (app was restarted)
@@ -206,16 +231,29 @@ class MainViewModel : ViewModel() {
         newYoutubeTestKeywordText = text
     }
 
+    /**
+     * Add a keyword to the YOUTUBE list.
+     *
+     * Goes through [BlockAction] so the reason and source are recorded with it —
+     * every block must be able to explain itself, and a keyword added here is
+     * the one a user is most likely to come back and ask "why is this blocked".
+     */
     fun addYoutubeTestKeyword() {
         val keyword = newYoutubeTestKeywordText.trim()
         if (keyword.isEmpty()) return
-        youtubeTestKeywordRepository?.addKeyword(keyword)
+        blockAction?.blockKeyword(
+            keyword = keyword,
+            scope = BlockAction.Scope.YOUTUBE,
+            source = BlockedItemMeta.Source.USER,
+            notify = false
+        ) ?: youtubeTestKeywordRepository?.addKeyword(keyword)
         newYoutubeTestKeywordText = ""
         refreshYoutubeTestKeywords()
     }
 
     fun removeYoutubeTestKeyword(keyword: String) {
         youtubeTestKeywordRepository?.removeKeyword(keyword)
+        blockedItemMeta?.forget(keyword)
         refreshYoutubeTestKeywords()
     }
 
@@ -253,9 +291,21 @@ class MainViewModel : ViewModel() {
         channelSearchText = text
     }
 
-    /** Add a channel by handle; returns false when the handle is not valid. */
+    /**
+     * Add a channel by handle; returns false when the handle is not valid.
+     *
+     * Routed through [BlockAction] so the block is recorded with a reason and a
+     * source — the channel list is what the long-video blocker enforces, and a
+     * block that cannot say why is a block the user cannot correct.
+     */
     fun addBrainRotChannel(handle: String = newChannelHandleText, name: String? = null, reason: String? = null): Boolean {
-        val added = brainRotRepository?.addBlockedChannel(handle, name, reason) ?: false
+        val added = blockAction?.blockChannel(
+            handle = handle,
+            name = name,
+            reason = reason,
+            source = BlockedItemMeta.Source.USER,
+            notify = false
+        ) ?: (brainRotRepository?.addBlockedChannel(handle, name, reason) ?: false)
         if (added) {
             newChannelHandleText = ""
             refreshBrainRot()
@@ -265,6 +315,7 @@ class MainViewModel : ViewModel() {
 
     fun removeBrainRotChannel(handle: String) {
         brainRotRepository?.removeBlockedChannel(handle)
+        blockedItemMeta?.forget(handle)
         refreshBrainRot()
     }
 
@@ -380,6 +431,163 @@ class MainViewModel : ViewModel() {
         scope.launch {
             onResult(runCatching { store.reportChannel(handle, detail) }.getOrNull())
         }
+    }
+
+    // ── Notification centre ────────────────────────────────────────
+    //
+    // Two things land here, and they are the same thing to the person reading
+    // them: a block ClearView made on their behalf (the "Not interested"
+    // receipt, written the moment it happens), and the fate of a request they
+    // sent to the global repository.
+
+    val notifications = mutableStateListOf<NotificationStore.Item>()
+
+    var unreadNotificationCount by mutableStateOf(0)
+        private set
+
+    fun refreshNotifications() {
+        notifications.clear()
+        notifications.addAll(notificationStore?.getAll() ?: emptyList())
+        unreadNotificationCount = notificationStore?.unreadCount() ?: 0
+    }
+
+    fun markNotificationRead(id: String) {
+        notificationStore?.markRead(id)
+        refreshNotifications()
+    }
+
+    fun markAllNotificationsRead() {
+        notificationStore?.markAllRead()
+        refreshNotifications()
+    }
+
+    fun clearNotifications() {
+        notificationStore?.clear()
+        refreshNotifications()
+    }
+
+    // ── My submissions to the global repository ────────────────────
+
+    /** This device's own suggestions, newest first, with their current status. */
+    val mySubmissions = mutableStateListOf<BrainRotClient.SubmissionStatus>()
+
+    var mySubmissionsLoading by mutableStateOf(false)
+        private set
+
+    /**
+     * Read this device's submissions, and turn any decision we have not already
+     * seen into a notification.
+     *
+     * The notification is written only when the status CHANGED since the last
+     * poll: the store is idempotent on the submission id, so re-reading an
+     * unchanged "approved" is a no-op rather than a second notification.
+     */
+    fun refreshMySubmissions(notifyOnChange: Boolean = true) {
+        val scope = viewModelScopeRef ?: return
+        val store = globalRulesStore ?: return
+        scope.launch {
+            val result = runCatching { store.fetchSubmissions() }.getOrNull()
+            if (result == null) return@launch
+            val previous = mySubmissions.associate { it.id to it.status }
+            mySubmissions.clear()
+            mySubmissions.addAll(result)
+            mySubmissionsLoading = false
+            if (!notifyOnChange) return@launch
+            result.forEach { submission ->
+                val before = previous[submission.id]
+                // Only a CHANGE is worth a notification, and only a final
+                // decision. A submission seen as pending the first time is not
+                // news — the user was there when they sent it.
+                if (before == submission.status) return@forEach
+                if (before == null) return@forEach
+                when (submission.status) {
+                    "approved" -> notificationStore?.add(
+                        id = "approved:${submission.id}",
+                        kind = NotificationStore.Kind.GLOBAL_APPROVED,
+                        value = submission.value,
+                        displayName = submission.displayName,
+                        message = "Block Request Approved — ${submission.value} was added to the " +
+                            "global block repository."
+                    )
+                    "rejected" -> notificationStore?.add(
+                        id = "rejected:${submission.id}",
+                        kind = NotificationStore.Kind.GLOBAL_REJECTED,
+                        value = submission.value,
+                        displayName = submission.displayName,
+                        message = "Block Request Rejected — your request to globally block " +
+                            "${submission.value} was rejected by an administrator."
+                    )
+                }
+            }
+            refreshNotifications()
+        }
+    }
+
+    /** Suggest a channel globally and record the queued state in the centre. */
+    fun submitChannelToGlobal(handle: String, name: String?, onResult: (Boolean) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(false); return }
+        scope.launch {
+            val ok = runCatching {
+                store.suggestChannel(handle, name, source = "app")
+            }.getOrDefault(false)
+            if (ok) {
+                notificationStore?.add(
+                    id = "submitted:channel:$handle",
+                    kind = NotificationStore.Kind.GLOBAL_SUBMITTED,
+                    value = handle,
+                    displayName = name,
+                    message = "$handle was submitted to the global repository and is pending " +
+                        "admin review."
+                )
+                refreshNotifications()
+                refreshMySubmissions(notifyOnChange = false)
+            }
+            onResult(ok)
+        }
+    }
+
+    /** Suggest a keyword globally and record the queued state in the centre. */
+    fun submitKeywordToGlobal(keyword: String, onResult: (Boolean) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(false); return }
+        scope.launch {
+            val ok = runCatching {
+                store.suggestKeyword(keyword, source = "app")
+            }.getOrDefault(false)
+            if (ok) {
+                notificationStore?.add(
+                    id = "submitted:keyword:$keyword",
+                    kind = NotificationStore.Kind.GLOBAL_SUBMITTED,
+                    value = keyword,
+                    displayName = null,
+                    message = "\"$keyword\" was submitted to the global repository and is " +
+                        "pending admin review."
+                )
+                refreshNotifications()
+                refreshMySubmissions(notifyOnChange = false)
+            }
+            onResult(ok)
+        }
+    }
+
+    // ── Why an item is blocked ─────────────────────────────────────
+
+    /** The recorded reason for a blocked item, or null when none was recorded. */
+    fun reasonFor(item: String): BlockedItemMeta.Meta? = blockedItemMeta?.get(item)
+
+    /** The provenance behind every blocked item, keyed by canonical identity. */
+    fun allItemMeta(): Map<String, BlockedItemMeta.Meta> {
+        val out = mutableMapOf<String, BlockedItemMeta.Meta>()
+        (userKeywords + youtubeTestKeywords).forEach { keyword ->
+            blockedItemMeta?.get(keyword)?.let { out[keyword] = it }
+        }
+        brainRotChannels.forEach { channel ->
+            blockedItemMeta?.get(channel.handle)?.let { out[channel.handle] = it }
+        }
+        return out
     }
 
     // ── Private DNS (network-level filtering) ───────────────────────
@@ -564,16 +772,29 @@ class MainViewModel : ViewModel() {
         newKeywordText = text
     }
 
+    /**
+     * Add a keyword to the GLOBAL list (every website in Chrome).
+     *
+     * Recorded through [BlockAction] so it carries a reason, and so the same
+     * code path is used wherever a keyword is blocked rather than each screen
+     * writing to the list directly and only some of them explaining why.
+     */
     fun addKeyword() {
         val keyword = newKeywordText.trim()
         if (keyword.isEmpty()) return
-        repository?.addUserKeyword(keyword)
+        blockAction?.blockKeyword(
+            keyword = keyword,
+            scope = BlockAction.Scope.EVERYWHERE,
+            source = BlockedItemMeta.Source.USER,
+            notify = false
+        ) ?: repository?.addUserKeyword(keyword)
         newKeywordText = ""
         refreshKeywords()
     }
 
     fun removeKeyword(keyword: String) {
         repository?.removeUserKeyword(keyword)
+        blockedItemMeta?.forget(keyword)
         refreshKeywords()
     }
 

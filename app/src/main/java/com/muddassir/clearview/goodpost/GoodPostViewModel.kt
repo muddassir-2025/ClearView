@@ -19,6 +19,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostAd
 import com.muddassir.clearview.goodpost.data.GoodPostAdPlacement
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotDashboard
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotRule
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotSubmission
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
@@ -533,6 +534,9 @@ data class GoodPostUiState(
     val brainRotRulesLoading: Boolean = false,
     /** Which half of the screen is showing: the queue or the rules. */
     val brainRotTab: Int = 0,
+    /** The dashboard's totals and most-requested lists. */
+    val brainRotDashboard: GoodPostBrainRotDashboard = GoodPostBrainRotDashboard(),
+    val brainRotDashboardLoading: Boolean = false,
     /** The keyword being typed into the add field. */
     val brainRotNewKeyword: String = "",
     /** The channel handle being typed into the add field. */
@@ -3346,15 +3350,46 @@ class GoodPostViewModel : ViewModel() {
     fun openBrainRotReview() {
         if (uiState.admin?.isSuperAdmin != true) return
         open(GoodPostScreen.BrainRotReview)
+        loadBrainRotDashboard()
         loadBrainRotQueue()
         loadBrainRotRules()
     }
 
-    /** Switch between the review queue and the rules, loading what is missing. */
+    /** Switch between the dashboard, the queue and the rules. */
     fun selectBrainRotTab(tab: Int) {
         if (tab == uiState.brainRotTab) return
         uiState = uiState.copy(brainRotTab = tab)
-        if (tab == 0) loadBrainRotQueue() else loadBrainRotRules()
+        when (tab) {
+            0 -> loadBrainRotDashboard()
+            1 -> loadBrainRotQueue()
+            else -> loadBrainRotRules()
+        }
+    }
+
+    /**
+     * The dashboard: the queue counts and the two most-requested lists.
+     *
+     * One read rather than five, because the numbers and the lists beside them
+     * have to agree — a total that arrived separately could disagree with the
+     * rows it is counting.
+     */
+    fun loadBrainRotDashboard() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        uiState = uiState.copy(brainRotDashboardLoading = true)
+        viewModelScope.launch {
+            val result = repo.adminBrainRotDashboard()
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    brainRotDashboard = result.value,
+                    brainRotDashboardLoading = false
+                )
+                else -> uiState.copy(
+                    brainRotDashboardLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+        }
     }
 
     /** Change which queue is shown, and read it. */
@@ -3426,6 +3461,7 @@ class GoodPostViewModel : ViewModel() {
                 )
             }
             if (result is ApiResult.Ok) {
+                loadBrainRotDashboard()
                 loadBrainRotQueue()
                 // An approval may have created a rule, so the lists are re-read
                 // too — otherwise the rules tab would be missing the rule the

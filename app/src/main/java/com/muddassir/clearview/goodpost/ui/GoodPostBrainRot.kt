@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotDemand
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotRule
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotSubmission
 
@@ -79,25 +80,32 @@ internal fun BrainRotReviewScreen(state: GoodPostUiState, viewModel: GoodPostVie
             }
         )
 
-        // The two halves as pills, matching every other filter row in the tab.
+        // The three surfaces as pills, matching every other filter row in the
+        // tab. The dashboard comes first because it is what an operator opens
+        // the screen to see: what is waiting, and what people are asking for.
         WaFilterRow {
             WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_queue),
+                label = stringResource(R.string.goodpost_brainrot_dashboard),
                 selected = state.brainRotTab == 0,
                 onClick = { viewModel.selectBrainRotTab(0) }
             )
             WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_rules),
+                label = stringResource(R.string.goodpost_brainrot_queue),
                 selected = state.brainRotTab == 1,
                 onClick = { viewModel.selectBrainRotTab(1) }
+            )
+            WaFilterPill(
+                label = stringResource(R.string.goodpost_brainrot_rules),
+                selected = state.brainRotTab == 2,
+                onClick = { viewModel.selectBrainRotTab(2) }
             )
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
-            if (state.brainRotTab == 0) {
-                BrainRotQueue(state = state, viewModel = viewModel)
-            } else {
-                BrainRotRules(
+            when (state.brainRotTab) {
+                0 -> BrainRotDashboard(state = state, viewModel = viewModel)
+                1 -> BrainRotQueue(state = state, viewModel = viewModel)
+                else -> BrainRotRules(
                     state = state,
                     viewModel = viewModel,
                     onDelete = { pendingDelete = it }
@@ -118,6 +126,166 @@ internal fun BrainRotReviewScreen(state: GoodPostUiState, viewModel: GoodPostVie
             onDismiss = { pendingDelete = null }
         )
     }
+}
+
+// ── The dashboard ───────────────────────────────────────────────────────
+
+/**
+ * What is waiting, and what people are asking for.
+ *
+ * The counts come first because they are the question the screen exists to
+ * answer — "how much is in my queue" — and the two demand lists follow, because
+ * they are the other half of a decision: which of those requests are many people
+ * making. Both numbers on a demand row are shown, and they are different numbers
+ * on purpose: how many devices blocked the target, and how many asked for it to
+ * be blocked for everyone.
+ */
+@Composable
+private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    val dashboard = state.brainRotDashboard
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 32.dp)
+        ) {
+            item(key = "totals") {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        DashboardStat(
+                            label = stringResource(R.string.goodpost_brainrot_pending),
+                            value = dashboard.pending,
+                            modifier = Modifier.weight(1f)
+                        )
+                        DashboardStat(
+                            label = stringResource(R.string.goodpost_brainrot_under_review),
+                            value = dashboard.underReview,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        DashboardStat(
+                            label = stringResource(R.string.goodpost_brainrot_approved),
+                            value = dashboard.approved,
+                            modifier = Modifier.weight(1f)
+                        )
+                        DashboardStat(
+                            label = stringResource(R.string.goodpost_brainrot_rejected),
+                            value = dashboard.rejected,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    DashboardStat(
+                        label = stringResource(R.string.goodpost_brainrot_total),
+                        value = dashboard.total,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            item(key = "channels-header") {
+                SectionHeading(stringResource(R.string.goodpost_brainrot_top_channels))
+            }
+            if (dashboard.topChannels.isEmpty()) {
+                item(key = "channels-empty") {
+                    EmptyDemandNote()
+                }
+            }
+            items(dashboard.topChannels, key = { "dc-${it.value}" }) { row ->
+                DemandRow(row)
+            }
+
+            item(key = "keywords-header") {
+                SectionHeading(stringResource(R.string.goodpost_brainrot_top_keywords))
+            }
+            if (dashboard.topKeywords.isEmpty()) {
+                item(key = "keywords-empty") {
+                    EmptyDemandNote()
+                }
+            }
+            items(dashboard.topKeywords, key = { "dk-${it.value}" }) { row ->
+                DemandRow(row)
+            }
+        }
+
+        if (state.brainRotDashboardLoading && dashboard.total == 0) {
+            CenteredProgress()
+        }
+    }
+}
+
+/** One headline number with its label. */
+@Composable
+private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(Wa.Bar)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(
+            text = value.toString(),
+            color = Wa.Text,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(text = label, color = Wa.TextDim, fontSize = 12.sp)
+    }
+}
+
+/**
+ * One target's demand.
+ *
+ * "247 users blocking · 182 global requests" is the sentence an operator needs:
+ * the first is how many devices independently reported it, the second is how
+ * many asked for it to be blocked for everyone. They are not the same question,
+ * so they are not the same number.
+ */
+@Composable
+private fun DemandRow(row: GoodPostBrainRotDemand) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            KindChip(isChannel = row.isChannel)
+            Spacer(Modifier.width(10.dp))
+            Text(
+                text = row.displayName ?: row.value,
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        // The handle under a channel's name, so the identity is never hidden by
+        // the display name.
+        if (row.isChannel && row.displayName != null) {
+            Text(text = row.value, color = Wa.TextDim, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.goodpost_brainrot_users_blocking, row.usersBlocking) +
+                "  ·  " +
+                stringResource(R.string.goodpost_brainrot_global_requests, row.globalRequests),
+            color = Wa.Accent,
+            fontSize = 12.sp
+        )
+    }
+}
+
+@Composable
+private fun EmptyDemandNote() {
+    Text(
+        text = stringResource(R.string.goodpost_brainrot_no_demand),
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        color = Wa.TextDim,
+        fontSize = 13.sp
+    )
 }
 
 // ── The review queue ────────────────────────────────────────────────────
@@ -152,6 +320,9 @@ private fun BrainRotQueue(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                         },
                         onReject = {
                             viewModel.reviewBrainRotSubmission(submission.id, "rejected")
+                        },
+                        onReview = {
+                            viewModel.reviewBrainRotSubmission(submission.id, "under_review")
                         }
                     )
                 }
@@ -176,6 +347,7 @@ private fun BrainRotQueue(state: GoodPostUiState, viewModel: GoodPostViewModel) 
 /** Which queue a pill selects, and the words it shows. */
 private enum class QueueStatus(val wire: String, val label: Int) {
     Pending("pending", R.string.goodpost_brainrot_pending),
+    UnderReview("under_review", R.string.goodpost_brainrot_under_review),
     Approved("approved", R.string.goodpost_brainrot_approved),
     Rejected("rejected", R.string.goodpost_brainrot_rejected),
     All("all", R.string.goodpost_brainrot_all)
@@ -187,7 +359,8 @@ private fun SubmissionRow(
     submission: GoodPostBrainRotSubmission,
     busy: Boolean,
     onApprove: () -> Unit,
-    onReject: () -> Unit
+    onReject: () -> Unit,
+    onReview: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -198,7 +371,7 @@ private fun SubmissionRow(
             KindChip(isChannel = submission.isChannel)
             Spacer(Modifier.width(10.dp))
             Text(
-                text = submission.value,
+                text = submission.displayName ?: submission.value,
                 color = Wa.Text,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Medium,
@@ -206,13 +379,37 @@ private fun SubmissionRow(
             )
         }
 
-        // The community's signal, on the row it decides. One person asking and
+        // The handle under a channel's name, so the identity the block will use
+        // is never hidden behind a display name.
+        if (submission.isChannel && submission.displayName != null) {
+            Text(text = submission.value, color = Wa.TextDim, fontSize = 12.sp)
+        }
+
+        // Where the request came from. "Not interested" is a decision the user
+        // made in YouTube; "added in the app" is one they typed. A reviewer
+        // weighing a request is entitled to know which they have.
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = stringResource(
+                when (submission.source) {
+                    "youtube_not_interested" -> R.string.goodpost_brainrot_source_youtube
+                    "app" -> R.string.goodpost_brainrot_source_app
+                    else -> R.string.goodpost_brainrot_source_unknown
+                }
+            ),
+            color = Wa.TextDim,
+            fontSize = 12.sp
+        )
+
+        // The two demand numbers, on the row they decide. One person asking and
         // two hundred devices asking are very different cases, and a reviewer
         // should not have to leave the screen to tell them apart.
-        if (submission.reports > 0) {
+        if (submission.reports > 0 || submission.requesters > 0) {
             Spacer(Modifier.height(4.dp))
             Text(
-                text = stringResource(R.string.goodpost_brainrot_reports, submission.reports),
+                text = stringResource(R.string.goodpost_brainrot_users_blocking, submission.reports) +
+                    "  ·  " +
+                    stringResource(R.string.goodpost_brainrot_global_requests, submission.requesters),
                 color = Wa.Accent,
                 fontSize = 12.sp
             )
@@ -226,7 +423,7 @@ private fun SubmissionRow(
 
         Spacer(Modifier.height(8.dp))
 
-        if (submission.isPending) {
+        if (submission.isOpen) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 WaTextAction(
                     text = stringResource(R.string.goodpost_brainrot_approve),
@@ -239,6 +436,12 @@ private fun SubmissionRow(
                     enabled = !busy,
                     onClick = onReject,
                     destructive = true
+                )
+                Spacer(Modifier.width(8.dp))
+                WaTextAction(
+                    text = stringResource(R.string.goodpost_brainrot_mark_review),
+                    enabled = !busy && submission.status == "pending",
+                    onClick = onReview
                 )
             }
         } else {

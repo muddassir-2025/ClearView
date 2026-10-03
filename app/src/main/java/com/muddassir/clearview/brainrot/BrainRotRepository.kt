@@ -163,6 +163,9 @@ class BrainRotRepository(context: Context) {
         return true
     }
 
+    /** True when this handle is already blocked (any spelling). */
+    fun hasBlockedChannel(handle: String?): Boolean = isChannelBlocked(handle)
+
     fun removeBlockedChannel(handle: String) {
         val normalized = normalizeHandle(handle) ?: return
         persistChannels(getBlockedChannels().filterNot { it.handle == normalized })

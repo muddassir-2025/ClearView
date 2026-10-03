@@ -86,6 +86,20 @@ internal object YouTubeNodeRules {
     }
 
     /**
+     * True for YouTube's "Not interested" item, in any of its spellings.
+     *
+     * This is the action a user takes on a video or a Short they do not want,
+     * and ClearView treats it as an intent to block the channel behind it. The
+     * label is matched on the substring because YouTube renders it as "Not
+     * interested", "Not Interested" and occasionally with trailing guidance in
+     * the same node.
+     */
+    fun isNotInterestedLabel(s: String?): Boolean {
+        val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false
+        return lower.contains("not interested")
+    }
+
+    /**
      * True for YouTube's "Don't recommend this video" menu item.
      *
      * This is the item that OPENS the submenu; the channel action lives inside

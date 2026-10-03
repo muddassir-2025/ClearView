@@ -1296,6 +1296,19 @@ class YouTubeChromeTestCoordinator(
             alpha = 90
             strokeWidth = 2f
         }
+        /**
+         * The "why" line under the message.
+         *
+         * A block the user cannot explain is a block they cannot correct, and
+         * this overlay used to say only "BLOCK BRAIN ROT" — which names the
+         * feature, not the rule that fired. This line names the rule.
+         */
+        private val reasonPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.WHITE
+            alpha = 165
+            textAlign = android.graphics.Paint.Align.CENTER
+            typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
+        }
 
         // Visual only: a fully opaque black wash over the protected player,
         // with the "SWIPE / FEAR GOD / BLOCK BRAIN ROT" message centered on
@@ -1360,6 +1373,27 @@ class YouTubeChromeTestCoordinator(
             bodyPaint.textSize = unit * 0.04f
             bodyPaint.letterSpacing = 0.08f
             canvas.drawText("BLOCK BRAIN ROT", cx, cy + unit * 0.10f, bodyPaint)
+
+            // WHY it was blocked, named exactly. The matched keyword is what
+            // the user would edit to change this, so it is the one thing this
+            // line has to carry.
+            val keyword = lastMatchedTestKeyword
+            if (!keyword.isNullOrBlank()) {
+                reasonPaint.textSize = unit * 0.03f
+                reasonPaint.letterSpacing = 0.0f
+                val reason = "Matched keyword: \"$keyword\""
+                val maxWidth = width * 0.84f
+                val shown = if (reasonPaint.measureText(reason) <= maxWidth) {
+                    reason
+                } else {
+                    var cut = reason
+                    while (cut.length > 4 && reasonPaint.measureText("$cut\u2026") > maxWidth) {
+                        cut = cut.dropLast(1)
+                    }
+                    "$cut\u2026"
+                }
+                canvas.drawText(shown, cx, cy + unit * 0.165f, reasonPaint)
+            }
         }
 
         init {

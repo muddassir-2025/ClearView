@@ -17,11 +17,12 @@ import com.muddassir.clearview.matching.KeywordMatcher
 import com.muddassir.clearview.matching.MatchResult
 import com.muddassir.clearview.matching.MatchType
 import com.muddassir.clearview.matching.MatchSource
+import com.muddassir.clearview.brainrot.BlockAction
 import com.muddassir.clearview.brainrot.BrainRotRepository
 import com.muddassir.clearview.brainrot.GlobalRulesStore
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.LongVideoBlockCoordinator
-import com.muddassir.clearview.youtubetest.YouTubeAppBlockCoordinator
+import com.muddassir.clearview.youtubetest.NotInterestedCoordinator
 import com.muddassir.clearview.youtubetest.YouTubeChromeTestCoordinator
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import kotlinx.coroutines.*
@@ -132,11 +133,12 @@ class UrlBlockerService : AccessibilityService() {
     private var longVideoBlock: LongVideoBlockCoordinator? = null
 
     /**
-     * Watches the NATIVE YouTube app for "Don't recommend this channel" and
-     * offers to keep that decision in ClearView's blocked list. Isolated from
-     * both Chrome coordinators: it only ever reads the YouTube app's tree.
+     * Watches for YouTube's "Not interested" / "Don't recommend this channel"
+     * action in Chrome AND the native YouTube app, blocks that channel for the
+     * user immediately, and offers to submit it globally. Isolated from both
+     * block coordinators: it only ever reads a tree, never enforces.
      */
-    private var youtubeAppBlock: YouTubeAppBlockCoordinator? = null
+    private var notInterested: NotInterestedCoordinator? = null
 
     // Per-event/per-poll debug logging is EXPENSIVE (string formatting + logcat
     // I/O on the accessibility/main thread). Release builds keep the detection
@@ -280,11 +282,14 @@ class UrlBlockerService : AccessibilityService() {
                 brainRotRepository?.recordBlock("Brain Rot", keyword = keyword, channel = channel)
             }
         )
-        // "Don't recommend this channel" in the YouTube APP is treated as an
-        // intent to block, and offered once. Independent of the Chrome
-        // coordinators — it never reads a Chrome tree.
-        youtubeAppBlock = brainRotRepository?.let { repo ->
-            globalRulesStore?.let { store -> YouTubeAppBlockCoordinator(this, repo, store) }
+        // YouTube's "Not interested" is treated as an intent to block: the
+        // channel is blocked for this user immediately and a global submission
+        // is offered once. Independent of the two Chrome block coordinators —
+        // this only reads a tree and never enforces anything.
+        notInterested = brainRotRepository?.let { repo ->
+            globalRulesStore?.let { store ->
+                NotInterestedCoordinator(this, BlockAction(applicationContext), repo, store)
+            }
         }
         Log.i(TAG, "UrlBlockerService created")
     }
@@ -301,7 +306,7 @@ class UrlBlockerService : AccessibilityService() {
         stopGooglePolling()
         youtubeChromeTest?.stop()
         longVideoBlock?.stop()
-        youtubeAppBlock?.stop()
+        notInterested?.stop()
     }
 
     override fun onDestroy() {
@@ -309,7 +314,7 @@ class UrlBlockerService : AccessibilityService() {
         serviceScope.cancel()
         youtubeChromeTest?.stop()
         longVideoBlock?.stop()
-        youtubeAppBlock?.stop()
+        notInterested?.stop()
         instance = null
         Log.i(TAG, "UrlBlockerService destroyed")
     }
@@ -328,9 +333,9 @@ class UrlBlockerService : AccessibilityService() {
         // Long-video blocker hook (isolated from Shorts). Also cheap.
         longVideoBlock?.onAccessibilityEvent(event)
 
-        // YouTube app "Don't recommend this channel" hook. Cheap: it returns
-        // immediately for any package that is not YouTube.
-        youtubeAppBlock?.onAccessibilityEvent(event)
+        // YouTube "Not interested" hook (Chrome and the YouTube app). Cheap: it
+        // returns immediately for any package that is neither.
+        notInterested?.onAccessibilityEvent(event)
 
         // Debug: log every event for target packages so detection issues (why an
         // incognito window was / wasn't caught) can be diagnosed from logcat.

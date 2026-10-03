@@ -181,6 +181,23 @@ class YouTubeNodeRulesTest {
             }
     }
 
+    // ── "Not interested" (the immediate personal block) ──────────────────
+
+    @Test
+    fun `the not-interested action is recognised across spellings`() {
+        listOf("Not interested", "not interested", "Not Interested").forEach { label ->
+            assertTrue(label, YouTubeNodeRules.isNotInterestedLabel(label))
+        }
+    }
+
+    @Test
+    fun `an ordinary label is not the not-interested action`() {
+        listOf("Interested", "Related videos", "Subscribe", "Save").forEach { label ->
+            assertFalse(label, YouTubeNodeRules.isNotInterestedLabel(label))
+        }
+        assertFalse(YouTubeNodeRules.isNotInterestedLabel(null))
+    }
+
     @Test
     fun `a plain container is neither forbidden nor a player`() {
         assertFalse(YouTubeNodeRules.isForbiddenActionNode(null, null, "android.view.View"))

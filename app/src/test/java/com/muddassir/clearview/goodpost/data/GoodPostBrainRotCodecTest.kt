@@ -106,7 +106,7 @@ class GoodPostBrainRotCodecTest {
         assertEquals(1, parsed.size)
         val submission = parsed.first()
         assertTrue(submission.isChannel)
-        assertTrue(submission.isPending)
+        assertTrue(submission.isOpen)
         assertEquals("@suggested", submission.value)
         assertEquals("please", submission.note)
         assertEquals(12, submission.reports)
@@ -125,7 +125,7 @@ class GoodPostBrainRotCodecTest {
             )
         )
         val submission = GoodPostCodec.brainRotSubmissions(body).first()
-        assertFalse(submission.isPending)
+        assertFalse(submission.isOpen)
         assertFalse(submission.isChannel)
         // A missing report count is zero, not a crash.
         assertEquals(0, submission.reports)
@@ -148,5 +148,89 @@ class GoodPostBrainRotCodecTest {
     @Test
     fun `an absent submissions array is empty rather than a failure`() {
         assertTrue(GoodPostCodec.brainRotSubmissions(JSONObject()).isEmpty())
+    }
+
+    @Test
+    fun `a submission carries its source and its two demand counts`() {
+        val body = JSONObject().put(
+            "submissions",
+            JSONArray().put(
+                JSONObject()
+                    .put("id", "s1")
+                    .put("kind", "channel")
+                    .put("value", "@example")
+                    .put("displayName", "Example")
+                    .put("source", "youtube_not_interested")
+                    .put("status", "under_review")
+                    .put("reports", 247)
+                    .put("requesters", 182)
+            )
+        )
+        val submission = GoodPostCodec.brainRotSubmissions(body).first()
+        assertEquals("@example", submission.value)
+        assertEquals("Example", submission.displayName)
+        assertEquals("youtube_not_interested", submission.source)
+        assertEquals(247, submission.reports)
+        assertEquals(182, submission.requesters)
+        // "Under review" is still an open decision, so the actions stay available.
+        assertTrue(submission.isOpen)
+    }
+
+    @Test
+    fun `the dashboard reads its totals and both demand lists`() {
+        val body = JSONObject()
+            .put(
+                "totals",
+                JSONObject()
+                    .put("pending", 2)
+                    .put("approved", 5)
+                    .put("rejected", 1)
+                    .put("underReview", 3)
+                    .put("all", 11)
+            )
+            .put(
+                "topChannels",
+                JSONArray().put(
+                    JSONObject()
+                        .put("kind", "channel")
+                        .put("value", "@example")
+                        .put("displayName", "Example")
+                        .put("usersBlocking", 247)
+                        .put("globalRequests", 182)
+                        .put("status", "pending")
+                )
+            )
+            .put(
+                "topKeywords",
+                JSONArray().put(
+                    JSONObject()
+                        .put("kind", "keyword")
+                        .put("value", "exkw")
+                        .put("usersBlocking", 531)
+                        .put("globalRequests", 410)
+                        .put("status", "approved")
+                )
+            )
+
+        val dashboard = GoodPostCodec.brainRotDashboard(body)
+        assertEquals(2, dashboard.pending)
+        assertEquals(5, dashboard.approved)
+        assertEquals(1, dashboard.rejected)
+        assertEquals(3, dashboard.underReview)
+        assertEquals(11, dashboard.total)
+        assertEquals(1, dashboard.topChannels.size)
+        assertEquals(247, dashboard.topChannels.first().usersBlocking)
+        assertEquals(182, dashboard.topChannels.first().globalRequests)
+        assertTrue(dashboard.topChannels.first().isChannel)
+        assertEquals(531, dashboard.topKeywords.first().usersBlocking)
+        assertFalse(dashboard.topKeywords.first().isChannel)
+    }
+
+    @Test
+    fun `an absent dashboard body is all zeroes rather than a failure`() {
+        val dashboard = GoodPostCodec.brainRotDashboard(JSONObject())
+        assertEquals(0, dashboard.total)
+        assertTrue(dashboard.topChannels.isEmpty())
+        assertTrue(dashboard.topKeywords.isEmpty())
     }
 }

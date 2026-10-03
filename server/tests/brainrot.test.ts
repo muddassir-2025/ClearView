@@ -79,16 +79,29 @@ describe('the global rule set', () => {
     expect(Array.isArray(res.body.channels)).toBe(true);
   });
 
-  it('ships the seeded starter keywords, with their report counts', async () => {
+  it('ships no hardcoded keywords — the list fills from real approvals', async () => {
     const res = await request(app).get('/api/v1/brainrot/rules');
-    const keywords = res.body.keywords.map((k: { keyword: string }) => k.keyword);
-    // The examples the product spec names, seeded so a fresh deployment has a
-    // repository that does something visible.
-    expect(keywords).toContain('viral');
-    expect(keywords).toContain('brainrot');
-    // A rule nobody has reported is a real zero, not a missing value.
-    const viral = res.body.keywords.find((k: { keyword: string }) => k.keyword === 'viral');
-    expect(viral.reports).toBe(0);
+    // The four starter keywords 014 seeded are gone, and nothing replaced them.
+    // The product decision is that nothing is blocked globally that a human did
+    // not ask for, so a fresh deployment blocks nothing globally.
+    expect(res.body.keywords).toEqual([]);
+  });
+
+  it('an approved rule carries a real report count, not a missing value', async () => {
+    const token = await adminToken();
+    await request(app)
+      .post('/admin/api/brainrot/keywords')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ keyword: 'doomscrolling' });
+    await request(app)
+      .post('/api/v1/brainrot/reports')
+      .send({ kind: 'keyword', value: 'doomscrolling', anonymousId: deviceId() });
+
+    const res = await request(app).get('/api/v1/brainrot/rules');
+    const rule = res.body.keywords.find(
+      (k: { keyword: string }) => k.keyword === 'doomscrolling'
+    );
+    expect(rule.reports).toBe(1);
   });
 
   it('carries a version that changes when a rule does', async () => {
@@ -169,17 +182,11 @@ describe('what a device may do anonymously', () => {
   it('counts two devices as two reports', async () => {
     await request(app)
       .post('/api/v1/brainrot/reports')
-      .send({ kind: 'keyword', value: 'viral', anonymousId: deviceId() });
+      .send({ kind: 'keyword', value: 'doomscrolling', anonymousId: deviceId() });
     const res = await request(app)
       .post('/api/v1/brainrot/reports')
-      .send({ kind: 'keyword', value: 'viral', anonymousId: deviceId() });
+      .send({ kind: 'keyword', value: 'doomscrolling', anonymousId: deviceId() });
     expect(res.body.reports).toBe(2);
-
-    // And the count is visible on the public rule list, which is what the spec's
-    // "542 reports" line reads.
-    const rules = await request(app).get('/api/v1/brainrot/rules');
-    const viral = rules.body.keywords.find((k: { keyword: string }) => k.keyword === 'viral');
-    expect(viral.reports).toBe(2);
   });
 
   it('cannot change a rule — there is no such route on the public surface', async () => {
@@ -299,6 +306,141 @@ describe('the review queue', () => {
       .set('Authorization', `Bearer ${token}`);
     const matching = res.body.submissions.filter((s: { value: string }) => s.value === 'once');
     expect(matching).toHaveLength(1);
+  });
+});
+
+describe('where a submission came from, and where it is', () => {
+  it('records the source and the channel name a suggestion carried', async () => {
+    await request(app).post('/api/v1/brainrot/suggestions').send({
+      kind: 'channel',
+      value: '@fromyoutube',
+      source: 'youtube_not_interested',
+      displayName: 'From YouTube',
+      anonymousId: deviceId(),
+    });
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    const item = res.body.submissions.find((s: { value: string }) => s.value === '@fromyoutube');
+    expect(item.source).toBe('youtube_not_interested');
+    expect(item.displayName).toBe('From YouTube');
+  });
+
+  it('defaults an older client with no source to unknown rather than refusing it', async () => {
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'sourceless', anonymousId: deviceId() });
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    const item = res.body.submissions.find((s: { value: string }) => s.value === 'sourceless');
+    expect(item.source).toBe('unknown');
+  });
+
+  it('marks a suggestion under review without deciding it', async () => {
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'considering', anonymousId: deviceId() });
+
+    const token = await adminToken();
+    const queue = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    const pending = queue.body.submissions.find((s: { value: string }) => s.value === 'considering');
+
+    const review = await request(app)
+      .post(`/admin/api/brainrot/submissions/${pending.id}/review`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ decision: 'under_review' });
+    expect(review.status).toBe(200);
+    // It did NOT become a rule.
+    expect(review.body.ruleId).toBeNull();
+    const rules = await request(app).get('/api/v1/brainrot/rules');
+    expect(rules.body.keywords.map((k: { keyword: string }) => k.keyword)).not.toContain('considering');
+
+    // ...and it can still be decided afterwards.
+    const decide = await request(app)
+      .post(`/admin/api/brainrot/submissions/${pending.id}/review`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ decision: 'approved' });
+    expect(decide.body.ruleId).not.toBeNull();
+  });
+
+  it('shows a device the fate of its own submissions', async () => {
+    const device = deviceId();
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'mine', anonymousId: device });
+    // Another device's submission must not appear in this device's list.
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'theirs', anonymousId: deviceId() });
+
+    const mine = await request(app)
+      .get('/api/v1/brainrot/submissions')
+      .query({ anonymousId: device });
+    expect(mine.status).toBe(200);
+    expect(mine.body.submissions.map((s: { value: string }) => s.value)).toEqual(['mine']);
+  });
+
+  it('refuses a malformed device id on the submissions read', async () => {
+    const res = await request(app)
+      .get('/api/v1/brainrot/submissions')
+      .query({ anonymousId: 'not-a-uuid' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_anonymous_id');
+  });
+});
+
+describe('the admin dashboard', () => {
+  it('counts the queue by status', async () => {
+    const device = deviceId();
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'dash-a', anonymousId: device });
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'keyword', value: 'dash-b', anonymousId: deviceId() });
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/dashboard')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.totals.pending).toBe(2);
+    expect(res.body.totals.all).toBe(2);
+  });
+
+  it('reports how many devices blocked and how many requested a target', async () => {
+    // Two devices request it globally; one of them also reports it.
+    const a = deviceId();
+    const b = deviceId();
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'channel', value: '@demanded', anonymousId: a });
+    await request(app)
+      .post('/api/v1/brainrot/suggestions')
+      .send({ kind: 'channel', value: '@demanded', anonymousId: b });
+    await request(app)
+      .post('/api/v1/brainrot/reports')
+      .send({ kind: 'channel', value: '@demanded', anonymousId: a });
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/dashboard')
+      .set('Authorization', `Bearer ${token}`);
+    const row = res.body.topChannels.find((c: { value: string }) => c.value === '@demanded');
+    expect(row.globalRequests).toBe(2);
+    expect(row.usersBlocking).toBe(1);
+  });
+
+  it('refuses the dashboard to an unauthenticated caller', async () => {
+    const res = await request(app).get('/admin/api/brainrot/dashboard');
+    expect(res.status).toBe(401);
   });
 });
 

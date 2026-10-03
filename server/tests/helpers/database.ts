@@ -164,7 +164,8 @@ export async function resetData(pglite: PGlite): Promise<void> {
   // they are reference data in the same way `channel_categories` is: a suite
   // that removed them would make every later assertion about the global rule
   // set depend on the order its cases ran in.
-  await pglite.exec(`DELETE FROM brainrot_keywords WHERE keyword NOT IN ('brainrot', 'viral', 'aesthetic', 'sigma')`);
+  // No seeded rules survive any more (015 removed them), so every keyword goes.
+  await pglite.exec(`DELETE FROM brainrot_keywords`);
   await pglite.exec(`DELETE FROM brainrot_channels`);
   await pglite.exec(
     `DELETE FROM channels

@@ -9,6 +9,7 @@ import {
   addGlobalKeyword,
   deleteGlobalChannel,
   deleteGlobalKeyword,
+  getDashboard,
   listGlobalChannels,
   listGlobalKeywords,
   listSubmissions,
@@ -70,11 +71,11 @@ const ChannelBodySchema = z
 const EnabledBodySchema = z.object({ enabled: z.boolean() }).strict();
 
 const ReviewBodySchema = z
-  .object({ decision: z.enum(['approved', 'rejected']) })
+  .object({ decision: z.enum(['approved', 'rejected', 'under_review']) })
   .strict();
 
 const QueueQuerySchema = z.object({
-  status: z.enum(['pending', 'approved', 'rejected', 'all']).optional(),
+  status: z.enum(['pending', 'approved', 'rejected', 'under_review', 'all']).optional(),
 });
 
 export function buildBrainRotAdminRouter(database: Queryable): Router {
@@ -162,6 +163,18 @@ export function buildBrainRotAdminRouter(database: Queryable): Router {
     const body = parseBody(ReviewBodySchema, req.body);
     const result = await reviewSubmission(database, id, body.decision, actorOf(req).adminId);
     res.status(200).json(result);
+  });
+
+  // ── Dashboard ─────────────────────────────────────────────────────────
+
+  /**
+   * The counts and the most-requested targets, in one read.
+   *
+   * One call because the dashboard draws them together and a total that arrived
+   * separately could disagree with the list beside it.
+   */
+  router.get('/dashboard', requireAdmin(database, 'brainrot.read'), async (_req, res) => {
+    res.status(200).json(await getDashboard(database));
   });
 
   return router;

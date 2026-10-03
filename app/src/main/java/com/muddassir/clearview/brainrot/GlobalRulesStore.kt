@@ -175,12 +175,22 @@ class GlobalRulesStore(context: Context) {
     }
 
     /** Suggest a keyword for the global repository (queued for review). */
-    suspend fun suggestKeyword(keyword: String): Boolean =
-        client.submitSuggestion("keyword", keyword)
+    suspend fun suggestKeyword(
+        keyword: String,
+        source: String = "app",
+        displayName: String? = null
+    ): Boolean = client.submitSuggestion("keyword", keyword, null, source, displayName)
 
     /** Suggest a channel for the global repository (queued for review). */
-    suspend fun suggestChannel(handle: String, name: String? = null): Boolean =
-        client.submitSuggestion("channel", handle, name)
+    suspend fun suggestChannel(
+        handle: String,
+        name: String? = null,
+        source: String = "app"
+    ): Boolean = client.submitSuggestion("channel", handle, name, source, name)
+
+    /** This device's own submissions and their current statuses. */
+    suspend fun fetchSubmissions(): List<BrainRotClient.SubmissionStatus>? =
+        client.fetchSubmissions()
 
     /** Report a keyword. Returns the new report count, or null on failure. */
     suspend fun reportKeyword(keyword: String, detail: String? = null): Int? =

@@ -32,12 +32,14 @@ import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Science
+import androidx.compose.material.icons.outlined.Upload
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.*
@@ -56,7 +58,13 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import com.muddassir.clearview.R
 import com.muddassir.clearview.viewmodel.MainViewModel
 
@@ -106,22 +114,46 @@ fun BlockTab(
 
         // What this screen protects, and where — stated once, up front, so the
         // page explains itself before the user reads a single switch.
-        item { BlockHeader() }
+        item { BlockHeader(viewModel) }
 
         item { ProtectionCard(viewModel, context) }
 
-        // ── Content Protection ─────────────────────────────────────
-        item { SectionHeading(R.string.block_content_protection) }
+        // ── YOUTUBE PROTECTION ─────────────────────────────────────
+        //
+        // Deliberately its own section, and deliberately BEFORE the global one.
+        // These rules apply to YouTube and nothing else — a keyword added here
+        // will never block a news site — and keeping them in one place is what
+        // makes that true rather than something the user has to infer.
+        item { SectionHeading(R.string.block_youtube_section) }
+        if (!protectionOn) {
+            item { LockedGroupHint() }
+        }
+        item { BrainRotProtectionCard(viewModel, locked = !protectionOn) }
+        item { BlockShortsCard(viewModel, locked = !protectionOn) }
+        item { BrainRotKeywordsCard(viewModel) }
+        item { BrainRotChannelsCard(viewModel) }
+
+        // ── MY BLOCKED ITEMS (global / every website) ──────────────
+        //
+        // Everything in this section applies across Chrome and every website
+        // the user visits through it. There are no built-in keywords here: the
+        // list is exactly what the user added, so an empty list means nothing
+        // extra is being blocked.
+        item { SectionHeading(R.string.block_my_items_section) }
         if (!protectionOn) {
             item { LockedGroupHint() }
         }
         item { StrictModeCard(viewModel, context, locked = !protectionOn) }
-        item { BlockShortsCard(viewModel, locked = !protectionOn) }
-        item { BrainRotProtectionCard(viewModel, locked = !protectionOn) }
-        item { BrainRotKeywordsCard(viewModel) }
-        item { BrainRotChannelsCard(viewModel) }
-        item { GlobalRulesCard(viewModel) }
         item { BlockedItemsCard(viewModel) }
+
+        // ── GLOBAL REPOSITORY ──────────────────────────────────────
+        //
+        // Rules an administrator approved for EVERYONE, plus this device's own
+        // submissions and their status. Read-only from here: the way to change a
+        // global rule is to submit one, which is the next card down.
+        item { SectionHeading(R.string.block_global_section) }
+        item { GlobalRulesCard(viewModel) }
+        item { MySubmissionsCard(viewModel) }
 
         // ── Activity ───────────────────────────────────────────────
         item { SectionHeading(R.string.block_activity_title) }
@@ -151,18 +183,54 @@ fun BlockTab(
 // ── Shared: page header + section headings ───────────────────────
 
 /**
- * The page's opening line: what this tab is, and the scope of protection.
+ * The page's opening line, and the notification bell.
+ *
  * The scope is deliberately plain — "websites in Chrome and Google Search" —
- * because a user who cannot tell WHAT is protected cannot trust any of it.
+ * because a user who cannot tell WHAT is protected cannot trust any of it. The
+ * bell sits here because this is the tab where a person comes to see what
+ * ClearView has been doing, and the notifications are the answer to that.
  */
 @Composable
-private fun BlockHeader() {
+private fun BlockHeader(viewModel: MainViewModel) {
+    var showNotifications by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.padding(horizontal = 4.dp)) {
-        Text(
-            text = stringResource(R.string.block_subtitle),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.block_subtitle),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            // The bell, with its unread count. Tapping opens the centre.
+            Box {
+                IconButton(onClick = { showNotifications = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.Notifications,
+                        contentDescription = stringResource(R.string.block_notifications_title),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val unread = viewModel.unreadNotificationCount
+                if (unread > 0) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 6.dp, end = 4.dp)
+                            .size(18.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (unread > 9) "9+" else unread.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
+                }
+            }
+        }
         Spacer(modifier = Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
@@ -178,6 +246,86 @@ private fun BlockHeader() {
                 color = MaterialTheme.colorScheme.primary
             )
         }
+    }
+
+    if (showNotifications) {
+        NotificationCentreSheet(
+            viewModel = viewModel,
+            onDismiss = { showNotifications = false }
+        )
+    }
+}
+
+/**
+ * The notification centre.
+ *
+ * A modal sheet rather than a screen: it is a glance at what happened, and the
+ * tab underneath is where the actions on those notifications live — so the list
+ * opens over it and closes back to it.
+ */
+@Composable
+private fun NotificationCentreSheet(viewModel: MainViewModel, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.block_notifications_title)) },
+        text = {
+            val items = viewModel.notifications
+            if (items.isEmpty()) {
+                Text(stringResource(R.string.block_notifications_empty))
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
+                    items(items, key = { it.id }) { item ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                            Text(
+                                text = item.message,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (item.read) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                fontWeight = if (item.read) FontWeight.Normal else FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = relativeTime(item.atMs),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                viewModel.markAllNotificationsRead()
+            }) {
+                Text(stringResource(R.string.block_notifications_mark_read))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                viewModel.clearNotifications()
+                onDismiss()
+            }) {
+                Text(stringResource(R.string.block_notifications_clear))
+            }
+        }
+    )
+    // Opening the centre is the moment the badge stops meaning anything.
+    LaunchedEffect(Unit) { viewModel.markAllNotificationsRead() }
+}
+
+/** A short, human "how long ago" for a notification. */
+private fun relativeTime(atMs: Long): String {
+    val delta = System.currentTimeMillis() - atMs
+    val minutes = delta / 60_000
+    return when {
+        minutes < 1 -> "just now"
+        minutes < 60 -> "${minutes}m ago"
+        minutes < 60 * 24 -> "${minutes / 60}h ago"
+        else -> "${minutes / (60 * 24)}d ago"
     }
 }
 
@@ -578,7 +726,7 @@ private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
                 onValueChange = { viewModel.updateNewYoutubeTestKeyword(it) },
                 modifier = Modifier.fillMaxWidth(),
                 label = { Text("Add a keyword to block") },
-                placeholder = { Text("e.g., viral, aesthetic, sigma") },
+                placeholder = { Text(stringResource(R.string.block_youtube_keyword_hint)) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Ascii,
@@ -966,6 +1114,107 @@ private fun GlobalRulesCard(viewModel: MainViewModel) {
 
 }
 
+// ── 3d-iii. My requests to the global repository ────────────────
+
+/**
+ * The requests this device has made, and where each one got to.
+ *
+ * The other half of the global repository: the card above says what IS global,
+ * and this says what this person asked for and what happened to it. Without it,
+ * submitting something would be an act with no visible outcome until an
+ * administrator happened to act — which is exactly the "I sent it and nothing
+ * happened" experience the notification centre and this list exist to remove.
+ */
+@Composable
+private fun MySubmissionsCard(viewModel: MainViewModel) {
+    var showDetails by remember { mutableStateOf(false) }
+    val submissions = viewModel.mySubmissions
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Upload,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.block_my_submissions_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${submissions.size} submitted",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(onClick = { viewModel.refreshMySubmissions(notifyOnChange = false) }) {
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = "Refresh my requests",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
+            }
+
+            AnimatedVisibility(visible = showDetails) {
+                FeatureDetailBlock(
+                    bullets = listOf(
+                        "Requests you sent for everyone. An administrator reviews them before they apply to anyone.",
+                        "Your request is tied to an anonymous id generated on this device — no account, no email.",
+                        "You are told here, and in the notifications, when a request is approved or rejected."
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (submissions.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.block_my_submissions_empty),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (submission in submissions) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = submission.displayName ?: submission.value,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = stringResource(
+                                        when (submission.status) {
+                                            "approved" -> R.string.block_my_submission_approved
+                                            "rejected" -> R.string.block_my_submission_rejected
+                                            "under_review" -> R.string.block_my_submission_under_review
+                                            else -> R.string.block_my_submission_pending
+                                        }
+                                    ),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── 3e. Activity (protection statistics) ─────────────────────────
 
 @Composable
@@ -1168,6 +1417,7 @@ private fun PrivacyCard() {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BlockedItemsCard(viewModel: MainViewModel) {
+    val context = LocalContext.current
     var expanded by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(16.dp)
@@ -1234,7 +1484,7 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
                         onValueChange = { viewModel.updateNewKeyword(it) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Add a keyword to block") },
-                        placeholder = { Text("e.g., instagram, tiktok") },
+                        placeholder = { Text(stringResource(R.string.block_keyword_hint)) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Ascii,
@@ -1257,14 +1507,33 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(4.dp))
-                        androidx.compose.foundation.layout.FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             for (keyword in viewModel.userKeywords) {
-                                BlockedChip(
+                                BlockedItemEntry(
                                     label = keyword,
-                                    onDelete = { viewModel.removeKeyword(keyword) }
+                                    // The reason is shown ON the row, not
+                                    // buried in a detail screen: a block the
+                                    // user cannot explain is a block they
+                                    // cannot correct.
+                                    reason = viewModel.reasonFor(keyword)?.reason,
+                                    onDelete = { viewModel.removeKeyword(keyword) },
+                                    submitLabel = if (viewModel.globalRulesAvailable) {
+                                        stringResource(R.string.block_my_submission_submit)
+                                    } else {
+                                        null
+                                    },
+                                    onSubmit = {
+                                        viewModel.submitKeywordToGlobal(keyword) { ok ->
+                                            Toast.makeText(
+                                                context,
+                                                context.getString(
+                                                    if (ok) R.string.block_global_suggest_queued
+                                                    else R.string.block_global_suggest_failed
+                                                ),
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -1277,7 +1546,7 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
                         onValueChange = { viewModel.updateNewDomain(it) },
                         modifier = Modifier.fillMaxWidth(),
                         label = { Text("Add a website to block") },
-                        placeholder = { Text("e.g., youtube.com, reddit.com") },
+                        placeholder = { Text(stringResource(R.string.block_domain_hint)) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Ascii,
@@ -1322,6 +1591,61 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * One blocked item, with WHY it is blocked and the actions on it.
+ *
+ * A chip alone says only the label, which answers "what" and never "why" — and
+ * the reason is the thing a user needs in order to decide whether to keep the
+ * block or remove it. It is shown on the row rather than behind a tap for that
+ * reason: the moment somebody wonders about a word is the moment it is next to
+ * the word.
+ */
+@Composable
+private fun BlockedItemEntry(
+    label: String,
+    reason: String?,
+    onDelete: () -> Unit,
+    submitLabel: String?,
+    onSubmit: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
+            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            if (reason != null) {
+                Text(
+                    text = reason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (submitLabel != null) {
+            TextButton(onClick = onSubmit) {
+                Text(submitLabel, fontSize = 11.sp)
+            }
+        }
+        IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Remove $label",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }
