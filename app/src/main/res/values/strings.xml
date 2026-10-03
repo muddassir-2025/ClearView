@@ -942,6 +942,13 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_saved">Saved to your device</string>
     <string name="goodpost_save_failed">Could not save that file</string>
     <string name="goodpost_close">Close</string>
+    <string name="goodpost_reactions_title">Reactions</string>
+    <string name="goodpost_reaction_yours">Your reaction</string>
+    <string name="goodpost_reaction_readers">Readers</string>
+    <plurals name="goodpost_reaction_count">
+        <item quantity="one">%1$d reaction</item>
+        <item quantity="other">%1$d reactions</item>
+    </plurals>
     <string name="goodpost_selected">Selected</string>
 
     <!-- A video the player could not open. The second line is the honest
@@ -1178,6 +1185,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ad_crop_how">Drag the picture to choose which part a reader sees.</string>
     <string name="goodpost_ad_crop_hint">The dot marks the centre of the crop.</string>
     <string name="goodpost_ad_crop_done">Done</string>
+    <string name="goodpost_ad_crop_first">Add a picture, then choose its crop.</string>
     <string name="goodpost_ad_background">Card background</string>
     <string name="goodpost_ad_delete_title">Delete this advertisement?</string>
     <string name="goodpost_ad_delete_note">It will be removed for everyone, along with its picture. This cannot be undone.</string>

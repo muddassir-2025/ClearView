@@ -384,7 +384,8 @@ val AD_BACKGROUND_COLORS = listOf(
     "#3B1F2B", // wine, for an announcement
     "#1B2A4A", // navy, for something informational
     "#3A2E12", // bronze, for a deadline
-    "#0B141A"  // the canvas itself, for a card that is only its words
+    "#0B141A", // the canvas itself, for a card that is only its words
+    "#FFFFFF"  // white, for a card that has to be seen from across a room
 )
 
 /**
@@ -402,7 +403,8 @@ val AD_TEXT_COLORS = listOf(
     "#FFD166", // amber, for a warning or a deadline
     "#7FD4FF", // sky, for a link-like card
     "#FF8FA3", // rose, for a card that should stop the scroll
-    "#FFFFFF"  // plain white, for a picture behind a dark scrim
+    "#FFFFFF", // plain white, for a picture behind a dark scrim
+    "#000000"  // black, for a card on a light background
 )
 
 /** Where a card can appear (§12). One endpoint serves both surfaces. */

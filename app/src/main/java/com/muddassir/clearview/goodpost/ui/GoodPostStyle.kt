@@ -864,6 +864,101 @@ internal fun WaConfirmDialog(
     }
 }
 
+/**
+ * What a post's reactions add up to, in full (§9).
+ *
+ * A sheet rather than a row of chips: the chips say what is ON the post, and this
+ * is the answer to the question a tap on them asks — which emoji, and how many
+ * readers each. WhatsApp's reaction sheet is the same shape, and the reason it is
+ * a sheet there is the reason it is one here: the counts are read once, then
+ * dismissed, and a row under every post that listed them would be the loudest
+ * thing in the feed.
+ *
+ * Who reacted is deliberately absent. Readers are anonymous to each other in this
+ * product, and the server holds no name to put beside an emoji — inventing one
+ * from a reader id would be the app claiming to know something it does not.
+ */
+@Composable
+internal fun WaReactionSheet(
+    reactions: List<Pair<String, Int>>,
+    mine: String?,
+    onReact: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val total = reactions.sumOf { it.second }
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .background(Wa.Bar, RoundedCornerShape(16.dp))
+                .padding(vertical = 16.dp)
+                .fillMaxWidth()
+        ) {
+            Text(
+                text = stringResource(R.string.goodpost_reactions_title),
+                color = Wa.Text,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                text = pluralStringResource(
+                    R.plurals.goodpost_reaction_count,
+                    total,
+                    total
+                ),
+                color = Wa.TextDim,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(horizontal = 20.dp)
+            )
+            Spacer(Modifier.height(12.dp))
+
+            reactions.sortedByDescending { it.second }.forEach { (emoji, count) ->
+                val isMine = emoji == mine
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // Tapping a row does what tapping the chip does, so the
+                        // sheet is also a way to change a reaction rather than
+                        // only a report of one.
+                        .clickable { onReact(emoji) }
+                        .padding(horizontal = 20.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = emoji, fontSize = 20.sp)
+                    Spacer(Modifier.width(14.dp))
+                    Text(
+                        text = if (isMine) {
+                            stringResource(R.string.goodpost_reaction_yours)
+                        } else {
+                            stringResource(R.string.goodpost_reaction_readers)
+                        },
+                        color = if (isMine) Wa.Accent else Wa.Text,
+                        fontSize = 14.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        text = waCompactCount(count),
+                        color = if (isMine) Wa.Accent else Wa.TextDim,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                Spacer(Modifier.weight(1f))
+                WaTextAction(
+                    text = stringResource(R.string.goodpost_close),
+                    onClick = onDismiss
+                )
+            }
+        }
+    }
+}
+
 /** The small green pill used by "Explore" and the channel page's action (§3). */
 @Composable
 internal fun WaPillButton(
@@ -1438,7 +1533,13 @@ internal fun WaField(
                 },
                 keyboardOptions = KeyboardOptions(
                     keyboardType = keyboardType,
-                    imeAction = imeAction
+                    // A multi-line field takes the platform's DEFAULT action, not
+                    // the caller's. With `Next` or `Done` the Enter key is the
+                    // IME's submit button, so pressing it to start a second line
+                    // moved the form on instead — the one key a person writing
+                    // two paragraphs of card copy will press first. `Default` is
+                    // what makes Enter insert a newline.
+                    imeAction = if (singleLine) imeAction else ImeAction.Default
                 ),
                 keyboardActions = KeyboardActions(onDone = { onDone() }),
                 modifier = Modifier

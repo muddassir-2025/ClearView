@@ -13,6 +13,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
@@ -658,11 +659,11 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                         lineHeight = 17.sp
                     )
 
-                    // The crop step: the card's own frame, with the picture in
-                    // it, dragged to choose what a reader sees. It only exists
-                    // while there is something to frame, because an empty box
-                    // that can be dragged is a control that appears to do
-                    // nothing.
+                    // The crop step. It is offered whenever a picture is
+                    // attached — a freshly picked one OR the one the card
+                    // already has — because framing is about the picture, and a
+                    // card whose image came from a previous save needs it just as
+                    // much as a new one.
                     if (preview != null || state.adFormExistingImageUrl != null) {
                         Spacer(Modifier.height(14.dp))
                         // A way IN rather than a draggable box: the crop has to be
@@ -673,6 +674,17 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                             value = stringResource(R.string.goodpost_ad_crop_open),
                             enabled = !state.adminBusy,
                             onClick = { showCrop = true }
+                        )
+                    } else {
+                        // No picture yet: say what to do rather than showing a
+                        // control that cannot open. A row that is there but does
+                        // nothing reads as broken.
+                        Spacer(Modifier.height(14.dp))
+                        Text(
+                            text = stringResource(R.string.goodpost_ad_crop_first),
+                            color = Wa.TextDim,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
                         )
                     }
                     Spacer(Modifier.height(16.dp))
@@ -1120,8 +1132,14 @@ private fun AdColorRow(
     enabled: Boolean,
     onSelect: (String) -> Unit
 ) {
+    // Scrolls rather than wrapping: the row is one gesture of choice, and a
+    // second line of swatches turns it into a grid to be read. It also means the
+    // palette can grow — black was added for a card on a light background —
+    // without the row being redesigned each time.
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         colors.forEach { hex ->

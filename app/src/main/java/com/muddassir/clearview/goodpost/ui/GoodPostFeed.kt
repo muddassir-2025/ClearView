@@ -796,6 +796,23 @@ private fun ReactionRow(
     val shown = reactions.filterNot { it.isEmpty }
     if (shown.isEmpty()) return
 
+    // The breakdown, opened by a tap on any chip. Held per row rather than by
+    // the feed, because a sheet belongs to the post it describes and the post is
+    // what the row already has.
+    var showBreakdown by remember { mutableStateOf(false) }
+
+    if (showBreakdown) {
+        WaReactionSheet(
+            reactions = shown.map { it.emoji to it.count },
+            mine = mine,
+            onReact = { emoji ->
+                onReact?.invoke(emoji)
+                showBreakdown = false
+            },
+            onDismiss = { showBreakdown = false }
+        )
+    }
+
     // §22: reactions arrive from OTHER phones (§12), so a pill appearing between
     // two glances at the same post should look like it was added rather than like
     // the row was redrawn.
@@ -818,8 +835,13 @@ private fun ReactionRow(
                     emoji = reaction.emoji,
                     count = reaction.count,
                     mine = reaction.emoji == mine,
-                    enabled = enabled && onReact != null,
-                    onClick = { onReact?.invoke(reaction.emoji) }
+                    enabled = enabled,
+                    // A tap opens the breakdown rather than toggling the emoji.
+                    // The old behaviour put a reaction ON by accident every time
+                    // somebody tried to see what the counts were, which is the
+                    // one thing a reader taps a reaction row to find out. The
+                    // sheet's own rows are how a reaction is changed now.
+                    onClick = { showBreakdown = true }
                 )
             }
         }
@@ -833,9 +855,14 @@ private val REACTION_OVERLAP = 11.dp
  * One emoji and its count (§9).
  *
  * Small, flat and fully rounded, the shape a chat uses: the emoji at 12sp with
- * the count beside it, and the count shown only once more than one reader has
- * chosen that emoji — "👍 1" on a single reaction is the number restating the
- * emoji.
+ * the number beside it.
+ *
+ * The count is ALWAYS shown, including on a single reaction. It used to be
+ * withheld until two readers had picked the same emoji, on the theory that "👍 1"
+ * was the emoji restating itself — but that made the one number a reader actually
+ * wants (how many people reacted, and with what) invisible in the common case, so
+ * a channel's first reaction looked like nobody had reacted at all. The number is
+ * the point of the pill; it is not a decoration on the emoji.
  *
  * The reader's OWN emoji is marked with the accent on the count and the border
  * rather than with a filled background, so a post with four reactions reads as
@@ -863,16 +890,14 @@ private fun ReactionChip(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text = emoji, fontSize = 12.sp)
-        if (count > 1) {
-            Spacer(Modifier.width(4.dp))
-            Text(
-                text = waCompactCount(count),
-                color = if (mine) Wa.Accent else Wa.BubbleTime,
-                fontSize = 11.sp,
-                fontWeight = if (mine) FontWeight.SemiBold else FontWeight.Normal,
-                maxLines = 1
-            )
-        }
+        Spacer(Modifier.width(4.dp))
+        Text(
+            text = waCompactCount(count),
+            color = if (mine) Wa.Accent else Wa.BubbleTime,
+            fontSize = 11.sp,
+            fontWeight = if (mine) FontWeight.SemiBold else FontWeight.Normal,
+            maxLines = 1
+        )
     }
 }
 
