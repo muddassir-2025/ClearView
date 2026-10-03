@@ -128,13 +128,6 @@ internal fun GoodPostChannelInfo(
                                     onClick = { shareChannel(context, known.name, known.shareLink) }
                                 )
                             )
-                            // §8: hide the channel on this device.
-                            add(
-                                WaMenuItem(
-                                    label = stringResource(R.string.goodpost_hide_channel),
-                                    onClick = { viewModel.hideChannel(known.id, known.name) }
-                                )
-                            )
                             // Only where the account may actually change it.
                             // Deleting is deliberately NOT here: an irreversible
                             // action does not belong a slip away from Share, and

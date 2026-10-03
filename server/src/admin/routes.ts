@@ -245,6 +245,15 @@ const UpdateChannelSchema = z.object({
    * remembered by the form (§30).
    */
   adminPassword: z.string().min(1).max(200).optional(),
+  /**
+   * The platform's own badge (§7).
+   *
+   * Accepted here but honoured only for a super administrator — see the route,
+   * which drops it for anyone else rather than refusing the whole edit. A channel
+   * administrator renaming their channel should not have the save rejected
+   * because their form also posted a field they were never allowed to set.
+   */
+  verified: z.boolean().optional(),
 });
 
 const PostInputSchema = z.object({
@@ -617,6 +626,9 @@ export function buildAdminRouter(
           description: body.description,
           categorySlug: body.categorySlug,
           countryCode: body.countryCode,
+          // Only a super administrator may set the badge; for anyone else the
+          // field is dropped and the existing value is left alone.
+          verified: context.role === 'super_admin' ? body.verified : undefined,
         });
 
         // Absent means "leave the image alone"; null means "remove it"; a uuid

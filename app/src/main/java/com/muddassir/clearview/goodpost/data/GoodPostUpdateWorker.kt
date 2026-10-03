@@ -55,22 +55,9 @@ class GoodPostUpdateWorker(
         val follows = repository.following()
         if (follows !is ApiResult.Ok) return Result.success()
 
-        // §8: a channel the reader hid on this device is gone from their feeds,
-        // so it must not announce either. Its timestamp is still advanced (just
-        // as for a muted channel) so that unhiding it later does not unload a
-        // backlog of updates published while it was hidden.
-        val hidden = GoodPostHidden(context)
-
         follows.value.items.forEach { channel ->
             val published = parseIsoMillis(channel.lastPostAt) ?: return@forEach
             val seen = GoodPostNotifications.lastSeen(context, channel.id)
-
-            if (hidden.isChannelHidden(channel.id)) {
-                if (seen == 0L || published > seen) {
-                    GoodPostNotifications.setLastSeen(context, channel.id, published)
-                }
-                return@forEach
-            }
 
             // First sighting: adopt it, announce nothing. See the class comment.
             if (seen == 0L) {

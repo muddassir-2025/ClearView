@@ -50,7 +50,7 @@ import {
 const ChannelQuerySchema = z.object({
   q: z.string().max(100).optional(),
   category: z.string().max(60).optional(),
-  sort: z.enum(['recent', 'name']).optional(),
+  sort: z.enum(['popular', 'active', 'new', 'name']).optional(),
   limit: z.string().max(10).optional(),
   cursor: z.string().max(512).optional(),
 });

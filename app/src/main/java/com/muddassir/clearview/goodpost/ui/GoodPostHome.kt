@@ -42,7 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
@@ -74,7 +73,6 @@ import com.muddassir.clearview.goodpost.data.parseIsoMillis
 @Composable
 internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     var confirmDelete by remember { mutableStateOf(false) }
-    var showHiddenChannels by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -143,18 +141,6 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                         onClick = viewModel::refreshChannels
                                     )
                                 )
-                                // §8: the way back for a channel the reader hid.
-                                // The count comes from the live hidden-channel
-                                // list, so it can never go stale.
-                                add(
-                                    WaMenuItem(
-                                        label = stringResource(
-                                            R.string.goodpost_hidden_channels,
-                                            state.hiddenChannels.size
-                                        ),
-                                        onClick = { showHiddenChannels = true }
-                                    )
-                                )
                                 if (state.isAdmin) {
                                     add(
                                         WaMenuItem(
@@ -175,7 +161,7 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
                 item(key = "header") {
-                    ChannelsHeader(onExplore = { viewModel.openExplore() })
+                    ChannelsHeader(onExplore = { viewModel.openDiscover() })
                 }
 
                 // §12: active advertisement cards, above the list and below the
@@ -266,110 +252,6 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
             },
             onDismiss = { confirmDelete = false }
         )
-    }
-
-    if (showHiddenChannels) {
-        HiddenChannelsDialog(
-            state = state,
-            viewModel = viewModel,
-            onDismiss = { showHiddenChannels = false }
-        )
-    }
-}
-
-/**
- * The reader's hidden channels, and the way to bring one back (§8).
- *
- * Rows rather than a delete list: the only action is [GoodPostViewModel
- * .unhideChannel], because hiding is a device-local preference and there is
- * nothing else to say about it.
- */
-@Composable
-private fun HiddenChannelsDialog(
-    state: GoodPostUiState,
-    viewModel: GoodPostViewModel,
-    onDismiss: () -> Unit
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(Wa.Bar)
-                .padding(horizontal = 18.dp, vertical = 18.dp)
-        ) {
-            Text(
-                text = stringResource(R.string.goodpost_hidden_channels_title),
-                color = Wa.Text,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold
-            )
-            Spacer(Modifier.height(8.dp))
-            if (state.hiddenChannels.isEmpty()) {
-                Text(
-                    text = stringResource(R.string.goodpost_hidden_channels_empty),
-                    color = Wa.TextDim,
-                    fontSize = 14.sp
-                )
-            } else {
-                Text(
-                    text = stringResource(R.string.goodpost_hidden_channels_note),
-                    color = Wa.TextDim,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
-                Spacer(Modifier.height(6.dp))
-                state.hiddenChannels.forEach { channel ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = channel.name.ifBlank { channel.id },
-                            color = Wa.Text,
-                            fontSize = 15.sp,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = stringResource(R.string.goodpost_unhide),
-                            color = Wa.Accent,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { viewModel.unhideChannel(channel.id) }
-                                .padding(horizontal = 10.dp, vertical = 8.dp)
-                        )
-                    }
-                }
-                if (state.hiddenChannels.size > 1) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = stringResource(R.string.goodpost_unhide_all),
-                        color = Wa.Accent,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { viewModel.unhideAllChannels() }
-                            .padding(horizontal = 10.dp, vertical = 8.dp)
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = stringResource(R.string.goodpost_dismiss),
-                color = Wa.TextDim,
-                fontSize = 14.sp,
-                modifier = Modifier
-                    .align(Alignment.End)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable(onClick = onDismiss)
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            )
-        }
     }
 }
 
@@ -491,7 +373,7 @@ private fun EmptyChannels(state: GoodPostUiState, viewModel: GoodPostViewModel) 
             title = stringResource(R.string.goodpost_empty_channels_title),
             note = stringResource(R.string.goodpost_empty_channels_note),
             actionLabel = stringResource(R.string.goodpost_explore),
-            onAction = { viewModel.openExplore() }
+            onAction = { viewModel.openDiscover() }
         )
     }
 }

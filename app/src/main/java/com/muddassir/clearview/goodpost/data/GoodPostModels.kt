@@ -65,6 +65,14 @@ data class GoodPostChannel(
      * beside them.
      */
     val followerCount: Int = 0,
+    /**
+     * The platform's own badge (§7).
+     *
+     * Set by a super administrator, never earned: it is drawn beside the name on
+     * discovery rows and nowhere else, because it is a statement about who runs
+     * the channel and a discovery row is where that is being decided.
+     */
+    val verified: Boolean = false,
     /** App deep link (§6): `clearview://goodpost/channel/<slug>`. */
     val shareLink: String,
     /**
@@ -112,14 +120,6 @@ data class GoodPostFollow(
 
 /** The channel a post came from, as a single-post payload names it. */
 data class GoodPostChannelRef(val id: String, val slug: String, val name: String)
-
-/**
- * A channel the reader hid on this device (§8), for the management surface.
- *
- * Just the id and a label: the row exists so the reader can FIND it again, not
- * to render the channel's feed.
- */
-data class GoodPostHiddenChannel(val id: String, val name: String)
 
 /** One stored asset on a post: an image, a video or a document. */
 data class GoodPostMedia(
@@ -307,11 +307,75 @@ data class GoodPostAd(
     /** ISO instant, or null for a card that never expires. */
     val expiresAt: String?,
     /** Lower sorts first; ties fall back to newest. */
-    val priority: Int
+    val priority: Int,
+    /**
+     * Text cards: the `#RRGGBB` the words are drawn in.
+     *
+     * A colour rather than a named style, because a card is a poster and the
+     * administrator is laying it out: a plain card on a dark surface is one look,
+     * and a card that has to shout is another. Empty or malformed falls back to
+     * the reader's ordinary ink.
+     */
+    val textColor: String = AD_DEFAULT_TEXT_COLOR,
+    /**
+     * Image cards: `cover` or `contain`.
+     *
+     * `cover` fills the card and crops; `contain` shows the whole picture with the
+     * card's surface behind it. Two different jobs — a photograph is usually
+     * `cover`, a logo with words in it is always `contain` — and the editor offers
+     * both rather than deciding for the administrator.
+     */
+    val imageFit: String = "cover",
+    /**
+     * Image cards: the point of the picture to keep when it is cropped, 0..1.
+     *
+     * Set by the crop step in the editor and sent with the card, so the SAME
+     * rectangle a reader sees was chosen by the person who made the card instead
+     * of by a default in the middle.
+     */
+    val imageFocusX: Float = 0.5f,
+    val imageFocusY: Float = 0.5f
 ) {
     val isImage: Boolean get() = contentType == "image"
     val isText: Boolean get() = contentType == "text"
+
+    /**
+     * Whether the card's own window contains [nowMs] — the rule the server applies.
+     *
+     * Needed on the CLIENT only for the cached copy: the server filters a live
+     * read by the clock, but a card saved an hour ago can have expired since, and
+     * a cached advertisement that has run out must not be shown. Applying the same
+     * rule here is what keeps the cache honest without a second endpoint.
+     */
+    fun isActiveAt(nowMs: Long): Boolean {
+        val start = parseIsoMillis(startsAt)
+        if (start != null && start > nowMs) return false
+        val end = parseIsoMillis(expiresAt)
+        if (end != null && end <= nowMs) return false
+        return true
+    }
 }
+
+/** The ink a text card falls back to when it has no colour of its own. */
+const val AD_DEFAULT_TEXT_COLOR = "#E9EDEF"
+
+/**
+ * The colours the card editor offers for a text card.
+ *
+ * A short, fixed palette rather than a colour wheel: every one of these is
+ * legible on the card's dark surface, which is the only property that matters
+ * and the one a free picker lets an administrator get wrong. The list is the
+ * card's own set, not the app's theme — a card may deliberately be louder than
+ * the rest of the tab.
+ */
+val AD_TEXT_COLORS = listOf(
+    "#E9EDEF", // the reader's ordinary ink
+    "#25D366", // the WhatsApp green, for a card that reads as an offer
+    "#FFD166", // amber, for a warning or a deadline
+    "#7FD4FF", // sky, for a link-like card
+    "#FF8FA3", // rose, for a card that should stop the scroll
+    "#FFFFFF"  // plain white, for a picture behind a dark scrim
+)
 
 /** Where a card can appear (§12). One endpoint serves both surfaces. */
 enum class GoodPostAdPlacement(val wire: String) {
@@ -376,6 +440,7 @@ internal object GoodPostCodec {
             lastPostPreview = json.nullableString("lastPostPreview"),
             lastPostViews = json.optInt("lastPostViews", 0).coerceAtLeast(0),
             followerCount = json.optInt("followerCount", 0).coerceAtLeast(0),
+            verified = json.optBoolean("verified", false),
             shareLink = json.optString("shareLink"),
             status = json.nullableString("status"),
             // Absent on every payload except the reader's own follows, where
@@ -594,7 +659,12 @@ internal object GoodPostCodec {
             enabled = json.optBoolean("enabled", false),
             startsAt = json.nullableString("startsAt"),
             expiresAt = json.nullableString("expiresAt"),
-            priority = json.optInt("priority", 100)
+            priority = json.optInt("priority", 100),
+            textColor = json.optString("textColor").takeIf { it.isNotBlank() }
+                ?: AD_DEFAULT_TEXT_COLOR,
+            imageFit = if (json.optString("imageFit") == "contain") "contain" else "cover",
+            imageFocusX = json.optDouble("imageFocusX", 0.5).toFloat().coerceIn(0f, 1f),
+            imageFocusY = json.optDouble("imageFocusY", 0.5).toFloat().coerceIn(0f, 1f)
         )
     }
 
@@ -672,6 +742,7 @@ internal object GoodPostCodec {
                 put("lastPostAt", channel.lastPostAt ?: JSONObject.NULL)
                 put("lastPostType", channel.lastPostType ?: JSONObject.NULL)
                 put("lastPostPreview", channel.lastPostPreview ?: JSONObject.NULL)
+                put("verified", channel.verified)
                 put("shareLink", channel.shareLink)
             })
         }
@@ -685,6 +756,56 @@ internal object GoodPostCodec {
             val parsed = ArrayList<GoodPostChannel>(items.length())
             for (i in 0 until items.length()) {
                 items.optJSONObject(i)?.let { channel(it)?.let(parsed::add) }
+            }
+            parsed
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Serialise advertisement cards for the cache (§12, §27).
+     *
+     * The reader's carousel is the same few cards on every open, and asking the
+     * server for them each time made opening the tab wait on a read whose answer
+     * had not changed. Cached like the channel list is, and for the same reason.
+     *
+     * [GoodPostAd.imageUrl] is deliberately NOT written, unlike a channel's
+     * avatar: it is a short-lived signed URL and a card IS its picture, so a
+     * cached card drawing an expired address would be a card with a hole in it.
+     * A cached image card therefore renders nothing until the live read replaces
+     * it, which is the same state [ad] already handles for a null URL.
+     */
+    fun encodeAds(ads: List<GoodPostAd>): String {
+        val items = JSONArray()
+        ads.forEach { ad ->
+            items.put(JSONObject().apply {
+                put("id", ad.id)
+                put("contentType", ad.contentType)
+                put("text", ad.text ?: JSONObject.NULL)
+                put("targetUrl", ad.targetUrl ?: JSONObject.NULL)
+                put("showInChannels", ad.showInChannels)
+                put("showInExplore", ad.showInExplore)
+                put("enabled", ad.enabled)
+                put("startsAt", ad.startsAt ?: JSONObject.NULL)
+                put("expiresAt", ad.expiresAt ?: JSONObject.NULL)
+                put("priority", ad.priority)
+                put("textColor", ad.textColor)
+                put("imageFit", ad.imageFit)
+                put("imageFocusX", ad.imageFocusX.toDouble())
+                put("imageFocusY", ad.imageFocusY.toDouble())
+            })
+        }
+        return items.toString()
+    }
+
+    fun decodeAds(raw: String?): List<GoodPostAd> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return try {
+            val items = JSONArray(raw)
+            val parsed = ArrayList<GoodPostAd>(items.length())
+            for (i in 0 until items.length()) {
+                items.optJSONObject(i)?.let { ad(it)?.let(parsed::add) }
             }
             parsed
         } catch (e: Exception) {

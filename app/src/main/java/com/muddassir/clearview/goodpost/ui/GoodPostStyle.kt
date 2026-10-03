@@ -1751,8 +1751,6 @@ internal fun goodPostErrorText(code: String): String {
         "starred" -> return stringResource(R.string.goodpost_starred_added)
         "unstarred" -> return stringResource(R.string.goodpost_starred_removed)
         "deleted_from_device" -> return stringResource(R.string.goodpost_deleted_from_device)
-        "channel_hidden" -> return stringResource(R.string.goodpost_channel_hidden)
-        "channel_unhidden" -> return stringResource(R.string.goodpost_channel_unhidden)
         // Advertisements (§15). Their own wording rather than a generic "invalid
         // input": each names a card the manager is looking at and the one field
         // that has to change.

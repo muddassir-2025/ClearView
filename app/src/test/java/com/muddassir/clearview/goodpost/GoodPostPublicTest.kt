@@ -522,6 +522,9 @@ private val GoodPostChannelFields = setOf(
     // counts of rows somebody's action created — a follow, or a read that was
     // reported — rather than a score kept about a channel.
     "followerCount", "lastPostViews",
+    // §7's badge. Not a counter and not earned: a super administrator sets it,
+    // and it means the platform runs the channel.
+    "verified",
     // §4–§6's four, and every one of them is the READER's own state rather than
     // a fact about the channel. `unreadCount` and `followedAt` differ per
     // reader; `following` and `notificationsMuted` are that reader's settings.

@@ -159,6 +159,15 @@ fun GoodPostTab(
 
                 GoodPostScreen.Explore -> GoodPostExplore(state = state, viewModel = viewModel)
 
+                // §7: the sectioned discovery page, and one section in full.
+                GoodPostScreen.Discover -> GoodPostDiscover(state = state, viewModel = viewModel)
+
+                is GoodPostScreen.Section -> GoodPostSection(
+                    state = state,
+                    section = screen.section,
+                    viewModel = viewModel
+                )
+
                 is GoodPostScreen.Channel -> GoodPostFeed(
                     state = state,
                     channelId = screen.channelId,
@@ -203,6 +212,7 @@ fun GoodPostTab(
                 // surface, reached from the tab's own menu — there is still no
                 // dashboard beside the product.
                 GoodPostScreen.Ads -> GoodPostAdsScreen(state = state, viewModel = viewModel)
+
             }
         }
     }

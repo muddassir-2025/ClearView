@@ -42,6 +42,10 @@ export interface AdvertisementRow {
   readonly starts_at: unknown;
   readonly expires_at: unknown;
   readonly priority: number;
+  readonly text_color: string;
+  readonly image_fit: 'cover' | 'contain';
+  readonly image_focus_x: number;
+  readonly image_focus_y: number;
   readonly created_at: unknown;
   readonly updated_at: unknown;
 }
@@ -60,10 +64,18 @@ export interface AdvertisementSummary {
   readonly startsAt: string | null;
   readonly expiresAt: string | null;
   readonly priority: number;
+  /** A text card's ink, `#RRGGBB`. */
+  readonly textColor: string;
+  /** How an image card's picture fills it. */
+  readonly imageFit: 'cover' | 'contain';
+  /** The crop's centre, 0..1 on each axis. */
+  readonly imageFocusX: number;
+  readonly imageFocusY: number;
 }
 
 const AD_COLUMNS = `id, content_type, image_object_key, text_content, target_url,
   show_in_channels, show_in_explore, enabled, starts_at, expires_at, priority,
+  text_color, image_fit, image_focus_x, image_focus_y,
   created_at, updated_at`;
 
 async function toSummary(store: ObjectStore, row: AdvertisementRow): Promise<AdvertisementSummary> {
@@ -79,6 +91,10 @@ async function toSummary(store: ObjectStore, row: AdvertisementRow): Promise<Adv
     startsAt: isoOrNull(row.starts_at),
     expiresAt: isoOrNull(row.expires_at),
     priority: row.priority,
+    textColor: row.text_color,
+    imageFit: row.image_fit,
+    imageFocusX: row.image_focus_x,
+    imageFocusY: row.image_focus_y,
   };
 }
 
@@ -125,6 +141,11 @@ export interface AdvertisementInput {
   readonly startsAt: Date | null;
   readonly expiresAt: Date | null;
   readonly priority: number;
+  /** A text card's ink, `#RRGGBB`. */
+  readonly textColor: string;
+  readonly imageFit: 'cover' | 'contain';
+  readonly imageFocusX: number;
+  readonly imageFocusY: number;
   /** A confirmed, owned image upload to claim. Required for an image card. */
   readonly mediaId: string | null;
 }
@@ -201,9 +222,11 @@ export async function createAdvertisement(
       `INSERT INTO advertisements
          (content_type, image_object_key, text_content, target_url,
           show_in_channels, show_in_explore, enabled, starts_at, expires_at,
-          priority, created_by_admin_id)
+          priority, text_color, image_fit, image_focus_x, image_focus_y,
+          created_by_admin_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7,
-               COALESCE($8::timestamptz, now()), $9::timestamptz, $10, $11)
+               COALESCE($8::timestamptz, now()), $9::timestamptz, $10,
+               $11, $12, $13, $14, $15)
        RETURNING id`,
       [
         input.contentType,
@@ -216,6 +239,10 @@ export async function createAdvertisement(
         input.startsAt ? input.startsAt.toISOString() : null,
         input.expiresAt ? input.expiresAt.toISOString() : null,
         input.priority,
+        input.textColor,
+        input.imageFit,
+        input.imageFocusX,
+        input.imageFocusY,
         adminId,
       ]
     );
@@ -310,7 +337,11 @@ export async function updateAdvertisement(
               enabled = $8,
               starts_at = COALESCE($9::timestamptz, starts_at),
               expires_at = $10::timestamptz,
-              priority = $11
+              priority = $11,
+              text_color = $12,
+              image_fit = $13,
+              image_focus_x = $14,
+              image_focus_y = $15
         WHERE id = $1`,
       [
         id,
@@ -324,6 +355,10 @@ export async function updateAdvertisement(
         input.startsAt ? input.startsAt.toISOString() : null,
         input.expiresAt ? input.expiresAt.toISOString() : null,
         input.priority,
+        input.textColor,
+        input.imageFit,
+        input.imageFocusX,
+        input.imageFocusY,
       ]
     );
     return removed;

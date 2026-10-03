@@ -81,6 +81,16 @@ const AdBodySchema = z
       .nullable()
       .optional(),
     priority: z.number().int().min(0).max(100_000).default(100),
+    /** A text card's ink. `#RRGGBB` only — the painter cannot read anything else. */
+    textColor: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/, 'Colour must be a #RRGGBB value.')
+      .default('#E9EDEF'),
+    /** How an image card's picture fills it. */
+    imageFit: z.enum(['cover', 'contain']).default('cover'),
+    /** The crop's centre, 0..1 on each axis. */
+    imageFocusX: z.number().min(0).max(1).default(0.5),
+    imageFocusY: z.number().min(0).max(1).default(0.5),
     /** A confirmed image upload to attach (required for an image card). */
     mediaId: z.string().uuid().nullable().optional(),
   })
@@ -99,6 +109,10 @@ function toInput(body: AdBody): AdvertisementInput {
     startsAt: body.startsAt ? new Date(body.startsAt) : null,
     expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
     priority: body.priority,
+    textColor: body.textColor,
+    imageFit: body.imageFit,
+    imageFocusX: body.imageFocusX,
+    imageFocusY: body.imageFocusY,
     mediaId: body.mediaId ?? null,
   };
 }

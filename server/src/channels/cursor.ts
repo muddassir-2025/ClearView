@@ -20,8 +20,14 @@
  */
 import { badRequest } from '../http/errors.js';
 
-/** How discovery orders results. Also part of the cursor: see [Cursor]. */
-export type ChannelSort = 'popular' | 'active' | 'new';
+/**
+ * How discovery orders results. Also part of the cursor: see [Cursor].
+ *
+ * `name` is alphabetical, for a search result; the other three are the orders
+ * the Explore filter chips offer. Which one a request may use is enforced at the
+ * route, so an unknown value is a 400 rather than a silent fallback.
+ */
+export type ChannelSort = 'popular' | 'active' | 'new' | 'name';
 
 export interface Cursor {
   /** The sort key of the last row of the previous page. */

@@ -205,8 +205,36 @@ describe('public channel list', () => {
     expect(slugs).toContain(quran);
     expect(slugs).not.toContain(tech);
 
-    const badSort = await request(app).get('/api/v1/channels?sort=popular');
+    // A sort this surface does not offer is a 400, not a silent fallback to the
+    // default: quietly reordering would hide a client bug behind a page that
+    // looks plausible. The four it does offer are asserted just below.
+    const badSort = await request(app).get('/api/v1/channels?sort=recent');
     expect(badSort.status).toBe(400);
+  });
+
+  it('offers the four discovery orders, and refuses anything else', async () => {
+    for (const sort of ['popular', 'active', 'new', 'name']) {
+      const res = await request(app).get(`/api/v1/channels?sort=${sort}`);
+      expect(res.status, `sort=${sort}`).toBe(200);
+      expect(Array.isArray(res.body.items)).toBe(true);
+    }
+  });
+
+  it('orders by follower count for popular, and reports it on every row', async () => {
+    const quiet = unique('quiet');
+    const busy = unique('busy');
+    await seedChannel({ slug: quiet, name: 'Quiet' });
+    const busyId = await seedChannel({ slug: busy, name: 'Busy' });
+
+    // Two followers on one channel and none on the other, so `popular` has an
+    // order to produce that `active` (which ties on creation time) would not.
+    await seedFollow(busyId, 'reader-a');
+    await seedFollow(busyId, 'reader-b');
+
+    const popular = await request(app).get('/api/v1/channels?sort=popular');
+    const first = popular.body.items[0];
+    expect(first.slug).toBe(busy);
+    expect(first.followerCount).toBe(2);
   });
 
   it('describes the last post it will preview', async () => {

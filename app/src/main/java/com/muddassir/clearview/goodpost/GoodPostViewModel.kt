@@ -7,7 +7,10 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.muddassir.clearview.BuildConfig
+import com.muddassir.clearview.goodpost.data.AD_DEFAULT_TEXT_COLOR
+import com.muddassir.clearview.goodpost.data.AdDuration
 import com.muddassir.clearview.goodpost.data.AdminSession
+import com.muddassir.clearview.goodpost.data.ChannelSection
 import com.muddassir.clearview.goodpost.data.ApiResult
 import com.muddassir.clearview.goodpost.data.CachedChannels
 import com.muddassir.clearview.goodpost.data.CachedPosts
@@ -18,7 +21,6 @@ import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.GoodPostHidden
-import com.muddassir.clearview.goodpost.data.GoodPostHiddenChannel
 import com.muddassir.clearview.goodpost.data.GoodPostCodec
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostMediaItem
@@ -38,6 +40,8 @@ import com.muddassir.clearview.goodpost.data.CreatorSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostRepository
 import com.muddassir.clearview.goodpost.data.GoogleSignIn
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
+import com.muddassir.clearview.goodpost.data.isoFromLocalStart
+import com.muddassir.clearview.goodpost.data.nowMillis
 import com.muddassir.clearview.goodpost.data.parseIsoMillis
 import com.muddassir.clearview.goodpost.ui.waDayLabel
 import com.muddassir.clearview.goodpost.ui.waSameDay
@@ -79,6 +83,24 @@ private const val STARRED_MEDIA_PER_PASS = 6
 private const val SEARCH_DEBOUNCE_MS = 250L
 
 /**
+ * How many channels a discovery section previews (§7).
+ *
+ * Five, which is enough to show the shape of a section and short enough that two
+ * sections and their headers fit a phone without scrolling past the point of the
+ * screen. "See all" is what the full list is for.
+ */
+private const val SECTION_PREVIEW = 5
+
+/**
+ * A page of the See-all list (§7).
+ *
+ * Larger than a section preview because this screen exists to be scrolled, and
+ * smaller than the server's maximum because a phone does not need a hundred rows
+ * in one reply — the cursor is what carries the rest.
+ */
+private const val SECTION_PAGE = 30
+
+/**
  * Where the tab is.
  *
  * A stack rather than a set of booleans, because Good Post's screens nest —
@@ -92,6 +114,24 @@ private const val SEARCH_DEBOUNCE_MS = 250L
 sealed interface GoodPostScreen {
     data object Home : GoodPostScreen
     data object Explore : GoodPostScreen
+
+    /**
+     * The sectioned discovery screen (§7) — the Channels page behind Explore.
+     *
+     * A screen of its own rather than the top of [Explore]: Explore is a search
+     * result, and a page whose job is to show what exists cannot also be the page
+     * that shows what matched. The two answer different questions and page
+     * differently, so they are two destinations.
+     */
+    data object Discover : GoodPostScreen
+
+    /**
+     * One section in full, behind its "See all" (§7).
+     *
+     * Carries the section so the screen can title itself and know which order to
+     * open in; the order the reader may then switch to lives in the state.
+     */
+    data class Section(val section: ChannelSection) : GoodPostScreen
 
     /** A channel's feed (§9). */
     data class Channel(val channelId: String) : GoodPostScreen
@@ -132,6 +172,7 @@ sealed interface GoodPostScreen {
 
     /** The administrator way in (§16). */
     data object AdminLogin : GoodPostScreen
+
 
     /**
      * Advertisement cards, as their manager sees them (§15, §16).
@@ -195,18 +236,6 @@ data class GoodPostUiState(
      * set, because the two lists can be on screen in different states.
      */
     val selectedChannelIds: Set<String> = emptySet(),
-
-    /**
-     * The channels THIS DEVICE hides (§8).
-     *
-     * Read from the reader's own store, so it survives a restart and applies to
-     * every feed — the home list, Explore, a channel's posts, a search — rather
-     * than to the one screen a card was hidden from.
-     */
-    val hiddenChannelIds: Set<String> = emptySet(),
-
-    /** The hidden channels, by label, for the management surface (§8). */
-    val hiddenChannels: List<GoodPostHiddenChannel> = emptyList(),
 
     // ── A channel's feed (§8, §9, §10) ───────────────────────────────────
     val channel: GoodPostChannel? = null,
@@ -334,13 +363,58 @@ data class GoodPostUiState(
 
     // ── Explore (§7) ─────────────────────────────────────────────────────
     val query: String = "",
-    val category: String? = null,
-    val sort: String = "recent",
     val categories: List<GoodPostCategory> = emptyList(),
     val explore: List<GoodPostChannel> = emptyList(),
     val exploreLoading: Boolean = false,
     val exploreCursor: String? = null,
     val exploreError: String? = null,
+
+    // ── Discover (§7) ────────────────────────────────────────────────────
+    //
+    // The Channels screen's own state, held apart from [explore] rather than
+    // shared with it. The two screens ask the server the same question with
+    // different orders, and one list field would mean opening a section wiped the
+    // other screen's rows — or, worse, left a stale page of them under a new
+    // heading. They are also paged independently, so a "load more" in a section
+    // must not append to the search results underneath it.
+
+    /**
+     * Every section's preview, keyed by the section itself.
+     *
+     * A map rather than one field per section: the sections are data now (see
+     * [ChannelSection]), and a field per category would mean every new category
+     * is a state field, a branch in the loader and a branch in the screen. A
+     * section with no entry, or an empty list, is simply not drawn.
+     */
+    val discoverSections: Map<ChannelSection, List<GoodPostChannel>> = emptyMap(),
+    val discoverLoading: Boolean = false,
+    val discoverError: String? = null,
+
+    /**
+     * The full list behind a section's "See all", or null when none is open.
+     *
+     * Non-null is what makes the See-all screen exist: it carries the section's
+     * own order, which is also what the app bar is titled with.
+     */
+    val section: ChannelSection? = null,
+    /**
+     * The order the See-all list is currently in.
+     *
+     * Separate from the section it was opened from, because the chips re-sort the
+     * list in place: the section says which heading the reader arrived under, and
+     * this says how they have since chosen to read it.
+     */
+    val sectionSort: String = "active",
+    val sectionItems: List<GoodPostChannel> = emptyList(),
+    val sectionLoading: Boolean = false,
+    val sectionCursor: String? = null,
+    val sectionError: String? = null,
+
+    /**
+     * A section's search term, kept per section so switching chips does not lose
+     * the term the reader typed.
+     */
+    val sectionQuery: String = "",
 
     // ── Advertisements a reader sees (§12) ───────────────────────────────
     //
@@ -456,9 +530,27 @@ data class GoodPostUiState(
     val adFormEnabled: Boolean = true,
     /** Kept as text so a half-typed number is a field not yet finished. */
     val adFormPriority: String = "100",
-    /** ISO-8601, or blank for "no bound". */
-    val adFormStartsAt: String = "",
-    val adFormExpiresAt: String = "",
+    /**
+     * When the card starts, as ISO-8601.
+     *
+     * A timestamp rather than a typed date: the editor offers a duration ("for
+     * a week") or a calendar picker, and this is what either resolves to before
+     * it is sent. Null means "now", which is what the server does with an
+     * omitted start.
+     */
+    val adFormStartsAt: String? = null,
+    /** When the card stops, as ISO-8601, or null for "no expiry". */
+    val adFormExpiresAt: String? = null,
+    /**
+     * The duration the editor is showing, or [AdDuration.Custom] once a specific
+     * date has been chosen.
+     *
+     * The form's own state rather than something derived from the two timestamps:
+     * a reader who picks "a week" and then opens the calendar to adjust the end
+     * date is in the custom case, and deriving it would flip the pill back to
+     * "a week" and lose what they did.
+     */
+    val adFormDuration: AdDuration = AdDuration.NoExpiry,
     /**
      * The picture being uploaded for this card.
      *
@@ -469,6 +561,20 @@ data class GoodPostUiState(
     val adFormImage: GoodPostAttachment? = null,
     /** The image an existing card already has, for the form's preview. */
     val adFormExistingImageUrl: String? = null,
+    /** A text card's ink (§12). */
+    val adFormTextColor: String = AD_DEFAULT_TEXT_COLOR,
+    /** An image card's fit: `cover` fills the card, `contain` shows it whole. */
+    val adFormImageFit: String = "cover",
+    /**
+     * Where the crop is centred, 0..1 on each axis.
+     *
+     * Held on the form rather than baked into the upload: the picture is stored
+     * once, and the rectangle the reader sees is a property of the CARD — so an
+     * administrator can change their mind about the framing without uploading the
+     * same photograph again.
+     */
+    val adFormFocusX: Float = 0.5f,
+    val adFormFocusY: Float = 0.5f,
 
     /** A message code from the last failed action, worded by [goodPostErrorFor]. */
     val messageCode: String? = null,
@@ -514,6 +620,14 @@ data class GoodPostUiState(
     val channelFormName: String = "",
     val channelFormDescription: String = "",
     val channelFormCategory: String? = null,
+    /**
+     * The platform's own badge (§7).
+     *
+     * Only a super administrator may set it, and the server drops the field for
+     * anyone else — so a channel administrator's form carries the value it was
+     * opened with and the save leaves it alone.
+     */
+    val channelFormVerified: Boolean = false,
     /** Set only when a super admin is creating a channel plus its admin (§20). */
     val channelFormAdminEmail: String? = null,
     val channelFormAdminPassword: String? = null,
@@ -734,15 +848,7 @@ class GoodPostViewModel : ViewModel() {
         appContext = context.applicationContext
         val stars = GoodPostStarred(context.applicationContext)
         starredStore = stars
-        hiddenStore = GoodPostHidden(context.applicationContext).also { store ->
-            // Primed before any list loads, so the very first render already
-            // respects what this device has hidden (§8).
-            val hidden = store.channels()
-            uiState = uiState.copy(
-                hiddenChannelIds = hidden.keys.toSet(),
-                hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) }
-            )
-        }
+        hiddenStore = GoodPostHidden(context.applicationContext)
         // §9: what this device has already had counted. Primed before any read
         // goes out, so the first page of a cold start is not reported again.
         viewedStore = GoodPostViewed(context.applicationContext).also { store ->
@@ -850,7 +956,7 @@ class GoodPostViewModel : ViewModel() {
 
     private fun showCachedChannels(cached: CachedChannels) {
         uiState = uiState.copy(
-            channels = cached.channels.visibleChannelsToMe(),
+            channels = cached.channels,
             channelsLoading = false,
             channelsStale = true
         )
@@ -878,7 +984,7 @@ class GoodPostViewModel : ViewModel() {
             when (val follows = repo.following()) {
                 is ApiResult.Ok -> {
                     uiState = uiState.copy(
-                        channels = follows.value.items.visibleChannelsToMe(),
+                        channels = follows.value.items,
                         followedIds = follows.value.items.map { it.id }.toSet(),
                         // The channel switches on the information page draw from
                         // the server's own answer, so they are right on a device
@@ -1034,7 +1140,7 @@ class GoodPostViewModel : ViewModel() {
     private suspend fun loadPublicChannels(repo: GoodPostRepository) {
         when (val result = repo.channels()) {
             is ApiResult.Ok -> uiState = uiState.copy(
-                channels = result.value.items.visibleChannelsToMe(),
+                channels = result.value.items,
                 channelsLoading = false,
                 channelsStale = false,
                 channelsError = null
@@ -1060,14 +1166,20 @@ class GoodPostViewModel : ViewModel() {
     /**
      * Fetch the active cards for the top of the Channels list (§12).
      *
-     * Best-effort on purpose: an advertisement is supplementary content and a
-     * failure leaves the carousel empty rather than reporting an error over a
-     * list that still works. Fetched once per open and NOT on the refresh timer,
-     * because which card is active is decided by the server against the clock, so
-     * a minute-old answer is not meaningfully stale.
+     * The CACHE is drawn first and the network replaces it, exactly as the
+     * channel list works (§26, §27). A card is the same card on every open, so
+     * asking the server for it each time made the tab wait on a read whose answer
+     * had not changed; the cached copy is filtered by the clock on the way out,
+     * so a card that expired since it was saved is not shown.
+     *
+     * Still best-effort: a failure leaves the cached cards in place rather than
+     * reporting an error over a list that works.
      */
     fun loadAds() {
         val repo = repository ?: return
+        repo.cachedAds(GoodPostAdPlacement.Channels)?.let { cached ->
+            uiState = uiState.copy(ads = cached.ads)
+        }
         viewModelScope.launch {
             val result = repo.ads(GoodPostAdPlacement.Channels)
             if (result is ApiResult.Ok) uiState = uiState.copy(ads = result.value)
@@ -1079,10 +1191,13 @@ class GoodPostViewModel : ViewModel() {
      *
      * A separate read from the Channels one because the placements are separate: a
      * card can run on one surface, the other, or both, and the server filters by
-     * the placement it was asked for.
+     * the placement it was asked for. Cached the same way, under its own key.
      */
     fun loadExploreAds() {
         val repo = repository ?: return
+        repo.cachedAds(GoodPostAdPlacement.Explore)?.let { cached ->
+            uiState = uiState.copy(exploreAds = cached.ads)
+        }
         viewModelScope.launch {
             val result = repo.ads(GoodPostAdPlacement.Explore)
             if (result is ApiResult.Ok) uiState = uiState.copy(exploreAds = result.value)
@@ -1181,17 +1296,7 @@ class GoodPostViewModel : ViewModel() {
      */
     private fun List<GoodPostPost>.visibleToMe(): List<GoodPostPost> {
         val hidden = hiddenStore ?: return this
-        return filterNot { hidden.isHidden(it.id) || hidden.isChannelHidden(it.channelId) }
-    }
-
-    /**
-     * The same rule for the channel list (§8): a hidden channel leaves the home
-     * list and Explore, and comes back only when it is unhidden.
-     */
-    private fun List<GoodPostChannel>.visibleChannelsToMe(): List<GoodPostChannel> {
-        val hiddenIds = uiState.hiddenChannelIds
-        if (hiddenIds.isEmpty()) return this
-        return filterNot { it.id in hiddenIds }
+        return filterNot { hidden.isHidden(it.id) }
     }
 
     /**
@@ -1204,63 +1309,6 @@ class GoodPostViewModel : ViewModel() {
     private fun List<GoodPostMediaItem>.visibleMediaToMe(): List<GoodPostMediaItem> {
         val hidden = hiddenStore ?: return this
         return filterNot { hidden.isHidden(it.postId) }
-    }
-
-    /**
-     * Hide a whole channel on this device (§8).
-     *
-     * The same operation Media offers on one of its videos, at the channel level:
-     * the channel leaves every feed, every one of its posts leaves with it, future
-     * posts are covered by the same rule, and the state is persisted so a restart
-     * does not bring it back. If the reader is inside the channel (or its
-     * information page) when they hide it, they are returned to the list rather
-     * than left looking at a channel they just removed.
-     */
-    fun hideChannel(channelId: String, name: String) {
-        val store = hiddenStore ?: return
-        store.hideChannel(channelId, name)
-        val hidden = store.channels()
-        val screen = uiState.screen
-        val leaving = (screen is GoodPostScreen.Channel && screen.channelId == channelId) ||
-            (screen is GoodPostScreen.ChannelInfo && screen.channelId == channelId) ||
-            (screen is GoodPostScreen.ChannelMedia && screen.channelId == channelId) ||
-            (screen is GoodPostScreen.ChannelSearch && screen.channelId == channelId)
-        uiState = uiState.copy(
-            hiddenChannelIds = hidden.keys.toSet(),
-            hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) },
-            channels = uiState.channels.filterNot { it.id == channelId },
-            posts = if (leaving) emptyList() else uiState.posts,
-            media = if (leaving) emptyList() else uiState.media,
-            channelSearchResults = uiState.channelSearchResults.filterNot { it.channelId == channelId },
-            selectedPostIds = emptySet(),
-            backStack = if (leaving) listOf(GoodPostScreen.Home) else uiState.backStack,
-            messageCode = "channel_hidden"
-        )
-    }
-
-    /** Bring a hidden channel back (§8): its posts can appear again. */
-    fun unhideChannel(channelId: String) {
-        val store = hiddenStore ?: return
-        store.unhideChannel(channelId)
-        val hidden = store.channels()
-        uiState = uiState.copy(
-            hiddenChannelIds = hidden.keys.toSet(),
-            hiddenChannels = hidden.map { GoodPostHiddenChannel(it.key, it.value) },
-            messageCode = "channel_unhidden"
-        )
-        refreshChannels()
-    }
-
-    /** Show every hidden channel again (§8). */
-    fun unhideAllChannels() {
-        val store = hiddenStore ?: return
-        store.clearChannels()
-        uiState = uiState.copy(
-            hiddenChannelIds = emptySet(),
-            hiddenChannels = emptyList(),
-            messageCode = "channel_unhidden"
-        )
-        refreshChannels()
     }
 
     fun loadPosts(channelId: String) {
@@ -2089,10 +2137,7 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(
             starredPostIds = store.all().map { it.postId }.toSet(),
             starred = store.forChannel(channelId)
-                .filterNot {
-                    entry -> hidden?.isHidden(entry.postId) == true ||
-                        hidden?.isChannelHidden(entry.channelId) == true
-                }
+                .filterNot { entry -> hidden?.isHidden(entry.postId) == true }
         )
     }
 
@@ -2185,10 +2230,7 @@ class GoodPostViewModel : ViewModel() {
             starredPostIds = store.all().map { it.postId }.toSet(),
             starred = store.all()
                 .filter { channelId == null || it.channelId == channelId }
-                .filterNot { entry ->
-                    hidden?.isHidden(entry.postId) == true ||
-                        hidden?.isChannelHidden(entry.channelId) == true
-                },
+                .filterNot { entry -> hidden?.isHidden(entry.postId) == true },
             // The row is gone, so its picture is too. Without this the map keeps a
             // URL for every message ever unstarred in the session.
             starredMedia = uiState.starredMedia - postId,
@@ -2390,6 +2432,197 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
+     * Open the Channels screen (§7) — the sectioned discovery page.
+     *
+     * The sections are loaded on the way in and cached in the ViewModel, so
+     * coming back from a channel does not refetch them: this screen is a way in,
+     * and a list that reloads under the reader every time they return from a
+     * channel would make browsing feel like a series of arrivals.
+     */
+    fun openDiscover() {
+        open(GoodPostScreen.Discover)
+        loadDiscover()
+        loadExploreAds()
+    }
+
+    /**
+     * The Channels screen's sections (§7).
+     *
+     * One request per section, run together: a section is a different FILTER and
+     * ORDER over the same catalogue, and the server pages each independently. A
+     * single request could not produce them all without the client re-sorting,
+     * which would put the ordering rule in two places and only one of them right.
+     *
+     * They are fired concurrently and awaited together, so the screen arrives in
+     * one piece rather than filling in row by row. A section that fails does not
+     * blank the others: half a catalogue is still worth showing, and the note
+     * above it says what is missing.
+     */
+    fun loadDiscover() {
+        val repo = repository ?: return
+        if (uiState.discoverLoading) return
+        val generation = ++discoverGeneration
+
+        uiState = uiState.copy(discoverLoading = true, discoverError = null)
+        viewModelScope.launch {
+            val sections = ChannelSection.entries
+            val results = sections.map { section ->
+                section to repo.channels(
+                    category = section.category,
+                    sort = section.sort,
+                    limit = SECTION_PREVIEW
+                )
+            }
+
+            // A newer load replaced this one while the requests were in flight;
+            // its answer is the one that belongs on screen.
+            if (generation != discoverGeneration) return@launch
+
+            val loaded = LinkedHashMap<ChannelSection, List<GoodPostChannel>>()
+            var error: String? = null
+            results.forEach { (section, result) ->
+                when (result) {
+                    is ApiResult.Ok -> loaded[section] = result.value.items
+                    is ApiResult.Failed -> if (error == null) error = result.code
+                    ApiResult.Unreachable -> if (error == null) error = "unreachable"
+                }
+            }
+
+            uiState = uiState.copy(
+                // A section that succeeded replaces what is there; one that failed
+                // keeps the rows it already had, so a retry that half-fails does
+                // not empty a section the reader was looking at.
+                discoverSections = uiState.discoverSections + loaded,
+                discoverLoading = false,
+                discoverError = error
+            )
+        }
+    }
+
+    /** Which discovery load is current; see [searchGeneration]. */
+    private var discoverGeneration = 0
+
+    /**
+     * Open one section in full (§7).
+     *
+     * The section's order is carried into the screen, so the first thing drawn is
+     * the same rows the preview showed — a See-all that opened in a different
+     * order would look like it had gone somewhere else.
+     */
+    fun openSection(section: ChannelSection) {
+        uiState = uiState.copy(
+            section = section,
+            sectionSort = section.sort,
+            sectionItems = emptyList(),
+            sectionCursor = null,
+            sectionQuery = ""
+        )
+        open(GoodPostScreen.Section(section))
+        loadSection()
+    }
+
+    /** The See-all screen's list, in the section's current order (§7). */
+    fun loadSection() {
+        val repo = repository ?: return
+        if (uiState.section == null) return
+        if (uiState.sectionLoading) return
+        val generation = ++sectionGeneration
+
+        uiState = uiState.copy(sectionLoading = true, sectionError = null)
+        viewModelScope.launch {
+            val result = repo.channels(
+                query = uiState.sectionQuery.takeIf { it.isNotBlank() },
+                // The section's own category, so "See all" shows every channel in
+                // the section rather than every channel there is.
+                category = uiState.section?.category,
+                sort = uiState.sectionSort,
+                limit = SECTION_PAGE
+            )
+            // Dropped if a newer request has replaced this one: tapping through
+            // the chips quickly can leave two in flight, and the slower reply
+            // must not overwrite the order the reader is now looking at.
+            if (generation != sectionGeneration) return@launch
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    sectionItems = result.value.items,
+                    sectionCursor = result.value.nextCursor,
+                    sectionLoading = false,
+                    sectionError = null
+                )
+                is ApiResult.Failed -> uiState.copy(
+                    sectionLoading = false,
+                    sectionError = result.code
+                )
+                ApiResult.Unreachable -> uiState.copy(
+                    sectionLoading = false,
+                    sectionError = "unreachable"
+                )
+            }
+        }
+    }
+
+    /** Which section request is current; see [searchGeneration]. */
+    private var sectionGeneration = 0
+
+    /** A section's next page (§7), appended to what is already shown. */
+    fun loadMoreSection() {
+        val repo = repository ?: return
+        if (uiState.section == null) return
+        val cursor = uiState.sectionCursor ?: return
+        if (uiState.sectionLoading) return
+
+        uiState = uiState.copy(sectionLoading = true)
+        viewModelScope.launch {
+            val result = repo.channels(
+                query = uiState.sectionQuery.takeIf { it.isNotBlank() },
+                category = uiState.section?.category,
+                sort = uiState.sectionSort,
+                cursor = cursor,
+                limit = SECTION_PAGE
+            )
+            uiState = if (result is ApiResult.Ok) {
+                uiState.copy(
+                    sectionItems = GoodPostCodec.merge(uiState.sectionItems, result.value.items) { it.id },
+                    sectionCursor = result.value.nextCursor,
+                    sectionLoading = false
+                )
+            } else {
+                uiState.copy(sectionLoading = false)
+            }
+        }
+    }
+
+    /** A term typed on the See-all screen (§7), searched shortly after typing stops. */
+    fun onSectionQueryChange(value: String) {
+        uiState = uiState.copy(sectionQuery = value)
+        sectionSearchJob?.cancel()
+        if (repository == null) return
+        sectionSearchJob = viewModelScope.launch {
+            delay(SEARCH_DEBOUNCE_MS)
+            loadSection()
+        }
+    }
+
+    private var sectionSearchJob: Job? = null
+
+    /**
+     * Re-sort the See-all screen (§7).
+     *
+     * The section's order changes in place — the screen stays where it is and the
+     * same list comes back in another order. The title keeps naming the section
+     * it was opened from, because that is still where the reader is; only the
+     * order under it has moved.
+     */
+    fun selectSectionSort(sort: String) {
+        uiState = uiState.copy(
+            sectionSort = sort,
+            sectionItems = emptyList(),
+            sectionCursor = null
+        )
+        loadSection()
+    }
+
+    /**
      * The term as it is typed, searched for shortly after typing stops (§7).
      *
      * Explore used to wait for the keyboard's search key, which made the screen
@@ -2420,15 +2653,6 @@ class GoodPostViewModel : ViewModel() {
         }
     }
 
-    fun selectCategory(slug: String?) {
-        uiState = uiState.copy(category = slug)
-        search()
-    }
-
-    fun selectSort(sort: String) {
-        uiState = uiState.copy(sort = sort)
-        search()
-    }
 
     /**
      * Search channels by name and description (§6, §7).
@@ -2446,13 +2670,16 @@ class GoodPostViewModel : ViewModel() {
         // An explicit search replaces any debounced one that has not fired yet.
         searchJob?.cancel()
         val query = uiState.query
-        val category = uiState.category
-        val sort = uiState.sort
         val generation = ++searchGeneration
 
         uiState = uiState.copy(exploreLoading = true, exploreError = null)
         viewModelScope.launch {
-            when (val result = repo.channels(query = query, category = category, sort = sort)) {
+            // No `sort` and no `category`: this screen is a search result, and
+            // its one order is the server's own default. The category strip that
+            // used to send one is gone (§7) — discovery is the Channels screen
+            // now, and a term plus a category was two filters answering a
+            // question nobody had asked on a screen with no results yet.
+            when (val result = repo.channels(query = query)) {
                 is ApiResult.Ok -> {
                     if (generation != searchGeneration) return@launch
                     uiState = uiState.copy(
@@ -2497,8 +2724,6 @@ class GoodPostViewModel : ViewModel() {
         viewModelScope.launch {
             val result = repo.channels(
                 query = uiState.query,
-                category = uiState.category,
-                sort = uiState.sort,
                 cursor = cursor
             )
             uiState = if (result is ApiResult.Ok) {
@@ -3062,6 +3287,7 @@ class GoodPostViewModel : ViewModel() {
         loadAdminAds()
     }
 
+
     /** Every card, active or not, for the manager list (§15). */
     fun loadAdminAds() {
         val repo = repository ?: return
@@ -3103,10 +3329,45 @@ class GoodPostViewModel : ViewModel() {
             adFormShowInExplore = ad?.showInExplore ?: true,
             adFormEnabled = ad?.enabled ?: true,
             adFormPriority = (ad?.priority ?: 100).toString(),
-            adFormStartsAt = ad?.startsAt.orEmpty(),
-            adFormExpiresAt = ad?.expiresAt.orEmpty(),
+            adFormStartsAt = ad?.startsAt,
+            adFormExpiresAt = ad?.expiresAt,
+            // An existing card's schedule is shown as custom unless it happens
+            // to be "no expiry": there is no way to tell a one-week card from a
+            // one-month one by looking at an end date, and guessing would relabel
+            // what the administrator actually set.
+            adFormDuration = if (ad?.expiresAt == null) {
+                AdDuration.NoExpiry
+            } else {
+                AdDuration.Custom
+            },
+            adFormTextColor = ad?.textColor ?: AD_DEFAULT_TEXT_COLOR,
+            adFormImageFit = ad?.imageFit ?: "cover",
+            adFormFocusX = ad?.imageFocusX ?: 0.5f,
+            adFormFocusY = ad?.imageFocusY ?: 0.5f,
             adFormImage = null,
             adFormExistingImageUrl = ad?.imageUrl,
+            messageCode = null
+        )
+    }
+
+    /** A text card's colour, from the editor's palette (§12). */
+    fun onAdTextColorChange(color: String) {
+        uiState = uiState.copy(adFormTextColor = color, messageCode = null)
+    }
+
+    /** How an image card's picture fills its card (§12). */
+    fun onAdImageFitChange(fit: String) {
+        uiState = uiState.copy(
+            adFormImageFit = if (fit == "contain") "contain" else "cover",
+            messageCode = null
+        )
+    }
+
+    /** The crop's centre, from the editor's framing step (§12). */
+    fun onAdFocusChange(x: Float, y: Float) {
+        uiState = uiState.copy(
+            adFormFocusX = x.coerceIn(0f, 1f),
+            adFormFocusY = y.coerceIn(0f, 1f),
             messageCode = null
         )
     }
@@ -3129,12 +3390,56 @@ class GoodPostViewModel : ViewModel() {
         uiState = uiState.copy(adFormPriority = value.filter { it.isDigit() }, messageCode = null)
     }
 
-    fun onAdStartsAtChange(value: String) {
-        uiState = uiState.copy(adFormStartsAt = value, messageCode = null)
+    /**
+     * Set how long the card runs for (§11).
+     *
+     * The end is computed from NOW rather than from the start: a card that says
+     * "one week" is one week from the moment it was set, which is what the person
+     * choosing it means. The start is left null ("now") — a card that has been
+     * scheduled has an explicit start from the calendar, and this is the ordinary
+     * "start it as soon as I save" path.
+     */
+    fun onAdDurationChange(duration: AdDuration) {
+        uiState = uiState.copy(
+            adFormDuration = duration,
+            adFormExpiresAt = duration.expiryFrom(nowMillis()),
+            adFormStartsAt = null,
+            messageCode = null
+        )
     }
 
-    fun onAdExpiresAtChange(value: String) {
-        uiState = uiState.copy(adFormExpiresAt = value, messageCode = null)
+    /**
+     * A start date chosen from the calendar, or null to clear it.
+     *
+     * Cleared rather than left as it was: the picker's dismiss button is a
+     * decision, and a date field that cannot be emptied is one that can only be
+     * changed by picking another.
+     */
+    fun onAdStartDatePicked(millis: Long?) {
+        uiState = uiState.copy(
+            adFormStartsAt = millis?.let(::isoFromLocalStart),
+            messageCode = null
+        )
+    }
+
+    /**
+     * An end date chosen from the calendar.
+     *
+     * Sets [adFormDuration] to [AdDuration.Custom]: the pills describe a length
+     * chosen in advance, and this one was not.
+     */
+    fun onAdExpiryDatePicked(millis: Long?) {
+        uiState = uiState.copy(
+            adFormDuration = AdDuration.Custom,
+            adFormExpiresAt = millis?.let(::isoFromLocalStart),
+            messageCode = null
+        )
+    }
+
+    /** The platform's badge, on the channel form (§7). Super administrators only. */
+    fun toggleChannelFormVerified() {
+        if (uiState.admin?.isSuperAdmin != true) return
+        uiState = uiState.copy(channelFormVerified = !uiState.channelFormVerified)
     }
 
     fun toggleAdShowInChannels() {
@@ -3270,8 +3575,15 @@ class GoodPostViewModel : ViewModel() {
             put("showInExplore", uiState.adFormShowInExplore)
             put("enabled", uiState.adFormEnabled)
             put("priority", uiState.adFormPriority.toIntOrNull() ?: 100)
-            put("startsAt", uiState.adFormStartsAt.trim().ifBlank { null } ?: JSONObject.NULL)
-            put("expiresAt", uiState.adFormExpiresAt.trim().ifBlank { null } ?: JSONObject.NULL)
+            put("startsAt", uiState.adFormStartsAt ?: JSONObject.NULL)
+            put("expiresAt", uiState.adFormExpiresAt ?: JSONObject.NULL)
+            // How the card LOOKS. Sent for both types: the server stores all of
+            // it, and a card that switched from text to image and back keeps the
+            // colour it was given rather than resetting to the default.
+            put("textColor", uiState.adFormTextColor)
+            put("imageFit", uiState.adFormImageFit)
+            put("imageFocusX", uiState.adFormFocusX.toDouble())
+            put("imageFocusY", uiState.adFormFocusY.toDouble())
             // Sent only when a NEW picture is being claimed; omitted on an edit
             // that keeps the existing one, which the server reads as "leave it".
             image?.mediaId?.let { put("mediaId", it) }
@@ -3385,6 +3697,7 @@ class GoodPostViewModel : ViewModel() {
             channelFormName = "",
             channelFormDescription = "",
             channelFormCategory = null,
+            channelFormVerified = false,
             // Only a super admin creates a channel together with the account that
             // runs it (§20). A channel admin editing their own channel has no
             // business minting credentials, and the server refuses it anyway.
@@ -3404,6 +3717,7 @@ class GoodPostViewModel : ViewModel() {
             channelFormName = channel.name,
             channelFormDescription = channel.description.orEmpty(),
             channelFormCategory = channel.categorySlug,
+            channelFormVerified = channel.verified,
             channelFormAdminEmail = null,
             // Empty rather than null on an edit (§20): the field is OFFERED here,
             // and blank is what "leave the password alone" looks like. A null
@@ -3607,6 +3921,12 @@ class GoodPostViewModel : ViewModel() {
             put("name", name)
             put("description", uiState.channelFormDescription.trim().ifBlank { JSONObject.NULL })
             put("categorySlug", uiState.channelFormCategory ?: JSONObject.NULL)
+            // Sent only by a super administrator; the server drops it from
+            // anyone else, so sending it from their form would be noise.
+            if (uiState.admin?.isSuperAdmin == true) {
+                put("verified", uiState.channelFormVerified)
+            }
+
             uiState.channelFormAdminEmail?.takeIf { it.isNotBlank() }
                 ?.let { put("adminEmail", it.trim().lowercase()) }
             uiState.channelFormAdminPassword?.takeIf { it.isNotBlank() }

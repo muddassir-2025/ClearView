@@ -59,28 +59,19 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
 
 
 
-        if (state.categories.isNotEmpty()) {
-            WaFilterRow {
-                WaFilterPill(
-                    label = stringResource(R.string.goodpost_all_categories),
-                    selected = state.category == null,
-                    onClick = { viewModel.selectCategory(null) }
-                )
-                state.categories.forEach { category ->
-                    WaFilterPill(
-                        label = category.label,
-                        selected = state.category == category.slug,
-                        onClick = { viewModel.selectCategory(category.slug) }
-                    )
-                }
-            }
-        }
-
         Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 32.dp)
             ) {
+                // The placeholder rows live INSIDE the list, so the carousel
+                // above them stays visible and the page keeps its height when
+                // the results land. Drawn over the list, as this used to be, a
+                // loading state hides the content it is loading.
+                if (state.exploreLoading && state.explore.isEmpty()) {
+                    items(6) { WaDiscoverRowSkeleton() }
+                }
+
                 items(state.explore, key = { it.id }) { channel ->
                     WaChannelRow(
                         title = channel.name,
@@ -115,24 +106,17 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
                     )
                 }
 
-                if (state.exploreCursor != null) {
+                if (state.exploreCursor != null && state.exploreLoading) {
                     item(key = "more") {
                         Box(
                             modifier = Modifier.fillMaxWidth().padding(16.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (state.exploreLoading) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(20.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Wa.Accent
-                                )
-                            } else {
-                                WaTextAction(
-                                    text = stringResource(R.string.goodpost_more),
-                                    onClick = viewModel::loadMoreChannels
-                                )
-                            }
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Wa.Accent
+                            )
                         }
                     }
                 }
@@ -147,10 +131,6 @@ internal fun GoodPostExplore(state: GoodPostUiState, viewModel: GoodPostViewMode
                         )
                     }
                 }
-            }
-
-            if (state.exploreLoading && state.explore.isEmpty()) {
-                WaChannelListSkeleton()
             }
         }
     }

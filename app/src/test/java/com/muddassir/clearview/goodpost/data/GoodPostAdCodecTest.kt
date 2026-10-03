@@ -95,4 +95,75 @@ class GoodPostAdCodecTest {
         assertEquals("channels", GoodPostAdPlacement.Channels.wire)
         assertEquals("explore", GoodPostAdPlacement.Explore.wire)
     }
+
+    @Test
+    fun `a card's styling defaults when the payload omits it`() {
+        val ad = GoodPostCodec.ad(textAd())!!
+        assertEquals(AD_DEFAULT_TEXT_COLOR, ad.textColor)
+        assertEquals("cover", ad.imageFit)
+        assertEquals(0.5f, ad.imageFocusX, 0.0001f)
+        assertEquals(0.5f, ad.imageFocusY, 0.0001f)
+    }
+
+    @Test
+    fun `a card's styling is read back, and an unknown fit becomes cover`() {
+        val ad = GoodPostCodec.ad(
+            textAd(
+                mapOf(
+                    "textColor" to "#25D366",
+                    "imageFit" to "contain",
+                    "imageFocusX" to 0.2,
+                    "imageFocusY" to 0.9
+                )
+            )
+        )!!
+        assertEquals("#25D366", ad.textColor)
+        assertEquals("contain", ad.imageFit)
+        assertEquals(0.2f, ad.imageFocusX, 0.0001f)
+        assertEquals(0.9f, ad.imageFocusY, 0.0001f)
+
+        // A fit the painter does not know is not a third mode, it is a typo.
+        assertEquals("cover", GoodPostCodec.ad(textAd(mapOf("imageFit" to "stretch")))!!.imageFit)
+        // And a focus outside the frame is clamped rather than drawn off-screen.
+        assertEquals(1f, GoodPostCodec.ad(textAd(mapOf("imageFocusX" to 4.0)))!!.imageFocusX, 0.0001f)
+    }
+
+    @Test
+    fun `a cached card's window is checked against the clock`() {
+        val now = 1_700_000_000_000L
+        val open = GoodPostCodec.ad(textAd())!!
+        assertTrue(open.isActiveAt(now))
+
+        val future = GoodPostCodec.ad(
+            textAd(mapOf("startsAt" to "2030-01-01T00:00:00.000Z"))
+        )!!
+        assertFalse(future.isActiveAt(now))
+
+        val expired = GoodPostCodec.ad(
+            textAd(mapOf("expiresAt" to "2020-01-01T00:00:00.000Z"))
+        )!!
+        assertFalse(expired.isActiveAt(now))
+    }
+
+    @Test
+    fun `a card survives the cache round trip without its signed image url`() {
+        val original = GoodPostCodec.ad(
+            textAd(mapOf("textColor" to "#FFD166", "imageFit" to "contain"))
+        )!!
+        val restored = GoodPostCodec.decodeAds(GoodPostCodec.encodeAds(listOf(original)))
+        assertEquals(1, restored.size)
+        assertEquals(original.id, restored.first().id)
+        assertEquals("#FFD166", restored.first().textColor)
+        assertEquals("contain", restored.first().imageFit)
+        assertEquals("YOUR AD HERE", restored.first().text)
+        // The URL is a short-lived capability, so it is deliberately not written.
+        assertNull(restored.first().imageUrl)
+    }
+
+    @Test
+    fun `an empty cache value decodes to nothing rather than throwing`() {
+        assertTrue(GoodPostCodec.decodeAds(null).isEmpty())
+        assertTrue(GoodPostCodec.decodeAds("").isEmpty())
+        assertTrue(GoodPostCodec.decodeAds("not json").isEmpty())
+    }
 }

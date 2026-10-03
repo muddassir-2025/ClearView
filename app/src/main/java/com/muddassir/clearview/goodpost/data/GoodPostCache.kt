@@ -15,6 +15,9 @@ data class CachedChannels(val channels: List<GoodPostChannel>, val savedAtMs: Lo
 /** A cached post list for one channel. */
 data class CachedPosts(val posts: List<GoodPostPost>, val savedAtMs: Long)
 
+/** A cached advertisement list for one placement. */
+data class CachedAds(val ads: List<GoodPostAd>, val savedAtMs: Long)
+
 /**
  * Offline cache for Good Post (§27).
  *
@@ -39,10 +42,12 @@ internal class GoodPostCache(context: Context) {
         const val KEY_CATEGORIES = "categories"
         const val KEY_SAVED_AT = "_saved_at"
         const val POSTS_PREFIX = "posts:"
+        const val ADS_PREFIX = "ads:"
 
         /** Enough to browse offline; small enough to stay off the heap. */
         const val MAX_CHANNELS = 200
         const val MAX_POSTS_PER_CHANNEL = 60
+        const val MAX_ADS = 10
     }
 
     private val prefs =
@@ -81,6 +86,39 @@ internal class GoodPostCache(context: Context) {
         val decoded = GoodPostCodec.decodePosts(prefs.getString(key, null))
         if (decoded.isEmpty()) return null
         return CachedPosts(decoded, prefs.getLong(key + KEY_SAVED_AT, 0L))
+    }
+
+    // ── Advertisements (§12) ─────────────────────────────────────────────
+
+    /**
+     * Cache the active cards for one placement.
+     *
+     * Keyed by placement, not shared: a card can run on Channels, on Explore, or
+     * on both, and one entry would show a reader the other surface's card.
+     */
+    fun saveAds(placement: GoodPostAdPlacement, ads: List<GoodPostAd>, nowMs: Long) {
+        val key = ADS_PREFIX + placement.wire
+        prefs.edit()
+            .putString(key, GoodPostCodec.encodeAds(ads.take(MAX_ADS)))
+            .putLong(key + KEY_SAVED_AT, nowMs)
+            .apply()
+    }
+
+    /**
+     * The cached cards for one placement, already filtered by the clock.
+     *
+     * Filtered HERE rather than by the caller because a cached card is the one
+     * kind of content whose validity can end while it sits on disk. The server
+     * applies this rule to a live read; a card that expired since it was saved
+     * would otherwise outlive its own campaign.
+     */
+    fun loadAds(placement: GoodPostAdPlacement, nowMs: Long): CachedAds? {
+        val key = ADS_PREFIX + placement.wire
+        val decoded = GoodPostCodec.decodeAds(prefs.getString(key, null))
+        if (decoded.isEmpty()) return null
+        val active = decoded.filter { it.isActiveAt(nowMs) }
+        if (active.isEmpty()) return null
+        return CachedAds(active, prefs.getLong(key + KEY_SAVED_AT, 0L))
     }
 
     // ── Following (§1, §2) ───────────────────────────────────────────────

@@ -66,15 +66,28 @@ internal class GoodPostRepository(
 
     fun cachedPosts(channelId: String): CachedPosts? = cache.loadPosts(channelId)
 
+    /**
+     * Cached cards for one placement, for the first frame.
+     *
+     * [nowMs] is passed in rather than read here so the expiry rule can be
+     * exercised by a test: a cached card whose window has closed must not be
+     * returned, and "has it closed" is a question about a clock.
+     */
+    fun cachedAds(
+        placement: GoodPostAdPlacement,
+        nowMs: Long = System.currentTimeMillis()
+    ): CachedAds? = cache.loadAds(placement, nowMs)
+
     /** The channel list, or a search over it (§3, §7). */
     suspend fun channels(
         query: String? = null,
         category: String? = null,
         sort: String? = null,
         cursor: String? = null,
+        limit: Int? = null,
         nowMs: Long = System.currentTimeMillis()
     ): ApiResult<GoodPostPage<GoodPostChannel>> =
-        api.channels(query, category, sort, cursor).also { result ->
+        channelsWithSortFallback(query, category, sort, cursor, limit).also { result ->
             // Only a FIRST page is cached: paging appends to the list on screen,
             // and a cache holding pages two, three and four as separate entries
             // would be a cache no reader ever sees the rest of.
@@ -84,6 +97,36 @@ internal class GoodPostRepository(
                 cache.saveChannels(result.value.items, nowMs)
             }
         }
+
+    /**
+     * The channel list, falling back to an order the server is certain to have.
+     *
+     * The discovery screens ask for orders the API grew for them — `active`,
+     * `popular`, `new` — and a deployment still running the previous build
+     * refuses those with a 400. That is a real state, not a hypothetical: the app
+     * is installed the moment it is built, while the server is deployed later,
+     * and in between every section of the Channels screen would be an error note
+     * about a parameter the reader never chose.
+     *
+     * The fallback is deliberately NARROW. Only `invalid_request` on an explicit
+     * sort triggers it, and only for a first page — a rejected cursor is a bug to
+     * report, not one to paper over, and a retry mid-list would restart the feed
+     * under the reader. The replacement order is `name`, which is the one sort
+     * the API has always had, so a fallback page is alphabetical rather than
+     * empty. Once the new orders are deployed this never runs again.
+     */
+    private suspend fun channelsWithSortFallback(
+        query: String?,
+        category: String?,
+        sort: String?,
+        cursor: String?,
+        limit: Int?
+    ): ApiResult<GoodPostPage<GoodPostChannel>> {
+        val first = api.channels(query, category, sort, cursor, limit)
+        val rejected = first is ApiResult.Failed && first.code == "invalid_request"
+        if (!rejected || sort.isNullOrBlank() || cursor != null) return first
+        return api.channels(query, category, "name", cursor, limit)
+    }
 
     /** One channel, by id or slug (§8, §11). */
     suspend fun channel(idOrSlug: String): ApiResult<GoodPostChannel> = api.channel(idOrSlug)
@@ -273,13 +316,19 @@ internal class GoodPostRepository(
     /**
      * The active advertisement cards for one placement (§12).
      *
-     * Not cached, and on purpose: which card is active is decided by the server
-     * against the clock, so a cached card is one that may already have expired.
-     * A failed read is not reported either — a missing card is not something a
-     * reader can act on, and the screen it sits above is still fully usable.
+     * Cached, and the cache is what the screen draws first: the cards a reader
+     * sees are the same few on every open, and a request per open made the tab
+     * wait on an answer that had not changed. A failed read leaves the cached
+     * cards in place rather than reporting anything — a missing card is not
+     * something a reader can act on, and the screen it sits above still works.
      */
-    suspend fun ads(placement: GoodPostAdPlacement): ApiResult<List<GoodPostAd>> =
-        api.ads(placement)
+    suspend fun ads(
+        placement: GoodPostAdPlacement,
+        nowMs: Long = System.currentTimeMillis()
+    ): ApiResult<List<GoodPostAd>> =
+        api.ads(placement).also { result ->
+            if (result is ApiResult.Ok) cache.saveAds(placement, result.value, nowMs)
+        }
 
     // ── Administrator session (§16) ─────────────────────────────────────
 

@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -554,6 +556,52 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                                 label = category.label,
                                 selected = state.channelFormCategory == category.slug,
                                 onClick = { viewModel.onChannelFormCategoryChange(category.slug) }
+                            )
+                        }
+                    }
+
+                    // §7: the platform's badge. Only a super administrator sees
+                    // it, because only they can set it — the server drops the
+                    // field from anyone else, and a switch that does nothing is
+                    // worse than one that is not there.
+                    if (state.admin?.isSuperAdmin == true) {
+                        Spacer(Modifier.height(18.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !state.adminBusy) {
+                                    viewModel.toggleChannelFormVerified()
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = stringResource(R.string.goodpost_channel_verified),
+                                    color = Wa.Text,
+                                    fontSize = 15.sp
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    text = stringResource(R.string.goodpost_channel_verified_note),
+                                    color = Wa.TextDim,
+                                    fontSize = 12.sp,
+                                    lineHeight = 17.sp
+                                )
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Switch(
+                                checked = state.channelFormVerified,
+                                onCheckedChange = { viewModel.toggleChannelFormVerified() },
+                                enabled = !state.adminBusy,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Wa.OnAccent,
+                                    checkedTrackColor = Wa.Accent,
+                                    checkedBorderColor = Wa.Accent,
+                                    uncheckedThumbColor = Wa.TextDim,
+                                    uncheckedTrackColor = Wa.Bar,
+                                    uncheckedBorderColor = Wa.Divider
+                                )
                             )
                         }
                     }

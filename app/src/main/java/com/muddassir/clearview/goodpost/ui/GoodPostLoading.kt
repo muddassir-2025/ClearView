@@ -127,6 +127,102 @@ private fun SkeletonBlock(
 }
 
 /**
+ * A discovery section's shape, before it has any channels (§7).
+ *
+ * A heading with its "See all" pill and four rows, drawn where the real section
+ * will be. This is a PLACEHOLDER INSIDE THE LIST rather than an overlay on top
+ * of it: the previous version was a floating column painted over the LazyColumn,
+ * which covered the advertisement carousel and any section that had already
+ * arrived — the loading state hid the content it was loading, and it stayed in
+ * place while the list behind it scrolled.
+ *
+ * Four rows rather than a full screen of them, because that is what one section
+ * previews; the placeholder's job is to say what is coming, not to fill the page.
+ */
+@Composable
+internal fun WaDiscoverSectionSkeleton(rows: Int = 4) {
+    Shimmer {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SkeletonBlock(modifier = Modifier.width(150.dp).height(19.dp))
+                Spacer(Modifier.weight(1f))
+                SkeletonBlock(
+                    modifier = Modifier.width(64.dp).height(28.dp),
+                    shape = CircleShape
+                )
+            }
+
+            repeat(rows) { index ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SkeletonBlock(modifier = Modifier.size(49.dp), shape = CircleShape)
+                    Spacer(Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        SkeletonBlock(
+                            modifier = Modifier
+                                .fillMaxWidth(if (index % 2 == 0) 0.52f else 0.38f)
+                                .height(14.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        SkeletonBlock(
+                            modifier = Modifier
+                                .fillMaxWidth(if (index % 3 == 0) 0.30f else 0.22f)
+                                .height(11.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    SkeletonBlock(
+                        modifier = Modifier.width(74.dp).height(30.dp),
+                        shape = CircleShape
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One discovery row's shape (§7).
+ *
+ * Avatar, name, follower line and a Follow pill — the same measurements the real
+ * row uses, so a page of these and the page of channels that replaces them have
+ * the same height and the list does not shift under the reader.
+ */
+@Composable
+internal fun WaDiscoverRowSkeleton() {
+    Shimmer {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SkeletonBlock(modifier = Modifier.size(49.dp), shape = CircleShape)
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                SkeletonBlock(modifier = Modifier.fillMaxWidth(0.46f).height(14.dp))
+                Spacer(Modifier.height(8.dp))
+                SkeletonBlock(modifier = Modifier.fillMaxWidth(0.26f).height(11.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            SkeletonBlock(
+                modifier = Modifier.width(74.dp).height(30.dp),
+                shape = CircleShape
+            )
+        }
+    }
+}
+
+/**
  * The channel list's own shape, before it has any channels (§4).
  *
  * Avatar, a bold line for the name and a dimmer one for the preview, with the

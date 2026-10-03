@@ -780,9 +780,27 @@ This video cannot be played inside the app.</string>
          history is ABOVE the newest update and this is the word for it. -->
     <string name="goodpost_older">Load older updates</string>
     <string name="goodpost_search">Search</string>
-    <string name="goodpost_all_categories">All</string>
+    <!-- §7: the discovery sections and their "See all", plus the sort chips on
+         the See-all screen. Each chip is a DIFFERENT order the API offers, so
+         no two of them can produce the same list. -->
+    <string name="goodpost_see_all">See all</string>
+    <string name="goodpost_section_explore">Explore channels</string>
+    <string name="goodpost_section_entertainment">Entertainment</string>
+    <string name="goodpost_section_sports">Sports</string>
+    <string name="goodpost_section_news">News and information</string>
+    <string name="goodpost_section_lifestyle">Lifestyle</string>
+    <string name="goodpost_section_people">People</string>
+    <string name="goodpost_section_business">Business</string>
+    <string name="goodpost_section_organizations">Organizations</string>
+    <string name="goodpost_section_more">More channels</string>
+    <string name="goodpost_verified">Verified</string>
+    <string name="goodpost_channel_verified">Verified channel</string>
+    <string name="goodpost_channel_verified_note">Show the platform\u2019s badge beside this channel\u2019s name. Only you can set it, and it means the platform runs the channel.</string>
+    <string name="goodpost_sort_explore">Explore</string>
+    <string name="goodpost_sort_popular">Popular</string>
+    <string name="goodpost_sort_new">New</string>
+    <string name="goodpost_sort_name">A–Z</string>
     <string name="goodpost_create_channel">Create a channel</string>
-    <string name="goodpost_create">Create</string>
     <string name="goodpost_save">Save</string>
     <string name="goodpost_cancel">Cancel</string>
     <string name="goodpost_share">Share link</string>
@@ -825,9 +843,6 @@ This video cannot be played inside the app.</string>
          shown inside the composer. "Copy" is deliberately NOT repeated here:
          `goodpost_copy` already exists for the post action bar, and one word
          gets one entry. -->
-    <string name="goodpost_cut">Cut</string>
-    <string name="goodpost_paste">Paste</string>
-    <string name="goodpost_select_all">Select all</string>
     <string name="goodpost_channel">Channel</string>
     <string name="goodpost_public_channel">Public channel</string>
     <!-- The two numbers a channel carries (§9). The count itself is abbreviated
@@ -838,10 +853,6 @@ This video cannot be played inside the app.</string>
         <item quantity="one">%1$s follower</item>
         <item quantity="other">%1$s followers</item>
     </plurals>
-    <plurals name="goodpost_view_count">
-        <item quantity="one">%1$s view</item>
-        <item quantity="other">%1$s views</item>
-    </plurals>
     <string name="goodpost_no_followers">No followers yet</string>
     <!-- The eye beside a post's own timestamp. It counts that one post, so it
          says so; "Views on the last post" described a channel-level statistic
@@ -850,7 +861,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_views_of_latest">Views</string>
     <string name="goodpost_no_description">No description yet</string>
     <string name="goodpost_channel_info">Channel info</string>
-    <string name="goodpost_forward">Forward</string>
     <string name="goodpost_read_more">Read more</string>
     <string name="goodpost_created_on">Created on %1$s</string>
     <string name="goodpost_media_and_links">Media and links</string>
@@ -871,7 +881,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_notification_channel_desc">New posts from the channels you follow</string>
 
     <!-- The master switch, in the Quran tab's settings sheet (§17). -->
-    <string name="goodpost_notifications_master_title">Good Post</string>
     <string name="goodpost_notifications_master_note">Get a notification when a channel you follow posts. One check every 15 minutes.</string>
 
     <!-- Starred messages (§9), on a channel's information page. -->
@@ -893,30 +902,17 @@ This video cannot be played inside the app.</string>
          chip says on its own, so a reader on a screen reader hears which emoji a
          control would set rather than a row of identical buttons. -->
     <string name="goodpost_react">React</string>
-    <string name="goodpost_react_with">React with %1$s</string>
-    <string name="goodpost_react_with_count">React with %1$s, %2$d in total</string>
-    <string name="goodpost_react_remove">Remove your %1$s reaction</string>
     <string name="goodpost_error_reaction_failed">That reaction did not save. Please try again.</string>
     <string name="goodpost_error_reactions_unavailable">Reactions are not available right now.</string>
     <string name="goodpost_starred_removed">Star removed</string>
 
     <!-- Managing what is on this device (§6, §15). -->
     <string name="goodpost_delete_from_device">Delete from this device</string>
-    <string name="goodpost_delete_posts">Delete posts</string>
     <string name="goodpost_channel_category">Category</string>
     <string name="goodpost_channel_category_none">None</string>
     <string name="goodpost_mute">Mute</string>
     <string name="goodpost_unmute">Unmute</string>
     <string name="goodpost_deleted_from_device">Removed from this device</string>
-    <string name="goodpost_channel_hidden">Channel hidden</string>
-    <string name="goodpost_channel_unhidden">Channel unhidden</string>
-    <string name="goodpost_hide_channel">Hide channel</string>
-    <string name="goodpost_hidden_channels">Hidden channels (%1$d)</string>
-    <string name="goodpost_hidden_channels_title">Hidden channels</string>
-    <string name="goodpost_hidden_channels_empty">No hidden channels</string>
-    <string name="goodpost_hidden_channels_note">Posts from these channels are hidden on this device. Unhide one to see it again.</string>
-    <string name="goodpost_unhide">Unhide</string>
-    <string name="goodpost_unhide_all">Unhide all</string>
 
     <!-- The confirmation every delete goes through (§5, §9, §17). Two different
          deletions live behind one gesture and one of them cannot be undone, so
@@ -934,8 +930,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_delete_media_title_many">Delete %1$d items?</string>
     <string name="goodpost_delete_media_note">The copies on this device will be removed and they will stop appearing here. The channel\'s copy is untouched.</string>
     <string name="goodpost_delete_media_note_admin">Deleting for everyone removes the updates that carry this media from the channel. Deleting for me removes the copies on this device only.</string>
-    <string name="goodpost_storage">Downloaded media</string>
-    <string name="goodpost_storage_note">%1$s kept on this device</string>
     <string name="goodpost_share_file">Share</string>
     <string name="goodpost_play_video">Play video</string>
     <string name="goodpost_pause_video">Pause</string>
@@ -1011,8 +1005,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_search_channel_prompt_note">Type a word to find it in this channel\'s updates.</string>
     <string name="goodpost_search_channel_empty_title">No matches</string>
     <string name="goodpost_search_channel_empty_note">Nothing in this channel says “%1$s”.</string>
-    <string name="goodpost_search_channel_count">%1$d matches</string>
-    <string name="goodpost_search_channel_loading">Searching this channel…</string>
     <!-- §17: deleting a channel is confirmed by naming it. -->
     <string name="goodpost_delete_type_name">Type the channel\'s name to confirm</string>
     <string name="goodpost_delete_type_word">Type “%1$s” to confirm</string>
@@ -1024,7 +1016,6 @@ This video cannot be played inside the app.</string>
     <!-- The pencil beside the field: the posting page, not a send. -->
     <string name="goodpost_open_composer">Open the writing page</string>
     <string name="goodpost_new_channel">New channel</string>
-    <string name="goodpost_video">Video</string>
     <string name="goodpost_edit_post">Edit post</string>
 
     <!-- Inline formatting on the composer's toolbar (§17). The labels are the
@@ -1101,19 +1092,14 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_posted_document">Document</string>
     <string name="goodpost_document_open">Open document</string>
     <string name="goodpost_attachment_uploading">Uploading…</string>
-    <string name="goodpost_attachment_ready">Ready</string>
     <string name="goodpost_attachment_failed">Failed</string>
     <!-- On the failed tile itself: the whole square is the way to send it again. -->
     <string name="goodpost_attachment_retry">Send this file again</string>
     <!-- The channel's profile image (§11), set from the same upload handshake as a post's media (§22). -->
-    <string name="goodpost_channel_image">Channel image</string>
     <string name="goodpost_channel_image_add">Add image</string>
     <string name="goodpost_channel_image_change">Change image</string>
     <string name="goodpost_channel_image_remove">Remove</string>
     <string name="goodpost_channel_image_keep">Keep</string>
-    <string name="goodpost_channel_image_current">Current image</string>
-    <string name="goodpost_channel_image_none">No image yet</string>
-    <string name="goodpost_channel_image_removing">Will be removed when you save</string>
 
     <!-- Selection and the actions taken on it (§5). A long press selects, which
          swaps the bar for one that says how many are selected and what can be
@@ -1129,7 +1115,6 @@ This video cannot be played inside the app.</string>
 
     <!-- Deleting a channel (§17). The only irreversible control in the app, so
          the only one that asks first — and it says what goes with it. -->
-    <string name="goodpost_delete_channel">Delete channel</string>
     <string name="goodpost_delete_channel_title">Delete this channel?</string>
     <string name="goodpost_delete_channel_note">%1$s and everything it published will be removed for everyone, including its posts, its media and the login that runs it. This cannot be undone.</string>
     <string name="goodpost_delete_channels_title">Delete these channels?</string>
@@ -1154,7 +1139,6 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ad_target_label">Tap link</string>
     <string name="goodpost_ad_target_hint">https://… or mailto:…</string>
     <string name="goodpost_ad_target_note">Where a tap on the card goes. Required for the default contact card.</string>
-    <string name="goodpost_ad_image_label">Picture</string>
     <string name="goodpost_ad_image_add">Add a picture</string>
     <string name="goodpost_ad_image_change">Change picture</string>
     <string name="goodpost_ad_image_remove">Remove</string>
@@ -1165,14 +1149,30 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ad_enabled">Enabled</string>
     <string name="goodpost_ad_priority">Priority</string>
     <string name="goodpost_ad_priority_hint">Lower shows first</string>
-    <string name="goodpost_ad_starts">Starts at</string>
-    <string name="goodpost_ad_expires">Expires at</string>
-    <string name="goodpost_ad_date_hint">YYYY-MM-DDTHH:MM:SSZ</string>
-    <string name="goodpost_ad_schedule_note">Times are UTC. Leave a field blank to start now or to never expire.</string>
+    <string name="goodpost_ad_starts">Starts</string>
+    <string name="goodpost_ad_expires">Ends</string>
+    <string name="goodpost_ad_starts_now">As soon as it is saved</string>
+    <string name="goodpost_ad_never_expires">Never expires</string>
+    <string name="goodpost_ad_schedule">How long it runs</string>
+    <string name="goodpost_ad_duration_none">No end</string>
+    <string name="goodpost_ad_duration_day">1 day</string>
+    <string name="goodpost_ad_duration_week">1 week</string>
+    <string name="goodpost_ad_duration_month">1 month</string>
+    <string name="goodpost_ad_duration_custom">Pick dates</string>
+    <string name="goodpost_ad_date_ok">OK</string>
+    <string name="goodpost_ad_date_clear">Clear</string>
+    <string name="goodpost_ad_schedule_note">Tap a date to choose another. A card with no end runs until you switch it off or delete it.</string>
     <string name="goodpost_ad_status_on">On</string>
     <string name="goodpost_ad_status_off">Off</string>
     <string name="goodpost_ad_no_text">No text</string>
     <string name="goodpost_ad_preview">Preview</string>
+    <string name="goodpost_ad_text_color">Text colour</string>
+    <string name="goodpost_ad_image_fit">How the picture fits</string>
+    <string name="goodpost_ad_fit_cover">Fill the card</string>
+    <string name="goodpost_ad_fit_contain">Show it whole</string>
+    <string name="goodpost_ad_fit_note">Filling the card crops the edges. Showing it whole leaves the card\u2019s background around the picture.</string>
+    <string name="goodpost_ad_crop">Choose the crop</string>
+    <string name="goodpost_ad_crop_note">Drag the picture to choose which part a reader sees. The dot marks the centre of the crop.</string>
     <string name="goodpost_ad_delete_title">Delete this advertisement?</string>
     <string name="goodpost_ad_delete_note">It will be removed for everyone, along with its picture. This cannot be undone.</string>
     <string name="goodpost_error_ad_not_found">That advertisement is gone.</string>

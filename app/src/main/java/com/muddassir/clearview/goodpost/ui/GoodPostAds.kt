@@ -7,10 +7,14 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -37,10 +41,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,13 +56,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -64,9 +78,15 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.AD_DEFAULT_TEXT_COLOR
+import com.muddassir.clearview.goodpost.data.AD_TEXT_COLORS
+import com.muddassir.clearview.goodpost.data.AdDuration
 import com.muddassir.clearview.goodpost.data.GoodPostAd
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
+import com.muddassir.clearview.goodpost.data.formatAdDate
+import com.muddassir.clearview.goodpost.data.isoFromLocalStart
+import com.muddassir.clearview.goodpost.data.localStartToPickerMillis
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 import kotlinx.coroutines.delay
 
@@ -99,6 +119,33 @@ private const val AD_AUTO_SLIDE_MS = 5_000L
  * A failure is swallowed on purpose. A device with nothing registered for the
  * target should ignore the tap, not be shown an error over an advertisement.
  */
+/**
+ * A card's ink, parsed from its `#RRGGBB`.
+ *
+ * Falls back to the reader's ordinary text colour for anything the painter
+ * cannot read, so a hand-edited row or an older payload draws a legible card
+ * rather than an invisible one.
+ */
+private fun adTextColor(value: String?): Color =
+    runCatching { Color(android.graphics.Color.parseColor(value ?: AD_DEFAULT_TEXT_COLOR)) }
+        .getOrDefault(Wa.Text)
+
+/**
+ * The crop rectangle an image card draws with.
+ *
+ * Expressed as a BIAS rather than a computed rect: `BiasAlignment` takes -1..1
+ * where 0 is centred, and the card's stored focus is 0..1, so the focus point is
+ * mapped across. Doing it this way means the same framing applies at every card
+ * size — the carousel, the editor's preview and the manager's thumbnail are three
+ * different rectangles and all three should keep the part of the picture that was
+ * chosen.
+ */
+private fun adBias(focus: Float): Float = (focus.coerceIn(0f, 1f) * 2f) - 1f
+
+/** The alignment an image card is drawn with, from its stored focus. */
+private fun adAlignment(focusX: Float, focusY: Float): Alignment =
+    BiasAlignment(adBias(focusX), adBias(focusY))
+
 private fun openAdTarget(context: Context, url: String?) {
     val target = url?.trim().orEmpty()
     if (target.isBlank()) return
@@ -124,7 +171,8 @@ private fun openAdTarget(context: Context, url: String?) {
 private fun AdRemoteImage(
     url: String?,
     modifier: Modifier = Modifier,
-    contentScale: ContentScale = ContentScale.Crop
+    contentScale: ContentScale = ContentScale.Crop,
+    alignment: Alignment = Alignment.Center
 ) {
     var bitmap by remember(url) { mutableStateOf(GoodPostImages.peek(url)) }
 
@@ -138,6 +186,7 @@ private fun AdRemoteImage(
             bitmap = current.asImageBitmap(),
             contentDescription = null,
             contentScale = contentScale,
+            alignment = alignment,
             modifier = modifier.fillMaxSize()
         )
     }
@@ -225,12 +274,20 @@ private fun AdCard(ad: GoodPostAd, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         if (ad.isImage && ad.imageUrl != null) {
-            AdRemoteImage(url = ad.imageUrl, contentScale = ContentScale.Crop)
+            AdRemoteImage(
+                url = ad.imageUrl,
+                contentScale = if (ad.imageFit == "contain") ContentScale.Fit else ContentScale.Crop,
+                alignment = adAlignment(ad.imageFocusX, ad.imageFocusY)
+            )
         } else {
             Text(
                 text = ad.text.orEmpty(),
-                color = Wa.Text,
+                color = adTextColor(ad.textColor),
                 fontSize = 16.sp,
+                // Monospace, like the default contact card it was seeded from: a
+                // card is a poster, and a fixed advance is what makes a hand-laid
+                // out one line up.
+                fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 maxLines = 4,
@@ -474,6 +531,13 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
     val failed = (picked?.state as? GoodPostUploadState.Failed)?.code
     val preview = rememberAdLocalPreview(picked?.uri)
 
+    // The two calendars are opened from the schedule block below. Held here, at
+    // the screen, because a dialog is a sibling of the form rather than a child
+    // of the row that opens it — a dialog composed inside a scrolling column is
+    // anchored to its row, not to the window.
+    var showStartPicker by remember { mutableStateOf(false) }
+    var showExpiryPicker by remember { mutableStateOf(false) }
+
     WaBackdrop {
         Column(modifier = Modifier.fillMaxSize().imePadding()) {
             WaTopBar(
@@ -501,18 +565,15 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     fontSize = 13.sp
                 )
                 Spacer(Modifier.height(8.dp))
-                WaFilterRow {
-                    WaFilterPill(
-                        label = stringResource(R.string.goodpost_ad_type_text),
-                        selected = state.adFormContentType == "text",
-                        onClick = { viewModel.onAdContentTypeChange("text") }
-                    )
-                    WaFilterPill(
-                        label = stringResource(R.string.goodpost_ad_type_image),
-                        selected = state.adFormContentType == "image",
-                        onClick = { viewModel.onAdContentTypeChange("image") }
-                    )
-                }
+                AdSegmented(
+                    options = listOf(
+                        "text" to stringResource(R.string.goodpost_ad_type_text),
+                        "image" to stringResource(R.string.goodpost_ad_type_image)
+                    ),
+                    selected = state.adFormContentType,
+                    enabled = !state.adminBusy,
+                    onSelect = viewModel::onAdContentTypeChange
+                )
 
                 Spacer(Modifier.height(18.dp))
 
@@ -552,6 +613,59 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                         singleLine = false,
                         minHeight = 90.dp
                     )
+
+                    Spacer(Modifier.height(16.dp))
+                    AdSectionLabel(stringResource(R.string.goodpost_ad_text_color))
+                    AdColorRow(
+                        selected = state.adFormTextColor,
+                        enabled = !state.adminBusy,
+                        onSelect = viewModel::onAdTextColorChange
+                    )
+                    Spacer(Modifier.height(16.dp))
+                } else {
+                    AdSectionLabel(stringResource(R.string.goodpost_ad_image_fit))
+                    AdSegmented(
+                        options = listOf(
+                            "cover" to stringResource(R.string.goodpost_ad_fit_cover),
+                            "contain" to stringResource(R.string.goodpost_ad_fit_contain)
+                        ),
+                        selected = state.adFormImageFit,
+                        enabled = !state.adminBusy,
+                        onSelect = viewModel::onAdImageFitChange
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = stringResource(R.string.goodpost_ad_fit_note),
+                        color = Wa.TextDim,
+                        fontSize = 12.sp,
+                        lineHeight = 17.sp
+                    )
+
+                    // The crop step: the card's own frame, with the picture in
+                    // it, dragged to choose what a reader sees. It only exists
+                    // while there is something to frame, because an empty box
+                    // that can be dragged is a control that appears to do
+                    // nothing.
+                    if (preview != null || state.adFormExistingImageUrl != null) {
+                        Spacer(Modifier.height(14.dp))
+                        AdSectionLabel(stringResource(R.string.goodpost_ad_crop))
+                        AdCropFrame(
+                            localImage = preview,
+                            remoteUrl = if (preview == null) state.adFormExistingImageUrl else null,
+                            focusX = state.adFormFocusX,
+                            focusY = state.adFormFocusY,
+                            fit = state.adFormImageFit,
+                            enabled = !state.adminBusy,
+                            onFocus = viewModel::onAdFocusChange
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = stringResource(R.string.goodpost_ad_crop_note),
+                            color = Wa.TextDim,
+                            fontSize = 12.sp,
+                            lineHeight = 17.sp
+                        )
+                    }
                     Spacer(Modifier.height(16.dp))
                 }
 
@@ -621,29 +735,12 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
 
                 Spacer(Modifier.height(14.dp))
 
-                WaField(
-                    value = state.adFormStartsAt,
-                    onValueChange = viewModel::onAdStartsAtChange,
-                    label = stringResource(R.string.goodpost_ad_starts),
-                    placeholder = stringResource(R.string.goodpost_ad_date_hint),
-                    enabled = !state.adminBusy
-                )
-
-                Spacer(Modifier.height(14.dp))
-
-                WaField(
-                    value = state.adFormExpiresAt,
-                    onValueChange = viewModel::onAdExpiresAtChange,
-                    label = stringResource(R.string.goodpost_ad_expires),
-                    placeholder = stringResource(R.string.goodpost_ad_date_hint),
-                    enabled = !state.adminBusy
-                )
-
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = stringResource(R.string.goodpost_ad_schedule_note),
-                    color = Wa.TextDim,
-                    fontSize = 12.sp
+                AdSchedule(
+                    state = state,
+                    enabled = !state.adminBusy,
+                    onDuration = viewModel::onAdDurationChange,
+                    onPickStart = { showStartPicker = true },
+                    onPickExpiry = { showExpiryPicker = true }
                 )
 
                 Spacer(Modifier.height(26.dp))
@@ -658,6 +755,170 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                 Spacer(Modifier.height(28.dp))
             }
         }
+    }
+
+    // The calendars themselves, opened by the schedule block above. A start date
+    // and an end date rather than one range: a card's window is "from then until
+    // then", and each half is optional — a card with no start begins now, and one
+    // with no end never expires.
+    if (showStartPicker) {
+        val startState = rememberDatePickerState(
+            initialSelectedDateMillis = localStartToPickerMillis(state.adFormStartsAt)
+                ?: localStartToPickerMillis(isoFromLocalStart(System.currentTimeMillis()))
+        )
+        DatePickerDialog(
+            onDismissRequest = { showStartPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.onAdStartDatePicked(startState.selectedDateMillis)
+                    showStartPicker = false
+                }) { Text(stringResource(R.string.goodpost_ad_date_ok)) }
+            },
+            dismissButton = {
+                // Clears the date rather than leaving it: this is also the way to
+                // take a scheduled start back to "begins as soon as I save".
+                TextButton(onClick = {
+                    viewModel.onAdStartDatePicked(null)
+                    showStartPicker = false
+                }) { Text(stringResource(R.string.goodpost_ad_date_clear)) }
+            }
+        ) {
+            DatePicker(state = startState)
+        }
+    }
+
+    if (showExpiryPicker) {
+        val expiryState = rememberDatePickerState(
+            initialSelectedDateMillis = localStartToPickerMillis(state.adFormExpiresAt)
+        )
+        DatePickerDialog(
+            onDismissRequest = { showExpiryPicker = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.onAdExpiryDatePicked(expiryState.selectedDateMillis)
+                    showExpiryPicker = false
+                }) { Text(stringResource(R.string.goodpost_ad_date_ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    viewModel.onAdExpiryDatePicked(null)
+                    showExpiryPicker = false
+                }) { Text(stringResource(R.string.goodpost_ad_date_clear)) }
+            }
+        ) {
+            DatePicker(state = expiryState)
+        }
+    }
+}
+
+/**
+ * How long the card runs (§11), and what that resolves to.
+ *
+ * A row of lengths — a day, a week, a month, no end — plus a way into the
+ * calendar for the case none of them covers. It replaces two text fields that
+ * asked an administrator to type an ISO timestamp, which is a format a person
+ * should never have to know, let alone get right on a phone keyboard.
+ *
+ * The resolved dates are printed underneath, because a length is a promise about
+ * a window and the two timestamps are what the server actually stores. Seeing
+ * "3 Oct 2026 → 10 Oct 2026" is how the choice stops being abstract.
+ */
+@Composable
+private fun AdSchedule(
+    state: GoodPostUiState,
+    enabled: Boolean,
+    onDuration: (AdDuration) -> Unit,
+    onPickStart: () -> Unit,
+    onPickExpiry: () -> Unit
+) {
+    Text(
+        text = stringResource(R.string.goodpost_ad_schedule),
+        color = Wa.TextDim,
+        fontSize = 13.sp
+    )
+    Spacer(Modifier.height(8.dp))
+
+    WaFilterRow {
+        WaFilterPill(
+            label = stringResource(R.string.goodpost_ad_duration_none),
+            selected = state.adFormDuration == AdDuration.NoExpiry,
+            onClick = { if (enabled) onDuration(AdDuration.NoExpiry) }
+        )
+        WaFilterPill(
+            label = stringResource(R.string.goodpost_ad_duration_day),
+            selected = state.adFormDuration == AdDuration.OneDay,
+            onClick = { if (enabled) onDuration(AdDuration.OneDay) }
+        )
+        WaFilterPill(
+            label = stringResource(R.string.goodpost_ad_duration_week),
+            selected = state.adFormDuration == AdDuration.OneWeek,
+            onClick = { if (enabled) onDuration(AdDuration.OneWeek) }
+        )
+        WaFilterPill(
+            label = stringResource(R.string.goodpost_ad_duration_month),
+            selected = state.adFormDuration == AdDuration.OneMonth,
+            onClick = { if (enabled) onDuration(AdDuration.OneMonth) }
+        )
+        WaFilterPill(
+            label = stringResource(R.string.goodpost_ad_duration_custom),
+            selected = state.adFormDuration == AdDuration.Custom,
+            onClick = { if (enabled) onDuration(AdDuration.Custom) }
+        )
+    }
+
+    Spacer(Modifier.height(4.dp))
+
+    AdDateRow(
+        label = stringResource(R.string.goodpost_ad_starts),
+        value = formatAdDate(state.adFormStartsAt)
+            ?: stringResource(R.string.goodpost_ad_starts_now),
+        enabled = enabled,
+        onClick = onPickStart
+    )
+    AdDateRow(
+        label = stringResource(R.string.goodpost_ad_expires),
+        value = formatAdDate(state.adFormExpiresAt)
+            ?: stringResource(R.string.goodpost_ad_never_expires),
+        enabled = enabled,
+        onClick = onPickExpiry
+    )
+
+    Spacer(Modifier.height(4.dp))
+    Text(
+        text = stringResource(R.string.goodpost_ad_schedule_note),
+        color = Wa.TextDim,
+        fontSize = 12.sp,
+        lineHeight = 17.sp
+    )
+}
+
+/** One of the schedule's two dates: a label, its resolved value, and the calendar. */
+@Composable
+private fun AdDateRow(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = if (enabled) Wa.Text else Wa.TextDim,
+            fontSize = 15.sp,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = value,
+            color = Wa.Accent,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.Medium
+        )
     }
 }
 
@@ -688,21 +949,26 @@ private fun AdFormPreview(
             .background(Wa.Bar),
         contentAlignment = Alignment.Center
     ) {
+        val fit = if (state.adFormImageFit == "contain") ContentScale.Fit else ContentScale.Crop
+        val alignment = adAlignment(state.adFormFocusX, state.adFormFocusY)
+
         when {
             localImage != null -> Image(
                 bitmap = localImage.asImageBitmap(),
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = fit,
+                alignment = alignment,
                 modifier = Modifier.fillMaxSize()
             )
 
             isImage && existingUrl != null ->
-                AdRemoteImage(url = existingUrl, contentScale = ContentScale.Crop)
+                AdRemoteImage(url = existingUrl, contentScale = fit, alignment = alignment)
 
             else -> Text(
                 text = state.adFormText.ifBlank { stringResource(R.string.goodpost_ad_preview) },
-                color = Wa.Text,
+                color = adTextColor(state.adFormTextColor),
                 fontSize = 16.sp,
+                fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.Medium,
                 textAlign = TextAlign.Center,
                 maxLines = 4,
@@ -758,6 +1024,179 @@ private fun AdFormPreview(
                     enabled = !state.adminBusy,
                     onClick = onRemove,
                     destructive = true
+                )
+            }
+        }
+    }
+}
+
+/** A small heading over one block of the editor. */
+@Composable
+private fun AdSectionLabel(text: String) {
+    Text(text = text, color = Wa.TextDim, fontSize = 13.sp)
+    Spacer(Modifier.height(8.dp))
+}
+
+/**
+ * Two or more mutually exclusive options, as one joined control.
+ *
+ * A segmented row rather than the filter pills the rest of the app uses: the
+ * pills read as "show me this subset", and the choice here is a property of the
+ * card being written — text or image, crop or fit — where exactly one value is
+ * always chosen. The shape says that; a strip of pills does not.
+ */
+@Composable
+private fun AdSegmented(
+    options: List<Pair<String, String>>,
+    selected: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(Wa.Bar)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        options.forEach { (value, label) ->
+            val isSelected = value == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (isSelected) Wa.Accent else Color.Transparent)
+                    .clickable(enabled = enabled) { onSelect(value) }
+                    .padding(vertical = 9.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = label,
+                    color = if (isSelected) Wa.OnAccent else Wa.Text,
+                    fontSize = 14.sp,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The colours a text card can be written in.
+ *
+ * Swatches rather than names: the choice is what the card will look like, and a
+ * row of the actual inks answers that in a glance. The selected one is ringed
+ * rather than ticked, so the row does not need a legend.
+ */
+@Composable
+private fun AdColorRow(
+    selected: String,
+    enabled: Boolean,
+    onSelect: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        AD_TEXT_COLORS.forEach { hex ->
+            val color = adTextColor(hex)
+            val isSelected = hex.equals(selected, ignoreCase = true)
+            Box(
+                modifier = Modifier
+                    .size(38.dp)
+                    .clip(CircleShape)
+                    .background(color)
+                    .border(
+                        width = if (isSelected) 3.dp else 1.dp,
+                        color = if (isSelected) Wa.Accent else Wa.Divider,
+                        shape = CircleShape
+                    )
+                    .clickable(enabled = enabled) { onSelect(hex) }
+            )
+        }
+    }
+}
+
+/**
+ * The crop step (§12).
+ *
+ * The card's own frame with the picture inside it, draggable: the point of the
+ * picture the administrator leaves the drag on is the point a reader sees, and it
+ * is stored on the CARD — so a photograph is uploaded once and can be reframed
+ * later without touching the file.
+ *
+ * The drag is measured against the frame's own size, which is what makes the
+ * stored value a fraction rather than a pixel count: the same card is drawn at
+ * three different sizes in this app, and a focus that only worked at one of them
+ * would be a crop that moved when the screen did.
+ */
+@Composable
+private fun AdCropFrame(
+    localImage: Bitmap?,
+    remoteUrl: String?,
+    focusX: Float,
+    focusY: Float,
+    fit: String,
+    enabled: Boolean,
+    onFocus: (Float, Float) -> Unit
+) {
+    var boxWidth by remember { mutableStateOf(1f) }
+    var boxHeight by remember { mutableStateOf(1f) }
+    val alignment = adAlignment(focusX, focusY)
+    val contentScale = if (fit == "contain") ContentScale.Fit else ContentScale.Crop
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Wa.Pressed)
+            .onSizeChanged { size ->
+                boxWidth = size.width.toFloat().coerceAtLeast(1f)
+                boxHeight = size.height.toFloat().coerceAtLeast(1f)
+            }
+            .pointerInput(enabled, fit) {
+                if (!enabled || fit == "contain") return@pointerInput
+                detectDragGestures { change, drag ->
+                    change.consume()
+                    // A drag RIGHT moves the picture right, which means the
+                    // window is looking further LEFT: the focus moves against
+                    // the gesture, which is what makes the drag feel like moving
+                    // the image rather than the frame.
+                    onFocus(
+                        (focusX - drag.x / boxWidth).coerceIn(0f, 1f),
+                        (focusY - drag.y / boxHeight).coerceIn(0f, 1f)
+                    )
+                }
+            }
+    ) {
+        when {
+            localImage != null -> Image(
+                bitmap = localImage.asImageBitmap(),
+                contentDescription = null,
+                contentScale = contentScale,
+                alignment = alignment,
+                modifier = Modifier.fillMaxSize()
+            )
+
+            remoteUrl != null ->
+                AdRemoteImage(url = remoteUrl, contentScale = contentScale, alignment = alignment)
+        }
+
+        // The chosen point, drawn on the picture. Without it a drag has no
+        // visible state at all: the image moves under the gesture and there is
+        // nothing to say where the centre ended up.
+        if (fit != "contain") {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val x = focusX * size.width
+                val y = focusY * size.height
+                drawCircle(color = Wa.Accent, radius = 5.dp.toPx(), center = Offset(x, y))
+                drawCircle(
+                    color = Wa.OnAccent,
+                    radius = 5.dp.toPx(),
+                    center = Offset(x, y),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
                 )
             }
         }

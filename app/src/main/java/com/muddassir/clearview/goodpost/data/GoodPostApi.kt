@@ -134,9 +134,16 @@ class GoodPostApi(
         query: String? = null,
         category: String? = null,
         sort: String? = null,
-        cursor: String? = null
+        cursor: String? = null,
+        /**
+         * How many rows to ask for, or null for the server's default.
+         *
+         * Sent for a discovery section, which previews a handful of channels and
+         * would otherwise fetch a whole page to show five of them.
+         */
+        limit: Int? = null
     ): ApiResult<GoodPostPage<GoodPostChannel>> =
-        parsedGet(channelsPath(query, category, sort, cursor), GoodPostCodec::channelPage)
+        parsedGet(channelsPath(query, category, sort, cursor, limit), GoodPostCodec::channelPage)
 
     /** The categories Explore can filter by. */
     suspend fun categories(): ApiResult<List<GoodPostCategory>> =
@@ -921,12 +928,14 @@ class GoodPostApi(
         query: String?,
         category: String?,
         sort: String?,
-        cursor: String?
+        cursor: String?,
+        limit: Int? = null
     ): String {
         val params = buildList {
             query?.takeIf { it.isNotBlank() }?.let { add("q=" + encode(it)) }
             category?.takeIf { it.isNotBlank() }?.let { add("category=" + encode(it)) }
             sort?.takeIf { it.isNotBlank() }?.let { add("sort=" + encode(it)) }
+            limit?.takeIf { it > 0 }?.let { add("limit=" + it) }
             cursor?.takeIf { it.isNotBlank() }?.let { add("cursor=" + encode(it)) }
         }
         val suffix = if (params.isEmpty()) "" else "?" + params.joinToString("&")

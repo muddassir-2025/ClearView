@@ -16,6 +16,7 @@ import {
   isUuid,
   parsePageSize,
   withLimit,
+  type ChannelSort,
   type Page,
   type PageQuery,
 } from './cursor.js';
@@ -110,6 +111,14 @@ export interface ChannelPayload {
   readonly followerCount: number;
   /** App deep link (§6): `clearview://goodpost/channel/<slug>`. */
   readonly shareLink: string;
+  /**
+   * Whether the platform itself runs this channel (§7).
+   *
+   * A flag the super administrator sets, NOT a follower threshold: a badge a
+   * channel could earn by being followed enough would be a number dressed up as
+   * an endorsement. Only the platform can claim to be the platform.
+   */
+  readonly verified: boolean;
   /** Present only on an administrator's own payloads. */
   readonly status?: ChannelStatus;
 }
@@ -118,6 +127,7 @@ export interface ChannelPayload {
 export const CHANNEL_COLUMNS = `
   c.id, c.slug, c.name, c.description, c.icon_object_key, c.category_slug,
   cat.label AS category_label, c.country_code, c.status, c.created_at, c.last_post_at,
+  c.verified,
   COALESCE(c.last_post_at, c.created_at) AS activity_at,
   (SELECT count(*)::int FROM channel_follows cf WHERE cf.channel_id = c.id) AS follower_count
 `;
@@ -184,6 +194,7 @@ export interface ChannelRow {
   last_post_views?: number | null;
   follower_count?: number | null;
   preview_at?: unknown;
+  verified?: boolean | null;
 }
 
 /**
@@ -295,6 +306,9 @@ export function mapChannel(
     // created a moment ago has none, and the read paths that matter select the
     // count. Zero rather than null so the app has one shape to render.
     followerCount: row.follower_count ?? 0,
+    // A row read before the column existed has no value; false is the honest
+    // default, since a badge is a claim and nothing should make one by accident.
+    verified: row.verified === true,
     // Versioned on the channel's identity, not on when this row was read: see
     // [channelIdentityVersion] for why a rename has to produce a new URL.
     shareLink: channelShareLink(
@@ -351,8 +365,7 @@ export async function listCategories(database: Queryable): Promise<Category[]> {
 
 // ── Reads ───────────────────────────────────────────────────────────────
 
-/** How a channel list is ordered. */
-export type ChannelSort = 'recent' | 'name';
+export type { ChannelSort } from './cursor.js';
 
 export interface ChannelQuery extends PageQuery {
   /** Free text over the channel's name and description (§6, §7). */
@@ -362,12 +375,15 @@ export interface ChannelQuery extends PageQuery {
 }
 
 /**
- * Public channels, newest activity first (§3, §7).
+ * Public channels, most active first by default (§3, §7).
  *
- * `recent` rather than `popular`, because popularity would have to mean follower
- * count and no follower count exists on this surface. A channel that just
- * published sorts above one that has not, tie-broken by id so the keyset is
- * total.
+ * Four orders, and each answers a different question a reader asks on the
+ * discovery screens: `active` is "what is being published", `popular` is "what
+ * everyone else is following", `new` is "what has just arrived", and `name` is
+ * alphabetical for a search result. The old pair (`recent`/`name`) is gone
+ * rather than kept alongside these: `recent` and `active` are the same idea, and
+ * two spellings of one order is how a client ends up with a list that sorts
+ * differently depending on which screen it came from.
  *
  * A search term that matches nothing is an empty page, not a 404: Explore is a
  * list that happens to be short, and the client renders the same empty state for
@@ -380,7 +396,7 @@ export async function listPublicChannels(
 ): Promise<Page<ChannelPayload>> {
   const limit = parsePageSize(query.limit, env.DEFAULT_PAGE_SIZE, env.MAX_PAGE_SIZE);
   const cursor = cursorOf(query.cursor);
-  const sort: ChannelSort = query.sort === 'name' ? 'name' : 'recent';
+  const sort: ChannelSort = isChannelSort(query.sort) ? query.sort : 'active';
 
   const params: unknown[] = [limit + 1];
   const conditions: string[] = [`c.status = 'active'`];
@@ -407,8 +423,7 @@ export async function listPublicChannels(
        FROM channels c
        LEFT JOIN channel_categories cat ON cat.slug = c.category_slug
        ${LAST_POST_JOIN}
-      WHERE ${conditions.join('\n        AND ')}
-        ${keyset}
+      WHERE ${conditions.join('\n        AND ')}\n        ${keyset}
       ORDER BY ${orderBy}
       LIMIT $1`,
     params
@@ -423,9 +438,47 @@ export async function listPublicChannels(
   };
 }
 
+/** True for a sort this surface accepts. Narrows the string to the union. */
+function isChannelSort(value: string | undefined): value is ChannelSort {
+  return value === 'popular' || value === 'active' || value === 'new' || value === 'name';
+}
+
+/**
+ * The SQL expression each sort orders by, aliased `c`.
+ *
+ * Every one is a plain column or an aggregate over the channel's own rows, and
+ * the follower count is the SAME subquery `CHANNEL_COLUMNS` already selects — so
+ * the order and the number the row displays cannot disagree. `activity_at` is
+ * the coalesce of the last post and the creation time, which is what makes a
+ * channel that has never published still order somewhere sensible under "active"
+ * rather than sorting as NULL.
+ */
+function sortColumn(sort: ChannelSort): string {
+  switch (sort) {
+    case 'name':
+      return 'LOWER(c.name)';
+    case 'popular':
+      return '(SELECT count(*)::int FROM channel_follows cf WHERE cf.channel_id = c.id)';
+    case 'new':
+      return 'c.created_at';
+    case 'active':
+    default:
+      return 'COALESCE(c.last_post_at, c.created_at)';
+  }
+}
+
+/** The Postgres type a sort key's cursor value is cast to. */
+function sortCast(sort: ChannelSort): string {
+  if (sort === 'name') return 'text';
+  if (sort === 'popular') return 'int';
+  return 'timestamptz';
+}
+
 /** The value the cursor resumes after, per sort. */
 function sortKey(sort: ChannelSort, value: ChannelRow): string {
   if (sort === 'name') return value.name.toLowerCase();
+  if (sort === 'popular') return String(value.follower_count ?? 0);
+  if (sort === 'new') return cursorKeyOf(value.created_at);
   return cursorKeyOf(value.activity_at);
 }
 
@@ -436,14 +489,20 @@ function sortKey(sort: ChannelSort, value: ChannelRow): string {
  * `(key, id) < (lastKey, lastId)` is exactly "the rows after the last one
  * returned". Mixing an ASC tie-break with a DESC primary would skip or repeat
  * rows at a page boundary.
+ *
+ * `popular` is the one order whose key can CHANGE while a reader pages through
+ * it — a channel gains a follower between two requests — so it tie-breaks on the
+ * id and accepts that a row may shift by one position. That is the same
+ * trade-off the keyset cursor exists to make, and the alternative (offset
+ * pagination) is what it exists to avoid.
  */
 function sortOrder(
   sort: ChannelSort,
   params: unknown[],
   cursor: { k: string; id: string } | null
 ): { orderBy: string; keyset: string } {
-  const column = sort === 'name' ? 'LOWER(c.name)' : 'COALESCE(c.last_post_at, c.created_at)';
-  const cast = sort === 'name' ? 'text' : 'timestamptz';
+  const column = sortColumn(sort);
+  const cast = sortCast(sort);
 
   let keyset = '';
   if (cursor) {
@@ -660,6 +719,8 @@ export interface UpdateChannelInput {
   readonly description?: string | null | undefined;
   readonly categorySlug?: string | null | undefined;
   readonly countryCode?: string | null | undefined;
+  /** Set by a super administrator only; the route enforces that, not this. */
+  readonly verified?: boolean | undefined;
 }
 
 /**
@@ -693,11 +754,13 @@ export async function updateChannel(
         SET name = COALESCE($2, name),
             description = CASE WHEN $3::boolean THEN $4 ELSE description END,
             category_slug = CASE WHEN $5::boolean THEN $6 ELSE category_slug END,
-            country_code = CASE WHEN $7::boolean THEN $8 ELSE country_code END
+            country_code = CASE WHEN $7::boolean THEN $8 ELSE country_code END,
+            verified = CASE WHEN $9::boolean THEN $10 ELSE verified END
       WHERE id = $1
       RETURNING id, slug, name, description, icon_object_key, category_slug,
                 NULL::text AS category_label, country_code, status, created_at,
-                last_post_at, COALESCE(last_post_at, created_at) AS activity_at`,
+                last_post_at, COALESCE(last_post_at, created_at) AS activity_at,
+                verified`,
     [
       existing.id,
       patch.name?.trim() ?? null,
@@ -707,6 +770,8 @@ export async function updateChannel(
       patch.categorySlug ?? null,
       patch.countryCode !== undefined,
       country || null,
+      patch.verified !== undefined,
+      patch.verified ?? false,
     ]
   );
 
