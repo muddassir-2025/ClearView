@@ -213,6 +213,12 @@ fun GoodPostTab(
                 // dashboard beside the product.
                 GoodPostScreen.Ads -> GoodPostAdsScreen(state = state, viewModel = viewModel)
 
+                // The global Brain Rot repository's review queue and rule lists.
+                // A platform surface beside the ad manager, held by super
+                // administrators and re-checked by the server on every call.
+                GoodPostScreen.BrainRotReview ->
+                    BrainRotReviewScreen(state = state, viewModel = viewModel)
+
             }
         }
     }

@@ -145,6 +145,42 @@ class YouTubeNodeRulesTest {
         )
     }
 
+    // ── "Don't recommend this channel" (the YouTube app offer) ──────────
+
+    @Test
+    fun `the dont-recommend menu items are recognised across spellings`() {
+        listOf(
+            "Don't recommend this channel",
+            "Dont recommend this channel",
+            "Do not recommend this channel",
+            "Don't recommend this video"
+        ).forEach { label ->
+            assertTrue(label, YouTubeNodeRules.isDontRecommendLabel(label))
+        }
+    }
+
+    @Test
+    fun `only the channel item is the narrower dont-recommend action`() {
+        // The channel action is the one ClearView can act on, because it names
+        // a channel. The video item must not be mistaken for it — blocking a
+        // channel is a much bigger decision than hiding one video.
+        assertTrue(
+            YouTubeNodeRules.isDontRecommendChannelLabel("Don't recommend this channel")
+        )
+        assertFalse(
+            YouTubeNodeRules.isDontRecommendChannelLabel("Don't recommend this video")
+        )
+    }
+
+    @Test
+    fun `an ordinary label is not a dont-recommend action`() {
+        listOf("Recommended", "Recommendations", "Subscribe", "Share", "More actions")
+            .forEach { label ->
+                assertFalse(label, YouTubeNodeRules.isDontRecommendLabel(label))
+                assertFalse(label, YouTubeNodeRules.isDontRecommendChannelLabel(label))
+            }
+    }
+
     @Test
     fun `a plain container is neither forbidden nor a player`() {
         assertFalse(YouTubeNodeRules.isForbiddenActionNode(null, null, "android.view.View"))

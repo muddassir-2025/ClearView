@@ -679,6 +679,152 @@ class GoodPostApi(
             parse = { }
         )
 
+    // ── Brain Rot repository (admin, /admin/api/brainrot) ────────────────
+    //
+    // The global protection repository: the community's suggestions and the
+    // rules they become. Like the ad routes, this is a platform surface behind
+    // its own permission (`brainrot.*`), held by super administrators only, and
+    // the server re-checks that on every call regardless of what the app draws.
+    //
+    // There is deliberately no path here that turns a suggestion into a rule
+    // implicitly: the only route that writes a rule is a review decision, so
+    // one accidental submission cannot change what everyone blocks.
+
+    /** Every global keyword, enabled or not. */
+    suspend fun adminBrainRotKeywords(token: String): ApiResult<List<GoodPostBrainRotRule>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/brainrot/keywords",
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::brainRotKeywords
+        )
+
+    /** Every global channel, enabled or not. */
+    suspend fun adminBrainRotChannels(token: String): ApiResult<List<GoodPostBrainRotRule>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/brainrot/channels",
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::brainRotChannels
+        )
+
+    /** Add a global keyword directly. Inert until the rule is enabled. */
+    suspend fun adminAddBrainRotKeyword(
+        token: String,
+        keyword: String,
+        reason: String?
+    ): ApiResult<GoodPostBrainRotRule> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/brainrot/keywords",
+            body = JSONObject().apply {
+                put("keyword", keyword)
+                put("reason", reason ?: JSONObject.NULL)
+            },
+            bearer = token,
+            parse = { body ->
+                body.optJSONObject("keyword")?.let(GoodPostCodec::brainRotRule)
+                    ?: throw ContractBreak()
+            }
+        )
+
+    /** Add a global channel directly. Inert until the rule is enabled. */
+    suspend fun adminAddBrainRotChannel(
+        token: String,
+        handle: String,
+        displayName: String?,
+        reason: String?
+    ): ApiResult<GoodPostBrainRotRule> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/brainrot/channels",
+            body = JSONObject().apply {
+                put("handle", handle)
+                put("displayName", displayName ?: JSONObject.NULL)
+                put("reason", reason ?: JSONObject.NULL)
+            },
+            bearer = token,
+            parse = { body ->
+                body.optJSONObject("channel")?.let(GoodPostCodec::brainRotRule)
+                    ?: throw ContractBreak()
+            }
+        )
+
+    /**
+     * Enable or disable a rule.
+     *
+     * Disabling is the reversible move: the row stays, so a rule switched off
+     * because it was too broad can be switched back on once it is narrowed,
+     * rather than being deleted and re-added from memory.
+     */
+    suspend fun adminSetBrainRotRuleEnabled(
+        token: String,
+        kind: String,
+        ruleId: String,
+        enabled: Boolean
+    ): ApiResult<Unit> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/brainrot/" + brainRotKindPath(kind) +
+                "/${encode(ruleId)}/status",
+            body = JSONObject().apply { put("enabled", enabled) },
+            bearer = token,
+            parse = { }
+        )
+
+    /** Remove a rule for good. */
+    suspend fun adminDeleteBrainRotRule(
+        token: String,
+        kind: String,
+        ruleId: String
+    ): ApiResult<Unit> =
+        parsedCall(
+            method = "DELETE",
+            path = "$ADMIN_PATH/brainrot/" + brainRotKindPath(kind) + "/${encode(ruleId)}",
+            body = null,
+            bearer = token,
+            parse = { Unit }
+        )
+
+    /** The review queue, oldest first. `status` defaults to `pending`. */
+    suspend fun adminBrainRotSubmissions(
+        token: String,
+        status: String = "pending"
+    ): ApiResult<List<GoodPostBrainRotSubmission>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/brainrot/submissions?status=" + encode(status),
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::brainRotSubmissions
+        )
+
+    /**
+     * Approve or reject a suggestion.
+     *
+     * Approving writes the rule and marks the submission in one transaction on
+     * the server, so an approval can never leave a suggestion marked approved
+     * whose rule was not created.
+     */
+    suspend fun adminReviewBrainRotSubmission(
+        token: String,
+        submissionId: String,
+        decision: String
+    ): ApiResult<Unit> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/brainrot/submissions/${encode(submissionId)}/review",
+            body = JSONObject().apply { put("decision", decision) },
+            bearer = token,
+            parse = { }
+        )
+
+    /** The URL segment for a rule kind, validated so a bad kind cannot build a path. */
+    private fun brainRotKindPath(kind: String): String =
+        if (kind == "channel") "channels" else "keywords"
+
     /** Publish a post (§21). The type follows from what is attached. */
     suspend fun adminCreatePost(
         token: String,

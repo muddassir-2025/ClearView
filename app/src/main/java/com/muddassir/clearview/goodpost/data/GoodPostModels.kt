@@ -266,6 +266,53 @@ data class GoodPostReactionResult(
 data class GoodPostCategory(val slug: String, val label: String)
 
 /**
+ * One entry in the global Brain Rot repository, as an administrator sees it.
+ *
+ * Keyword and channel share this type because they are managed identically —
+ * the queue, the two lists and the enable/disable action all describe one row.
+ * [value] is the keyword or the `@handle`; [kind] says which, so a caller that
+ * needs to know does not have to infer it from the leading "@".
+ */
+data class GoodPostBrainRotRule(
+    val id: String,
+    /** `keyword` or `channel`. */
+    val kind: String,
+    val value: String,
+    /** A channel's display name, when the repository has one. */
+    val displayName: String?,
+    val reason: String?,
+    /** Disabled rules stay in the repository but stop being served. */
+    val enabled: Boolean,
+    /** Distinct devices that reported this. */
+    val reports: Int,
+    val createdAt: String?
+) {
+    val isChannel: Boolean get() = kind == "channel"
+}
+
+/**
+ * A community suggestion awaiting review.
+ *
+ * [reports] is the number of distinct devices that reported the same target, so
+ * a reviewer can weigh "one person asked" against "many asked" in the same row
+ * they approve from.
+ */
+data class GoodPostBrainRotSubmission(
+    val id: String,
+    /** `keyword` or `channel`. */
+    val kind: String,
+    val value: String,
+    val note: String?,
+    /** `pending`, `approved` or `rejected`. */
+    val status: String,
+    val reports: Int,
+    val createdAt: String?
+) {
+    val isChannel: Boolean get() = kind == "channel"
+    val isPending: Boolean get() = status == "pending"
+}
+
+/**
  * An advertisement card (§9–§17).
  *
  * Platform-controlled content shown at the top of Channels and Explore. It is
@@ -897,6 +944,78 @@ internal object GoodPostCodec {
         } catch (e: Exception) {
             emptyList()
         }
+    }
+
+    // ── Brain Rot repository (admin, /admin/api/brainrot) ────────────────
+
+    /**
+     * One global rule, keyword or channel.
+     *
+     * The SAME shape for both, with [value] carrying the keyword or the handle,
+     * because the review queue, the two management lists and the rules endpoint
+     * all describe one row and the only difference is which column holds the
+     * string. A channel's `value` is already normalised to a leading "@" by the
+     * server, so nothing here has to guess.
+     */
+    fun brainRotRule(json: JSONObject): GoodPostBrainRotRule? {
+        val id = json.optString("id")
+        if (id.isBlank()) return null
+        val value = json.optString("keyword").takeIf { it.isNotBlank() }
+            ?: json.optString("handle").takeIf { it.isNotBlank() }
+            ?: return null
+        val isChannel = json.optString("handle").isNotBlank()
+        return GoodPostBrainRotRule(
+            id = id,
+            kind = if (isChannel) "channel" else "keyword",
+            value = value,
+            displayName = json.nullableString("displayName"),
+            reason = json.nullableString("reason"),
+            enabled = json.optBoolean("enabled", true),
+            reports = json.optInt("reports", 0),
+            createdAt = json.nullableString("createdAt")
+        )
+    }
+
+    /** Parse a `{ keywords: [...] }` body. */
+    fun brainRotKeywords(body: JSONObject): List<GoodPostBrainRotRule> =
+        brainRotRuleList(body.optJSONArray("keywords"))
+
+    /** Parse a `{ channels: [...] }` body. */
+    fun brainRotChannels(body: JSONObject): List<GoodPostBrainRotRule> =
+        brainRotRuleList(body.optJSONArray("channels"))
+
+    private fun brainRotRuleList(items: JSONArray?): List<GoodPostBrainRotRule> {
+        if (items == null) return emptyList()
+        val parsed = ArrayList<GoodPostBrainRotRule>(items.length())
+        for (i in 0 until items.length()) {
+            items.optJSONObject(i)?.let { brainRotRule(it)?.let(parsed::add) }
+        }
+        return parsed
+    }
+
+    /** Parse a `{ submissions: [...] }` body. */
+    fun brainRotSubmissions(body: JSONObject): List<GoodPostBrainRotSubmission> {
+        val items = body.optJSONArray("submissions") ?: return emptyList()
+        val parsed = ArrayList<GoodPostBrainRotSubmission>(items.length())
+        for (i in 0 until items.length()) {
+            val row = items.optJSONObject(i) ?: continue
+            val id = row.optString("id")
+            val value = row.optString("value")
+            if (id.isBlank() || value.isBlank()) continue
+            val kind = if (row.optString("kind") == "channel") "channel" else "keyword"
+            parsed.add(
+                GoodPostBrainRotSubmission(
+                    id = id,
+                    kind = kind,
+                    value = value,
+                    note = row.nullableString("note"),
+                    status = row.optString("status").ifBlank { "pending" },
+                    reports = row.optInt("reports", 0),
+                    createdAt = row.nullableString("createdAt")
+                )
+            )
+        }
+        return parsed
     }
 
     fun encodeCategories(categories: List<GoodPostCategory>): String {

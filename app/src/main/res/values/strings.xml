@@ -1136,6 +1136,39 @@ This video cannot be played inside the app.</string>
          are all this deployment's own. -->
 
     <string name="goodpost_ads">Advertisements</string>
+
+    <!-- Global Brain Rot repository (admin review queue and rules) -->
+    <string name="goodpost_brainrot">Global protection</string>
+    <string name="goodpost_brainrot_queue">Review queue</string>
+    <string name="goodpost_brainrot_rules">Rules</string>
+    <string name="goodpost_brainrot_pending">Pending</string>
+    <string name="goodpost_brainrot_approved">Approved</string>
+    <string name="goodpost_brainrot_rejected">Rejected</string>
+    <string name="goodpost_brainrot_all">All</string>
+    <string name="goodpost_brainrot_queue_empty_title">Nothing to review</string>
+    <string name="goodpost_brainrot_queue_empty_note">Suggestions from the community appear here, oldest first.</string>
+    <string name="goodpost_brainrot_approve">Approve</string>
+    <string name="goodpost_brainrot_reject">Reject</string>
+    <string name="goodpost_brainrot_approved_note">Approved</string>
+    <string name="goodpost_brainrot_rejected_note">Rejected</string>
+    <string name="goodpost_brainrot_suggestion_note">Suggested by a device</string>
+    <string name="goodpost_brainrot_keyword">Keyword</string>
+    <string name="goodpost_brainrot_channel">Channel</string>
+    <string name="goodpost_brainrot_rules_empty_title">No global rules</string>
+    <string name="goodpost_brainrot_rules_empty_note">Add a keyword or a channel to protect everyone.</string>
+    <string name="goodpost_brainrot_add_keyword">Add a keyword</string>
+    <string name="goodpost_brainrot_add_keyword_hint">e.g. brainrot</string>
+    <string name="goodpost_brainrot_add_channel">Add a channel</string>
+    <string name="goodpost_brainrot_add_channel_hint">@channelhandle</string>
+    <string name="goodpost_brainrot_add">Add</string>
+    <string name="goodpost_brainrot_enabled">Enabled</string>
+    <string name="goodpost_brainrot_disabled">Disabled</string>
+    <string name="goodpost_brainrot_delete_title">Delete this rule?</string>
+    <string name="goodpost_brainrot_delete_note">It stops applying to everyone. Disabling it instead keeps it here so it can be turned back on.</string>
+    <string name="goodpost_brainrot_section_keywords">KEYWORDS</string>
+    <string name="goodpost_brainrot_section_channels">CHANNELS</string>
+    <string name="goodpost_brainrot_reports">%1$d reports</string>
+
     <string name="goodpost_ad_new">New advertisement</string>
     <string name="goodpost_ad_edit">Edit advertisement</string>
     <string name="goodpost_ads_empty_title">No advertisements</string>
@@ -1192,4 +1225,75 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_error_ad_not_found">That advertisement is gone.</string>
     <string name="goodpost_error_ad_content_required">A text advertisement needs some text.</string>
     <string name="goodpost_error_ad_image_required">An image advertisement needs a picture.</string>
+    <!-- ── Blocking tab: redesign (protection dashboard) ───────────────
+         The tab is a protection centre rather than a settings list, so the
+         copy leads with what is protected and by what. "YouTube Chrome Test"
+         is renamed "Brain Rot Protection": it stopped being an experiment and
+         became the content-blocking system. -->
+    <string name="block_subtitle">Protect your browsing from unwanted and distracting content.</string>
+    <string name="block_scope_note">Protection applies to websites you visit in Chrome and to Google Search.</string>
+    <string name="block_protection_title">Protection</string>
+    <string name="block_protection_on">Active — monitoring Chrome &amp; Google</string>
+    <string name="block_protection_off">Off — tap to enable</string>
+    <string name="block_protection_summary">Adult websites &amp; searches · Incognito · YouTube · Your keywords</string>
+    <string name="block_content_protection">CONTENT PROTECTION</string>
+    <string name="block_strict_summary">Detect inappropriate combinations of otherwise normal words.</string>
+    <string name="block_shorts_title">Block YouTube Shorts</string>
+    <string name="block_shorts_summary">Prevent Shorts from being consumed through supported Chrome browsing.</string>
+    <string name="block_brainrot_title">Brain Rot Protection</string>
+    <string name="block_brainrot_summary">Block unwanted content using keywords, channels and global protection rules.</string>
+    <string name="block_locked_hint">Protection is off — the switches below unlock once it is on.</string>
+
+    <!-- Brain Rot dashboard -->
+    <string name="block_dashboard_title">BRAIN ROT PROTECTION</string>
+    <string name="block_stat_keywords">Blocked keywords</string>
+    <string name="block_stat_channels">Blocked channels</string>
+    <string name="block_stat_blocks">Content blocked</string>
+    <string name="block_manage_keywords">Manage keywords</string>
+    <string name="block_manage_channels">Manage channels</string>
+    <string name="block_activity_title">Recent activity</string>
+    <string name="block_activity_empty">Nothing blocked yet. Protection is watching.</string>
+    <string name="block_today">Today</string>
+    <string name="block_this_week">This week</string>
+    <string name="block_most_triggered">Most triggered</string>
+    <string name="block_top_channel">Top blocked channel</string>
+    <string name="block_streak_days">%1$d days protected</string>
+    <string name="block_streak_one_day">1 day protected</string>
+    <string name="block_clear_activity">Reset activity</string>
+    <string name="block_clear_activity_note">This clears the recorded protection activity. Your keywords, channels and rules are kept.</string>
+    <string name="block_reset_confirm">Reset</string>
+    <string name="block_cancel">Cancel</string>
+
+    <!-- Brain Rot channel manager -->
+    <string name="block_channels_title">Blocked Channels</string>
+    <string name="block_channels_empty">No channels blocked yet. Add one below.</string>
+    <string name="block_channel_add_label">Add a channel</string>
+    <string name="block_channel_add_hint">@channelhandle</string>
+    <string name="block_channel_search_hint">Search blocked channels</string>
+    <string name="block_channel_invalid">Enter a channel handle like @examplechannel.</string>
+    <string name="block_channel_my_block">My block</string>
+    <string name="block_channel_handle_note">Channels are stored by their @handle, so a rename of the channel name never loses the block.</string>
+
+    <!-- Privacy -->
+    <string name="block_privacy_title">PRIVACY</string>
+    <string name="block_privacy_note">Built around anonymous protection. No signup is required.</string>
+
+    <!-- Global (community) rules -->
+    <string name="block_global_title">Global protection</string>
+    <string name="block_global_summary">%1$d keywords · %2$d channels maintained for everyone</string>
+    <string name="block_global_note">These rules are maintained centrally and apply automatically, alongside your own.</string>
+    <string name="block_global_unavailable">This build has no server configured, so global rules are unavailable. Your own rules still apply.</string>
+    <string name="block_global_sync">Check for updates</string>
+    <string name="block_global_syncing">Checking…</string>
+    <string name="block_global_suggest">Suggest to everyone</string>
+    <string name="block_global_suggest_note">Suggestions are reviewed before they become a global rule. One suggestion never changes what everyone else blocks on its own.</string>
+    <string name="block_global_suggest_queued">Queued for review</string>
+    <string name="block_global_suggest_failed">Could not reach the server. Nothing changed.</string>
+    <string name="block_global_reports">%1$d reports</string>
+
+    <!-- "Don't recommend this channel" offer (YouTube app) -->
+    <string name="brainrot_offer_block_channel">You told YouTube not to recommend %1$s. Block it in ClearView too?</string>
+    <string name="brainrot_offer_block_channel_generic">You asked YouTube not to recommend that channel. Block it in ClearView too?</string>
+    <string name="brainrot_offer_block_action">Block</string>
+    <string name="brainrot_channel_blocked">%1$s is now blocked</string>
 </resources>

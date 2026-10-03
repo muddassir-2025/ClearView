@@ -236,6 +236,16 @@ fun goodPostErrorFor(code: String): GoodPostError = when (code) {
     // picked again, which is what the attachment message asks for.
     "missing_file_name" -> GoodPostError.AttachmentFailed
 
+    // Brain Rot repository (global rules and the review queue).
+    "invalid_keyword", "invalid_channel_handle", "invalid_keyword_id",
+    "invalid_channel_id", "invalid_submission_id",
+    // A suggestion that was already reviewed — a second reviewer acting on a
+    // stale queue, not a bad request from this client. Worded as invalid input
+    // so the screen says the row is out of date rather than "something broke".
+    "submission_already_reviewed" -> GoodPostError.InvalidInput
+    "submission_not_found", "keyword_not_found", "brainrot_not_found" ->
+        GoodPostError.NotFound
+
     // A status this client has no name for and a body that named no code. A
     // proxy's HTML 502 lands here, and it is a server-side condition however it
     // is described — so it is reported as one.

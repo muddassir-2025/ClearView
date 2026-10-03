@@ -21,14 +21,20 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.outlined.AdminPanelSettings
+import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Insights
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.Psychology
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Science
@@ -42,13 +48,16 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.annotation.StringRes
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.drawBehind
+import com.muddassir.clearview.R
 import com.muddassir.clearview.viewmodel.MainViewModel
 
 /**
@@ -95,15 +104,32 @@ fun BlockTab(
         // instead of repeating it on each card).
         val protectionOn = viewModel.isAccessibilityEnabled
 
+        // What this screen protects, and where — stated once, up front, so the
+        // page explains itself before the user reads a single switch.
+        item { BlockHeader() }
+
         item { ProtectionCard(viewModel, context) }
+
+        // ── Content Protection ─────────────────────────────────────
+        item { SectionHeading(R.string.block_content_protection) }
         if (!protectionOn) {
             item { LockedGroupHint() }
         }
         item { StrictModeCard(viewModel, context, locked = !protectionOn) }
         item { BlockShortsCard(viewModel, locked = !protectionOn) }
-        item { YouTubeChromeTestCard(viewModel, locked = !protectionOn) }
-        item { YouTubeChromeTestKeywordsCard(viewModel) }
+        item { BrainRotProtectionCard(viewModel, locked = !protectionOn) }
+        item { BrainRotKeywordsCard(viewModel) }
+        item { BrainRotChannelsCard(viewModel) }
+        item { GlobalRulesCard(viewModel) }
         item { BlockedItemsCard(viewModel) }
+
+        // ── Activity ───────────────────────────────────────────────
+        item { SectionHeading(R.string.block_activity_title) }
+        item { ActivityCard(viewModel) }
+
+        // ── Privacy ────────────────────────────────────────────────
+        item { PrivacyCard() }
+
         item { DnsCard(viewModel, context) }
 
         item {
@@ -120,6 +146,50 @@ fun BlockTab(
 
         item { Spacer(modifier = Modifier.height(8.dp)) }
     }
+}
+
+// ── Shared: page header + section headings ───────────────────────
+
+/**
+ * The page's opening line: what this tab is, and the scope of protection.
+ * The scope is deliberately plain — "websites in Chrome and Google Search" —
+ * because a user who cannot tell WHAT is protected cannot trust any of it.
+ */
+@Composable
+private fun BlockHeader() {
+    Column(modifier = Modifier.padding(horizontal = 4.dp)) {
+        Text(
+            text = stringResource(R.string.block_subtitle),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Icons.Outlined.Info,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = stringResource(R.string.block_scope_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+/** A quiet all-caps heading that groups the cards below it. */
+@Composable
+private fun SectionHeading(@StringRes titleRes: Int) {
+    Text(
+        text = stringResource(titleRes),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp, start = 4.dp)
+    )
 }
 
 // ── Shared: info icon + full-context details expander ────────────
@@ -233,7 +303,7 @@ private fun ProtectionCard(viewModel: MainViewModel, context: Context) {
             }
             Spacer(modifier = Modifier.height(12.dp))
             Text(
-                text = "Adult sites & searches · Incognito · YouTube · Your keywords",
+                text = stringResource(R.string.block_protection_summary),
                 style = MaterialTheme.typography.bodySmall,
                 color = if (isEnabled) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -325,7 +395,7 @@ private fun LockedGroupHint() {
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = "Protection is off — the switches below unlock once it is on.",
+                text = stringResource(R.string.block_locked_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -434,32 +504,33 @@ private fun BlockShortsCard(viewModel: MainViewModel, locked: Boolean) {
     )
 }
 
-// ── 3b. YouTube Chrome Test (Stage 1 experiment) ─────────────────
+// ── 3b. Brain Rot Protection (was "YouTube Chrome Test") ─────────
 
 @Composable
-private fun YouTubeChromeTestCard(viewModel: MainViewModel, locked: Boolean) {
+private fun BrainRotProtectionCard(viewModel: MainViewModel, locked: Boolean) {
     FeatureCard(
-        icon = Icons.Outlined.Science,
-        title = "YouTube Chrome Test",
-        summary = "Checks YouTube video titles and descriptions in Chrome.",
+        icon = Icons.Outlined.Psychology,
+        title = stringResource(R.string.block_brainrot_title),
+        summary = stringResource(R.string.block_brainrot_summary),
         checked = viewModel.youTubeChromeTest,
         locked = locked,
         details = listOf(
-            "Stage-1 experiment for YouTube blocking inside Chrome.",
-            "Shorts — detected on-screen, matched against keywords, paused once and covered with a protection overlay; swipes between Shorts still work.",
+            "Blocks content using your keywords and blocked channels — on YouTube Shorts and long videos in Chrome.",
+            "Shorts are detected on-screen, matched, paused once and covered with a protection overlay; swipes between Shorts still work.",
             "Long videos — the real title AND description are extracted from the watch page and matched against your keywords (browser strings like \"Share\", \"Subscribe\" or \"New tab\" are ignored).",
-            "A blocked long video is paused exactly once, then protected by a dark overlay with a \"Go to YouTube Home\" button that clears the block and navigates to m.youtube.com.",
-            "Allowed videos keep playing untouched — no overlay, no pause.",
-            "Every step is logged under ClearViewYTTest (Shorts) and ClearViewLongVideo (long videos) — check logcat to verify."
+            "A blocked long video is paused exactly once, then protected by a dark overlay with a \"Go to YouTube Home\" button.",
+            "Detection interrupts the content rather than warning about it — a blocked video cannot simply be dismissed and continued.",
+            "Allowed videos keep playing untouched — no overlay, no pause."
         ),
         onToggle = { viewModel.toggleYouTubeChromeTest() }
     )
 }
 
-// ── 3c. YouTube Chrome Test Keywords (separate test-only list) ───
+// ── 3c. Brain Rot: blocked keywords ──────────────────────────────
 
 @Composable
-private fun YouTubeChromeTestKeywordsCard(viewModel: MainViewModel) {
+private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
+    val context = LocalContext.current
     var showDetails by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -476,39 +547,38 @@ private fun YouTubeChromeTestKeywordsCard(viewModel: MainViewModel) {
                     modifier = Modifier.size(22.dp)
                 )
                 Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = "YouTube Chrome Test Keywords",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.block_stat_keywords),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${viewModel.youtubeTestKeywords.size} keywords",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
             }
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Extra keywords used only by the YouTube Chrome Test above.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
             AnimatedVisibility(visible = showDetails) {
                 FeatureDetailBlock(
                     bullets = listOf(
-                        "A separate, test-only keyword list used by the YouTube Chrome Test.",
+                        "Words or phrases that block content when detected in a title or page text.",
                         "Matching Shorts are paused and covered instead of showing the normal ClearView block screen.",
                         "The same list is matched against long-video titles and descriptions on watch pages.",
-                        "Does not affect your main Blocked Items list."
+                        "These are your own rules and are separate from the always-on adult filter."
                     )
                 )
             }
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Add test keyword
             OutlinedTextField(
                 value = viewModel.newYoutubeTestKeywordText,
                 onValueChange = { viewModel.updateNewYoutubeTestKeyword(it) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Test keyword") },
-                placeholder = { Text("e.g., aestheic") },
+                label = { Text("Add a keyword to block") },
+                placeholder = { Text("e.g., viral, aesthetic, sigma") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Ascii,
@@ -517,7 +587,7 @@ private fun YouTubeChromeTestKeywordsCard(viewModel: MainViewModel) {
                 keyboardActions = KeyboardActions(onDone = { viewModel.addYoutubeTestKeyword() }),
                 trailingIcon = {
                     IconButton(onClick = { viewModel.addYoutubeTestKeyword() }) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add test keyword")
+                        Icon(Icons.Filled.Add, contentDescription = "Add keyword")
                     }
                 }
             )
@@ -525,12 +595,6 @@ private fun YouTubeChromeTestKeywordsCard(viewModel: MainViewModel) {
             Spacer(modifier = Modifier.height(8.dp))
 
             if (viewModel.youtubeTestKeywords.isNotEmpty()) {
-                Text(
-                    text = "Testing keywords:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(modifier = Modifier.height(4.dp))
                 androidx.compose.foundation.layout.FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -542,9 +606,555 @@ private fun YouTubeChromeTestKeywordsCard(viewModel: MainViewModel) {
                         )
                     }
                 }
+                // Contributing a keyword is a separate, deliberate action from
+                // adding it locally. The copy says what actually happens — it is
+                // reviewed, not applied — because a button labelled "block this
+                // for everyone" that silently did nothing visible would be a lie
+                // in the other direction.
+                if (viewModel.globalRulesAvailable) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(R.string.block_global_suggest_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    OutlinedButton(
+                        onClick = {
+                            val keyword = viewModel.newYoutubeTestKeywordText.trim()
+                            if (keyword.isNotEmpty()) {
+                                viewModel.suggestGlobalKeyword(keyword) { ok ->
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(
+                                            if (ok) R.string.block_global_suggest_queued
+                                            else R.string.block_global_suggest_failed
+                                        ),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        },
+                        enabled = viewModel.newYoutubeTestKeywordText.trim().isNotEmpty()
+                    ) {
+                        Text(stringResource(R.string.block_global_suggest), fontSize = 12.sp)
+                    }
+                }
             } else {
                 Text(
-                    text = "No test keywords yet. Add one above.",
+                    text = "No keywords yet. Add one above.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+// ── 3d. Brain Rot: blocked channels ──────────────────────────────
+
+@Composable
+private fun BrainRotChannelsCard(viewModel: MainViewModel) {
+    val context = LocalContext.current
+    var expanded by remember { mutableStateOf(false) }
+    var showDetails by remember { mutableStateOf(false) }
+    val channels = viewModel.filteredBrainRotChannels()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.Block,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.block_stat_channels),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "${viewModel.brainRotChannels.size} channels",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                FilledIconButton(onClick = { expanded = !expanded }) {
+                    Icon(
+                        if (expanded) Icons.Filled.Close else Icons.Filled.Add,
+                        contentDescription = if (expanded) "Close channel manager" else "Manage channels"
+                    )
+                }
+                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
+            }
+
+            AnimatedVisibility(visible = showDetails) {
+                FeatureDetailBlock(
+                    bullets = listOf(
+                        "Block specific YouTube channels. Every video from a blocked channel is blocked, regardless of its title.",
+                        "Channels are stored by their @handle, so a rename of the channel name never loses the block.",
+                        "Add a channel manually, or block one straight from YouTube's \"Don't recommend this\" menu.",
+                        "Your blocks are private and belong only to you."
+                    )
+                )
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = viewModel.newChannelHandleText,
+                        onValueChange = { viewModel.updateNewChannelHandle(it) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.block_channel_add_label)) },
+                        placeholder = { Text(stringResource(R.string.block_channel_add_hint)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Ascii,
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(onDone = {
+                            if (!viewModel.addBrainRotChannel()) {
+                                Toast.makeText(context, context.getString(R.string.block_channel_invalid), Toast.LENGTH_SHORT).show()
+                            }
+                        }),
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                if (!viewModel.addBrainRotChannel()) {
+                                    Toast.makeText(context, context.getString(R.string.block_channel_invalid), Toast.LENGTH_SHORT).show()
+                                }
+                            }) {
+                                Icon(Icons.Filled.Add, contentDescription = "Add channel")
+                            }
+                        }
+                    )
+
+                    if (viewModel.brainRotChannels.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = viewModel.channelSearchText,
+                            onValueChange = { viewModel.updateChannelSearch(it) },
+                            modifier = Modifier.fillMaxWidth(),
+                            placeholder = { Text(stringResource(R.string.block_channel_search_hint)) },
+                            singleLine = true,
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Search,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                if (viewModel.channelSearchText.isNotEmpty()) {
+                                    IconButton(onClick = { viewModel.updateChannelSearch("") }) {
+                                        Icon(Icons.Filled.Close, contentDescription = "Clear search", modifier = Modifier.size(16.dp))
+                                    }
+                                }
+                            }
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        if (channels.isEmpty()) {
+                            Text(
+                                text = "No channel matches that search.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        } else {
+                            for (channel in channels) {
+                                ChannelRow(
+                                    channel = channel,
+                                    onDelete = { viewModel.removeBrainRotChannel(channel.handle) },
+                                    onSuggestGlobal = if (viewModel.globalRulesAvailable) {
+                                        {
+                                            viewModel.suggestGlobalChannel(channel.handle, channel.name) { ok ->
+                                                Toast.makeText(
+                                                    context,
+                                                    context.getString(
+                                                        if (ok) R.string.block_global_suggest_queued
+                                                        else R.string.block_global_suggest_failed
+                                                    ),
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        }
+                                    } else null
+                                )
+                            }
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = stringResource(R.string.block_channels_empty),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = stringResource(R.string.block_channel_handle_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One blocked channel: handle, optional name, the "My block" badge, and an
+ * optional action to suggest it to the global repository.
+ *
+ * The badge is always drawn, because the spec requires a user to be able to tell
+ * at a glance whether something is blocked by their own rule or by the shared
+ * one — and the two are managed in different places.
+ */
+@Composable
+private fun ChannelRow(
+    channel: com.muddassir.clearview.brainrot.BrainRotRepository.BlockedChannel,
+    onDelete: () -> Unit,
+    onSuggestGlobal: (() -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = channel.handle,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.secondaryContainer
+                ) {
+                    Text(
+                        text = stringResource(R.string.block_channel_my_block),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+            }
+            channel.name?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+        }
+        if (onSuggestGlobal != null) {
+            TextButton(onClick = onSuggestGlobal) {
+                Text(stringResource(R.string.block_global_suggest), fontSize = 11.sp)
+            }
+        }
+        IconButton(onClick = onDelete) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Unblock ${channel.handle}",
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+// ── 3d-ii. Global (community) rules ──────────────────────────────
+
+/**
+ * The centrally-maintained rule set.
+ *
+ * Shown separately from the user's own rules on purpose: the spec requires a
+ * person to always be able to tell whether something is blocked because of
+ * their own rule or because of the global repository, and two clearly-labelled
+ * cards is how that stays true.
+ */
+@Composable
+private fun GlobalRulesCard(viewModel: MainViewModel) {
+    var showDetails by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Public,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.block_global_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (viewModel.globalRulesAvailable) {
+                            stringResource(
+                                R.string.block_global_summary,
+                                viewModel.globalKeywordCount,
+                                viewModel.globalChannelCount
+                            )
+                        } else {
+                            stringResource(R.string.block_global_unavailable)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
+            }
+
+            AnimatedVisibility(visible = showDetails) {
+                FeatureDetailBlock(
+                    bullets = listOf(
+                        "A rule set maintained centrally and applied to every ClearView install automatically.",
+                        "It works alongside your own keywords and channels — it never replaces or removes them.",
+                        "Your suggestions are reviewed before they become a global rule, so one person's mistake cannot affect everyone.",
+                        "Report counts show how many people have asked for a rule, without identifying any of them."
+                    )
+                )
+            }
+
+            if (viewModel.globalRulesAvailable) {
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = { viewModel.syncGlobalRules() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !viewModel.globalRulesSyncing
+                ) {
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = stringResource(
+                            if (viewModel.globalRulesSyncing) R.string.block_global_syncing
+                            else R.string.block_global_sync
+                        ),
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        }
+    }
+
+}
+
+// ── 3e. Activity (protection statistics) ─────────────────────────
+
+@Composable
+private fun ActivityCard(viewModel: MainViewModel) {
+    val summary = viewModel.brainRotSummary
+    var showResetConfirm by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.Insights,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Protection activity",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = { showResetConfirm = true }) {
+                    Text(stringResource(R.string.block_clear_activity), fontSize = 12.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(modifier = Modifier.fillMaxWidth()) {
+                StatCell(stringResource(R.string.block_today), "${summary.todayBlocks}", Modifier.weight(1f))
+                StatCell(stringResource(R.string.block_this_week), "${summary.weekBlocks}", Modifier.weight(1f))
+                StatCell(stringResource(R.string.block_stat_blocks), "${summary.totalBlocks}", Modifier.weight(1f))
+            }
+
+            if (summary.streakDays > 0) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = if (summary.streakDays == 1) {
+                            stringResource(R.string.block_streak_one_day)
+                        } else {
+                            stringResource(R.string.block_streak_days, summary.streakDays)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
+            if (summary.topKeywords.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = stringResource(R.string.block_most_triggered),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                for ((keyword, count) in summary.topKeywords) {
+                    ActivityRow(keyword, "$count")
+                }
+            }
+
+            if (summary.topChannels.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = stringResource(R.string.block_top_channel),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                for ((channel, count) in summary.topChannels) {
+                    ActivityRow(channel, "$count")
+                }
+            }
+
+            if (summary.totalBlocks == 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.block_activity_empty),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+
+    if (showResetConfirm) {
+        AlertDialog(
+            onDismissRequest = { showResetConfirm = false },
+            title = { Text(stringResource(R.string.block_clear_activity)) },
+            text = { Text(stringResource(R.string.block_clear_activity_note)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showResetConfirm = false
+                    viewModel.clearBrainRotActivity()
+                }) {
+                    Text(stringResource(R.string.block_reset_confirm), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showResetConfirm = false }) {
+                    Text(stringResource(R.string.block_cancel))
+                }
+            }
+        )
+    }
+}
+
+/** One big number with its label, for the activity counters. */
+@Composable
+private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/** A label on the left, its count on the right. */
+@Composable
+private fun ActivityRow(label: String, count: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            maxLines = 1
+        )
+        Text(
+            text = count,
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// ── 3f. Privacy ──────────────────────────────────────────────────
+
+@Composable
+private fun PrivacyCard() {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Filled.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column {
+                Text(
+                    text = stringResource(R.string.block_privacy_title),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = stringResource(R.string.block_privacy_note),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

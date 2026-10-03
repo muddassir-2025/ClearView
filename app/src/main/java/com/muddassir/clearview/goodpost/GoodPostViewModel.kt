@@ -19,6 +19,8 @@ import com.muddassir.clearview.goodpost.data.GoodPostAd
 import com.muddassir.clearview.goodpost.data.GoodPostAdPlacement
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotRule
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotSubmission
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
 import com.muddassir.clearview.goodpost.data.GoodPostChannel
 import com.muddassir.clearview.goodpost.data.GoodPostHidden
@@ -193,6 +195,15 @@ sealed interface GoodPostScreen {
      * product rather than part of it (§5).
      */
     data class AdminChannel(val channelId: String) : GoodPostScreen
+
+    /**
+     * The global Brain Rot repository, as an administrator reviews it.
+     *
+     * A destination like the ad manager: it is a queue an operator works
+     * through, not a step over another screen. Held by super administrators
+     * only, and the server refuses every route here to anyone else.
+     */
+    data object BrainRotReview : GoodPostScreen
 }
 
 /**
@@ -507,6 +518,26 @@ data class GoodPostUiState(
     /** Every card, enabled or not, for the management list (§15). */
     val adminAds: List<GoodPostAd> = emptyList(),
     val adminAdsLoading: Boolean = false,
+
+    // ── Global Brain Rot repository, administrator ──────────────────────
+
+    /** The community suggestions being reviewed, oldest first. */
+    val brainRotSubmissions: List<GoodPostBrainRotSubmission> = emptyList(),
+    /** Which queue is shown: `pending`, `approved`, `rejected` or `all`. */
+    val brainRotQueueStatus: String = "pending",
+    val brainRotQueueLoading: Boolean = false,
+    /** The global keyword rules, enabled or not. */
+    val brainRotKeywords: List<GoodPostBrainRotRule> = emptyList(),
+    /** The global channel rules, enabled or not. */
+    val brainRotChannels: List<GoodPostBrainRotRule> = emptyList(),
+    val brainRotRulesLoading: Boolean = false,
+    /** Which half of the screen is showing: the queue or the rules. */
+    val brainRotTab: Int = 0,
+    /** The keyword being typed into the add field. */
+    val brainRotNewKeyword: String = "",
+    /** The channel handle being typed into the add field. */
+    val brainRotNewChannel: String = "",
+    val brainRotBusy: Boolean = false,
     /**
      * True from the moment a card is drawn over the list until it is closed (§16).
      *
@@ -3296,6 +3327,200 @@ class GoodPostViewModel : ViewModel() {
         if (uiState.admin?.isSuperAdmin != true) return
         open(GoodPostScreen.Ads)
         loadAdminAds()
+    }
+
+    // ── Brain Rot repository management ─────────────────────────────────
+    //
+    // Only a super administrator holds `brainrot.read`/`brainrot.manage`, and
+    // the server re-checks that on every call. The app gates the entry so a
+    // channel administrator is never offered a screen that would fail, but the
+    // authority is never the app's.
+
+    /**
+     * Open the global repository, on its review queue.
+     *
+     * Gated on the role this session reports, which is a convenience and not a
+     * permission: the server refuses every brainrot route to anyone else
+     * regardless of what this draws.
+     */
+    fun openBrainRotReview() {
+        if (uiState.admin?.isSuperAdmin != true) return
+        open(GoodPostScreen.BrainRotReview)
+        loadBrainRotQueue()
+        loadBrainRotRules()
+    }
+
+    /** Switch between the review queue and the rules, loading what is missing. */
+    fun selectBrainRotTab(tab: Int) {
+        if (tab == uiState.brainRotTab) return
+        uiState = uiState.copy(brainRotTab = tab)
+        if (tab == 0) loadBrainRotQueue() else loadBrainRotRules()
+    }
+
+    /** Change which queue is shown, and read it. */
+    fun setBrainRotQueueStatus(status: String) {
+        if (status == uiState.brainRotQueueStatus) return
+        uiState = uiState.copy(brainRotQueueStatus = status)
+        loadBrainRotQueue()
+    }
+
+    /** The suggestions in the selected queue, oldest first. */
+    fun loadBrainRotQueue() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        uiState = uiState.copy(brainRotQueueLoading = true)
+        viewModelScope.launch {
+            val result = repo.adminBrainRotSubmissions(uiState.brainRotQueueStatus)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    brainRotSubmissions = result.value,
+                    brainRotQueueLoading = false
+                )
+                // Never silently empty: an empty queue would read as "nobody has
+                // suggested anything", which is a statement about the platform
+                // rather than a failed request.
+                else -> uiState.copy(
+                    brainRotQueueLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+        }
+    }
+
+    /** The global rules, enabled or not. */
+    fun loadBrainRotRules() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        uiState = uiState.copy(brainRotRulesLoading = true)
+        viewModelScope.launch {
+            val keywords = repo.adminBrainRotKeywords()
+            val channels = repo.adminBrainRotChannels()
+            uiState = when {
+                keywords is ApiResult.Ok && channels is ApiResult.Ok -> uiState.copy(
+                    brainRotKeywords = keywords.value,
+                    brainRotChannels = channels.value,
+                    brainRotRulesLoading = false
+                )
+                else -> uiState.copy(
+                    brainRotRulesLoading = false,
+                    messageCode = adminFailureCode(
+                        if (keywords !is ApiResult.Ok) keywords else channels
+                    )
+                )
+            }
+        }
+    }
+
+    /** Approve or reject a suggestion, then refresh the queue. */
+    fun reviewBrainRotSubmission(submissionId: String, decision: String) {
+        val repo = repository ?: return
+        if (uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminReviewBrainRotSubmission(submissionId, decision)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(brainRotBusy = false)
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) {
+                loadBrainRotQueue()
+                // An approval may have created a rule, so the lists are re-read
+                // too — otherwise the rules tab would be missing the rule the
+                // operator just made.
+                loadBrainRotRules()
+            }
+        }
+    }
+
+    fun onBrainRotNewKeywordChange(value: String) {
+        uiState = uiState.copy(brainRotNewKeyword = value)
+    }
+
+    fun onBrainRotNewChannelChange(value: String) {
+        uiState = uiState.copy(brainRotNewChannel = value)
+    }
+
+    /** Add a global keyword directly. */
+    fun addBrainRotKeyword() {
+        val repo = repository ?: return
+        val keyword = uiState.brainRotNewKeyword.trim()
+        if (keyword.isEmpty() || uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminAddBrainRotKeyword(keyword, null)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    brainRotBusy = false,
+                    brainRotNewKeyword = ""
+                )
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) loadBrainRotRules()
+        }
+    }
+
+    /** Add a global channel directly. */
+    fun addBrainRotChannel() {
+        val repo = repository ?: return
+        val handle = uiState.brainRotNewChannel.trim()
+        if (handle.isEmpty() || uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminAddBrainRotChannel(handle, null, null)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    brainRotBusy = false,
+                    brainRotNewChannel = ""
+                )
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) loadBrainRotRules()
+        }
+    }
+
+    /** Enable or disable a rule, keeping the row so the move stays reversible. */
+    fun setBrainRotRuleEnabled(rule: GoodPostBrainRotRule, enabled: Boolean) {
+        val repo = repository ?: return
+        if (uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminSetBrainRotRuleEnabled(rule.kind, rule.id, enabled)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(brainRotBusy = false)
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) loadBrainRotRules()
+        }
+    }
+
+    /** Remove a rule for good. */
+    fun deleteBrainRotRule(rule: GoodPostBrainRotRule) {
+        val repo = repository ?: return
+        if (uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminDeleteBrainRotRule(rule.kind, rule.id)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(brainRotBusy = false)
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) loadBrainRotRules()
+        }
     }
 
 

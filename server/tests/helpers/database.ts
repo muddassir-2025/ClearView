@@ -153,6 +153,19 @@ export function asQueryable(pglite: PGlite): Queryable {
  */
 export async function resetData(pglite: PGlite): Promise<void> {
   await pglite.exec(`TRUNCATE post_media, posts CASCADE`);
+  // The Brain Rot repository is content too, and a fixture that seeds a global
+  // keyword must not leak it into the next case. `brainrot_devices` cascades
+  // from the reports that reference it, and submissions reference it with
+  // SET NULL, so the device rows are removed explicitly rather than being left
+  // to accumulate.
+  await pglite.exec(`TRUNCATE brainrot_reports, brainrot_submissions CASCADE`);
+  await pglite.exec(`DELETE FROM brainrot_devices`);
+  // Migration-seeded starter keywords are restored rather than deleted, because
+  // they are reference data in the same way `channel_categories` is: a suite
+  // that removed them would make every later assertion about the global rule
+  // set depend on the order its cases ran in.
+  await pglite.exec(`DELETE FROM brainrot_keywords WHERE keyword NOT IN ('brainrot', 'viral', 'aesthetic', 'sigma')`);
+  await pglite.exec(`DELETE FROM brainrot_channels`);
   await pglite.exec(
     `DELETE FROM channels
       WHERE id NOT IN (SELECT channel_id FROM admin_users WHERE channel_id IS NOT NULL)`

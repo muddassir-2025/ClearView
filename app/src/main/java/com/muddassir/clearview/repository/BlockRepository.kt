@@ -115,14 +115,34 @@ class BlockRepository(context: Context) {
 
     // ── User keywords ──────────────────────────────────────────────
 
+    /**
+     * The user's own blocked keywords, MERGED with the active global rules.
+     *
+     * The merge happens here, in the one accessor every matching path already
+     * calls, rather than at each call site. That is what makes the global
+     * repository apply everywhere the user's own list applies — searches, page
+     * text, video titles, YouTube Shorts and long videos — without a single
+     * change to the matcher and without a path that could be forgotten.
+     *
+     * Global rules are kept in a process-wide set (see [setGlobalKeywords]) that
+     * the service refreshes in the background. A failed refresh leaves the
+     * previous set in place, so a dead backend can only ever mean "the same
+     * rules as before", never "no rules".
+     */
     fun getUserKeywords(): Set<String> {
         userKeywordsCache?.let { return it }
         val keywords = (prefs.getStringSet(KEY_USER_KEYWORDS, emptySet()) ?: emptySet())
             .map { it.trim().lowercase(Locale.ROOT) }
             .filter { it.isNotEmpty() }
-            .toSet()
-        userKeywordsCache = keywords
-        return keywords
+            .toMutableSet()
+        // Global rules are additive: they can block something the user's own list
+        // does not, and they can never unblock anything.
+        keywords.addAll(globalKeywords)
+        // Immutable copy — see activeBuiltInKeywords. Return the local, not the
+        // field, so a concurrent invalidation cannot null it between store/load.
+        val result = keywords.toSet()
+        userKeywordsCache = result
+        return result
     }
 
     fun addUserKeyword(keyword: String) {
@@ -225,6 +245,32 @@ class BlockRepository(context: Context) {
          * path reuses stable immutable sets. Volatile because the service
          * reads them from several threads.
          */
+        /**
+         * The active GLOBAL keywords, refreshed from the backend in the
+         * background. Process-wide for the same reason the caches below are: the
+         * app and the long-lived service each construct their own repository,
+         * and a per-instance set would mean the service never saw a refresh.
+         */
+        @Volatile
+        var globalKeywords: Set<String> = emptySet()
+            private set
+
+        /**
+         * Replace the global keyword set and invalidate the merge cache.
+         *
+         * Called only by the background sync. Deliberately never called with an
+         * empty set on failure — a refresh that did not complete must leave the
+         * previous rules in force, which is why the caller passes the result of
+         * a SUCCESSFUL fetch and nothing else.
+         */
+        fun setGlobalKeywords(keywords: Set<String>) {
+            val normalized = keywords.map { it.trim().lowercase(Locale.ROOT) }
+                .filter { it.isNotEmpty() }
+                .toSet()
+            globalKeywords = normalized
+            userKeywordsCache = null
+        }
+
         @Volatile private var builtInKeywordsCache: Set<String>? = null
         @Volatile private var websiteKeywordsCache: Set<String>? = null
         @Volatile private var userKeywordsCache: Set<String>? = null

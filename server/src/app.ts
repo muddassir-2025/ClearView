@@ -10,6 +10,8 @@ import { buildReadersRouter } from './readers/routes.js';
 import { buildAdminRouter } from './admin/routes.js';
 import { buildAdsPublicRouter } from './ads/publicRoutes.js';
 import { buildAdsAdminRouter } from './ads/adminRoutes.js';
+import { buildBrainRotPublicRouter } from './brainrot/routes.js';
+import { buildBrainRotAdminRouter } from './brainrot/adminRoutes.js';
 import { createFirebaseVerifier, type IdentityVerifier } from './identity/verifier.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
 import { createPushSender, type PushSender } from './notifications/fcm.js';
@@ -281,6 +283,11 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // `ads` segment is matched exactly rather than being read as a channel id by
   // a later parameterised route.
   app.use('/api/v1/ads', buildAdsPublicRouter(database, store));
+  // The global Brain Rot rule set and the anonymous report/submit surface.
+  // Mounted on its own path before the parameterised router below, for the same
+  // reason the ads router is: `brainrot` must be matched exactly rather than
+  // being read as a channel id.
+  app.use('/api/v1/brainrot', buildBrainRotPublicRouter(database));
   app.use('/api/v1', buildPublicRouter(database, store));
 
   // ── Reader state (§3–§6) ──
@@ -334,6 +341,10 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // channel-administration router so `/admin/api/ads` is matched exactly. Its
   // routes re-check the `ads.*` permission on every request (super admins only).
   app.use('/admin/api/ads', buildAdsAdminRouter(database, store));
+  // The global Brain Rot repository and its review queue, on its own path for
+  // the same exact-match reason as the ads router. Every route re-checks a
+  // `brainrot.*` permission, which only a super admin holds.
+  app.use('/admin/api/brainrot', buildBrainRotAdminRouter(database));
   app.use(
     '/admin/api',
     buildAdminRouter(database, store, limiter, rateLimits, verifier, pushSender)

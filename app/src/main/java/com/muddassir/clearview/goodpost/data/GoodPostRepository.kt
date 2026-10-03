@@ -500,6 +500,48 @@ internal class GoodPostRepository(
     suspend fun adminChannels(): ApiResult<List<GoodPostChannel>> =
         authorized { token -> api.adminChannels(token) }
 
+    // ── Brain Rot repository (admin) ────────────────────────────────────
+
+    suspend fun adminBrainRotKeywords(): ApiResult<List<GoodPostBrainRotRule>> =
+        authorized { token -> api.adminBrainRotKeywords(token) }
+
+    suspend fun adminBrainRotChannels(): ApiResult<List<GoodPostBrainRotRule>> =
+        authorized { token -> api.adminBrainRotChannels(token) }
+
+    suspend fun adminAddBrainRotKeyword(
+        keyword: String,
+        reason: String?
+    ): ApiResult<GoodPostBrainRotRule> =
+        authorized { token -> api.adminAddBrainRotKeyword(token, keyword, reason) }
+
+    suspend fun adminAddBrainRotChannel(
+        handle: String,
+        displayName: String?,
+        reason: String?
+    ): ApiResult<GoodPostBrainRotRule> =
+        authorized { token -> api.adminAddBrainRotChannel(token, handle, displayName, reason) }
+
+    suspend fun adminSetBrainRotRuleEnabled(
+        kind: String,
+        ruleId: String,
+        enabled: Boolean
+    ): ApiResult<Unit> =
+        authorized { token -> api.adminSetBrainRotRuleEnabled(token, kind, ruleId, enabled) }
+
+    suspend fun adminDeleteBrainRotRule(kind: String, ruleId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteBrainRotRule(token, kind, ruleId) }
+
+    suspend fun adminBrainRotSubmissions(
+        status: String = "pending"
+    ): ApiResult<List<GoodPostBrainRotSubmission>> =
+        authorized { token -> api.adminBrainRotSubmissions(token, status) }
+
+    suspend fun adminReviewBrainRotSubmission(
+        submissionId: String,
+        decision: String
+    ): ApiResult<Unit> =
+        authorized { token -> api.adminReviewBrainRotSubmission(token, submissionId, decision) }
+
     suspend fun adminCreateChannel(body: JSONObject): ApiResult<GoodPostChannel> =
         authorized { token -> api.adminCreateChannel(token, body) }
 

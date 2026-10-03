@@ -127,7 +127,14 @@ enum class PausePhase {
 class YouTubeChromeTestCoordinator(
     private val service: AccessibilityService,
     private val repository: BlockRepository,
-    private val testKeywordRepository: YoutubeTestKeywordRepository
+    private val testKeywordRepository: YoutubeTestKeywordRepository,
+    /**
+     * Reports a confirmed block for the Activity dashboard. Called once per
+     * blocked video instance (not per enforcement tick). Optional and
+     * best-effort: reporting must never affect enforcement, so a null callback
+     * or a throwing one changes nothing about the block itself.
+     */
+    private val onBlocked: ((keyword: String?, channel: String?) -> Unit)? = null
 ) {
 
     companion object {
@@ -760,6 +767,14 @@ class YouTubeChromeTestCoordinator(
         noControlTicks = 0
         resetPausePhase()
         Log.w(TAG, "YT_BLOCK_DETECTED videoId=${videoId ?: "unknown"} keyword=$matched")
+        // Record the block once, here — this runs once per blocked instance
+        // (blockVideo is only reached from NORMAL), so the dashboard counts
+        // videos blocked, not enforcement ticks.
+        try {
+            onBlocked?.invoke(matched, null)
+        } catch (e: Exception) {
+            Log.e(TAG, "block report failed: ${e.message}")
+        }
         transitionBlockState(YoutubeBlockState.BLOCKED_NEEDS_PAUSE, videoId)
         enforceBlockedVideo()
     }

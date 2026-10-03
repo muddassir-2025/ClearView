@@ -12,8 +12,13 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import com.muddassir.clearview.brainrot.BrainRotRepository
+import com.muddassir.clearview.brainrot.BrainRotStats
+import com.muddassir.clearview.brainrot.BrainRotSummary
+import com.muddassir.clearview.brainrot.GlobalRulesStore
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
+import kotlinx.coroutines.launch
 
 class MainViewModel : ViewModel() {
 
@@ -38,11 +43,31 @@ class MainViewModel : ViewModel() {
 
     private var repository: BlockRepository? = null
     private var youtubeTestKeywordRepository: YoutubeTestKeywordRepository? = null
+    private var brainRotRepository: BrainRotRepository? = null
+    private var globalRulesStore: GlobalRulesStore? = null
+    private var viewModelScopeRef: kotlinx.coroutines.CoroutineScope? = null
 
     fun initialize(context: Context) {
         if (repository != null) return
         repository = BlockRepository(context.applicationContext)
         youtubeTestKeywordRepository = YoutubeTestKeywordRepository(context.applicationContext)
+        brainRotRepository = BrainRotRepository(context.applicationContext)
+        globalRulesStore = GlobalRulesStore(context.applicationContext)
+        globalRulesAvailable = globalRulesStore?.let { store ->
+            com.muddassir.clearview.brainrot.BrainRotClient(context.applicationContext).isConfigured()
+        } ?: false
+        refreshBrainRot()
+        refreshGlobalRules()
+        // A background refresh so the global rules are current shortly after the
+        // app opens. Failure is a no-op: the previous snapshot (or the empty
+        // first-run state) stays in force, and local protection is unaffected.
+        viewModelScopeRef = kotlinx.coroutines.CoroutineScope(
+            kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob()
+        )
+        viewModelScopeRef?.launch {
+            runCatching { globalRulesStore?.sync() }
+            refreshGlobalRules()
+        }
         refreshKeywords()
         refreshDomains()
         checkHasPassword()
@@ -197,6 +222,164 @@ class MainViewModel : ViewModel() {
     private fun refreshYoutubeTestKeywords() {
         youtubeTestKeywords.clear()
         youtubeTestKeywords.addAll((youtubeTestKeywordRepository?.getKeywords() ?: emptySet()).sorted())
+    }
+
+    // ── Brain Rot Protection (dashboard + blocked channels) ─────────
+    //
+    // The rename the product spec asks for: "YouTube Chrome Test" was an
+    // experiment name, and the feature is no longer an experiment — it is the
+    // global content-blocking system. The stored flag keeps its old key so an
+    // existing install keeps its setting; only the label changes.
+
+    /** The user's own blocked channels (handle-canonical). */
+    val brainRotChannels = mutableStateListOf<BrainRotRepository.BlockedChannel>()
+
+    var newChannelHandleText by mutableStateOf("")
+        private set
+
+    /** Activity numbers for the dashboard, recomputed from stored events. */
+    var brainRotSummary by mutableStateOf(BrainRotSummary())
+        private set
+
+    /** Filter text for the channel manager's search box. */
+    var channelSearchText by mutableStateOf("")
+        private set
+
+    fun updateNewChannelHandle(text: String) {
+        newChannelHandleText = text
+    }
+
+    fun updateChannelSearch(text: String) {
+        channelSearchText = text
+    }
+
+    /** Add a channel by handle; returns false when the handle is not valid. */
+    fun addBrainRotChannel(handle: String = newChannelHandleText, name: String? = null, reason: String? = null): Boolean {
+        val added = brainRotRepository?.addBlockedChannel(handle, name, reason) ?: false
+        if (added) {
+            newChannelHandleText = ""
+            refreshBrainRot()
+        }
+        return added
+    }
+
+    fun removeBrainRotChannel(handle: String) {
+        brainRotRepository?.removeBlockedChannel(handle)
+        refreshBrainRot()
+    }
+
+    /** Channels matching the current search text (empty search = all). */
+    fun filteredBrainRotChannels(): List<BrainRotRepository.BlockedChannel> {
+        val query = channelSearchText.trim().lowercase()
+        if (query.isEmpty()) return brainRotChannels
+        return brainRotChannels.filter {
+            it.handle.contains(query) || (it.name?.lowercase()?.contains(query) == true)
+        }
+    }
+
+    /** Recompute the dashboard numbers from the stored events. */
+    fun refreshBrainRot() {
+        brainRotChannels.clear()
+        brainRotChannels.addAll(brainRotRepository?.getBlockedChannels() ?: emptyList())
+        val events = brainRotRepository?.getEvents() ?: emptyList()
+        brainRotSummary = BrainRotStats.summarise(events, System.currentTimeMillis())
+    }
+
+    /** Reset the recorded activity (the dashboard's clear action). */
+    fun clearBrainRotActivity() {
+        brainRotRepository?.clearEvents()
+        refreshBrainRot()
+    }
+
+    /**
+     * Record one protection event. Called by the accessibility service (the
+     * enforcement path) so the Activity section reflects real blocks. Writes
+     * are cheap and exception-safe; a failure must never disturb protection.
+     */
+    fun recordBrainRotBlock(category: String, keyword: String? = null, channel: String? = null) {
+        brainRotRepository?.recordBlock(category, keyword, channel)
+    }
+
+    // ── Global rules ──────────────────────────────────────────────
+
+    /** The number of GLOBAL keywords currently cached on the device. */
+    var globalKeywordCount by mutableStateOf(0)
+        private set
+
+    /** The number of GLOBAL channels currently cached on the device. */
+    var globalChannelCount by mutableStateOf(0)
+        private set
+
+    /** True when a global-rules sync is in flight, for a progress indicator. */
+    var globalRulesSyncing by mutableStateOf(false)
+        private set
+
+    /**
+     * True when this build has a backend configured at all.
+     *
+     * An unconfigured build is a supported state, not an error: the app runs on
+     * its local rules and the UI simply does not offer the global actions.
+     */
+    var globalRulesAvailable by mutableStateOf(false)
+        private set
+
+    private fun refreshGlobalRules() {
+        globalKeywordCount = globalRulesStore?.keywords?.size ?: 0
+        globalChannelCount = globalRulesStore?.channelHandles?.size ?: 0
+    }
+
+    /** Force a refresh of the global rules from the server. */
+    fun syncGlobalRules() {
+        val scope = viewModelScopeRef ?: return
+        if (globalRulesSyncing) return
+        globalRulesSyncing = true
+        scope.launch {
+            runCatching { globalRulesStore?.sync(force = true) }
+            refreshGlobalRules()
+            globalRulesSyncing = false
+        }
+    }
+
+    /** Suggest a keyword for the global repository. Returns true when queued. */
+    fun suggestGlobalKeyword(keyword: String, onResult: (Boolean) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(false); return }
+        scope.launch {
+            val ok = runCatching { store.suggestKeyword(keyword) }.getOrDefault(false)
+            onResult(ok)
+        }
+    }
+
+    /** Suggest a channel for the global repository. Returns true when queued. */
+    fun suggestGlobalChannel(handle: String, name: String?, onResult: (Boolean) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(false); return }
+        scope.launch {
+            val ok = runCatching { store.suggestChannel(handle, name) }.getOrDefault(false)
+            onResult(ok)
+        }
+    }
+
+    /** Report a keyword. Returns the resulting count, or null on failure. */
+    fun reportGlobalKeyword(keyword: String, detail: String?, onResult: (Int?) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(null); return }
+        scope.launch {
+            onResult(runCatching { store.reportKeyword(keyword, detail) }.getOrNull())
+        }
+    }
+
+    /** Report a channel. Returns the resulting count, or null on failure. */
+    fun reportGlobalChannel(handle: String, detail: String?, onResult: (Int?) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(null); return }
+        scope.launch {
+            onResult(runCatching { store.reportChannel(handle, detail) }.getOrNull())
+        }
     }
 
     // ── Private DNS (network-level filtering) ───────────────────────

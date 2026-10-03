@@ -60,6 +60,8 @@ export type AdminAction =
   | 'admins.manage'
   | 'ads.read'
   | 'ads.manage'
+  | 'brainrot.read'
+  | 'brainrot.manage'
   | 'audit.read';
 
 /**
@@ -102,6 +104,11 @@ const GRANTS: Readonly<Record<AdminRole, readonly AdminAction[]>> = {
     // has no business changing what every reader sees at the top of the tab.
     'ads.read',
     'ads.manage',
+    // The global Brain Rot repository decides what every ClearView install
+    // blocks, so it is the same kind of platform-wide power as an advertisement
+    // card and is held by the same role for the same reason.
+    'brainrot.read',
+    'brainrot.manage',
     'audit.read',
   ],
 };
@@ -153,5 +160,7 @@ export const ACTION_LABELS: Readonly<Record<AdminAction, string>> = {
   'admins.manage': 'Create, disable and re-role administrators',
   'ads.read': 'View advertisement cards',
   'ads.manage': 'Create, edit and remove advertisement cards',
+  'brainrot.read': 'View the global brain-rot rules and the review queue',
+  'brainrot.manage': 'Change the global brain-rot rules and review submissions',
   'audit.read': 'Read the audit log',
 };

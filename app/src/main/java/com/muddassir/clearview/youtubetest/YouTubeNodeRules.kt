@@ -85,6 +85,30 @@ internal object YouTubeNodeRules {
         return id in PLAYER_CONTAINER_IDS
     }
 
+    /**
+     * True for YouTube's "Don't recommend this video" menu item.
+     *
+     * This is the item that OPENS the submenu; the channel action lives inside
+     * it. Recognised by the substring because YouTube spells it "Don't
+     * recommend", "Dont recommend" and "Do not recommend" across builds, and
+     * because the label carries a typographic apostrophe on some of them.
+     */
+    fun isDontRecommendLabel(s: String?): Boolean {
+        val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false
+        return lower.contains("recommend") &&
+            (lower.contains("don't") || lower.contains("dont") || lower.contains("do not"))
+    }
+
+    /**
+     * True for YouTube's "Don't recommend this channel" menu item — the
+     * narrower one inside the submenu, which is the action that names a
+     * channel and is therefore the one ClearView can act on.
+     */
+    fun isDontRecommendChannelLabel(s: String?): Boolean {
+        val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false
+        return isDontRecommendLabel(lower) && lower.contains("channel")
+    }
+
     /** True for labels like "Pause" / "Pause video" (case-insensitive). */
     fun isPauseLabel(s: String?): Boolean {
         val lower = s?.trim()?.lowercase(Locale.ROOT) ?: return false

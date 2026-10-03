@@ -105,7 +105,13 @@ class LongVideoBlockCoordinator(
     private val keywordMatcher: KeywordMatcher,
     /** Optional shared-backend channel blocking. Null keeps the existing
      *  keyword-only behavior (no network, no behavior change). */
-    private val channelBlockRepository: ChannelBlockRepository? = null
+    private val channelBlockRepository: ChannelBlockRepository? = null,
+    /**
+     * Reports a confirmed block for the Activity dashboard. Called once per
+     * blocked video instance. Optional and best-effort: reporting must never
+     * affect enforcement.
+     */
+    private val onBlocked: ((keyword: String?, channel: String?) -> Unit)? = null
 ) {
 
     companion object {
@@ -486,6 +492,15 @@ class LongVideoBlockCoordinator(
         }
     }
 
+    /** Best-effort block report; never lets a reporting failure disturb enforcement. */
+    private fun reportBlock(keyword: String?, channel: String?) {
+        try {
+            onBlocked?.invoke(keyword, channel)
+        } catch (e: Exception) {
+            Log.e(TAG, "block report failed: ${e.message}")
+        }
+    }
+
     /** Full state cleanup (left watch page / Chrome gone / home button). */
     private fun resetAll(reason: String) {
         Log.i(TAG, "LONG_VIDEO_STATE_RESET reason=$reason")
@@ -548,6 +563,7 @@ class LongVideoBlockCoordinator(
             longVideoBlocked = true
             Log.w(TAG, "LONG_VIDEO_MATCH keyword=${result.matchedItem} source=${result.matchSource}")
             Log.w(TAG, "LONG_VIDEO_BLOCKED videoId=${longVideoId ?: "unknown"} keyword=${result.matchedItem}")
+            reportBlock(result.matchedItem, null)
             transition(LongVideoBlockState.LONG_BLOCKED_NEEDS_PAUSE)
             enforceBlockedVideo(root)
         } else {
@@ -593,6 +609,7 @@ class LongVideoBlockCoordinator(
                     Log.w(TAG, "LONG_VIDEO_CHANNEL_BLOCKED videoId=$videoId handle=$channelHandle")
                     longVideoBlocked = true
                     longVideoMatchedKeyword = "channel:$channelHandle"
+                    reportBlock(null, channelHandle)
                     transition(LongVideoBlockState.LONG_BLOCKED_NEEDS_PAUSE)
                     // Root may be recycled by the time the network returns;
                     // fetch a fresh one for enforcement.
@@ -632,6 +649,7 @@ class LongVideoBlockCoordinator(
             longVideoBlocked = true
             Log.w(TAG, "LONG_VIDEO_MATCH keyword=${result.matchedItem} source=${result.matchSource} (late content)")
             Log.w(TAG, "LONG_VIDEO_BLOCKED videoId=${longVideoId ?: "unknown"} keyword=${result.matchedItem}")
+            reportBlock(result.matchedItem, null)
             transition(LongVideoBlockState.LONG_BLOCKED_NEEDS_PAUSE)
             enforceBlockedVideo(root)
         } else {
@@ -994,6 +1012,13 @@ class LongVideoBlockCoordinator(
             textAlign = Paint.Align.CENTER
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
+        /** The "blocked because…" line. Quieter than the status above it. */
+        private val reasonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            alpha = 165
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+        }
         private val dividerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             alpha = 90
@@ -1048,7 +1073,39 @@ class LongVideoBlockCoordinator(
             // "BLOCKED" — wide-tracked caps.
             statusPaint.textSize = unit * 0.045f
             statusPaint.letterSpacing = 0.12f
-            canvas.drawText("BLOCKED", cx, dividerY + unit * 0.08f, statusPaint)
+            val statusY = dividerY + unit * 0.08f
+            canvas.drawText("BLOCKED", cx, statusY, statusPaint)
+
+            // WHY it was blocked. The product principle is that the system
+            // stays explainable — "blocked because it matched keyword X" or
+            // "because the channel @examplechannel is blocked" — rather than an
+            // opaque judgement. A user who cannot see the reason cannot correct
+            // a false positive, and a block they cannot argue with is one they
+            // will simply switch off.
+            reasonPaint.textSize = unit * 0.028f
+            reasonPaint.letterSpacing = 0.02f
+            val reasonY = statusY + unit * 0.075f
+            val keyword = longVideoMatchedKeyword
+            val reason = when {
+                keyword == null -> null
+                keyword.startsWith("channel:") -> "Channel ${keyword.removePrefix("channel:")} is blocked"
+                else -> "Matched keyword: \"$keyword\""
+            }
+            reason?.let {
+                // Ellipsised to the overlay width, so a long keyword can never
+                // overflow the screen or push the button off it.
+                val maxWidth = width * 0.82f
+                val shown = if (reasonPaint.measureText(it) <= maxWidth) {
+                    it
+                } else {
+                    var cut = it
+                    while (cut.length > 4 && reasonPaint.measureText("$cut…") > maxWidth) {
+                        cut = cut.dropLast(1)
+                    }
+                    "$cut…"
+                }
+                canvas.drawText(shown, cx, reasonY, reasonPaint)
+            }
 
             // "Go to YouTube Home" button.
             val bw = min(width * 0.7f, unit * 1.4f)

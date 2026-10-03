@@ -17,8 +17,11 @@ import com.muddassir.clearview.matching.KeywordMatcher
 import com.muddassir.clearview.matching.MatchResult
 import com.muddassir.clearview.matching.MatchType
 import com.muddassir.clearview.matching.MatchSource
+import com.muddassir.clearview.brainrot.BrainRotRepository
+import com.muddassir.clearview.brainrot.GlobalRulesStore
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.LongVideoBlockCoordinator
+import com.muddassir.clearview.youtubetest.YouTubeAppBlockCoordinator
 import com.muddassir.clearview.youtubetest.YouTubeChromeTestCoordinator
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import kotlinx.coroutines.*
@@ -111,6 +114,12 @@ class UrlBlockerService : AccessibilityService() {
      * pipeline below — it never touches blockingState, the dedup cache, or
      * the overlay. See [YouTubeChromeTestCoordinator].
      */
+    /** Reporting/statistics store for the Blocking tab's Activity section. */
+    private var brainRotRepository: BrainRotRepository? = null
+
+    /** The cached global Brain Rot rules. */
+    private var globalRulesStore: GlobalRulesStore? = null
+
     private var youtubeChromeTest: YouTubeChromeTestCoordinator? = null
 
     /**
@@ -121,6 +130,13 @@ class UrlBlockerService : AccessibilityService() {
      * Shorts logic. See [LongVideoBlockCoordinator].
      */
     private var longVideoBlock: LongVideoBlockCoordinator? = null
+
+    /**
+     * Watches the NATIVE YouTube app for "Don't recommend this channel" and
+     * offers to keep that decision in ClearView's blocked list. Isolated from
+     * both Chrome coordinators: it only ever reads the YouTube app's tree.
+     */
+    private var youtubeAppBlock: YouTubeAppBlockCoordinator? = null
 
     // Per-event/per-poll debug logging is EXPENSIVE (string formatting + logcat
     // I/O on the accessibility/main thread). Release builds keep the detection
@@ -223,16 +239,53 @@ class UrlBlockerService : AccessibilityService() {
         instance = this
         repository = BlockRepository(applicationContext)
         keywordMatcher = KeywordMatcher(repository)
+        // Reporting/statistics store for the Blocking tab's Activity section.
         // Separate test-only keyword list for the YouTube-in-Chrome Shorts
         // experiment — never touches the normal blocked keywords. The
         // coordinator matches ONLY against this list with its own simple
         // matcher (the normal KeywordMatcher is deliberately not used).
         val testKeywordRepository = YoutubeTestKeywordRepository(applicationContext)
-        youtubeChromeTest = YouTubeChromeTestCoordinator(this, repository, testKeywordRepository)
+        brainRotRepository = BrainRotRepository(applicationContext)
+        // The global rule set, refreshed in the background. A failure is a no-op
+        // — the previous rules stay in force and local protection is untouched.
+        globalRulesStore = GlobalRulesStore(applicationContext)
+        serviceScope.launch {
+            runCatching { globalRulesStore?.sync() }
+            pushGlobalRulesIntoMatcher()
+        }
+        youtubeChromeTest = YouTubeChromeTestCoordinator(
+            this,
+            repository,
+            testKeywordRepository,
+            // A blocked Short is Brain Rot protection doing its job.
+            onBlocked = { keyword, channel ->
+                brainRotRepository?.recordBlock("Brain Rot", keyword = keyword, channel = channel)
+            }
+        )
         // Shared-backend channel blocking (best-effort; a dead backend keeps
         // the existing keyword-only protection — never blocks on the network).
         val channelBlockRepository = ChannelBlockRepository(applicationContext)
-        longVideoBlock = LongVideoBlockCoordinator(this, repository, keywordMatcher, channelBlockRepository)
+        // Hand the user's OWN blocked channels to the channel check, so a
+        // personal block is honoured with no backend and no network at all.
+        // Without this the list would be managed in the Blocking tab and never
+        // consulted by the blocker — the exact gap the spec called out.
+        channelBlockRepository.userChannelRepository = brainRotRepository
+        longVideoBlock = LongVideoBlockCoordinator(
+            this,
+            repository,
+            keywordMatcher,
+            channelBlockRepository,
+            // A blocked long video is Brain Rot protection doing its job.
+            onBlocked = { keyword, channel ->
+                brainRotRepository?.recordBlock("Brain Rot", keyword = keyword, channel = channel)
+            }
+        )
+        // "Don't recommend this channel" in the YouTube APP is treated as an
+        // intent to block, and offered once. Independent of the Chrome
+        // coordinators — it never reads a Chrome tree.
+        youtubeAppBlock = brainRotRepository?.let { repo ->
+            globalRulesStore?.let { store -> YouTubeAppBlockCoordinator(this, repo, store) }
+        }
         Log.i(TAG, "UrlBlockerService created")
     }
 
@@ -248,6 +301,7 @@ class UrlBlockerService : AccessibilityService() {
         stopGooglePolling()
         youtubeChromeTest?.stop()
         longVideoBlock?.stop()
+        youtubeAppBlock?.stop()
     }
 
     override fun onDestroy() {
@@ -255,6 +309,7 @@ class UrlBlockerService : AccessibilityService() {
         serviceScope.cancel()
         youtubeChromeTest?.stop()
         longVideoBlock?.stop()
+        youtubeAppBlock?.stop()
         instance = null
         Log.i(TAG, "UrlBlockerService destroyed")
     }
@@ -272,6 +327,10 @@ class UrlBlockerService : AccessibilityService() {
 
         // Long-video blocker hook (isolated from Shorts). Also cheap.
         longVideoBlock?.onAccessibilityEvent(event)
+
+        // YouTube app "Don't recommend this channel" hook. Cheap: it returns
+        // immediately for any package that is not YouTube.
+        youtubeAppBlock?.onAccessibilityEvent(event)
 
         // Debug: log every event for target packages so detection issues (why an
         // incognito window was / wasn't caught) can be diagnosed from logcat.
@@ -2374,7 +2433,36 @@ class UrlBlockerService : AccessibilityService() {
         }
     }
 
+    /**
+     * Publish the cached global keywords into the matcher's shared set.
+     *
+     * The matcher merges them with the user's own keywords, so they apply on
+     * every path that already applies those — no matcher change and no path that
+     * can be forgotten. Called after a successful sync; on a failure the set is
+     * left exactly as it was.
+     */
+    private fun pushGlobalRulesIntoMatcher() {
+        try {
+            val store = globalRulesStore ?: return
+            BlockRepository.setGlobalKeywords(store.keywords)
+            Log.i(TAG, "GLOBAL_RULES_APPLIED keywords=${store.keywords.size} channels=${store.channelHandles.size}")
+        } catch (e: Exception) {
+            Log.e(TAG, "global rules apply failed: ${e.message}")
+        }
+    }
+
     private fun showBlockOverlay(result: MatchResult.Blocked, sourcePackage: String) {
+        // Record the block for the Activity dashboard. Best-effort and
+        // exception-safe: reporting must never disturb the block itself.
+        try {
+            brainRotRepository?.recordBlock(
+                category = categoryFor(result),
+                keyword = result.matchedItem.takeIf { result.matchType != MatchType.DOMAIN },
+                channel = null
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "block report failed: ${e.message}")
+        }
         try {
             val intent = Intent(this, com.muddassir.clearview.ui.BlockOverlayActivity::class.java).apply {
                 addFlags(
@@ -2413,6 +2501,20 @@ class UrlBlockerService : AccessibilityService() {
         // Words that are ALSO always-block keywords block without Strict Mode —
         // the note must not imply that turning it off would unblock them.
         return keyword !in BlockRepository.ALWAYS_BLOCK_KEYWORDS
+    }
+
+    /**
+     * The Activity dashboard's category for a block. Deliberately coarse and
+     * derived from the match type rather than a judgement about the content:
+     * the point is that a user can see WHY something was blocked, and the
+     * categories map one-to-one onto the rules that can cause a block.
+     */
+    private fun categoryFor(result: MatchResult.Blocked): String = when {
+        result.matchType == MatchType.INCOGNITO -> "Incognito"
+        result.matchType == MatchType.DOMAIN -> "Custom Website"
+        isStrictModeBlock(result) -> "Strict Mode"
+        result.matchType == MatchType.USER_KEYWORD -> "Custom Keyword"
+        else -> "Adult"
     }
 
     private fun goToHome() {

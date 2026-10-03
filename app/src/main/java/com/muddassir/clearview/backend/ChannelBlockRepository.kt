@@ -101,39 +101,35 @@ class ChannelBlockRepository(private val context: Context) {
     }
 
     /**
-     * Is this channel blocked? Checks the local cache first (no network),
-     * then the backend for uncached identities. channelId is canonical;
-     * handle/videoId fall back to backend resolution.
+     * Is this channel blocked by the GLOBAL repository?
+     *
+     * Decided entirely from the cached rule set — no network call. The global
+     * channel list is small and arrives whole, so a per-channel lookup is a
+     * list scan rather than a round trip on the accessibility hot path. That is
+     * both faster and strictly more reliable: this can only be wrong because
+     * the list is stale, never because the network was momentarily down, and a
+     * stale list still blocks everything it blocked last time.
+     *
+     * The channel's own identity is its HANDLE, which is what the global
+     * repository is keyed on because a handle survives a channel rename.
      */
     suspend fun isChannelBlocked(
         channelId: String? = null,
         handle: String? = null,
         videoId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
-        // 1. Local blocked-id cache (fast path).
-        channelId?.let { id ->
-            if (readBlockedMap().getOrElse(id) { false } == true) return@withContext true
-        }
-        handle?.let { h ->
-            val id = readHandleMap()[h.lowercase()]
-            if (id != null && readBlockedMap().getOrElse(id) { false } == true) {
-                return@withContext true
-            }
-        }
-
-        // 2. Backend check for anything not cached locally.
-        val res = backend.checkChannel(channelId, handle, videoId)
-        if (res == null) {
-            // Backend unreachable: rely on cached rules only.
-            return@withContext isBlockedByCachedRules(channelId, handle)
-        }
-        res.channelId?.let { writeBlockedMap(it, res.blocked) }
-        // Backend gave a definitive answer — trust it over the stale local
-        // cache. (Previously we fell through to isBlockedByCachedRules here,
-        // which could return true from a stale cached list even after the
-        // backend explicitly said the channel is NOT blocked.)
-        return@withContext res.blocked
+        // The user's OWN blocked channels first — that list is on the device and
+        // applies even with no backend configured.
+        if (userChannelRepository?.isChannelBlocked(handle) == true) return@withContext true
+        return@withContext isBlockedByCachedRules(channelId, handle)
     }
+
+    /**
+     * The user's own blocked channels, so a personal block is honoured with no
+     * backend at all. Set by the service on construction; null keeps the
+     * behaviour channel-list-only.
+     */
+    var userChannelRepository: com.muddassir.clearview.brainrot.BrainRotRepository? = null
 
     /** Local-only decision from the cached rules list (never network). */
     fun isBlockedByCachedRules(channelId: String?, handle: String?): Boolean {
@@ -145,11 +141,25 @@ class ChannelBlockRepository(private val context: Context) {
         }
     }
 
-    /** Block a channel on the backend (idempotent) and refresh the cache. */
-    suspend fun blockChannel(channelId: String? = null, handle: String? = null, channelName: String? = null): Boolean {
-        val ok = backend.blockChannel(channelId, handle, channelName)
-        if (ok) syncRules(force = true)
-        return ok
+    /**
+     * Block a channel on the GLOBAL repository.
+     *
+     * Goes through the suggestion endpoint, not a direct write: a user cannot
+     * add a global rule, only ask for one. Returns true when the server accepted
+     * it for review — which is "queued", not "now blocked everywhere", and the
+     * UI must word it that way.
+     */
+    suspend fun suggestGlobalChannel(handle: String, name: String? = null): Boolean {
+        return backendSuggest(handle, name)
+    }
+
+    private suspend fun backendSuggest(handle: String, name: String?): Boolean = withContext(Dispatchers.IO) {
+        runCatching { brainRotClient.submitSuggestion("channel", handle, name) }.getOrDefault(false)
+    }
+
+    /** Client for the anonymous suggestion/report endpoints. */
+    private val brainRotClient by lazy {
+        com.muddassir.clearview.brainrot.BrainRotClient(context)
     }
 
     // ── Persistence helpers ───────────────────────────────────────

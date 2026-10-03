@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.service.UrlBlockerService
 import com.muddassir.clearview.ui.theme.UrlblockerTheme
+import kotlinx.coroutines.launch
 
 /**
  * Full-screen blocking overlay that shows when blocked content is detected.
@@ -45,6 +46,9 @@ import com.muddassir.clearview.ui.theme.UrlblockerTheme
  * The user cannot dismiss this overlay to reveal the blocked content
  * underneath — dismissal always goes Home.
  */
+/** Where a false-positive report has got to, for the button's own label. */
+private enum class ReportState { IDLE, SENDING, SENT, FAILED }
+
 class BlockOverlayActivity : ComponentActivity() {
 
     companion object {
@@ -85,6 +89,20 @@ class BlockOverlayActivity : ComponentActivity() {
         // overlay then shows a short note about searching the term legitimately.
         val strictHit = intent.getBooleanExtra("strict_hit", false)
 
+        // False-positive controls. The block must be EXPLAINABLE and
+        // RECOVERABLE: a broad keyword like "ai" or "viral" will sometimes hit
+        // legitimate content, and a user who cannot see why something was
+        // blocked, or cannot correct it, has no reason to trust the feature.
+        //
+        // What the user may do depends on WHERE the rule came from, which is the
+        // same distinction the Blocking tab draws between "My block" and the
+        // global repository:
+        //   * their own keyword -> they can remove it outright;
+        //   * a global keyword    -> they cannot remove it (it is not theirs),
+        //                            but they can report it as a false positive.
+        val userKeyword = blockedType == "USER_KEYWORD"
+        val isKeywordBlock = blockedType == "USER_KEYWORD" || blockedType == "BUILT_IN_KEYWORD"
+
         // NOTE: incognito never reaches this overlay anymore — the service
         // closes the incognito tabs and lands the user on Home directly (simple,
         // clean behavior). This overlay is only for keyword/domain blocks and
@@ -97,6 +115,33 @@ class BlockOverlayActivity : ComponentActivity() {
                     blockedItem = blockedItem,
                     blockedType = blockedType,
                     strictHit = strictHit,
+                    isUserKeyword = userKeyword,
+                    isKeywordBlock = isKeywordBlock,
+                    onRemoveKeyword = {
+                        // Removing the rule is the whole point of the control: it
+                        // must take effect immediately, so the next scan cannot
+                        // block the same thing again.
+                        try {
+                            com.muddassir.clearview.repository.BlockRepository(applicationContext)
+                                .removeUserKeyword(blockedItem)
+                            Log.i(TAG, "Removed user keyword from rules: $blockedItem")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Could not remove keyword: ${e.message}")
+                        }
+                        exitToDestination()
+                    },
+                    onReport = { onResult ->
+                        val store = com.muddassir.clearview.brainrot.GlobalRulesStore(applicationContext)
+                        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                            val count = runCatching {
+                                if (isKeywordBlock) store.reportKeyword(blockedItem, "Blocked in error")
+                                else store.reportChannel(blockedItem, "Blocked in error")
+                            }.getOrNull()
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                                onResult(count != null)
+                            }
+                        }
+                    },
                     onDismiss = { exitToDestination() }
                 )
             }
@@ -197,9 +242,21 @@ private fun BlockOverlayScreen(
     /** When the block came from Strict Mode's broad keywords, a short note
      *  explains that it's on and how to search the term legitimately. */
     strictHit: Boolean = false,
+    /** True when the matched rule is the user's own, so it can be removed. */
+    isUserKeyword: Boolean = false,
+    /** True for any keyword block (as opposed to a domain block). */
+    isKeywordBlock: Boolean = false,
+    /** Remove the user's own keyword, then dismiss. */
+    onRemoveKeyword: () -> Unit = {},
+    /** Report a false positive; the callback receives whether it was accepted. */
+    onReport: ((Boolean) -> Unit) -> Unit = { it(false) },
     onDismiss: () -> Unit
 ) {
     var visible by remember { mutableStateOf(false) }
+    // "Why was this blocked?" is collapsed by default so the overlay stays the
+    // calm screen it was, and expands to the controls only when asked.
+    var showWhy by remember { mutableStateOf(false) }
+    var reportState by remember { mutableStateOf(ReportState.IDLE) }
 
     // Intercept the system back — BOTH the button and the predictive-back
     // gesture (on targetSdk 37 the gesture never calls onBackPressed; without
@@ -340,7 +397,104 @@ private fun BlockOverlayScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(40.dp))
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // ── False-positive controls ───────────────────────────
+                //
+                // The block is explainable and recoverable: the user can always
+                // see which rule caused it, and can always act on that rule.
+                TextButton(onClick = { showWhy = !showWhy }) {
+                    Text(
+                        text = if (showWhy) "Hide details" else "Why was this blocked?",
+                        fontSize = 13.sp
+                    )
+                }
+
+                AnimatedVisibility(visible = showWhy) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = if (isKeywordBlock) {
+                                    "Matched keyword: \"$blockedItem\""
+                                } else {
+                                    "Blocked by rule: $blockedItem"
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isUserKeyword) {
+                                    "This is one of your own rules, so you can remove it."
+                                } else if (isKeywordBlock) {
+                                    "This keyword is part of the global ClearView rules, so it cannot be removed here — but you can report it."
+                                } else {
+                                    "This website is on the blocked list."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            if (isUserKeyword) {
+                                // The rule is theirs, so removing it is the direct
+                                // fix and it takes effect immediately.
+                                OutlinedButton(
+                                    onClick = onRemoveKeyword,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Remove \"$blockedItem\" from my rules", fontSize = 13.sp)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
+
+                            if (isKeywordBlock) {
+                                OutlinedButton(
+                                    onClick = {
+                                        if (reportState == ReportState.SENDING) return@OutlinedButton
+                                        reportState = ReportState.SENDING
+                                        onReport { ok ->
+                                            reportState = if (ok) ReportState.SENT else ReportState.FAILED
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    enabled = reportState != ReportState.SENDING &&
+                                        reportState != ReportState.SENT
+                                ) {
+                                    Text(
+                                        text = when (reportState) {
+                                            ReportState.IDLE -> "Report false positive"
+                                            ReportState.SENDING -> "Sending…"
+                                            ReportState.SENT -> "Reported — thank you"
+                                            ReportState.FAILED -> "Could not send. Try again"
+                                        },
+                                        fontSize = 13.sp
+                                    )
+                                }
+                                if (reportState == ReportState.FAILED) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Nothing changed; the block still applies.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 Text(
                     text = "Tap ✕ to dismiss",

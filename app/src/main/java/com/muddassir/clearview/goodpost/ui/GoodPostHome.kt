@@ -134,6 +134,12 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                             onClick = viewModel::openAds
                                         )
                                     )
+                                    add(
+                                        WaMenuItem(
+                                            label = stringResource(R.string.goodpost_brainrot),
+                                            onClick = viewModel::openBrainRotReview
+                                        )
+                                    )
                                 }
                                 add(
                                     WaMenuItem(
