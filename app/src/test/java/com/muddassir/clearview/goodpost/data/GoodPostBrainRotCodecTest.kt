@@ -177,6 +177,33 @@ class GoodPostBrainRotCodecTest {
     }
 
     @Test
+    fun `json null fields are absent, never the word null`() {
+        // org.json's optString returns the literal "null" for a JSON null, which
+        // is how an absent display name reached the UI as the word "null".
+        val body = JSONObject().put(
+            "submissions",
+            JSONArray().put(
+                JSONObject()
+                    .put("id", "s1")
+                    .put("kind", "channel")
+                    .put("value", "@example")
+                    .put("displayName", JSONObject.NULL)
+                    .put("note", JSONObject.NULL)
+                    .put("source", JSONObject.NULL)
+                    .put("status", JSONObject.NULL)
+                    .put("createdAt", JSONObject.NULL)
+            )
+        )
+        val submission = GoodPostCodec.brainRotSubmissions(body).first()
+        assertNull(submission.displayName)
+        assertNull(submission.note)
+        assertNull(submission.createdAt)
+        // The defaults apply; neither is the string "null".
+        assertEquals("unknown", submission.source)
+        assertEquals("pending", submission.status)
+    }
+
+    @Test
     fun `the dashboard reads its totals and both demand lists`() {
         val body = JSONObject()
             .put(

@@ -254,6 +254,10 @@ class UrlBlockerService : AccessibilityService() {
         // The global rule set, refreshed in the background. A failure is a no-op
         // — the previous rules stay in force and local protection is untouched.
         globalRulesStore = GlobalRulesStore(applicationContext)
+        // Apply the CACHED rules immediately, before any network attempt: a
+        // phone that has synced once is protected from the next launch on,
+        // online or not.
+        pushGlobalRulesIntoMatcher()
         serviceScope.launch {
             runCatching { globalRulesStore?.sync() }
             pushGlobalRulesIntoMatcher()
@@ -2456,6 +2460,9 @@ class UrlBlockerService : AccessibilityService() {
         try {
             val store = globalRulesStore ?: return
             BlockRepository.setGlobalKeywords(store.keywords)
+            // Channels too: an approved global channel is enforced by the same
+            // channel check the user's own blocks use.
+            com.muddassir.clearview.brainrot.BrainRotRepository.setGlobalChannels(store.channelHandles)
             Log.i(TAG, "GLOBAL_RULES_APPLIED keywords=${store.keywords.size} channels=${store.channelHandles.size}")
         } catch (e: Exception) {
             Log.e(TAG, "global rules apply failed: ${e.message}")

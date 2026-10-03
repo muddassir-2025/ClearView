@@ -1002,12 +1002,11 @@ internal object GoodPostCodec {
      * server, so nothing here has to guess.
      */
     fun brainRotRule(json: JSONObject): GoodPostBrainRotRule? {
-        val id = json.optString("id")
-        if (id.isBlank()) return null
-        val value = json.optString("keyword").takeIf { it.isNotBlank() }
-            ?: json.optString("handle").takeIf { it.isNotBlank() }
-            ?: return null
-        val isChannel = json.optString("handle").isNotBlank()
+        val id = json.nullableString("id") ?: return null
+        val keyword = json.nullableString("keyword")
+        val handle = json.nullableString("handle")
+        val value = keyword ?: handle ?: return null
+        val isChannel = handle != null
         return GoodPostBrainRotRule(
             id = id,
             kind = if (isChannel) "channel" else "keyword",
@@ -1043,9 +1042,8 @@ internal object GoodPostCodec {
         val parsed = ArrayList<GoodPostBrainRotSubmission>(items.length())
         for (i in 0 until items.length()) {
             val row = items.optJSONObject(i) ?: continue
-            val id = row.optString("id")
-            val value = row.optString("value")
-            if (id.isBlank() || value.isBlank()) continue
+            val id = row.nullableString("id") ?: continue
+            val value = row.nullableString("value") ?: continue
             val kind = if (row.optString("kind") == "channel") "channel" else "keyword"
             parsed.add(
                 GoodPostBrainRotSubmission(
@@ -1054,8 +1052,8 @@ internal object GoodPostCodec {
                     value = value,
                     displayName = row.nullableString("displayName"),
                     note = row.nullableString("note"),
-                    source = row.optString("source").ifBlank { "unknown" },
-                    status = row.optString("status").ifBlank { "pending" },
+                    source = row.nullableString("source") ?: "unknown",
+                    status = row.nullableString("status") ?: "pending",
                     reports = row.optInt("reports", 0),
                     requesters = row.optInt("requesters", 0),
                     createdAt = row.nullableString("createdAt")
@@ -1084,8 +1082,7 @@ internal object GoodPostCodec {
         val parsed = ArrayList<GoodPostBrainRotDemand>(items.length())
         for (i in 0 until items.length()) {
             val row = items.optJSONObject(i) ?: continue
-            val value = row.optString("value")
-            if (value.isBlank()) continue
+            val value = row.nullableString("value") ?: continue
             parsed.add(
                 GoodPostBrainRotDemand(
                     kind = if (row.optString("kind") == "channel") "channel" else "keyword",

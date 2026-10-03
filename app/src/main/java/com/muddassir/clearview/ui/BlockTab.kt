@@ -8,17 +8,23 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Search
@@ -48,6 +54,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.annotation.StringRes
@@ -55,6 +63,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +75,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import com.muddassir.clearview.R
+import com.muddassir.clearview.brainrot.BrainRotClient
 import com.muddassir.clearview.viewmodel.MainViewModel
 
 /**
@@ -155,26 +165,23 @@ fun BlockTab(
         item { GlobalRulesCard(viewModel) }
         item { MySubmissionsCard(viewModel) }
 
-        // ── Activity ───────────────────────────────────────────────
+        // ── PROTECTION ACTIVITY ────────────────────────────────────
         item { SectionHeading(R.string.block_activity_title) }
         item { ActivityCard(viewModel) }
 
-        // ── Privacy ────────────────────────────────────────────────
-        item { PrivacyCard() }
-
-        item { DnsCard(viewModel, context) }
-
-        item {
-            Text(
-                text = "ADVANCED",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp, start = 4.dp)
-            )
-        }
+        // ── ADVANCED ───────────────────────────────────────────────
+        // Device admin, uninstall protection, the block-tab password and DNS all
+        // live here: they are setup-once, rarely-touched settings, and keeping
+        // them below the everyday switches is what makes the top of the page a
+        // protection screen rather than a settings list.
+        item { SectionHeading(R.string.block_advanced_section) }
         item { DeviceAdminCard(viewModel, context, deviceAdminLauncher) }
         item { UninstallProtectionCard(viewModel, context) }
         item { AppLockCard(viewModel) }
+        item { DnsCard(viewModel, context) }
+
+        // ── Privacy ────────────────────────────────────────────────
+        item { PrivacyCard() }
 
         item { Spacer(modifier = Modifier.height(8.dp)) }
     }
@@ -259,62 +266,117 @@ private fun BlockHeader(viewModel: MainViewModel) {
 /**
  * The notification centre.
  *
- * A modal sheet rather than a screen: it is a glance at what happened, and the
- * tab underneath is where the actions on those notifications live — so the list
- * opens over it and closes back to it.
+ * Opens as a full screen, the same way every list on this tab does, because a
+ * notification is a thing with a value, a status and a time in it — and a
+ * dialog that printed one undifferentiated paragraph per item made all three
+ * hard to find. Each entry is a tinted row with the icon its KIND deserves, the
+ * value in bold, the explanation underneath and the time on the right, so the
+ * list can be read down the middle.
  */
 @Composable
 private fun NotificationCentreSheet(viewModel: MainViewModel, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.block_notifications_title)) },
-        text = {
-            val items = viewModel.notifications
-            if (items.isEmpty()) {
-                Text(stringResource(R.string.block_notifications_empty))
-            } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 360.dp)) {
-                    items(items, key = { it.id }) { item ->
-                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                            Text(
-                                text = item.message,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (item.read) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                fontWeight = if (item.read) FontWeight.Normal else FontWeight.Medium
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = relativeTime(item.atMs),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+    val items = viewModel.notifications
+
+    BlockManagerDialog(
+        title = stringResource(R.string.block_notifications_title),
+        onDismiss = onDismiss
+    ) {
+        if (items.isEmpty()) {
+            Text(
+                text = stringResource(R.string.block_notifications_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { viewModel.markAllNotificationsRead() },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(stringResource(R.string.block_notifications_mark_read), fontSize = 13.sp)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.clearNotifications()
+                        onDismiss()
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text(stringResource(R.string.block_notifications_clear), fontSize = 13.sp)
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                viewModel.markAllNotificationsRead()
-            }) {
-                Text(stringResource(R.string.block_notifications_mark_read))
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = {
-                viewModel.clearNotifications()
-                onDismiss()
-            }) {
-                Text(stringResource(R.string.block_notifications_clear))
-            }
+            Spacer(modifier = Modifier.height(4.dp))
+            items.forEach { item -> NotificationRow(item) }
         }
-    )
+    }
     // Opening the centre is the moment the badge stops meaning anything.
     LaunchedEffect(Unit) { viewModel.markAllNotificationsRead() }
+}
+
+/** One notification: its kind's icon, the value, the message and the time. */
+@Composable
+private fun NotificationRow(item: com.muddassir.clearview.brainrot.NotificationStore.Item) {
+    val accent = when (item.kind) {
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.BLOCKED ->
+            MaterialTheme.colorScheme.onSurfaceVariant
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_APPROVED -> Color(0xFF2E7D32)
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_REJECTED ->
+            MaterialTheme.colorScheme.error
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_SUBMITTED ->
+            MaterialTheme.colorScheme.primary
+    }
+    val icon = when (item.kind) {
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.BLOCKED -> Icons.Outlined.Block
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_APPROVED -> Icons.Filled.CheckCircle
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_REJECTED -> Icons.Filled.Close
+        com.muddassir.clearview.brainrot.NotificationStore.Kind.GLOBAL_SUBMITTED -> Icons.Outlined.Upload
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+    ) {
+        Row(modifier = Modifier.padding(12.dp)) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(accent.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.displayName ?: item.value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (item.read) FontWeight.Normal else FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = item.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = relativeTime(item.atMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
 }
 
 /** A short, human "how long ago" for a notification. */
@@ -330,14 +392,36 @@ private fun relativeTime(atMs: Long): String {
 }
 
 /** A quiet all-caps heading that groups the cards below it. */
+/**
+ * A section label: a short accent bar, then the section name.
+ *
+ * The bar is what makes the page scannable — sections read as groups at a
+ * glance instead of one long column of same-shaped cards, which is what made
+ * the old layout feel unstructured.
+ */
 @Composable
 private fun SectionHeading(@StringRes titleRes: Int) {
-    Text(
-        text = stringResource(titleRes),
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 8.dp, start = 4.dp)
-    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 4.dp, end = 4.dp, top = 14.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 14.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = stringResource(titleRes).uppercase(),
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            letterSpacing = 0.8.sp
+        )
+    }
 }
 
 // ── Shared: info icon + full-context details expander ────────────
@@ -383,6 +467,473 @@ private fun FeatureDetailBlock(bullets: List<String>) {
     }
 }
 
+// ── Shared: collapsible header chevron ──────────────────────────
+
+/** The down/up chevron a compact card uses to show it can be expanded. */
+@Composable
+private fun ExpandChevron(expanded: Boolean) {
+    Icon(
+        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+        contentDescription = if (expanded) "Collapse" else "Expand",
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.size(22.dp)
+    )
+}
+
+// ── Shared: card header with an icon badge ──────────────────────
+
+/**
+ * The header every feature card shares: a tinted icon badge, a title, one
+ * subtitle line, then whatever trailing control the card needs and — when the
+ * card expands — a chevron. One header shape across the tab is what stops the
+ * page reading as a pile of differently-built boxes.
+ */
+@Composable
+private fun CardHeader(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    expanded: Boolean = false,
+    onToggle: (() -> Unit)? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable RowScope.() -> Unit = {}
+) {
+    val click = onClick ?: onToggle
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (click != null) Modifier.clickable { click() } else Modifier),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(modifier = Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        trailing()
+        if (onToggle != null) {
+            Spacer(modifier = Modifier.width(4.dp))
+            ExpandChevron(expanded)
+        }
+    }
+}
+
+/** The right-pointing arrow a compact card uses to say "this opens a screen". */
+@Composable
+private fun ManageArrow(onClick: (() -> Unit)? = null) {
+    Icon(
+        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+        contentDescription = "Open",
+        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .size(24.dp)
+    )
+}
+
+// ── Shared: a full-screen manager opened from a card's arrow ─────
+
+/**
+ * The screen a compact card's arrow opens.
+ *
+ * The cards on the tab are deliberately one line each — exact counts, and an
+ * arrow. Everything you can DO with the list lives here, on a full screen with
+ * room to breathe, rather than being crammed under the card where it made the
+ * page read as a wall of controls.
+ */
+@Composable
+private fun BlockManagerDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Filled.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .safeDrawingPadding()
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    content()
+                    Spacer(modifier = Modifier.height(24.dp))
+                }
+            }
+        }
+    }
+}
+
+// ── Shared: one compact, editable list row ──────────────────────
+
+/**
+ * One entry in a blocked-items list: a leading glyph, the value on a single
+ * line, then the actions.
+ *
+ * This replaces the old rows that put a submit button and a delete button side
+ * by side with a weighted text column. When the value was long the column lost
+ * the width fight and the text wrapped one character per line — the "keyword
+ * appears vertically" bug — and the two tap targets sat on top of each other.
+ * Here the text is always one ellipsised line and the actions are fixed-size
+ * icon buttons, so nothing can overlap whatever the value is.
+ */
+@Composable
+private fun BlockListItem(
+    label: String,
+    icon: ImageVector,
+    onRemove: () -> Unit,
+    removeLabel: String,
+    subtitle: String? = null,
+    onSend: (() -> Unit)? = null,
+    sendLabel: String = "Send to global review"
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+            .padding(start = 12.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(vertical = 8.dp)
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        if (onSend != null) {
+            IconButton(onClick = onSend, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = sendLabel,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = removeLabel,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+    }
+}
+
+/** A read-only rule row, for lists the user cannot edit (the global rules). */
+@Composable
+private fun RuleRow(label: String, icon: ImageVector, subtitle: String? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.6f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The "waiting on a decision" group a manager screen shows above its own list.
+ *
+ * A submission is inert — nothing is blocked by it — so it is drawn as its own
+ * labelled, tinted group rather than as a row in the list it was sent from. A
+ * pending request that sat among real rules would read as one. Nothing here has
+ * a Send action: it is already sent.
+ */
+@Composable
+private fun QueuedForReview(
+    items: List<BrainRotClient.SubmissionStatus>,
+    icon: ImageVector
+) {
+    if (items.isEmpty()) return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xFF1565C0).copy(alpha = 0.08f)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Queued for review",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF1565C0)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "Waiting on an administrator. Not blocking anyone yet.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            items.forEach { submission ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = Color(0xFF1565C0),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = submission.displayName ?: submission.value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    SubmissionStatusPill(submission.status)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The group of this device's requests that an administrator APPROVED.
+ *
+ * Approved rules are global now, so they are drawn separately from the user's
+ * own blocks — and separately from the queue, because "waiting" and "live" are
+ * different facts about a request. Keeping them out of the user's own list is
+ * also what keeps that list honest: it holds only what the user themselves put
+ * there and can therefore remove.
+ */
+@Composable
+private fun ApprovedGlobally(
+    items: List<BrainRotClient.SubmissionStatus>,
+    icon: ImageVector
+) {
+    if (items.isEmpty()) return
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = Color(0xFF2E7D32).copy(alpha = 0.08f)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                text = "Approved globally",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = Color(0xFF2E7D32)
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "Live for every ClearView user. You do not need to send it again.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            items.forEach { submission ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = Color(0xFF2E7D32),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = submission.displayName ?: submission.value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    SubmissionStatusPill("approved")
+                }
+            }
+        }
+    }
+}
+
+// ── Shared: one clean "type and add" control ────────────────────
+
+/**
+ * A single rounded row that holds the input and its add button.
+ *
+ * The keyword/channel/website editors used to stack a full labelled
+ * OutlinedTextField, a floating label and stray helper text above every list —
+ * three heavy blocks per list, which is what made those cards feel cluttered.
+ * This is one quiet row, so the card is mostly the LIST it exists to show.
+ */
+@Composable
+private fun AddField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    onAdd: () -> Unit
+) {
+    val canAdd = value.trim().isNotEmpty()
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = LocalTextStyle.current.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontSize = 15.sp
+                ),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(onDone = { if (canAdd) onAdd() }),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(vertical = 14.dp),
+                decorationBox = { inner ->
+                    Box {
+                        if (value.isEmpty()) {
+                            Text(
+                                text = placeholder,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        inner()
+                    }
+                }
+            )
+            FilledIconButton(
+                onClick = onAdd,
+                enabled = canAdd,
+                modifier = Modifier.size(36.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = "Add", modifier = Modifier.size(20.dp))
+            }
+        }
+    }
+}
+
 // ── 1. Protection toggle ──────────────────────────────────────────
 
 @Composable
@@ -397,19 +948,24 @@ private fun ProtectionCard(viewModel: MainViewModel, context: Context) {
     var showDisclosure by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
 
+    // A single compact hero row: icon, name, one status line, the switch and the
+    // info button. The old card printed a whole paragraph here on top of the
+    // status line and pushed every real control below the fold; the paragraph
+    // lives behind the (i) now, which is what it is for.
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (isEnabled) activeGreen else MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Filled.Shield,
                     contentDescription = null,
                     tint = if (isEnabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(28.dp)
+                    modifier = Modifier.size(26.dp)
                 )
                 Spacer(modifier = Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -420,7 +976,7 @@ private fun ProtectionCard(viewModel: MainViewModel, context: Context) {
                         color = if (isEnabled) Color.White else MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = if (isEnabled) "Active — monitoring Chrome & Google" else "Off — tap to enable",
+                        text = if (isEnabled) "Active · watching Chrome & Google" else "Off — tap to enable",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isEnabled) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -449,12 +1005,6 @@ private fun ProtectionCard(viewModel: MainViewModel, context: Context) {
                 )
                 InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
             }
-            Spacer(modifier = Modifier.height(12.dp))
-            Text(
-                text = stringResource(R.string.block_protection_summary),
-                style = MaterialTheme.typography.bodySmall,
-                color = if (isEnabled) Color(0xFFE8F5E9) else MaterialTheme.colorScheme.onSurfaceVariant
-            )
             AnimatedVisibility(visible = showDetails) {
                 FeatureDetailBlock(
                     bullets = listOf(
@@ -564,6 +1114,7 @@ private fun FeatureCard(
     var showDetails by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (checked)
                 MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.7f)
@@ -679,99 +1230,70 @@ private fun BrainRotProtectionCard(viewModel: MainViewModel, locked: Boolean) {
 @Composable
 private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
     val context = LocalContext.current
-    var showDetails by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Outlined.Science,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.block_stat_keywords),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "${viewModel.youtubeTestKeywords.size} keywords",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
-            }
-            AnimatedVisibility(visible = showDetails) {
-                FeatureDetailBlock(
-                    bullets = listOf(
-                        "Words or phrases that block content when detected in a title or page text.",
-                        "Matching Shorts are paused and covered instead of showing the normal ClearView block screen.",
-                        "The same list is matched against long-video titles and descriptions on watch pages.",
-                        "These are your own rules and are separate from the always-on adult filter."
-                    )
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
+            CardHeader(
+                icon = Icons.Outlined.Science,
+                title = stringResource(R.string.block_stat_keywords),
+                subtitle = if (viewModel.youtubeTestKeywords.isEmpty()) {
+                    "No keywords yet — tap to add"
+                } else {
+                    "${viewModel.youtubeTestKeywords.size} keywords"
+                },
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
+        }
+    }
 
-            OutlinedTextField(
+    if (open) {
+        BlockManagerDialog(
+            title = stringResource(R.string.block_stat_keywords),
+            onDismiss = { open = false }
+        ) {
+            QueuedForReview(
+                items = viewModel.pendingSubmissions("keyword"),
+                icon = Icons.Outlined.Science
+            )
+            ApprovedGlobally(
+                items = viewModel.approvedSubmissions("keyword"),
+                icon = Icons.Outlined.Science
+            )
+            AddField(
                 value = viewModel.newYoutubeTestKeywordText,
                 onValueChange = { viewModel.updateNewYoutubeTestKeyword(it) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Add a keyword to block") },
-                placeholder = { Text(stringResource(R.string.block_youtube_keyword_hint)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Ascii,
-                    imeAction = ImeAction.Done
-                ),
-                keyboardActions = KeyboardActions(onDone = { viewModel.addYoutubeTestKeyword() }),
-                trailingIcon = {
-                    IconButton(onClick = { viewModel.addYoutubeTestKeyword() }) {
-                        Icon(Icons.Filled.Add, contentDescription = "Add keyword")
-                    }
-                }
+                placeholder = stringResource(R.string.block_youtube_keyword_hint),
+                onAdd = { viewModel.addYoutubeTestKeyword() }
             )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            if (viewModel.youtubeTestKeywords.isNotEmpty()) {
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    for (keyword in viewModel.youtubeTestKeywords) {
-                        BlockedChip(
-                            label = keyword,
-                            onDelete = { viewModel.removeYoutubeTestKeyword(keyword) }
-                        )
-                    }
-                }
-                // Contributing a keyword is a separate, deliberate action from
-                // adding it locally. The copy says what actually happens — it is
-                // reviewed, not applied — because a button labelled "block this
-                // for everyone" that silently did nothing visible would be a lie
-                // in the other direction.
-                if (viewModel.globalRulesAvailable) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.block_global_suggest_note),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
-                    )
-                    Spacer(modifier = Modifier.height(6.dp))
-                    OutlinedButton(
-                        onClick = {
-                            val keyword = viewModel.newYoutubeTestKeywordText.trim()
-                            if (keyword.isNotEmpty()) {
-                                viewModel.suggestGlobalKeyword(keyword) { ok ->
+            if (viewModel.youtubeTestKeywords.isEmpty()) {
+                Text(
+                    text = "No keywords yet. Add one above.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                viewModel.youtubeTestKeywords.forEach { keyword ->
+                    BlockListItem(
+                        label = keyword,
+                        icon = Icons.Outlined.Science,
+                        onRemove = { viewModel.removeYoutubeTestKeyword(keyword) },
+                        removeLabel = "Remove $keyword",
+                        // The Send action disappears once this value is queued or
+                        // approved, so the same request cannot be sent twice.
+                        onSend = if (
+                            viewModel.globalRulesAvailable &&
+                            viewModel.submissionStatusFor("keyword", keyword) == null
+                        ) {
+                            {
+                                viewModel.submitKeywordToGlobal(keyword) { ok ->
                                     Toast.makeText(
                                         context,
                                         context.getString(
@@ -782,18 +1304,16 @@ private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
                                     ).show()
                                 }
                             }
-                        },
-                        enabled = viewModel.newYoutubeTestKeywordText.trim().isNotEmpty()
-                    ) {
-                        Text(stringResource(R.string.block_global_suggest), fontSize = 12.sp)
-                    }
+                        } else null,
+                        subtitle = if (viewModel.isQueuedForReview("keyword", keyword)) {
+                            "Queued for review"
+                        } else if (viewModel.isApprovedGlobally("keyword", keyword)) {
+                            "Approved globally"
+                        } else {
+                            viewModel.reasonFor(keyword)?.reason
+                        }
+                    )
                 }
-            } else {
-                Text(
-                    text = "No keywords yet. Add one above.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
     }
@@ -804,221 +1324,123 @@ private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
 @Composable
 private fun BrainRotChannelsCard(viewModel: MainViewModel) {
     val context = LocalContext.current
-    var expanded by remember { mutableStateOf(false) }
-    var showDetails by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
     val channels = viewModel.filteredBrainRotChannels()
 
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Outlined.Block,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.block_stat_channels),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "${viewModel.brainRotChannels.size} channels",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                FilledIconButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        if (expanded) Icons.Filled.Close else Icons.Filled.Add,
-                        contentDescription = if (expanded) "Close channel manager" else "Manage channels"
-                    )
-                }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
-            }
-
-            AnimatedVisibility(visible = showDetails) {
-                FeatureDetailBlock(
-                    bullets = listOf(
-                        "Block specific YouTube channels. Every video from a blocked channel is blocked, regardless of its title.",
-                        "Channels are stored by their @handle, so a rename of the channel name never loses the block.",
-                        "Add a channel manually, or block one straight from YouTube's \"Don't recommend this\" menu.",
-                        "Your blocks are private and belong only to you."
-                    )
-                )
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column {
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = viewModel.newChannelHandleText,
-                        onValueChange = { viewModel.updateNewChannelHandle(it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text(stringResource(R.string.block_channel_add_label)) },
-                        placeholder = { Text(stringResource(R.string.block_channel_add_hint)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(onDone = {
-                            if (!viewModel.addBrainRotChannel()) {
-                                Toast.makeText(context, context.getString(R.string.block_channel_invalid), Toast.LENGTH_SHORT).show()
-                            }
-                        }),
-                        trailingIcon = {
-                            IconButton(onClick = {
-                                if (!viewModel.addBrainRotChannel()) {
-                                    Toast.makeText(context, context.getString(R.string.block_channel_invalid), Toast.LENGTH_SHORT).show()
-                                }
-                            }) {
-                                Icon(Icons.Filled.Add, contentDescription = "Add channel")
-                            }
-                        }
-                    )
-
-                    if (viewModel.brainRotChannels.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = viewModel.channelSearchText,
-                            onValueChange = { viewModel.updateChannelSearch(it) },
-                            modifier = Modifier.fillMaxWidth(),
-                            placeholder = { Text(stringResource(R.string.block_channel_search_hint)) },
-                            singleLine = true,
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Filled.Search,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            trailingIcon = {
-                                if (viewModel.channelSearchText.isNotEmpty()) {
-                                    IconButton(onClick = { viewModel.updateChannelSearch("") }) {
-                                        Icon(Icons.Filled.Close, contentDescription = "Clear search", modifier = Modifier.size(16.dp))
-                                    }
-                                }
-                            }
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        if (channels.isEmpty()) {
-                            Text(
-                                text = "No channel matches that search.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        } else {
-                            for (channel in channels) {
-                                ChannelRow(
-                                    channel = channel,
-                                    onDelete = { viewModel.removeBrainRotChannel(channel.handle) },
-                                    onSuggestGlobal = if (viewModel.globalRulesAvailable) {
-                                        {
-                                            viewModel.suggestGlobalChannel(channel.handle, channel.name) { ok ->
-                                                Toast.makeText(
-                                                    context,
-                                                    context.getString(
-                                                        if (ok) R.string.block_global_suggest_queued
-                                                        else R.string.block_global_suggest_failed
-                                                    ),
-                                                    Toast.LENGTH_SHORT
-                                                ).show()
-                                            }
-                                        }
-                                    } else null
-                                )
-                            }
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = stringResource(R.string.block_channels_empty),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = stringResource(R.string.block_channel_handle_note),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                    )
-                }
-            }
+            CardHeader(
+                icon = Icons.Outlined.Block,
+                title = stringResource(R.string.block_stat_channels),
+                subtitle = if (viewModel.brainRotChannels.isEmpty()) {
+                    "No channels yet — tap to add"
+                } else {
+                    "${viewModel.brainRotChannels.size} channels"
+                },
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
         }
     }
-}
 
-/**
- * One blocked channel: handle, optional name, the "My block" badge, and an
- * optional action to suggest it to the global repository.
- *
- * The badge is always drawn, because the spec requires a user to be able to tell
- * at a glance whether something is blocked by their own rule or by the shared
- * one — and the two are managed in different places.
- */
-@Composable
-private fun ChannelRow(
-    channel: com.muddassir.clearview.brainrot.BrainRotRepository.BlockedChannel,
-    onDelete: () -> Unit,
-    onSuggestGlobal: (() -> Unit)? = null
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = channel.handle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
+    if (open) {
+        BlockManagerDialog(
+            title = stringResource(R.string.block_stat_channels),
+            onDismiss = { open = false }
+        ) {
+            QueuedForReview(
+                items = viewModel.pendingSubmissions("channel"),
+                icon = Icons.Outlined.PlayCircle
+            )
+            ApprovedGlobally(
+                items = viewModel.approvedSubmissions("channel"),
+                icon = Icons.Outlined.PlayCircle
+            )
+            AddField(
+                value = viewModel.newChannelHandleText,
+                onValueChange = { viewModel.updateNewChannelHandle(it) },
+                placeholder = stringResource(R.string.block_channel_add_hint),
+                onAdd = {
+                    if (!viewModel.addBrainRotChannel()) {
+                        Toast.makeText(context, context.getString(R.string.block_channel_invalid), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+
+            if (viewModel.brainRotChannels.size > 5) {
+                OutlinedTextField(
+                    value = viewModel.channelSearchText,
+                    onValueChange = { viewModel.updateChannelSearch(it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text(stringResource(R.string.block_channel_search_hint)) },
+                    singleLine = true,
+                    leadingIcon = {
+                        Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    trailingIcon = {
+                        if (viewModel.channelSearchText.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.updateChannelSearch("") }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear search", modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Surface(
-                    shape = RoundedCornerShape(50),
-                    color = MaterialTheme.colorScheme.secondaryContainer
-                ) {
-                    Text(
-                        text = stringResource(R.string.block_channel_my_block),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+            }
+
+            if (channels.isEmpty()) {
+                Text(
+                    text = if (viewModel.brainRotChannels.isEmpty()) {
+                        stringResource(R.string.block_channels_empty)
+                    } else {
+                        "No channel matches that search."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                channels.forEach { channel ->
+                    BlockListItem(
+                        label = channel.handle,
+                        icon = Icons.Outlined.PlayCircle,
+                        onRemove = { viewModel.removeBrainRotChannel(channel.handle) },
+                        removeLabel = "Unblock ${channel.handle}",
+                        // Already sent? The action is not offered at all.
+                        onSend = if (
+                            viewModel.globalRulesAvailable &&
+                            viewModel.submissionStatusFor("channel", channel.handle) == null
+                        ) {
+                            {
+                                viewModel.submitChannelToGlobal(channel.handle, channel.name) { ok ->
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(
+                                            if (ok) R.string.block_global_suggest_queued
+                                            else R.string.block_global_suggest_failed
+                                        ),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        } else null,
+                        subtitle = when {
+                            viewModel.isQueuedForReview("channel", channel.handle) -> "Queued for review"
+                            viewModel.isApprovedGlobally("channel", channel.handle) -> "Approved globally"
+                            else -> channel.name ?: stringResource(R.string.block_channel_my_block)
+                        }
                     )
                 }
             }
-            channel.name?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-            }
-        }
-        if (onSuggestGlobal != null) {
-            TextButton(onClick = onSuggestGlobal) {
-                Text(stringResource(R.string.block_global_suggest), fontSize = 11.sp)
-            }
-        }
-        IconButton(onClick = onDelete) {
-            Icon(
-                Icons.Filled.Close,
-                contentDescription = "Unblock ${channel.handle}",
-                modifier = Modifier.size(16.dp)
+
+            Text(
+                text = stringResource(R.string.block_channel_handle_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
             )
         }
     }
@@ -1036,77 +1458,92 @@ private fun ChannelRow(
  */
 @Composable
 private fun GlobalRulesCard(viewModel: MainViewModel) {
-    var showDetails by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Outlined.Public,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
+            CardHeader(
+                icon = Icons.Outlined.Public,
+                title = stringResource(R.string.block_global_title),
+                subtitle = if (viewModel.globalRulesAvailable) {
+                    stringResource(
+                        R.string.block_global_summary,
+                        viewModel.globalKeywordCount,
+                        viewModel.globalChannelCount
+                    )
+                } else {
+                    stringResource(R.string.block_global_unavailable)
+                },
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
+        }
+    }
+
+    if (open) {
+        BlockManagerDialog(
+            title = stringResource(R.string.block_global_title),
+            onDismiss = { open = false }
+        ) {
+            OutlinedButton(
+                onClick = { viewModel.syncGlobalRules() },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !viewModel.globalRulesSyncing && viewModel.globalRulesAvailable
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(
+                        if (viewModel.globalRulesSyncing) R.string.block_global_syncing
+                        else R.string.block_global_sync
+                    ),
+                    fontSize = 13.sp
                 )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.block_global_title),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = if (viewModel.globalRulesAvailable) {
-                            stringResource(
-                                R.string.block_global_summary,
-                                viewModel.globalKeywordCount,
-                                viewModel.globalChannelCount
-                            )
-                        } else {
-                            stringResource(R.string.block_global_unavailable)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Approved keywords",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (viewModel.globalKeywords.isEmpty()) {
+                Text(
+                    text = "No global keywords yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                viewModel.globalKeywords.forEach { keyword ->
+                    RuleRow(label = keyword, icon = Icons.Outlined.Block)
                 }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
             }
 
-            AnimatedVisibility(visible = showDetails) {
-                FeatureDetailBlock(
-                    bullets = listOf(
-                        "A rule set maintained centrally and applied to every ClearView install automatically.",
-                        "It works alongside your own keywords and channels — it never replaces or removes them.",
-                        "Your suggestions are reviewed before they become a global rule, so one person's mistake cannot affect everyone.",
-                        "Report counts show how many people have asked for a rule, without identifying any of them."
-                    )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "Approved channels",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (viewModel.globalChannels.isEmpty()) {
+                Text(
+                    text = "No global channels yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-            }
-
-            if (viewModel.globalRulesAvailable) {
-                Spacer(modifier = Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { viewModel.syncGlobalRules() },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !viewModel.globalRulesSyncing
-                ) {
-                    Icon(
-                        Icons.Outlined.Refresh,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = stringResource(
-                            if (viewModel.globalRulesSyncing) R.string.block_global_syncing
-                            else R.string.block_global_sync
-                        ),
-                        fontSize = 12.sp
-                    )
+            } else {
+                viewModel.globalChannels.forEach { handle ->
+                    RuleRow(label = handle, icon = Icons.Outlined.PlayCircle)
                 }
             }
         }
@@ -1127,57 +1564,40 @@ private fun GlobalRulesCard(viewModel: MainViewModel) {
  */
 @Composable
 private fun MySubmissionsCard(viewModel: MainViewModel) {
-    var showDetails by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
     val submissions = viewModel.mySubmissions
 
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Outlined.Upload,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = stringResource(R.string.block_my_submissions_title),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "${submissions.size} submitted",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                IconButton(onClick = { viewModel.refreshMySubmissions(notifyOnChange = false) }) {
-                    Icon(
-                        Icons.Outlined.Refresh,
-                        contentDescription = "Refresh my requests",
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
-            }
+            CardHeader(
+                icon = Icons.Outlined.Upload,
+                title = stringResource(R.string.block_my_submissions_title),
+                subtitle = "${submissions.size} submitted",
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
+        }
+    }
 
-            AnimatedVisibility(visible = showDetails) {
-                FeatureDetailBlock(
-                    bullets = listOf(
-                        "Requests you sent for everyone. An administrator reviews them before they apply to anyone.",
-                        "Your request is tied to an anonymous id generated on this device — no account, no email.",
-                        "You are told here, and in the notifications, when a request is approved or rejected."
-                    )
-                )
+    if (open) {
+        BlockManagerDialog(
+            title = stringResource(R.string.block_my_submissions_title),
+            onDismiss = { open = false }
+        ) {
+            OutlinedButton(
+                onClick = { viewModel.refreshMySubmissions(notifyOnChange = false) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Refresh", fontSize = 13.sp)
             }
-
-            Spacer(modifier = Modifier.height(10.dp))
 
             if (submissions.isEmpty()) {
                 Text(
@@ -1186,32 +1606,75 @@ private fun MySubmissionsCard(viewModel: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (submission in submissions) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = submission.displayName ?: submission.value,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    text = stringResource(
-                                        when (submission.status) {
-                                            "approved" -> R.string.block_my_submission_approved
-                                            "rejected" -> R.string.block_my_submission_rejected
-                                            "under_review" -> R.string.block_my_submission_under_review
-                                            else -> R.string.block_my_submission_pending
-                                        }
-                                    ),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
+                submissions.forEach { submission -> SubmissionRow(submission) }
             }
         }
+    }
+}
+
+/** One device submission, with its status pill. */
+@Composable
+private fun SubmissionRow(submission: BrainRotClient.SubmissionStatus) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (submission.kind == "channel") {
+                    Icons.Outlined.PlayCircle
+                } else {
+                    Icons.Outlined.Block
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = submission.displayName ?: submission.value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            SubmissionStatusPill(submission.status)
+        }
+    }
+}
+
+/** Small rounded chip showing where one of this device's requests stands. */
+@Composable
+private fun SubmissionStatusPill(status: String) {
+    val labelRes = when (status) {
+        "approved" -> R.string.block_my_submission_approved
+        "rejected" -> R.string.block_my_submission_rejected
+        "under_review" -> R.string.block_my_submission_under_review
+        else -> R.string.block_my_submission_pending
+    }
+    val color = when (status) {
+        "approved" -> Color(0xFF2E7D32)
+        "rejected" -> MaterialTheme.colorScheme.error
+        "under_review" -> Color(0xFF1565C0)
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = color.copy(alpha = 0.14f)
+    ) {
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Medium,
+            color = color,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+        )
     }
 }
 
@@ -1220,47 +1683,50 @@ private fun MySubmissionsCard(viewModel: MainViewModel) {
 @Composable
 private fun ActivityCard(viewModel: MainViewModel) {
     val summary = viewModel.brainRotSummary
-    var showResetConfirm by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
 
+    // One line on the page, like every other card: what happened TODAY, then an
+    // arrow. The counters, the streak and the top lists used to be printed in
+    // full here and pushed everything below them down the screen.
     Card(
         modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Outlined.Insights,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(22.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = "Protection activity",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f)
-                )
-                TextButton(onClick = { showResetConfirm = true }) {
-                    Text(stringResource(R.string.block_clear_activity), fontSize = 12.sp)
-                }
-            }
+            CardHeader(
+                icon = Icons.Outlined.Insights,
+                title = "Protection activity",
+                subtitle = when {
+                    summary.totalBlocks == 0 -> "Nothing blocked yet"
+                    summary.todayBlocks == 1 -> "1 blocked today"
+                    summary.todayBlocks > 1 -> "${summary.todayBlocks} blocked today"
+                    else -> "${summary.totalBlocks} blocked in total"
+                },
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
+        }
+    }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(modifier = Modifier.fillMaxWidth()) {
+    if (open) {
+        BlockManagerDialog(title = "Protection activity", onDismiss = { open = false }) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 StatCell(stringResource(R.string.block_today), "${summary.todayBlocks}", Modifier.weight(1f))
                 StatCell(stringResource(R.string.block_this_week), "${summary.weekBlocks}", Modifier.weight(1f))
                 StatCell(stringResource(R.string.block_stat_blocks), "${summary.totalBlocks}", Modifier.weight(1f))
             }
 
             if (summary.streakDays > 0) {
-                Spacer(modifier = Modifier.height(10.dp))
                 Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                 ) {
                     Text(
                         text = if (summary.streakDays == 1) {
@@ -1269,18 +1735,19 @@ private fun ActivityCard(viewModel: MainViewModel) {
                             stringResource(R.string.block_streak_days, summary.streakDays)
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                     )
                 }
             }
 
             if (summary.topKeywords.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = stringResource(R.string.block_most_triggered),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 for ((keyword, count) in summary.topKeywords) {
@@ -1292,8 +1759,9 @@ private fun ActivityCard(viewModel: MainViewModel) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = stringResource(R.string.block_top_channel),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 for ((channel, count) in summary.topChannels) {
@@ -1302,76 +1770,152 @@ private fun ActivityCard(viewModel: MainViewModel) {
             }
 
             if (summary.totalBlocks == 0) {
-                Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = stringResource(R.string.block_activity_empty),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { confirmClear = true },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text(stringResource(R.string.block_clear_activity), fontSize = 13.sp)
+            }
         }
     }
 
-    if (showResetConfirm) {
-        AlertDialog(
-            onDismissRequest = { showResetConfirm = false },
-            title = { Text(stringResource(R.string.block_clear_activity)) },
-            text = { Text(stringResource(R.string.block_clear_activity_note)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showResetConfirm = false
-                    viewModel.clearBrainRotActivity()
-                }) {
-                    Text(stringResource(R.string.block_reset_confirm), color = MaterialTheme.colorScheme.error)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showResetConfirm = false }) {
-                    Text(stringResource(R.string.block_cancel))
-                }
+    if (confirmClear) {
+        ClearActivityDialog(
+            onDismiss = { confirmClear = false },
+            onConfirm = {
+                confirmClear = false
+                viewModel.clearBrainRotActivity()
             }
         )
     }
 }
 
-/** One big number with its label, for the activity counters. */
+/**
+ * The destructive-confirmation for clearing protection activity.
+ *
+ * Deliberately NOT a one-tap dialog. This erases the whole history — every
+ * counter, the streak and both top lists — and it cannot be undone, so the
+ * confirm button stays disabled until the user literally types the word. That
+ * turns a mis-tap into a deliberate act, which is the only thing that makes a
+ * "clear everything" button safe to keep one tap away.
+ */
+@Composable
+private fun ClearActivityDialog(onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    var typed by remember { mutableStateOf("") }
+    val armed = typed.trim().equals("clear", ignoreCase = true)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.block_clear_activity)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "This erases your whole protection history: the counters, the streak " +
+                        "and the most-triggered lists. It cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    text = "Type clear to confirm.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = { typed = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("clear") }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = armed) {
+                Text(
+                    text = stringResource(R.string.block_reset_confirm),
+                    color = if (armed) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.block_cancel))
+            }
+        }
+    )
+}
+
+/** One number in its own rounded tile, for the activity counters. */
 @Composable
 private fun StatCell(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier) {
-        Text(
-            text = value,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
     }
 }
 
-/** A label on the left, its count on the right. */
+/** A label on the left, its count as a small pill on the right. */
 @Composable
 private fun ActivityRow(label: String, count: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = label,
-            style = MaterialTheme.typography.bodySmall,
+            style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
             maxLines = 1
         )
-        Text(
-            text = count,
-            style = MaterialTheme.typography.bodySmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Text(
+                text = count,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+            )
+        }
     }
 }
 
@@ -1418,8 +1962,7 @@ private fun PrivacyCard() {
 @Composable
 private fun BlockedItemsCard(viewModel: MainViewModel) {
     val context = LocalContext.current
-    var expanded by remember { mutableStateOf(false) }
-    var showDetails by remember { mutableStateOf(false) }
+    var open by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(16.dp)
     // Hoisted out of drawBehind: MaterialTheme is a composable read and cannot
     // be accessed inside the non-composable DrawScope lambda.
@@ -1443,209 +1986,103 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Blocked Items",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "${viewModel.userKeywords.size} keywords · ${viewModel.blockedDomains.size} websites",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                FilledIconButton(onClick = { expanded = !expanded }) {
-                    Icon(Icons.Filled.Add, contentDescription = if (expanded) "Close editor" else "Add blocked items")
-                }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
-            }
-
-            AnimatedVisibility(visible = showDetails) {
-                FeatureDetailBlock(
-                    bullets = listOf(
-                        "Keywords block searches, video titles and page text across Chrome and the Google app.",
-                        "Websites are blocked by domain — every page on that domain is blocked.",
-                        "Matching uses word boundaries: \"button\" never matches \"butt\", \"brass\" never matches \"bra\".",
-                        "Your own keywords are always blocked as exact words; the built-in pattern system only blocks innocent words when they are combined with an adult term.",
-                        "Everything here is enforced alongside the always-on adult filter, Strict Mode, Shorts and long-video blocking."
-                    )
-                )
-            }
-
-            AnimatedVisibility(visible = expanded) {
-                Column {
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    // Add keyword
-                    OutlinedTextField(
-                        value = viewModel.newKeywordText,
-                        onValueChange = { viewModel.updateNewKeyword(it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Add a keyword to block") },
-                        placeholder = { Text(stringResource(R.string.block_keyword_hint)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { viewModel.addKeyword() }),
-                        trailingIcon = {
-                            IconButton(onClick = { viewModel.addKeyword() }) {
-                                Icon(Icons.Filled.Add, contentDescription = "Add keyword")
-                            }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (viewModel.userKeywords.isNotEmpty()) {
-                        Text(
-                            text = "Keywords",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            for (keyword in viewModel.userKeywords) {
-                                BlockedItemEntry(
-                                    label = keyword,
-                                    // The reason is shown ON the row, not
-                                    // buried in a detail screen: a block the
-                                    // user cannot explain is a block they
-                                    // cannot correct.
-                                    reason = viewModel.reasonFor(keyword)?.reason,
-                                    onDelete = { viewModel.removeKeyword(keyword) },
-                                    submitLabel = if (viewModel.globalRulesAvailable) {
-                                        stringResource(R.string.block_my_submission_submit)
-                                    } else {
-                                        null
-                                    },
-                                    onSubmit = {
-                                        viewModel.submitKeywordToGlobal(keyword) { ok ->
-                                            Toast.makeText(
-                                                context,
-                                                context.getString(
-                                                    if (ok) R.string.block_global_suggest_queued
-                                                    else R.string.block_global_suggest_failed
-                                                ),
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-
-                    // Add website
-                    OutlinedTextField(
-                        value = viewModel.newDomainText,
-                        onValueChange = { viewModel.updateNewDomain(it) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Add a website to block") },
-                        placeholder = { Text(stringResource(R.string.block_domain_hint)) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Ascii,
-                            imeAction = ImeAction.Done
-                        ),
-                        keyboardActions = KeyboardActions(onDone = { viewModel.addDomain() }),
-                        trailingIcon = {
-                            IconButton(onClick = { viewModel.addDomain() }) {
-                                Icon(Icons.Filled.Add, contentDescription = "Add website")
-                            }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    if (viewModel.blockedDomains.isNotEmpty()) {
-                        Text(
-                            text = "Websites",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        androidx.compose.foundation.layout.FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            for (domain in viewModel.blockedDomains) {
-                                BlockedChip(
-                                    label = domain,
-                                    onDelete = { viewModel.removeDomain(domain) }
-                                )
-                            }
-                        }
-                    }
-
-                    if (viewModel.userKeywords.isEmpty() && viewModel.blockedDomains.isEmpty()) {
-                        Text(
-                            text = "Nothing blocked yet. Add keywords or websites above.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
+            CardHeader(
+                icon = Icons.Outlined.Block,
+                title = "Blocked Items",
+                subtitle = "${viewModel.userKeywords.size} keywords · ${viewModel.blockedDomains.size} websites",
+                onClick = { open = true },
+                trailing = { ManageArrow() }
+            )
         }
     }
-}
 
-/**
- * One blocked item, with WHY it is blocked and the actions on it.
- *
- * A chip alone says only the label, which answers "what" and never "why" — and
- * the reason is the thing a user needs in order to decide whether to keep the
- * block or remove it. It is shown on the row rather than behind a tap for that
- * reason: the moment somebody wonders about a word is the moment it is next to
- * the word.
- */
-@Composable
-private fun BlockedItemEntry(
-    label: String,
-    reason: String?,
-    onDelete: () -> Unit,
-    submitLabel: String?,
-    onSubmit: () -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.4f))
-            .padding(start = 12.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
+    if (open) {
+        BlockManagerDialog(title = "Blocked Items", onDismiss = { open = false }) {
+            QueuedForReview(
+                items = viewModel.pendingSubmissions("keyword"),
+                icon = Icons.Outlined.Block
             )
-            if (reason != null) {
+            ApprovedGlobally(
+                items = viewModel.approvedSubmissions("keyword"),
+                icon = Icons.Outlined.Block
+            )
+            Text(
+                text = "Keywords",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            AddField(
+                value = viewModel.newKeywordText,
+                onValueChange = { viewModel.updateNewKeyword(it) },
+                placeholder = stringResource(R.string.block_keyword_hint),
+                onAdd = { viewModel.addKeyword() }
+            )
+            if (viewModel.userKeywords.isEmpty()) {
                 Text(
-                    text = reason,
-                    style = MaterialTheme.typography.labelSmall,
+                    text = "No keywords yet.",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            } else {
+                viewModel.userKeywords.forEach { keyword ->
+                    BlockListItem(
+                        label = keyword,
+                        icon = Icons.Outlined.Block,
+                        subtitle = viewModel.reasonFor(keyword)?.reason,
+                        onRemove = { viewModel.removeKeyword(keyword) },
+                        removeLabel = "Remove $keyword",
+                        onSend = if (viewModel.globalRulesAvailable) {
+                            {
+                                viewModel.submitKeywordToGlobal(keyword) { ok ->
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(
+                                            if (ok) R.string.block_global_suggest_queued
+                                            else R.string.block_global_suggest_failed
+                                        ),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        } else null
+                    )
+                }
             }
-        }
-        if (submitLabel != null) {
-            TextButton(onClick = onSubmit) {
-                Text(submitLabel, fontSize = 11.sp)
-            }
-        }
-        IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-            Icon(
-                Icons.Filled.Close,
-                contentDescription = "Remove $label",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp)
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "Websites",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            AddField(
+                value = viewModel.newDomainText,
+                onValueChange = { viewModel.updateNewDomain(it) },
+                placeholder = stringResource(R.string.block_domain_hint),
+                onAdd = { viewModel.addDomain() }
+            )
+            if (viewModel.blockedDomains.isEmpty()) {
+                Text(
+                    text = "No websites yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                androidx.compose.foundation.layout.FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    for (domain in viewModel.blockedDomains) {
+                        BlockedChip(
+                            label = domain,
+                            onDelete = { viewModel.removeDomain(domain) }
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -1997,7 +2434,10 @@ private fun UninstallProtectionCard(viewModel: MainViewModel, context: Context) 
     val isOwner = viewModel.isDeviceOwner
     val isAdmin = viewModel.isDeviceAdminEnabled
     var showRemoveOwnerConfirm by remember { mutableStateOf(false) }
-    var showDetails by remember { mutableStateOf(false) }
+    // Compact by default: only the header line shows. Everything else (details,
+    // the ADB steps, the remove button) is behind a tap, because this is
+    // setup-once content that should not push the everyday cards off screen.
+    var expanded by remember { mutableStateOf(false) }
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -2009,7 +2449,9 @@ private fun UninstallProtectionCard(viewModel: MainViewModel, context: Context) 
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
@@ -2038,10 +2480,10 @@ private fun UninstallProtectionCard(viewModel: MainViewModel, context: Context) 
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                InfoToggleButton(expanded = showDetails) { showDetails = !showDetails }
+                ExpandChevron(expanded)
             }
 
-            AnimatedVisibility(visible = showDetails) {
+            AnimatedVisibility(visible = expanded) {
                 FeatureDetailBlock(
                     bullets = listOf(
                         "Device Owner blocks uninstall completely — a factory reset is required to remove the app.",
@@ -2051,7 +2493,7 @@ private fun UninstallProtectionCard(viewModel: MainViewModel, context: Context) 
                 )
             }
 
-            if (isOwner && isAdmin) {
+            if (expanded && isOwner && isAdmin) {
                 Spacer(modifier = Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(12.dp))
@@ -2097,7 +2539,7 @@ private fun UninstallProtectionCard(viewModel: MainViewModel, context: Context) 
                 )
             }
 
-            if (!isOwner && isAdmin) {
+            if (expanded && !isOwner && isAdmin) {
                 Spacer(modifier = Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(modifier = Modifier.height(12.dp))

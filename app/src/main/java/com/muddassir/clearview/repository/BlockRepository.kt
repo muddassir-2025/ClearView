@@ -131,31 +131,41 @@ class BlockRepository(context: Context) {
      */
     fun getUserKeywords(): Set<String> {
         userKeywordsCache?.let { return it }
-        val keywords = (prefs.getStringSet(KEY_USER_KEYWORDS, emptySet()) ?: emptySet())
-            .map { it.trim().lowercase(Locale.ROOT) }
-            .filter { it.isNotEmpty() }
-            .toMutableSet()
-        // Global rules are additive: they can block something the user's own list
-        // does not, and they can never unblock anything.
-        keywords.addAll(globalKeywords)
         // Immutable copy — see activeBuiltInKeywords. Return the local, not the
         // field, so a concurrent invalidation cannot null it between store/load.
-        val result = keywords.toSet()
+        val result = mergeKeywords(getUserOwnKeywords(), globalKeywords)
         userKeywordsCache = result
         return result
     }
 
+    /**
+     * ONLY the keywords this person added — never the global rules.
+     *
+     * This is what the Blocking tab edits. The merged list above is for
+     * ENFORCEMENT; a screen that read it would show a global rule as if it were
+     * the user's own entry, and the Remove button next to it would do nothing:
+     * the write went to the local list, then the very next read merged the global
+     * rule straight back in. That is the "I cannot remove the keyword" bug, and
+     * it also used to bake every global rule into the user's own prefs the first
+     * time they added anything.
+     */
+    fun getUserOwnKeywords(): Set<String> =
+        (prefs.getStringSet(KEY_USER_KEYWORDS, emptySet()) ?: emptySet())
+            .map { it.trim().lowercase(Locale.ROOT) }
+            .filter { it.isNotEmpty() }
+            .toSet()
+
     fun addUserKeyword(keyword: String) {
         val trimmed = keyword.trim().lowercase(Locale.ROOT)
         if (trimmed.isEmpty()) return
-        val current = getUserKeywords().toMutableSet()
+        val current = getUserOwnKeywords().toMutableSet()
         current.add(trimmed)
         prefs.edit().putStringSet(KEY_USER_KEYWORDS, current).apply()
         userKeywordsCache = null
     }
 
     fun removeUserKeyword(keyword: String) {
-        val current = getUserKeywords().toMutableSet()
+        val current = getUserOwnKeywords().toMutableSet()
         current.remove(keyword.trim().lowercase(Locale.ROOT))
         prefs.edit().putStringSet(KEY_USER_KEYWORDS, current).apply()
         userKeywordsCache = null
@@ -270,6 +280,17 @@ class BlockRepository(context: Context) {
             globalKeywords = normalized
             userKeywordsCache = null
         }
+
+        /**
+         * The user's own keywords plus the global rules — the ENFORCEMENT set.
+         *
+         * A plain function rather than inline code so the rule that matters is
+         * testable without a device: the global rules are added, never removed,
+         * so a global rule can only ever block MORE. Note that the user's own
+         * list is what a screen may edit — see [getUserOwnKeywords].
+         */
+        fun mergeKeywords(own: Set<String>, global: Set<String>): Set<String> =
+            (own + global).toSet()
 
         @Volatile private var builtInKeywordsCache: Set<String>? = null
         @Volatile private var websiteKeywordsCache: Set<String>? = null

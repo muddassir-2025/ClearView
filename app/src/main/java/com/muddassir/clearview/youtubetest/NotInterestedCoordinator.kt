@@ -280,6 +280,20 @@ class NotInterestedCoordinator(
             val confirmed = scanForConfirmation(root)
             val now = System.currentTimeMillis()
 
+            // No confirmation on screen: re-arm for the NEXT one, FIRST and
+            // unconditionally. This used to happen only in the not-menu branch,
+            // so re-opening the menu before it reset left `confirmationHandled`
+            // stuck true and silently dropped the next "Not interested" — the
+            // intermittency. Re-arming here covers every path.
+            if (!confirmed) {
+                confirmationFirstSeenAt = 0L
+                confirmationHandled = false
+                // The captured handle is deliberately NOT cleared here: between
+                // picking a menu option and the confirmation appearing there is a
+                // gap where nothing is on screen, and clearing would lose the
+                // channel and fall back to whatever Short is on screen next.
+            }
+
             // The menu names the video the ACTION is about. Capture its channel
             // NOW, because choosing an option often ADVANCES to the next Short
             // before the confirmation appears — and acting on whatever channel
@@ -287,7 +301,7 @@ class NotInterestedCoordinator(
             // acted on; it only records which channel the coming action means.
             if (menuOpen && !confirmed) {
                 val h = findChannelHandle(root) ?: findChannelHandleAcrossWindows()
-                if (!h.isNullOrBlank() && h != pendingActionHandle) {
+                if (!h.isNullOrBlank()) {
                     pendingActionHandle = h
                     pendingActionAt = now
                     Log.i(TAG, "NOT_INTERESTED_MENU_OPEN handle=$h")
@@ -295,12 +309,7 @@ class NotInterestedCoordinator(
                 return
             }
 
-            if (!confirmed) {
-                // Neither menu nor confirmation: arm the next confirmation.
-                confirmationFirstSeenAt = 0L
-                confirmationHandled = false
-                return
-            }
+            if (!confirmed) return
 
             if (confirmationHandled) return
             if (confirmationFirstSeenAt == 0L) {

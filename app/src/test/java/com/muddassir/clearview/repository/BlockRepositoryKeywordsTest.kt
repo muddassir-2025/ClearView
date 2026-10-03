@@ -1,5 +1,6 @@
 package com.muddassir.clearview.repository
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -203,6 +204,41 @@ class BlockRepositoryKeywordsTest {
         // it (a bare "beach" must stay innocent), so its presence in both
         // lists is by design.
         assertTrue("'beach' must be a generic half too", "beach" in comboGeneric)
+    }
+
+    // ── Global rules merge, they never overwrite ────────────────────
+
+    @Test
+    fun `global rules are additive and never replace the user's own list`() {
+        val own = setOf("myword")
+        val global = setOf("viral")
+        val merged = BlockRepository.mergeKeywords(own, global)
+        assertTrue(merged.contains("myword"))
+        assertTrue(merged.contains("viral"))
+        assertEquals(2, merged.size)
+    }
+
+    /**
+     * The regression this file exists for: a global rule must never end up in
+     * the list the UI edits. When it did, the global word appeared as the user's
+     * own entry and its Remove button silently did nothing — the write went to
+     * the local list and the very next read merged the global rule back in.
+     */
+    @Test
+    fun `a global rule is enforced but is not one of the user's own keywords`() {
+        val global = setOf("viral")
+        val own = setOf("myword")
+        assertTrue("the global rule must be enforced", BlockRepository.mergeKeywords(own, global).contains("viral"))
+        // mergeKeywords is the ENFORCEMENT view; the editable view is the first
+        // argument, which the caller passes as the user's own list alone.
+        assertFalse("the editable list must not contain the global rule", own.contains("viral"))
+        assertTrue(BlockRepository.mergeKeywords(emptySet(), global).contains("viral"))
+    }
+
+    @Test
+    fun `an empty global set leaves the user's own list exactly as it was`() {
+        val own = setOf("a", "b")
+        assertEquals(own, BlockRepository.mergeKeywords(own, emptySet()))
     }
 
     // ── Fully innocent / over-broad words: not blocked anywhere ────

@@ -1,7 +1,9 @@
 package com.muddassir.clearview.brainrot
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -40,5 +42,20 @@ class BrainRotChannelTest {
     @Test
     fun `a single character handle is too short to be real`() {
         assertNull(BrainRotRepository.normalizeHandle("@a"))
+    }
+
+    @Test
+    fun `a globally approved channel is enforced for every user`() {
+        try {
+            BrainRotRepository.setGlobalChannels(setOf("@PureCalisthenicX"))
+            // Any spelling the phone may see is the same global block.
+            assertTrue(BrainRotRepository.isGlobalChannelBlocked("@purecalisthenicx"))
+            assertTrue(BrainRotRepository.isGlobalChannelBlocked("purecalisthenicx"))
+            assertTrue(BrainRotRepository.isGlobalChannelBlocked("  @PURECALISTHENICX  "))
+            assertFalse(BrainRotRepository.isGlobalChannelBlocked("@someone-else"))
+            assertFalse(BrainRotRepository.isGlobalChannelBlocked(null))
+        } finally {
+            BrainRotRepository.setGlobalChannels(emptySet())
+        }
     }
 }

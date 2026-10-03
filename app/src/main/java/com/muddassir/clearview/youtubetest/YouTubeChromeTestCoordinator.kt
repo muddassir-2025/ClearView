@@ -742,7 +742,11 @@ class YouTubeChromeTestCoordinator(
                 Log.i(TAG, "YT_BLOCK_REENFORCE videoId=${videoId ?: "unknown"} (still matched)")
             }
         } else {
-            lastMatchedTestKeyword = null
+            // Keep the CHANNEL label while a channel block is active: the
+            // overlay reads this to say which channel is blocked, and clearing
+            // it here is why a blocked channel's overlay fell back to the
+            // generic "BLOCK BRAIN ROT" wording.
+            if (!blockedByChannel) lastMatchedTestKeyword = null
             Log.i(TAG, "YT_TEST_KEYWORD_MATCH none")
             if (blockState != YoutubeBlockState.NORMAL && blockedVideoId == stateId &&
                 !blockedByChannel

@@ -366,6 +366,15 @@ class MainViewModel : ViewModel() {
     var globalChannelCount by mutableStateOf(0)
         private set
 
+    /**
+     * The actual global rules cached on this device, so the repository card can
+     * show WHAT is enforced rather than only how many there are. An approved
+     * channel that never appears here is exactly the "it says 0 channels"
+     * confusion this list removes.
+     */
+    val globalKeywords = mutableStateListOf<String>()
+    val globalChannels = mutableStateListOf<String>()
+
     /** True when a global-rules sync is in flight, for a progress indicator. */
     var globalRulesSyncing by mutableStateOf(false)
         private set
@@ -380,8 +389,13 @@ class MainViewModel : ViewModel() {
         private set
 
     private fun refreshGlobalRules() {
-        globalKeywordCount = globalRulesStore?.keywords?.size ?: 0
-        globalChannelCount = globalRulesStore?.channelHandles?.size ?: 0
+        val store = globalRulesStore ?: return
+        globalKeywordCount = store.keywords.size
+        globalChannelCount = store.channelHandles.size
+        globalKeywords.clear()
+        globalKeywords.addAll(store.keywords.sorted())
+        globalChannels.clear()
+        globalChannels.addAll(store.channelHandles.sorted())
     }
 
     /** Force a refresh of the global rules from the server. */
@@ -527,6 +541,45 @@ class MainViewModel : ViewModel() {
             refreshNotifications()
         }
     }
+
+    /**
+     * This device's submissions still waiting on a decision, for one kind.
+     *
+     * Shown as its own "Queued for review" group above the user's own list: a
+     * request that was sent is not a block yet, and mixing the two made a
+     * pending request look like a rule that was already in force.
+     */
+    fun pendingSubmissions(kind: String): List<BrainRotClient.SubmissionStatus> =
+        mySubmissions.filter {
+            it.kind == kind && (it.status == "pending" || it.status == "under_review")
+        }
+
+    /** This device's APPROVED submissions for one kind — now global rules. */
+    fun approvedSubmissions(kind: String): List<BrainRotClient.SubmissionStatus> =
+        mySubmissions.filter { it.kind == kind && it.status == "approved" }
+
+    /**
+     * Where this device's request for one value stands, or null when it was
+     * never sent.
+     *
+     * This is what stops the Send button being offered twice: once a value is
+     * queued it shows as queued, and once it is approved it shows as approved —
+     * the button is not drawn again, so the same request cannot be re-submitted
+     * from the list it came from. A REJECTED request returns null, deliberately:
+     * a rejection is not a reason to stop somebody asking again.
+     */
+    fun submissionStatusFor(kind: String, value: String): String? =
+        mySubmissions
+            .firstOrNull { it.kind == kind && it.value.equals(value.trim(), ignoreCase = true) }
+            ?.status
+
+    /** True while this value is still waiting on a decision. */
+    fun isQueuedForReview(kind: String, value: String): Boolean =
+        submissionStatusFor(kind, value).let { it == "pending" || it == "under_review" }
+
+    /** True once this value became a global rule. */
+    fun isApprovedGlobally(kind: String, value: String): Boolean =
+        submissionStatusFor(kind, value) == "approved"
 
     /** Suggest a channel globally and record the queued state in the centre. */
     fun submitChannelToGlobal(handle: String, name: String?, onResult: (Boolean) -> Unit) {
@@ -803,9 +856,16 @@ class MainViewModel : ViewModel() {
         refreshKeywords()
     }
 
+    /**
+     * Re-read the keywords the user THEMSELVES added.
+     *
+     * Deliberately not the merged enforcement list: a global rule must never
+     * appear in the editable list, or it looks like the user's own entry and its
+     * Remove button silently does nothing.
+     */
     private fun refreshKeywords() {
         userKeywords.clear()
-        userKeywords.addAll((repository?.getUserKeywords() ?: emptySet()).sorted())
+        userKeywords.addAll((repository?.getUserOwnKeywords() ?: emptySet()).sorted())
     }
 
     // ── Domains ────────────────────────────────────────────────────

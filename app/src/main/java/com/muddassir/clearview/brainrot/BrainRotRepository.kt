@@ -33,6 +33,33 @@ class BrainRotRepository(context: Context) {
         const val MAX_CHANNELS = 500
 
         /**
+         * Channels approved in the GLOBAL repository, pushed in after a sync.
+         *
+         * Held statically for the same reason [com.muddassir.clearview.repository.BlockRepository.setGlobalKeywords]
+         * is: the accessibility hot path checks a channel on every scan and must
+         * not build a second store or touch the network to do it. Without this
+         * an admin-approved channel reached the phone but nothing ever consulted
+         * it, so a global channel block silently did nothing for every user.
+         */
+        @Volatile
+        private var globalChannelHandles: Set<String> = emptySet()
+
+        /** Replace the global channel set (normalised handles). Called after a sync. */
+        fun setGlobalChannels(handles: Set<String>) {
+            globalChannelHandles = handles.mapNotNull { normalizeHandle(it) }.toSet()
+        }
+
+        /**
+         * True when the handle is blocked by a GLOBAL rule. Pure companion
+         * lookup — no Context, no device prefs — so it is trivially testable and
+         * cheap enough for the accessibility hot path.
+         */
+        fun isGlobalChannelBlocked(handle: String?): Boolean {
+            val normalized = normalizeHandle(handle) ?: return false
+            return globalChannelHandles.contains(normalized)
+        }
+
+        /**
          * Normalize a channel handle: trim, ensure a single leading "@",
          * lowercase. Returns null for anything that is not a plausible handle,
          * so "@", "@-" and a full URL never enter the list.
@@ -171,9 +198,13 @@ class BrainRotRepository(context: Context) {
         persistChannels(getBlockedChannels().filterNot { it.handle == normalized })
     }
 
-    /** True when this handle (in any spelling) is in the user's blocked list. */
+    /**
+     * True when this handle is blocked — by the user's own list OR by a global
+     * rule the administrator approved. Either way it is enforced.
+     */
     fun isChannelBlocked(handle: String?): Boolean {
         val normalized = normalizeHandle(handle) ?: return false
+        if (isGlobalChannelBlocked(normalized)) return true
         return getBlockedChannels().any { it.handle == normalized }
     }
 

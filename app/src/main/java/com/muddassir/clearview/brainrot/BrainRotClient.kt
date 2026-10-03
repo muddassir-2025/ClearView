@@ -182,17 +182,16 @@ class BrainRotClient(context: Context) {
             val arr = json.optJSONArray("submissions") ?: return@withContext emptyList()
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                val id = o.optString("id")
-                val value = o.optString("value")
-                if (id.isBlank() || value.isBlank()) return@mapNotNull null
+                val id = stringOrNull(o, "id") ?: return@mapNotNull null
+                val value = stringOrNull(o, "value") ?: return@mapNotNull null
                 SubmissionStatus(
                     id = id,
                     kind = if (o.optString("kind") == "channel") "channel" else "keyword",
                     value = value,
-                    displayName = o.optString("displayName").takeIf { it.isNotBlank() },
-                    status = o.optString("status").ifBlank { "pending" },
-                    source = o.optString("source").ifBlank { "unknown" },
-                    createdAt = o.optString("createdAt").takeIf { it.isNotBlank() }
+                    displayName = stringOrNull(o, "displayName"),
+                    status = stringOrNull(o, "status") ?: "pending",
+                    source = stringOrNull(o, "source") ?: "unknown",
+                    createdAt = stringOrNull(o, "createdAt")
                 )
             }
         } catch (e: Exception) {
@@ -218,6 +217,19 @@ class BrainRotClient(context: Context) {
             val json = postJsonReturning("/api/v1/brainrot/reports", body) ?: return@withContext null
             json.optInt("reports", 0)
         }
+
+    /**
+     * A string field, or null when it is MISSING or a JSON null.
+     *
+     * `JSONObject.optString` returns the literal string "null" for a JSON
+     * `null` (org.json stringifies JSONObject.NULL), which is how a submission's
+     * absent display name reached the UI as the word "null". Use this for every
+     * optional field so "null" is never shown as a value.
+     */
+    private fun stringOrNull(o: JSONObject, key: String): String? {
+        if (o.isNull(key)) return null
+        return o.optString(key).takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+    }
 
     // ── Internals ────────────────────────────────────────────────────
 
