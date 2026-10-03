@@ -86,6 +86,11 @@ const AdBodySchema = z
       .string()
       .regex(/^#[0-9A-Fa-f]{6}$/, 'Colour must be a #RRGGBB value.')
       .default('#E9EDEF'),
+    /** The card's own surface. `#RRGGBB` only. */
+    backgroundColor: z
+      .string()
+      .regex(/^#[0-9A-Fa-f]{6}$/, 'Colour must be a #RRGGBB value.')
+      .default('#202C33'),
     /** How an image card's picture fills it. */
     imageFit: z.enum(['cover', 'contain']).default('cover'),
     /** The crop's centre, 0..1 on each axis. */
@@ -110,6 +115,7 @@ function toInput(body: AdBody): AdvertisementInput {
     expiresAt: body.expiresAt ? new Date(body.expiresAt) : null,
     priority: body.priority,
     textColor: body.textColor,
+    backgroundColor: body.backgroundColor,
     imageFit: body.imageFit,
     imageFocusX: body.imageFocusX,
     imageFocusY: body.imageFocusY,

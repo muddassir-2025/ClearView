@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.muddassir.clearview.BuildConfig
+import com.muddassir.clearview.goodpost.data.AD_DEFAULT_BACKGROUND_COLOR
 import com.muddassir.clearview.goodpost.data.AD_DEFAULT_TEXT_COLOR
 import com.muddassir.clearview.goodpost.data.AdDuration
 import com.muddassir.clearview.goodpost.data.AdminSession
@@ -563,6 +564,8 @@ data class GoodPostUiState(
     val adFormExistingImageUrl: String? = null,
     /** A text card's ink (§12). */
     val adFormTextColor: String = AD_DEFAULT_TEXT_COLOR,
+    /** The card's own surface (§12). */
+    val adFormBackgroundColor: String = AD_DEFAULT_BACKGROUND_COLOR,
     /** An image card's fit: `cover` fills the card, `contain` shows it whole. */
     val adFormImageFit: String = "cover",
     /**
@@ -872,7 +875,15 @@ class GoodPostViewModel : ViewModel() {
 
         refreshChannels()
         loadAds()
-        if (uiState.categories.isEmpty()) loadCategories()
+        // Always re-read, not only when the cache is empty.
+        //
+        // Categories are a list the SERVER owns and an operator changes by adding
+        // one, and the cache is there so the form opens with something in it —
+        // not to freeze the list at whatever it was the first time this install
+        // ran. Fetching only when empty meant a category added later never
+        // appeared on the channel form at all, which is how a correct server
+        // response looked like a stale app.
+        loadCategories()
 
         // The background check is enqueued unconditionally and reads the switch
         // itself, so a reader who turned notifications on in a previous install
@@ -3341,6 +3352,7 @@ class GoodPostViewModel : ViewModel() {
                 AdDuration.Custom
             },
             adFormTextColor = ad?.textColor ?: AD_DEFAULT_TEXT_COLOR,
+            adFormBackgroundColor = ad?.backgroundColor ?: AD_DEFAULT_BACKGROUND_COLOR,
             adFormImageFit = ad?.imageFit ?: "cover",
             adFormFocusX = ad?.imageFocusX ?: 0.5f,
             adFormFocusY = ad?.imageFocusY ?: 0.5f,
@@ -3353,6 +3365,11 @@ class GoodPostViewModel : ViewModel() {
     /** A text card's colour, from the editor's palette (§12). */
     fun onAdTextColorChange(color: String) {
         uiState = uiState.copy(adFormTextColor = color, messageCode = null)
+    }
+
+    /** The card's own surface, from the editor's palette (§12). */
+    fun onAdBackgroundColorChange(color: String) {
+        uiState = uiState.copy(adFormBackgroundColor = color, messageCode = null)
     }
 
     /** How an image card's picture fills its card (§12). */
@@ -3581,6 +3598,7 @@ class GoodPostViewModel : ViewModel() {
             // it, and a card that switched from text to image and back keeps the
             // colour it was given rather than resetting to the default.
             put("textColor", uiState.adFormTextColor)
+            put("backgroundColor", uiState.adFormBackgroundColor)
             put("imageFit", uiState.adFormImageFit)
             put("imageFocusX", uiState.adFormFocusX.toDouble())
             put("imageFocusY", uiState.adFormFocusY.toDouble())

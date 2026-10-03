@@ -30,6 +30,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -111,17 +112,24 @@ internal fun GoodPostDiscover(state: GoodPostUiState, viewModel: GoodPostViewMod
                 ChannelSection.entries.forEach { section ->
                     val channels = state.discoverSections[section].orEmpty()
 
-                    // A section the server returned nothing for is not drawn at
-                    // all — not its heading and not its "See all". An empty
-                    // category is a fact about the catalogue, and a row of empty
-                    // headings would make the screen look broken rather than new.
-                    if (channels.isEmpty()) return@forEach
-
+                    // EVERY section gets its heading, including one the server
+                    // returned nothing for.
+                    //
+                    // This was the other way round for a while — an empty section
+                    // drew nothing at all — on the theory that a heading over no
+                    // rows looks broken. It does not: it looks like a catalogue
+                    // with a gap in it, which is what it is, and the reader can
+                    // see that "Sports" exists and has nothing in it yet. Hiding
+                    // them hid the shape of the product.
                     item(key = "sec-${section.name}") {
                         SectionHeader(
                             title = stringResource(section.titleRes()),
                             onSeeAll = { viewModel.openSection(section) }
                         )
+                    }
+
+                    if (channels.isEmpty()) {
+                        item(key = "none-${section.name}") { SectionEmptyNote() }
                     }
 
                     items(channels, key = { "${section.name}-${it.id}" }) { channel ->
@@ -135,7 +143,7 @@ internal fun GoodPostDiscover(state: GoodPostUiState, viewModel: GoodPostViewMod
                     }
                 }
 
-                if (state.discoverSections.values.all { it.isEmpty() } &&
+                if (state.discoverSections.isEmpty() &&
                     !state.discoverLoading && state.discoverError == null
                 ) {
                     item(key = "empty") {
@@ -199,6 +207,13 @@ internal fun GoodPostSection(
                     icon = Icons.AutoMirrored.Filled.ArrowBack,
                     description = stringResource(R.string.goodpost_back),
                     onClick = { viewModel.back() }
+                )
+            },
+            actions = {
+                WaIconAction(
+                    icon = Icons.Filled.Search,
+                    description = stringResource(R.string.goodpost_search),
+                    onClick = { viewModel.openExplore() }
                 )
             }
         )
@@ -280,6 +295,23 @@ internal fun GoodPostSection(
             }
         }
     }
+}
+
+/**
+ * "Nothing here yet", under a section that has no channels.
+ *
+ * A quiet line rather than a card or an illustration: the section is not an
+ * error and not an invitation, it is simply empty, and the heading above it has
+ * already said which category it is.
+ */
+@Composable
+private fun SectionEmptyNote() {
+    Text(
+        text = stringResource(R.string.goodpost_section_empty),
+        color = Wa.TextDim,
+        fontSize = 14.sp,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 2.dp, bottom = 10.dp)
+    )
 }
 
 /**
@@ -371,7 +403,12 @@ private fun DiscoverRow(
             Spacer(Modifier.height(2.dp))
             Text(
                 text = if (channel.followerCount > 0) {
-                    stringResource(
+                    // A PLURALS resource, so it needs `pluralStringResource`: the
+                    // two differ by resource type, and passing a plurals id to
+                    // the string one throws `Resources$NotFoundException` the
+                    // moment a row with followers is drawn — which is why this
+                    // screen closed as soon as it had anything to show.
+                    pluralStringResource(
                         R.plurals.goodpost_follower_count,
                         channel.followerCount,
                         waCompactCount(channel.followerCount)
@@ -412,8 +449,8 @@ private fun ChannelSection.titleRes(): Int = when (this) {
 
 /** A sort chip's label, as a resource. */
 private fun ChannelSortChip.labelRes(): Int = when (this) {
-    ChannelSortChip.Explore -> R.string.goodpost_sort_explore
-    ChannelSortChip.Popular -> R.string.goodpost_sort_popular
+    ChannelSortChip.Trending -> R.string.goodpost_sort_trending
+    ChannelSortChip.Active -> R.string.goodpost_sort_active
     ChannelSortChip.New -> R.string.goodpost_sort_new
     ChannelSortChip.Name -> R.string.goodpost_sort_name
 }

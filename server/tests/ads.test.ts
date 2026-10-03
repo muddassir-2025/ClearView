@@ -165,6 +165,54 @@ describe('a text card (§11)', () => {
       .send({ contentType: 'text', text: 'hi', targetUrl: 'javascript:alert(1)' });
     expect(res.status).toBe(400);
   });
+
+  it('carries the card\u2019s colours and its crop, and defaults them', async () => {
+    // Omitted entirely: every field has a default, so an older client that knows
+    // nothing about them still writes a card that renders exactly as before.
+    const plain = await request(app)
+      .post('/admin/api/ads')
+      .set(authed(superAdmin.accessToken))
+      .send({ contentType: 'text', text: 'Defaults' });
+    expect(plain.status, JSON.stringify(plain.body)).toBe(201);
+    expect(plain.body.ad.textColor).toBe('#E9EDEF');
+    expect(plain.body.ad.backgroundColor).toBe('#202C33');
+    expect(plain.body.ad.imageFit).toBe('cover');
+    expect(plain.body.ad.imageFocusX).toBe(0.5);
+    expect(plain.body.ad.imageFocusY).toBe(0.5);
+
+    const styled = await request(app)
+      .post('/admin/api/ads')
+      .set(authed(superAdmin.accessToken))
+      .send({
+        contentType: 'text',
+        text: 'Styled',
+        textColor: '#25D366',
+        backgroundColor: '#103529',
+        imageFit: 'contain',
+        imageFocusX: 0.25,
+        imageFocusY: 0.75,
+      });
+    expect(styled.status, JSON.stringify(styled.body)).toBe(201);
+    expect(styled.body.ad.textColor).toBe('#25D366');
+    expect(styled.body.ad.backgroundColor).toBe('#103529');
+    expect(styled.body.ad.imageFit).toBe('contain');
+    expect(styled.body.ad.imageFocusX).toBe(0.25);
+    expect(styled.body.ad.imageFocusY).toBe(0.75);
+
+    // A colour the Android painter cannot parse would be a card whose text is
+    // invisible, so the shape is refused rather than stored.
+    const badColour = await request(app)
+      .post('/admin/api/ads')
+      .set(authed(superAdmin.accessToken))
+      .send({ contentType: 'text', text: 'Bad', textColor: 'red' });
+    expect(badColour.status).toBe(400);
+
+    const badFit = await request(app)
+      .post('/admin/api/ads')
+      .set(authed(superAdmin.accessToken))
+      .send({ contentType: 'text', text: 'Bad', imageFit: 'stretch' });
+    expect(badFit.status).toBe(400);
+  });
 });
 
 describe('an image card (§11)', () => {

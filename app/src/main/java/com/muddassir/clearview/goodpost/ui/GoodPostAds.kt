@@ -78,6 +78,8 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
+import com.muddassir.clearview.goodpost.data.AD_BACKGROUND_COLORS
+import com.muddassir.clearview.goodpost.data.AD_DEFAULT_BACKGROUND_COLOR
 import com.muddassir.clearview.goodpost.data.AD_DEFAULT_TEXT_COLOR
 import com.muddassir.clearview.goodpost.data.AD_TEXT_COLORS
 import com.muddassir.clearview.goodpost.data.AdDuration
@@ -127,8 +129,14 @@ private const val AD_AUTO_SLIDE_MS = 5_000L
  * rather than an invisible one.
  */
 private fun adTextColor(value: String?): Color =
-    runCatching { Color(android.graphics.Color.parseColor(value ?: AD_DEFAULT_TEXT_COLOR)) }
-        .getOrDefault(Wa.Text)
+    adParseColor(value ?: AD_DEFAULT_TEXT_COLOR, Wa.Text)
+
+/** A card's surface, parsed the same way, falling back to the app's bar colour. */
+private fun adBackgroundColor(value: String?): Color =
+    adParseColor(value ?: AD_DEFAULT_BACKGROUND_COLOR, Wa.Bar)
+
+private fun adParseColor(value: String, fallback: Color): Color =
+    runCatching { Color(android.graphics.Color.parseColor(value)) }.getOrDefault(fallback)
 
 /**
  * The crop rectangle an image card draws with.
@@ -269,7 +277,7 @@ private fun AdCard(ad: GoodPostAd, onClick: () -> Unit) {
             .fillMaxWidth()
             .height(150.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Wa.Bar)
+            .background(adBackgroundColor(ad.backgroundColor))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -296,22 +304,6 @@ private fun AdCard(ad: GoodPostAd, onClick: () -> Unit) {
             )
         }
 
-        // The disclosure that this is paid placement, on every card and in the
-        // same corner. Not optional and not a per-card setting: a reader is
-        // entitled to know, and a card that could switch it off would be a card
-        // pretending to be a channel update.
-        Text(
-            text = stringResource(R.string.goodpost_ad_sponsored),
-            color = Wa.TextDim,
-            fontSize = 10.sp,
-            letterSpacing = 0.5.sp,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(8.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(Wa.Canvas)
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-        )
     }
 }
 
@@ -537,6 +529,30 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
     // anchored to its row, not to the window.
     var showStartPicker by remember { mutableStateOf(false) }
     var showExpiryPicker by remember { mutableStateOf(false) }
+    var showCrop by remember { mutableStateOf(false) }
+
+    // The crop editor is a SCREEN over the form, not a box inside it.
+    //
+    // WhatsApp crops a profile picture this way for the reason it has to: the
+    // picture has to be seen at the size it will be used at, with the frame
+    // around it, and a small preview inside a scrolling form cannot show a
+    // photograph's edges. Nothing else of the form is visible while it is open,
+    // and Done or Cancel returns to exactly the field that opened it.
+    if (showCrop) {
+        AdCropScreen(
+            localImage = preview,
+            remoteUrl = state.adFormExistingImageUrl,
+            fit = state.adFormImageFit,
+            focusX = state.adFormFocusX,
+            focusY = state.adFormFocusY,
+            onDone = { x, y ->
+                viewModel.onAdFocusChange(x, y)
+                showCrop = false
+            },
+            onCancel = { showCrop = false }
+        )
+        return
+    }
 
     WaBackdrop {
         Column(modifier = Modifier.fillMaxSize().imePadding()) {
@@ -617,6 +633,7 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     Spacer(Modifier.height(16.dp))
                     AdSectionLabel(stringResource(R.string.goodpost_ad_text_color))
                     AdColorRow(
+                        colors = AD_TEXT_COLORS,
                         selected = state.adFormTextColor,
                         enabled = !state.adminBusy,
                         onSelect = viewModel::onAdTextColorChange
@@ -648,26 +665,27 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     // nothing.
                     if (preview != null || state.adFormExistingImageUrl != null) {
                         Spacer(Modifier.height(14.dp))
-                        AdSectionLabel(stringResource(R.string.goodpost_ad_crop))
-                        AdCropFrame(
-                            localImage = preview,
-                            remoteUrl = if (preview == null) state.adFormExistingImageUrl else null,
-                            focusX = state.adFormFocusX,
-                            focusY = state.adFormFocusY,
-                            fit = state.adFormImageFit,
+                        // A way IN rather than a draggable box: the crop has to be
+                        // chosen against the whole card, which only a full screen
+                        // can show. See [AdCropScreen].
+                        AdDateRow(
+                            label = stringResource(R.string.goodpost_ad_crop),
+                            value = stringResource(R.string.goodpost_ad_crop_open),
                             enabled = !state.adminBusy,
-                            onFocus = viewModel::onAdFocusChange
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            text = stringResource(R.string.goodpost_ad_crop_note),
-                            color = Wa.TextDim,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp
+                            onClick = { showCrop = true }
                         )
                     }
                     Spacer(Modifier.height(16.dp))
                 }
+
+                AdSectionLabel(stringResource(R.string.goodpost_ad_background))
+                AdColorRow(
+                    colors = AD_BACKGROUND_COLORS,
+                    selected = state.adFormBackgroundColor,
+                    enabled = !state.adminBusy,
+                    onSelect = viewModel::onAdBackgroundColorChange
+                )
+                Spacer(Modifier.height(16.dp))
 
                 WaField(
                     value = state.adFormTargetUrl,
@@ -946,13 +964,31 @@ private fun AdFormPreview(
             .fillMaxWidth()
             .height(150.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Wa.Bar),
+            .background(adBackgroundColor(state.adFormBackgroundColor)),
         contentAlignment = Alignment.Center
     ) {
         val fit = if (state.adFormImageFit == "contain") ContentScale.Fit else ContentScale.Crop
         val alignment = adAlignment(state.adFormFocusX, state.adFormFocusY)
 
+        // The preview follows the TYPE being edited, not what happens to be
+        // attached. A card switched to text was still drawing the picture it
+        // used to have — so the preview said "image card" while the form said
+        // "text", and the two disagreed about the card being saved. The picture
+        // is not lost by switching: it stays on the form and comes back if the
+        // type does.
         when {
+            !isImage -> Text(
+                text = state.adFormText.ifBlank { stringResource(R.string.goodpost_ad_preview) },
+                color = adTextColor(state.adFormTextColor),
+                fontSize = 16.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+                maxLines = 4,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 22.dp)
+            )
+
             localImage != null -> Image(
                 bitmap = localImage.asImageBitmap(),
                 contentDescription = null,
@@ -961,7 +997,7 @@ private fun AdFormPreview(
                 modifier = Modifier.fillMaxSize()
             )
 
-            isImage && existingUrl != null ->
+            existingUrl != null ->
                 AdRemoteImage(url = existingUrl, contentScale = fit, alignment = alignment)
 
             else -> Text(
@@ -976,18 +1012,6 @@ private fun AdFormPreview(
                 modifier = Modifier.padding(horizontal = 22.dp)
             )
         }
-
-        Text(
-            text = stringResource(R.string.goodpost_ad_sponsored),
-            color = Wa.TextDim,
-            fontSize = 10.sp,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(8.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(Wa.Canvas)
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-        )
 
         if (uploading) {
             CircularProgressIndicator(
@@ -1091,6 +1115,7 @@ private fun AdSegmented(
  */
 @Composable
 private fun AdColorRow(
+    colors: List<String>,
     selected: String,
     enabled: Boolean,
     onSelect: (String) -> Unit
@@ -1099,7 +1124,7 @@ private fun AdColorRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        AD_TEXT_COLORS.forEach { hex ->
+        colors.forEach { hex ->
             val color = adTextColor(hex)
             val isSelected = hex.equals(selected, ignoreCase = true)
             Box(
@@ -1132,72 +1157,135 @@ private fun AdColorRow(
  * would be a crop that moved when the screen did.
  */
 @Composable
-private fun AdCropFrame(
+private fun AdCropScreen(
     localImage: Bitmap?,
     remoteUrl: String?,
+    fit: String,
     focusX: Float,
     focusY: Float,
-    fit: String,
-    enabled: Boolean,
-    onFocus: (Float, Float) -> Unit
+    onDone: (Float, Float) -> Unit,
+    onCancel: () -> Unit
 ) {
-    var boxWidth by remember { mutableStateOf(1f) }
-    var boxHeight by remember { mutableStateOf(1f) }
-    val alignment = adAlignment(focusX, focusY)
+    // The edits are held HERE until Done, so Cancel really cancels: writing each
+    // drag straight back into the form would make the back button a save.
+    var x by remember { mutableStateOf(focusX) }
+    var y by remember { mutableStateOf(focusY) }
+
+    var frameWidth by remember { mutableStateOf(1f) }
+    var frameHeight by remember { mutableStateOf(1f) }
+
+    // The frame is the card's own shape — 16:9, the same box a reader sees — and
+    // the picture is drawn at its NATURAL aspect inside it, then panned. That is
+    // the whole point of the screen: a wide photograph in a wide frame has almost
+    // no crop to choose, and the same photograph in this frame is where the choice
+    // actually exists.
+    val alignment = adAlignment(x, y)
     val contentScale = if (fit == "contain") ContentScale.Fit else ContentScale.Crop
 
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(16f / 9f)
-            .clip(RoundedCornerShape(12.dp))
-            .background(Wa.Pressed)
-            .onSizeChanged { size ->
-                boxWidth = size.width.toFloat().coerceAtLeast(1f)
-                boxHeight = size.height.toFloat().coerceAtLeast(1f)
-            }
-            .pointerInput(enabled, fit) {
-                if (!enabled || fit == "contain") return@pointerInput
-                detectDragGestures { change, drag ->
-                    change.consume()
-                    // A drag RIGHT moves the picture right, which means the
-                    // window is looking further LEFT: the focus moves against
-                    // the gesture, which is what makes the drag feel like moving
-                    // the image rather than the frame.
-                    onFocus(
-                        (focusX - drag.x / boxWidth).coerceIn(0f, 1f),
-                        (focusY - drag.y / boxHeight).coerceIn(0f, 1f)
+    WaBackdrop {
+        Column(modifier = Modifier.fillMaxSize()) {
+            WaTopBar(
+                title = stringResource(R.string.goodpost_ad_crop),
+                navigation = {
+                    WaIconAction(
+                        icon = Icons.AutoMirrored.Filled.ArrowBack,
+                        description = stringResource(R.string.goodpost_back),
+                        onClick = onCancel
                     )
                 }
-            }
-    ) {
-        when {
-            localImage != null -> Image(
-                bitmap = localImage.asImageBitmap(),
-                contentDescription = null,
-                contentScale = contentScale,
-                alignment = alignment,
-                modifier = Modifier.fillMaxSize()
             )
 
-            remoteUrl != null ->
-                AdRemoteImage(url = remoteUrl, contentScale = contentScale, alignment = alignment)
-        }
-
-        // The chosen point, drawn on the picture. Without it a drag has no
-        // visible state at all: the image moves under the gesture and there is
-        // nothing to say where the centre ended up.
-        if (fit != "contain") {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val x = focusX * size.width
-                val y = focusY * size.height
-                drawCircle(color = Wa.Accent, radius = 5.dp.toPx(), center = Offset(x, y))
-                drawCircle(
-                    color = Wa.OnAccent,
-                    radius = 5.dp.toPx(),
-                    center = Offset(x, y),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.goodpost_ad_crop_how),
+                    color = Wa.TextDim,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
                 )
+
+                Spacer(Modifier.height(16.dp))
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(16f / 9f)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Wa.Pressed)
+                        .onSizeChanged { size ->
+                            frameWidth = size.width.toFloat().coerceAtLeast(1f)
+                            frameHeight = size.height.toFloat().coerceAtLeast(1f)
+                        }
+                        .pointerInput(fit) {
+                            if (fit == "contain") return@pointerInput
+                            detectDragGestures { change, drag ->
+                                change.consume()
+                                // The picture follows the finger: dragging right
+                                // moves the picture right, which shows more of its
+                                // left, so the crop centre moves the other way.
+                                x = (x - drag.x / frameWidth).coerceIn(0f, 1f)
+                                y = (y - drag.y / frameHeight).coerceIn(0f, 1f)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    when {
+                        localImage != null -> Image(
+                            bitmap = localImage.asImageBitmap(),
+                            contentDescription = null,
+                            contentScale = contentScale,
+                            alignment = alignment,
+                            modifier = Modifier.fillMaxSize()
+                        )
+
+                        remoteUrl != null -> AdRemoteImage(
+                            url = remoteUrl,
+                            contentScale = contentScale,
+                            alignment = alignment
+                        )
+                    }
+
+                    // The centre of the crop, so the drag has a visible state.
+                    if (fit != "contain") {
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val cx = x * size.width
+                            val cy = y * size.height
+                            drawCircle(Wa.Accent, radius = 6.dp.toPx(), center = Offset(cx, cy))
+                            drawCircle(
+                                Wa.OnAccent,
+                                radius = 6.dp.toPx(),
+                                center = Offset(cx, cy),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx())
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    text = stringResource(R.string.goodpost_ad_crop_hint),
+                    color = Wa.TextDim,
+                    fontSize = 12.sp
+                )
+
+                Spacer(Modifier.height(20.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_cancel),
+                        onClick = onCancel
+                    )
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_ad_crop_done),
+                        onClick = { onDone(x, y) }
+                    )
+                }
             }
         }
     }

@@ -367,12 +367,24 @@ export async function listCategories(database: Queryable): Promise<Category[]> {
 
 export type { ChannelSort } from './cursor.js';
 
+/**
+ * The `category` value meaning "no category at all".
+ *
+ * A channel is created without one and may stay that way, and the discovery
+ * screen's last section is exactly those channels. A sentinel is needed because
+ * `category` is otherwise a real slug, and `none` cannot be one: slugs are
+ * checked against the category table, and no row there can be called this.
+ */
+export const UNCATEGORISED = 'none';
+
 export interface ChannelQuery extends PageQuery {
   /** Free text over the channel's name and description (§6, §7). */
   readonly q?: string | undefined;
+  /** A category slug, or [UNCATEGORISED] for channels that have none. */
   readonly category?: string | undefined;
   readonly sort?: ChannelSort | undefined;
 }
+
 
 /**
  * Public channels, most active first by default (§3, §7).
@@ -410,7 +422,14 @@ export async function listPublicChannels(
       `(c.name ILIKE $${params.length} OR COALESCE(c.description, '') ILIKE $${params.length})`
     );
   }
-  if (query.category !== undefined && query.category !== '') {
+  if (query.category === UNCATEGORISED) {
+    // The sentinel, not a slug: `none` is not a category and never could be
+    // (slugs are validated against the category table), so it is free to mean
+    // "this one has no category" — which is a real state a channel is in before
+    // anybody has filed it, and the one the discovery screen's last section is
+    // made of.
+    conditions.push(`c.category_slug IS NULL`);
+  } else if (query.category !== undefined && query.category !== '') {
     params.push(query.category);
     conditions.push(`c.category_slug = $${params.length}`);
   }

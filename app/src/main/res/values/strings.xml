@@ -784,7 +784,7 @@ This video cannot be played inside the app.</string>
          the See-all screen. Each chip is a DIFFERENT order the API offers, so
          no two of them can produce the same list. -->
     <string name="goodpost_see_all">See all</string>
-    <string name="goodpost_section_explore">Explore channels</string>
+    <string name="goodpost_section_explore">Trending channels</string>
     <string name="goodpost_section_entertainment">Entertainment</string>
     <string name="goodpost_section_sports">Sports</string>
     <string name="goodpost_section_news">News and information</string>
@@ -793,10 +793,12 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_section_business">Business</string>
     <string name="goodpost_section_organizations">Organizations</string>
     <string name="goodpost_section_more">More channels</string>
+    <string name="goodpost_section_empty">Nothing here yet</string>
     <string name="goodpost_verified">Verified</string>
     <string name="goodpost_channel_verified">Verified channel</string>
     <string name="goodpost_channel_verified_note">Show the platform\u2019s badge beside this channel\u2019s name. Only you can set it, and it means the platform runs the channel.</string>
-    <string name="goodpost_sort_explore">Explore</string>
+    <string name="goodpost_sort_trending">Trending</string>
+    <string name="goodpost_sort_active">Most active</string>
     <string name="goodpost_sort_popular">Popular</string>
     <string name="goodpost_sort_new">New</string>
     <string name="goodpost_sort_name">A–Z</string>
@@ -1125,7 +1127,7 @@ This video cannot be played inside the app.</string>
          administrator creates, shown at the top of Channels and Explore. Not a
          third-party ad SDK: the words, the picture, the target and the schedule
          are all this deployment's own. -->
-    <string name="goodpost_ad_sponsored">Sponsored</string>
+
     <string name="goodpost_ads">Advertisements</string>
     <string name="goodpost_ad_new">New advertisement</string>
     <string name="goodpost_ad_edit">Edit advertisement</string>
@@ -1172,7 +1174,11 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ad_fit_contain">Show it whole</string>
     <string name="goodpost_ad_fit_note">Filling the card crops the edges. Showing it whole leaves the card\u2019s background around the picture.</string>
     <string name="goodpost_ad_crop">Choose the crop</string>
-    <string name="goodpost_ad_crop_note">Drag the picture to choose which part a reader sees. The dot marks the centre of the crop.</string>
+    <string name="goodpost_ad_crop_open">Adjust</string>
+    <string name="goodpost_ad_crop_how">Drag the picture to choose which part a reader sees.</string>
+    <string name="goodpost_ad_crop_hint">The dot marks the centre of the crop.</string>
+    <string name="goodpost_ad_crop_done">Done</string>
+    <string name="goodpost_ad_background">Card background</string>
     <string name="goodpost_ad_delete_title">Delete this advertisement?</string>
     <string name="goodpost_ad_delete_note">It will be removed for everyone, along with its picture. This cannot be undone.</string>
     <string name="goodpost_error_ad_not_found">That advertisement is gone.</string>

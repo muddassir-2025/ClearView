@@ -55,8 +55,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -1258,65 +1256,47 @@ internal fun WaFollowAction(
         else -> stringResource(R.string.goodpost_follow)
     }
 
-    // The two states are animated INTO each other rather than swapped, and the
-    // colour is the message: a follow that has just been taken is a pill that
-    // drains from green to a quiet outline under the reader's own thumb. A hard
-    // swap reads as the row having been redrawn by somebody else.
-    val fill by animateColorAsState(
-        targetValue = when {
-            busy -> Wa.Bar
-            following -> Color.Transparent
-            else -> Wa.Accent
-        },
-        animationSpec = tween(durationMillis = 180),
-        label = "wa-follow-fill"
-    )
-    val outline by animateColorAsState(
-        targetValue = if (following) Wa.Divider else Wa.Accent,
-        animationSpec = tween(durationMillis = 180),
-        label = "wa-follow-outline"
-    )
-    val content by animateColorAsState(
-        targetValue = if (following) Wa.TextDim else Wa.OnAccent,
-        animationSpec = tween(durationMillis = 180),
-        label = "wa-follow-content"
-    )
+    // A plain pill with a word on it, and no animation between the two states.
+    //
+    // It used to fade its fill, its outline and its ink and grow a "+" or a
+    // tick beside the label, which made a one-word button on every row of a long
+    // list animate under the reader's thumb every time it was touched. The word
+    // already says which state it is; the colour already says which state it is.
+    // Nothing here needs to move.
+    val fill = when {
+        busy -> Wa.Bar
+        following -> Color.Transparent
+        else -> Wa.Accent
+    }
+    val outline = if (following) Wa.Divider else Wa.Accent
+    val content = if (following) Wa.TextDim else Wa.OnAccent
 
-    // A Row rather than a Box, so the state can carry a mark as well as a word:
-    // a tick beside "Following" says which of the two states this is even to
-    // somebody who has not read the label, which is the whole job of an
-    // unfollowable-looking button.
-    Row(
+    Box(
         modifier = Modifier
-            .animateContentSize()
-            .clip(RoundedCornerShape(18.dp))
+            .clip(RoundedCornerShape(16.dp))
             .background(fill)
-            .border(width = 1.dp, color = outline, shape = RoundedCornerShape(18.dp))
+            .border(width = 1.dp, color = outline, shape = RoundedCornerShape(16.dp))
             // §22: a follow is a deliberate, one-per-channel tap, so it keeps the
             // platform's own ripple rather than the scale the small chips use —
             // the press should feel like a button and not like a chip.
             .clickable(enabled = !busy, onClick = onClick)
-            .padding(horizontal = 13.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+            // Smaller than it was, so it stops competing with the channel's name
+            // for the weight of the row: it is the one action here, not the
+            // subject of it.
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center
     ) {
         if (label == null) {
             CircularProgressIndicator(
-                modifier = Modifier.size(14.dp),
+                modifier = Modifier.size(13.dp),
                 strokeWidth = 1.5.dp,
                 color = Wa.TextDim
             )
         } else {
-            Icon(
-                imageVector = if (following) Icons.Filled.Check else Icons.Filled.Add,
-                contentDescription = null,
-                tint = content,
-                modifier = Modifier.size(15.dp)
-            )
             Text(
                 text = label,
                 color = content,
-                fontSize = 13.sp,
+                fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1
             )

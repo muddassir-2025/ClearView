@@ -237,6 +237,20 @@ describe('public channel list', () => {
     expect(first.followerCount).toBe(2);
   });
 
+  it('filters to channels with no category, which no slug can name', async () => {
+    const filed = unique('filed');
+    const loose = unique('loose');
+    await seedChannel({ slug: filed, name: 'Filed', category: 'islamic' });
+    // No category at all, which is the state a channel is in before anybody
+    // files it and what the discovery screen's last section is made of.
+    await seedChannel({ slug: loose, name: 'Loose' });
+
+    const res = await request(app).get('/api/v1/channels?category=none');
+    const slugs = res.body.items.map((c: { slug: string }) => c.slug);
+    expect(slugs).toContain(loose);
+    expect(slugs).not.toContain(filed);
+  });
+
   it('describes the last post it will preview', async () => {
     const slug = unique('quran');
     const channelId = await seedChannel({ slug, name: 'Quran' });

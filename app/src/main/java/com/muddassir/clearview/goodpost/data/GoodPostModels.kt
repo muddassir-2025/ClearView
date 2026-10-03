@@ -318,6 +318,14 @@ data class GoodPostAd(
      */
     val textColor: String = AD_DEFAULT_TEXT_COLOR,
     /**
+     * The card's own surface, `#RRGGBB`.
+     *
+     * The card used to be drawn on the app's bar colour, which made every
+     * advertisement look like a piece of the interface. It is a poster: its
+     * background is part of the design, so the administrator chooses it.
+     */
+    val backgroundColor: String = AD_DEFAULT_BACKGROUND_COLOR,
+    /**
      * Image cards: `cover` or `contain`.
      *
      * `cover` fills the card and crops; `contain` shows the whole picture with the
@@ -358,6 +366,26 @@ data class GoodPostAd(
 
 /** The ink a text card falls back to when it has no colour of its own. */
 const val AD_DEFAULT_TEXT_COLOR = "#E9EDEF"
+
+/** The surface a card falls back to — the app's own bar, as it was drawn before. */
+const val AD_DEFAULT_BACKGROUND_COLOR = "#202C33"
+
+/**
+ * The surfaces a card can be drawn on.
+ *
+ * Dark-first, because the card sits on a near-black list and a light panel there
+ * is a different kind of object rather than a louder one. The last two are the
+ * exceptions and are deliberately muted — a card is allowed to stand out, not to
+ * glare.
+ */
+val AD_BACKGROUND_COLORS = listOf(
+    "#202C33", // the bar colour, for a card that reads as part of the app
+    "#103529", // the WhatsApp deep green, for an offer
+    "#3B1F2B", // wine, for an announcement
+    "#1B2A4A", // navy, for something informational
+    "#3A2E12", // bronze, for a deadline
+    "#0B141A"  // the canvas itself, for a card that is only its words
+)
 
 /**
  * The colours the card editor offers for a text card.
@@ -662,6 +690,8 @@ internal object GoodPostCodec {
             priority = json.optInt("priority", 100),
             textColor = json.optString("textColor").takeIf { it.isNotBlank() }
                 ?: AD_DEFAULT_TEXT_COLOR,
+            backgroundColor = json.optString("backgroundColor").takeIf { it.isNotBlank() }
+                ?: AD_DEFAULT_BACKGROUND_COLOR,
             imageFit = if (json.optString("imageFit") == "contain") "contain" else "cover",
             imageFocusX = json.optDouble("imageFocusX", 0.5).toFloat().coerceIn(0f, 1f),
             imageFocusY = json.optDouble("imageFocusY", 0.5).toFloat().coerceIn(0f, 1f)
@@ -791,6 +821,7 @@ internal object GoodPostCodec {
                 put("expiresAt", ad.expiresAt ?: JSONObject.NULL)
                 put("priority", ad.priority)
                 put("textColor", ad.textColor)
+                put("backgroundColor", ad.backgroundColor)
                 put("imageFit", ad.imageFit)
                 put("imageFocusX", ad.imageFocusX.toDouble())
                 put("imageFocusY", ad.imageFocusY.toDouble())
