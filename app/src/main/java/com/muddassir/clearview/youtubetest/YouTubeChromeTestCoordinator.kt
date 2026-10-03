@@ -707,8 +707,19 @@ class YouTubeChromeTestCoordinator(
         // ordinary keywords) so disguised spellings of a test keyword are
         // caught generically instead of by manual list entries.
         val normalizedMatchInput = KeywordMatcher.normalizeForMatching(matchInput)
+        // WHOLE-WORD matching, exactly like the main matcher. A plain-word
+        // keyword such as "ai" must NOT match inside "said", "brain", "again"
+        // or "candylamp" patterns — substring matching there blocked innocent
+        // Shorts and then released them, which looked like a flickering overlay.
+        // Punctuation/leetspeak forms ("p0rn", "f*ck", "18+") keep substring
+        // matching, since their only realistic occurrences are standalone.
         val matched = testKeywords.firstOrNull { kw ->
-            normalizedMatchInput.contains(KeywordMatcher.normalizeForMatching(kw))
+            val normalizedKw = KeywordMatcher.normalizeForMatching(kw)
+            KeywordMatcher.containsKeyword(
+                normalizedMatchInput,
+                normalizedKw,
+                KeywordMatcher.isPlainWordKeyword(normalizedKw)
+            )
         }
 
         if (matched != null) {
@@ -742,10 +753,13 @@ class YouTubeChromeTestCoordinator(
                 // overlay and then immediately vanished.
                 releaseBlock(videoId, "keyword no longer matches")
             }
-            // No keyword matched — the channel may still be blocked. A blocked
-            // CHANNEL must protect its Shorts exactly like a keyword does.
-            maybeCheckChannel(stateId, videoId, texts)
         }
+
+        // ALWAYS: a blocked CHANNEL must be enforced whether or not a keyword
+        // also matched. Checking it only in the no-keyword branch is why a
+        // blocked channel's Short could keep playing — a title that happened to
+        // trip a keyword (even one that flickers) starved the channel check.
+        maybeCheckChannel(stateId, videoId, texts, root)
     }
 
     /**
@@ -753,10 +767,24 @@ class YouTubeChromeTestCoordinator(
      * the SAME pause + overlay flow a keyword match uses; a backend failure NEVER
      * blocks (it simply leaves the existing keyword protection in force).
      */
-    private fun maybeCheckChannel(stateId: String, videoId: String?, texts: List<String>) {
+    private fun maybeCheckChannel(
+        stateId: String,
+        videoId: String?,
+        texts: List<String>,
+        root: AccessibilityNodeInfo
+    ) {
         val repo = channelBlockRepository ?: return
         if (lastChannelCheckVideoId == stateId) return
-        val handle = YouTubeNodeRules.channelHandleFrom(texts) ?: return
+        // `texts` is VISIBLE-only and filters dotted/no-space labels, which
+        // drops a channel row that is scrolled off or behind an overlay. Fall
+        // back to a deep tree walk (visible AND non-visible) so a blocked
+        // channel is still recognised — a silent miss here is a video that
+        // keeps playing when it must not.
+        val handle = YouTubeNodeRules.channelHandleFrom(texts) ?: findChannelHandleDeep(root)
+        if (handle.isNullOrBlank()) {
+            Log.i(TAG, "YT_TEST_CHANNEL_NO_HANDLE videoId=${videoId ?: "unknown"}")
+            return
+        }
         lastChannelCheckVideoId = stateId
         Log.i(TAG, "YT_TEST_CHANNEL_CHECK videoId=${videoId ?: "unknown"} handle=$handle")
         scope.launch {
@@ -770,7 +798,7 @@ class YouTubeChromeTestCoordinator(
                 Log.i(TAG, "YT_TEST_CHANNEL_ALLOWED handle=$handle")
                 return@launch
             }
-            if (blockState != YoutubeBlockState.NORMAL || currentVideoId != stateId) {
+            if (currentVideoId != stateId) {
                 Log.i(TAG, "YT_TEST_CHANNEL_STALE handle=$handle")
                 return@launch
             }
@@ -779,8 +807,55 @@ class YouTubeChromeTestCoordinator(
             blockedByChannel = true
             Log.w(TAG, "YT_TEST_CHANNEL_MATCH handle=$handle")
             Log.w(TAG, "YT_TEST_MATCHED_KEYWORD $matched")
-            blockVideo(stateId, videoId, matched)
+            if (blockState == YoutubeBlockState.NORMAL) {
+                blockVideo(stateId, videoId, matched)
+            } else {
+                // Already blocked by a keyword that may flicker; upgrade to a
+                // channel block so it PERSISTS instead of releasing the moment
+                // the keyword stops matching.
+                Log.i(TAG, "YT_TEST_CHANNEL_UPGRADE handle=$handle")
+                blockedVideoId = stateId
+            }
         }
+    }
+
+    /**
+     * Channel-handle search over the WHOLE tree (visible or not), bounded.
+     * Mirrors the Not-interested coordinator's lookup. Only a label that is a
+     * genuine @handle matches, so a bounded read is safe.
+     */
+    private fun findChannelHandleDeep(root: AccessibilityNodeInfo): String? {
+        val visible = ArrayList<String>(24)
+        val all = ArrayList<String>(64)
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var depth = 0
+        var visited = 0
+        while (queue.isNotEmpty() && depth < MAX_DEPTH && visited < NODE_BUDGET) {
+            visited++
+            val node = queue.removeFirst()
+            val isRoot = node === root
+            val isVisible = try { node.isVisibleToUser } catch (e: Exception) { false }
+            val text = try { node.text?.toString() } catch (e: Exception) { null }
+            val desc = try { node.contentDescription?.toString() } catch (e: Exception) { null }
+            if (text != null) {
+                all.add(text)
+                if (isVisible) visible.add(text)
+            }
+            if (desc != null) {
+                all.add(desc)
+                if (isVisible) visible.add(desc)
+            }
+            val count = try { node.childCount } catch (e: Exception) { 0 }
+            for (i in 0 until count) {
+                val child = try { node.getChild(i) } catch (e: Exception) { null } ?: continue
+                queue.add(child)
+            }
+            if (!isRoot) try { node.recycle() } catch (e: Exception) {}
+            depth++
+        }
+        return YouTubeNodeRules.channelHandleFrom(visible)
+            ?: YouTubeNodeRules.channelHandleFrom(all)
     }
 
     // ── Video transitions ─────────────────────────────────────────
@@ -1454,20 +1529,32 @@ class YouTubeChromeTestCoordinator(
             bodyPaint.letterSpacing = 0.12f
             canvas.drawText("FEAR GOD", cx, cy + unit * 0.03f, bodyPaint)
 
-            // Bottom line: quieter, more transparent.
+            // Bottom line: quieter, more transparent. A CHANNEL block says so
+            // — naming the thing actually blocked is the difference between an
+            // overlay that explains itself and one that reads as a generic
+            // "brain rot" wall for a decision the user made about a channel.
+            val matched = lastMatchedTestKeyword
+            val channelHandle = matched?.takeIf { it.startsWith("channel:") }
+                ?.removePrefix("channel:")
             bodyPaint.alpha = 150
             bodyPaint.textSize = unit * 0.04f
             bodyPaint.letterSpacing = 0.08f
-            canvas.drawText("BLOCK BRAIN ROT", cx, cy + unit * 0.10f, bodyPaint)
+            canvas.drawText(
+                if (channelHandle != null) "CHANNEL BLOCKED" else "BLOCK BRAIN ROT",
+                cx, cy + unit * 0.10f, bodyPaint
+            )
 
             // WHY it was blocked, named exactly. The matched keyword is what
             // the user would edit to change this, so it is the one thing this
             // line has to carry.
-            val keyword = lastMatchedTestKeyword
-            if (!keyword.isNullOrBlank()) {
+            if (!matched.isNullOrBlank()) {
                 reasonPaint.textSize = unit * 0.03f
                 reasonPaint.letterSpacing = 0.0f
-                val reason = "Matched keyword: \"$keyword\""
+                val reason = if (channelHandle != null) {
+                    "Blocked channel: \"$channelHandle\""
+                } else {
+                    "Matched keyword: \"$matched\""
+                }
                 val maxWidth = width * 0.84f
                 val shown = if (reasonPaint.measureText(reason) <= maxWidth) {
                     reason

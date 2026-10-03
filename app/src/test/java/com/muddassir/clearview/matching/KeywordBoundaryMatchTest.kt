@@ -84,6 +84,24 @@ class KeywordBoundaryMatchTest {
         assertFalse(match("transport", "trans"))
     }
 
+    // ── Short keywords must not hide inside ordinary words ────────
+
+    @Test
+    fun `a short keyword never matches inside an innocent word`() {
+        // The YouTube-only list allowed a keyword like "ai"; substring matching
+        // made it trip on "said", "brain", "again", ... and block innocent
+        // Shorts. Whole-word matching must leave those alone but still catch a
+        // standalone "ai".
+        assertFalse(match("said", "ai"))
+        assertFalse(match("brain", "ai"))
+        assertFalse(match("again", "ai"))
+        assertFalse(match("candylamp", "ai"))
+        assertFalse(match("waiting", "ai"))
+        assertTrue(match("ai", "ai"))
+        assertTrue(match("this is ai", "ai"))
+        assertTrue(match("AI everywhere", "ai"))
+    }
+
     // ── True positives: the same keywords as standalone words ─────
 
     @Test
