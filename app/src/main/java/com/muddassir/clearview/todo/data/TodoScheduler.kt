@@ -88,6 +88,28 @@ object TodoScheduler {
     }
 
     /**
+     * Cancels EVERY pending alarm the app has scheduled and forgets all of its
+     * reminder bookkeeping (scheduled alarms, pending snoozes, seen markers).
+     * Used by the full reset, which deletes the todos themselves: the records
+     * are all that is left of them, so they are cancelled by their own
+     * (todo, index, day) request codes before the records are dropped — nothing
+     * can ring for a todo that no longer exists.
+     */
+    fun cancelAllReminders(context: Context) {
+        val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val store = TodoStore(context)
+        store.getScheduledAlarms().forEach { (key, epochDay) ->
+            val todoId = key.substringBeforeLast('#')
+            val index = key.substringAfterLast('#').toIntOrNull() ?: return@forEach
+            alarm.cancel(broadcastPending(context, todoId, index, epochDay))
+            alarm.cancel(alarmActivityPending(context, todoId, index, epochDay))
+        }
+        store.clearAllScheduledAlarms()
+        store.clearSnoozedReminders()
+        store.clearSeenReminders()
+    }
+
+    /**
      * Cancels EVERY pending reminder of [todoId] for [epochDay] — every
      * reminder index offset (0…[INDICES]-1), BOTH PendingIntent shapes, plus
      * their scheduled-alarm and snooze records. Called the moment a

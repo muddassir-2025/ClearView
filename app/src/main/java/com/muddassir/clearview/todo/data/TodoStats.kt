@@ -202,6 +202,98 @@ object TodoStats {
     }
 
     /**
+     * The ONE scorer behind every numeric score in the feature, weekly and
+     * monthly alike (v3). Every argument is a raw count for the period:
+     *
+     *  - Completion  45 · priority-weighted: 45 × doneWeight / dueWeight
+     *  - Consistency 18 · 18 × activeDays / daysWithDue
+     *  - Streak      12 · 12 × min(streak, 7) / 7 — 0 is earned, not excluded
+     *  - Timeliness  10 · 10 × (1 − (overdue + missed) / closedItems)
+     *  - Volume      15 · 15 × min(1, completed / the user's own baseline)
+     *
+     * A component whose denominator is 0 is EXCLUDED and the remaining base
+     * weights are rescaled by 100 / (sum of included weights) so the total
+     * still reaches 100; a period with nothing due scores null, never 0/100
+     * for free. Extracted so the weekly and monthly cards cannot drift apart.
+     */
+    private fun score(
+        dueWeight: Float,
+        doneWeight: Float,
+        daysWithDue: Int,
+        activeDays: Int,
+        streak: Int,
+        closedItems: Int,
+        overdue: Int,
+        missed: Int,
+        completed: Int,
+        baselineCompleted: Float?
+    ): ScoreBreakdown? {
+        // Nothing due (or zero weight, which cannot happen for a due todo) =
+        // nothing to measure: no score exists rather than a free zero.
+        if (dueWeight <= 0f) return null
+        val completionRaw = W_COMPLETION * (doneWeight / dueWeight)
+        val consistencyRaw = if (daysWithDue > 0) {
+            W_CONSISTENCY * (activeDays.toFloat() / daysWithDue)
+        } else 0f
+        val streakRaw = W_STREAK * (streak.coerceAtMost(7).toFloat() / 7f)
+        // Timeliness: only when something has actually reached its due time —
+        // being "on track" on a not-yet-due todo is not an achievement.
+        // Overdue/missed shrink it toward 0.
+        val timelinessRaw = if (closedItems > 0) {
+            W_TIMELINESS * (1f - (overdue + missed).toFloat() / closedItems)
+        } else 0f
+        // Volume: this period's completions against the recent baseline.
+        // At/above your usual volume = full credit (capped at 1 so one huge
+        // period can't bank future points); below it scales down. A baseline
+        // of 0 (history exists but nothing was ever completed) makes ANY
+        // completion a full-credit improvement.
+        val hasBaseline = baselineCompleted != null
+        val baseline = baselineCompleted ?: 0f
+        val volumeRaw = when {
+            !hasBaseline -> 0f
+            baseline <= 0f -> if (completed > 0) W_VOLUME.toFloat() else 0f
+            else -> W_VOLUME * (completed.toFloat() / baseline).coerceIn(0f, 1f)
+        }
+        val includedWeight = W_COMPLETION + W_CONSISTENCY + W_STREAK +
+            (if (closedItems > 0) W_TIMELINESS else 0) +
+            (if (hasBaseline) W_VOLUME else 0)
+        val scale = 100f / includedWeight
+        // Score = round(Σ component scores) — one rounding at the end. The
+        // breakdown rows round independently, so they may sum to ±1 of this
+        // authoritative total.
+        val total = (scale * (completionRaw + consistencyRaw + streakRaw + timelinessRaw + volumeRaw))
+            .roundToInt().coerceIn(0, 100)
+        return ScoreBreakdown(
+            completion = (scale * completionRaw).roundToInt().coerceIn(0, 100),
+            completionMax = (scale * W_COMPLETION).roundToInt().coerceIn(0, 100),
+            consistency = (scale * consistencyRaw).roundToInt().coerceIn(0, 100),
+            consistencyMax = (scale * W_CONSISTENCY).roundToInt().coerceIn(0, 100),
+            streak = (scale * streakRaw).roundToInt().coerceIn(0, 100),
+            streakMax = (scale * W_STREAK).roundToInt().coerceIn(0, 100),
+            streakDays = streak,
+            timeliness = if (closedItems > 0) {
+                (scale * timelinessRaw).roundToInt().coerceIn(0, 100)
+            } else 0,
+            timelinessMax = if (closedItems > 0) {
+                (scale * W_TIMELINESS).roundToInt().coerceIn(0, 100)
+            } else 0,
+            volume = if (hasBaseline) {
+                (scale * volumeRaw).roundToInt().coerceIn(0, 100)
+            } else 0,
+            volumeMax = if (hasBaseline) {
+                (scale * W_VOLUME).roundToInt().coerceIn(0, 100)
+            } else 0,
+            baselineCompleted = baselineCompleted,
+            closedItems = closedItems,
+            dueWeight = dueWeight,
+            doneWeight = doneWeight,
+            overdueCount = overdue,
+            missedCount = missed,
+            total = total
+        )
+    }
+
+    /**
      * Full weekly statistics for the week containing [today]. Days after
      * today are deliberately EMPTY (due=0) — future schedules never count as
      * progress, missed, or score. [nowMillis] lets strict-interval todos
@@ -303,74 +395,21 @@ object TodoStats {
             }
         }
 
-        // Score + breakdown (only meaningful with at least one due todo). v3:
-        // priority-weighted completion (a single bucket — no separate
-        // High-Priority that can sit empty and auto-pass), a volume component
-        // measured against the user's own recent baseline, and components that
-        // are EXCLUDED — with the remaining weights rescaled — when their
-        // denominator is 0. Nothing ever earns points for being empty.
-        val breakdown = if (due > 0 && dueWeight > 0f) {
-            val completionRaw = W_COMPLETION * (doneWeight / dueWeight)
-            val consistencyRaw = if (daysWithDue > 0) {
-                W_CONSISTENCY * (activeDays.toFloat() / daysWithDue)
-            } else 0f
-            val streakRaw = W_STREAK * (streak.coerceAtMost(7).toFloat() / 7f)
-            // Timeliness: only when something has actually reached its due
-            // time this week — being "on track" on a not-yet-due todo is not
-            // an achievement. Overdue/missed shrink it toward 0.
-            val timelinessRaw = if (closedItems > 0) {
-                W_TIMELINESS * (1f - (overdue + missed).toFloat() / closedItems)
-            } else 0f
-            // Volume: this week's completions against the recent baseline.
-            // At/above your usual volume = full credit (capped at 1 so one
-            // huge week can't bank future points); below it scales down. A
-            // baseline of 0 (history exists but nothing was ever completed)
-            // makes ANY completion a full-credit improvement.
-            val hasBaseline = baselineCompleted != null
-            val baseline = baselineCompleted ?: 0f
-            val volumeRaw = when {
-                !hasBaseline -> 0f
-                baseline <= 0f -> if (completed > 0) W_VOLUME.toFloat() else 0f
-                else -> W_VOLUME * (completed.toFloat() / baseline).coerceIn(0f, 1f)
-            }
-            val includedWeight = W_COMPLETION + W_CONSISTENCY + W_STREAK +
-                (if (closedItems > 0) W_TIMELINESS else 0) +
-                (if (hasBaseline) W_VOLUME else 0)
-            val scale = 100f / includedWeight
-            // Score = round(Σ component scores) — one rounding at the end (per
-            // the spec). The breakdown rows round independently, so they may
-            // sum to ±1 of this authoritative total.
-            val total = (scale * (completionRaw + consistencyRaw + streakRaw + timelinessRaw + volumeRaw))
-                .roundToInt().coerceIn(0, 100)
-            ScoreBreakdown(
-                completion = (scale * completionRaw).roundToInt().coerceIn(0, 100),
-                completionMax = (scale * W_COMPLETION).roundToInt().coerceIn(0, 100),
-                consistency = (scale * consistencyRaw).roundToInt().coerceIn(0, 100),
-                consistencyMax = (scale * W_CONSISTENCY).roundToInt().coerceIn(0, 100),
-                streak = (scale * streakRaw).roundToInt().coerceIn(0, 100),
-                streakMax = (scale * W_STREAK).roundToInt().coerceIn(0, 100),
-                streakDays = streak,
-                timeliness = if (closedItems > 0) {
-                    (scale * timelinessRaw).roundToInt().coerceIn(0, 100)
-                } else 0,
-                timelinessMax = if (closedItems > 0) {
-                    (scale * W_TIMELINESS).roundToInt().coerceIn(0, 100)
-                } else 0,
-                volume = if (hasBaseline) {
-                    (scale * volumeRaw).roundToInt().coerceIn(0, 100)
-                } else 0,
-                volumeMax = if (hasBaseline) {
-                    (scale * W_VOLUME).roundToInt().coerceIn(0, 100)
-                } else 0,
-                baselineCompleted = baselineCompleted,
-                closedItems = closedItems,
-                dueWeight = dueWeight,
-                doneWeight = doneWeight,
-                overdueCount = overdue,
-                missedCount = missed,
-                total = total
-            )
-        } else null
+        // Score + breakdown (only meaningful with at least one due todo) — the
+        // shared scorer is also what the monthly view uses, so the two periods
+        // can never compute a score differently.
+        val breakdown = score(
+            dueWeight = dueWeight,
+            doneWeight = doneWeight,
+            daysWithDue = daysWithDue,
+            activeDays = activeDays,
+            streak = streak,
+            closedItems = closedItems,
+            overdue = overdue,
+            missed = missed,
+            completed = completed,
+            baselineCompleted = baselineCompleted
+        )
 
         return WeekStats(
             today = today,
@@ -770,5 +809,383 @@ object TodoStats {
             productiveMinutes = counts.productiveMinutes,
             earnedPoints = earnedPoints(items, monday, today)
         )
+    }
+
+    // ── Period insights (the Productivity dashboard's Week / Month switch) ──
+
+    /** Which period the Productivity dashboard measures. */
+    enum class TodoPeriod { WEEK, MONTH }
+
+    /**
+     * One column of the progress strip and the bar graph: a single day in the
+     * weekly view, one Monday-based week in the monthly view. [start] is the
+     * day itself (weekly) or the first day of that week inside the month
+     * (monthly), so the UI can label a bar without knowing the period.
+     */
+    data class PeriodBar(
+        val start: LocalDate,
+        val due: Int,
+        val completed: Int,
+        /** Marked attempted (but not completed) on the bar's days. */
+        val attempted: Int,
+        val isToday: Boolean,
+        val isFuture: Boolean
+    )
+
+    /**
+     * Everything the insights card and its charts render, for ONE period (this
+     * week or this month). Built by [weekInsights] / [monthInsights], so the
+     * card itself is period-agnostic: changing the period changes the numbers,
+     * never the layout or the definition of a number. The raw completion rate
+     * and the behaviour-aware [creditRate] are derived from the same counts, so
+     * they can never disagree.
+     */
+    data class PeriodInsights(
+        val period: TodoPeriod,
+        val today: LocalDate,
+        val bars: List<PeriodBar>,
+        val due: Int,
+        val completed: Int,
+        val daysWithDue: Int,
+        val activeDays: Int,
+        /** The divisor of the "active days" tile: 7 for a week, days elapsed for a month. */
+        val activeDaysWindow: Int,
+        val streak: Int,
+        val longestStreak: Int,
+        val productiveMinutes: Int,
+        val bestDay: WeekDayStats?,
+        val mostProductiveWindow: Pair<Int, Int>?,
+        val remainingToday: Int,
+        /** Completion-rate points vs the same period one step back; null without data. */
+        val improvementPoints: Int?,
+        val firstPeriod: Boolean,
+        val score: Int?,
+        val breakdown: ScoreBreakdown?,
+        val baselineCompleted: Float?,
+        val dueWeight: Float,
+        val doneWeight: Float,
+        val partialOccurrences: Int,
+        val todayDue: Int,
+        val todayCompleted: Int,
+        /**
+         * MONTH VIEW ONLY: the user's own month-to-date baseline — the average
+         * completed count by this same day-of-month across the previous months
+         * that actually had something due (never a target someone else set, and
+         * null when there is no past to compare against).
+         */
+        val paceBaseline: Float? = null,
+        /**
+         * MONTH VIEW ONLY: [completed] against [paceBaseline], as whole percent
+         * (+ ahead, − behind). Null whenever [paceBaseline] is null or zero,
+         * because "x% of nothing" is not a pace — the same rule the volume
+         * component follows.
+         */
+        val pacePercent: Int? = null
+    ) {
+        /** Raw completion rate (completed / due). */
+        val rate: Float get() = if (due > 0) (completed.toFloat() / due).coerceIn(0f, 1f) else 0f
+
+        /** [rate] as whole percent. */
+        val percent: Int get() = if (due > 0) (rate * 100).toInt() else 0
+
+        /**
+         * PROGRESS, not just completions: the same priority-weighted,
+         * behaviour-aware credit the score uses (full for a completion, half
+         * for an attempt, minutes/target for a time todo), so marking a todo
+         * attempted visibly moves the headline. [rate] stays the raw
+         * completed/due figure.
+         */
+        val creditRate: Float
+            get() = if (dueWeight > 0f) (doneWeight / dueWeight).coerceIn(0f, 1f) else rate
+
+        /** [creditRate] as whole percent. */
+        val creditPercent: Int get() = (creditRate * 100).roundToInt()
+
+        /** True when partial work has lifted the progress above raw completions. */
+        val hasPartialCredit: Boolean get() = creditRate > rate + 0.0001f
+    }
+
+    /** The dashboard's data for the current week (Monday → Sunday). */
+    fun weekInsights(
+        items: List<TodoItem>,
+        today: LocalDate,
+        nowMillis: Long = System.currentTimeMillis()
+    ): PeriodInsights {
+        val week = weekStats(items, today, nowMillis)
+        val previous = weekStats(items, mondayOf(today).minusDays(1), nowMillis)
+        val summary = productivitySummary(items, today, nowMillis)
+        val todayStats = dayStats(items, today)
+        val bars = week.days.map { day ->
+            PeriodBar(
+                start = day.date,
+                due = day.due,
+                completed = day.completed,
+                attempted = if (day.date > today) 0
+                else items.count { TodoCodec.isAttemptedOn(it, day.date) },
+                isToday = day.date == today,
+                isFuture = day.date > today
+            )
+        }
+        return PeriodInsights(
+            period = TodoPeriod.WEEK,
+            today = today,
+            bars = bars,
+            due = week.due,
+            completed = week.completed,
+            daysWithDue = week.days.count { it.due > 0 },
+            activeDays = week.activeDays,
+            activeDaysWindow = 7,
+            streak = week.streak,
+            longestStreak = summary.longestStreak,
+            productiveMinutes = summary.productiveMinutes,
+            bestDay = week.bestDay,
+            mostProductiveWindow = week.mostProductiveWindow,
+            remainingToday = week.remainingToday,
+            improvementPoints = week.improvementPoints,
+            firstPeriod = week.firstWeek,
+            score = week.score,
+            breakdown = week.breakdown,
+            baselineCompleted = week.breakdown?.baselineCompleted,
+            dueWeight = week.dueWeight,
+            doneWeight = week.doneWeight,
+            partialOccurrences = week.partialOccurrences,
+            todayDue = todayStats.due,
+            todayCompleted = todayStats.completed
+        )
+    }
+
+    /**
+     * The dashboard's data for the current MONTH. Only days that have ARRIVED
+     * count (the same date rule as the week): a future schedule is never due,
+     * completed, missed or scored. The month's bars are its Monday-based WEEKS,
+     * so the progress strip and the bar graph keep readable columns instead of
+     * thirty slivers on a phone.
+     */
+    fun monthInsights(
+        items: List<TodoItem>,
+        today: LocalDate,
+        nowMillis: Long = System.currentTimeMillis()
+    ): PeriodInsights {
+        val month = YearMonth.from(today)
+        val monthStart = month.atDay(1)
+        val monthEnd = month.atEndOfMonth()
+        val allDays = (1..month.lengthOfMonth()).map { monthStart.plusDays((it - 1).toLong()) }
+        val byDay = allDays.associateWith { dayStats(items, it) }
+        val elapsed = allDays.filter { !it.isAfter(today) }
+
+        val due = elapsed.sumOf { byDay.getValue(it).due }
+        val completed = elapsed.sumOf { byDay.getValue(it).completed }
+        val daysWithDue = elapsed.count { byDay.getValue(it).due > 0 }
+        val activeDays = elapsed.count { byDay.getValue(it).completed > 0 }
+        val bestDay = elapsed.filter { byDay.getValue(it).due > 0 }
+            .maxWithOrNull(
+                compareBy<LocalDate>(
+                    { byDay.getValue(it).rate },
+                    { byDay.getValue(it).completed }
+                )
+            )
+            ?.let { byDay.getValue(it) }
+            ?.takeIf { completed > 0 }
+
+        val bars = monthWeeks(monthStart, monthEnd).map { days ->
+            val inside = days.filter { !it.isAfter(today) }
+            PeriodBar(
+                start = days.first(),
+                due = inside.sumOf { byDay.getValue(it).due },
+                completed = inside.sumOf { byDay.getValue(it).completed },
+                attempted = inside.sumOf { day ->
+                    items.count { TodoCodec.isAttemptedOn(it, day) }
+                },
+                isToday = days.any { it == today },
+                isFuture = days.all { it.isAfter(today) }
+            )
+        }
+
+        // Closed / overdue / missed and the priority-weighted credit, exactly
+        // as weekStats computes them for a week — only over the month's days
+        // that have arrived.
+        var overdue = 0
+        var missed = 0
+        var closedItems = 0
+        var dueWeight = 0f
+        var doneWeight = 0f
+        var partialOccurrences = 0
+        elapsed.forEach { day ->
+            items.forEach { item ->
+                if (!TodoCodec.isActiveOn(item, day)) return@forEach
+                val weight = item.priority.scoreWeight
+                dueWeight += weight
+                val credit = creditFraction(item, day)
+                doneWeight += weight * credit
+                if (credit > 0f && credit < 1f && !TodoCodec.completedOn(item, day)) {
+                    partialOccurrences++
+                }
+                val dayClosed = day < today || TodoCodec.intervalEnded(item, day, nowMillis)
+                if (!dayClosed) return@forEach
+                closedItems++
+                if (!TodoCodec.completedOn(item, day)) {
+                    if (TodoCodec.isArchived(item, today)) missed++ else overdue++
+                }
+            }
+        }
+
+        // Volume baseline: the average completed count of the previous
+        // [BASELINE_WEEKS] months that actually had something due. Months with
+        // nothing due are skipped (no data ≠ zero effort) and with no earlier
+        // month at all the component is excluded — a new user is never scored
+        // against an empty past.
+        val baselineCompleted: Float? = (1..BASELINE_WEEKS)
+            .map { back ->
+                val past = monthStats(items, month.minusMonths(back.toLong()), today)
+                if (past.due > 0) past.completed else null
+            }
+            .filterNotNull()
+            .takeIf { it.isNotEmpty() }
+            ?.let { it.average().toFloat() }
+
+        val previous = monthStats(items, month.minusMonths(1), today)
+        val improvement = if (due > 0 && previous.due > 0) {
+            ((completed.toFloat() / due - previous.completed.toFloat() / previous.due) * 100).toInt()
+        } else null
+
+        val streak = streak(items, today)
+        val breakdown = score(
+            dueWeight = dueWeight,
+            doneWeight = doneWeight,
+            daysWithDue = daysWithDue,
+            activeDays = activeDays,
+            streak = streak,
+            closedItems = closedItems,
+            overdue = overdue,
+            missed = missed,
+            completed = completed,
+            baselineCompleted = baselineCompleted
+        )
+
+        // PACE (month view only): the same completed count, read at the same
+        // point — day 1..today — in each previous month that had something due.
+        // A mid-month total on its own says nothing ("6 done" is good on the 5th
+        // and poor on the 28th); against your OWN month-to-date it is a real
+        // answer, and it is the one comparison only a month view can make. A
+        // baseline of 0 is not a pace (x% of nothing), so it yields no line
+        // rather than a fabricated percentage. A past month shorter than today's
+        // day-of-month contributes every day it has, which is the honest
+        // reading of "by day 31".
+        val dayOfMonth = today.dayOfMonth
+        val paceBaseline: Float? = (1..BASELINE_WEEKS)
+            .mapNotNull { back ->
+                val past = month.minusMonths(back.toLong())
+                val pastDays = (1..dayOfMonth)
+                    .filter { it <= past.lengthOfMonth() }
+                    .map { past.atDay(it) }
+                val due = pastDays.sumOf { dayStats(items, it).due }
+                if (due == 0) null
+                else pastDays.sumOf { dayStats(items, it).completed }.toFloat()
+            }
+            .takeIf { it.isNotEmpty() }
+            ?.average()
+            ?.toFloat()
+            ?.takeIf { it > 0f }
+        val pacePercent = paceBaseline?.let {
+            ((completed - it) / it * 100f).roundToInt()
+        }
+
+        val todayStats = dayStats(items, today)
+        return PeriodInsights(
+            period = TodoPeriod.MONTH,
+            today = today,
+            bars = bars,
+            due = due,
+            completed = completed,
+            daysWithDue = daysWithDue,
+            activeDays = activeDays,
+            activeDaysWindow = elapsed.size,
+            streak = streak,
+            longestStreak = longestStreak(items, firstActivityDay(items) ?: today, today),
+            productiveMinutes = behaviorCounts(items, monthStart, monthEnd, today, nowMillis)
+                .productiveMinutes,
+            bestDay = bestDay,
+            mostProductiveWindow = mostProductiveWindow(
+                items,
+                monthStart.toEpochDay(),
+                monthEnd.plusDays(1).toEpochDay()
+            ),
+            remainingToday = items.count { TodoCodec.canCompleteOn(it, today, nowMillis) },
+            improvementPoints = improvement,
+            firstPeriod = due > 0 && previous.due == 0,
+            score = breakdown?.total,
+            breakdown = breakdown,
+            baselineCompleted = baselineCompleted,
+            dueWeight = dueWeight,
+            doneWeight = doneWeight,
+            partialOccurrences = partialOccurrences,
+            todayDue = todayStats.due,
+            todayCompleted = todayStats.completed,
+            paceBaseline = paceBaseline,
+            pacePercent = pacePercent
+        )
+    }
+
+    /** One column of the trailing-month trend: a whole month's outcomes. */
+    data class MonthBar(
+        val month: YearMonth,
+        val due: Int,
+        val completed: Int,
+        /** Marked attempted (but not completed) in the month. */
+        val attempted: Int,
+        val isCurrent: Boolean
+    )
+
+    /**
+     * The trailing [count] months ending with the one containing [today],
+     * OLDEST FIRST — the monthly counterpart of [weekStats]'s days, and what
+     * the month view's bar chart draws.
+     *
+     * Only days that have ARRIVED count, exactly as everywhere else: the
+     * current month contributes just the days up to today, and because the
+     * window always ENDS at today there is never a future month to draw as
+     * progress.
+     */
+    fun monthBars(
+        items: List<TodoItem>,
+        today: LocalDate,
+        nowMillis: Long = System.currentTimeMillis(),
+        count: Int = 12
+    ): List<MonthBar> {
+        val current = YearMonth.from(today)
+        return (count - 1 downTo 0).map { back ->
+            val month = current.minusMonths(back.toLong())
+            val stats = monthStats(items, month, today)
+            val attempts = behaviorCounts(
+                items,
+                month.atDay(1),
+                month.atEndOfMonth(),
+                today,
+                nowMillis
+            ).attempted
+            MonthBar(
+                month = month,
+                due = stats.due,
+                completed = stats.completed,
+                attempted = attempts,
+                isCurrent = month == current
+            )
+        }
+    }
+
+    /**
+     * The Monday-based weeks that touch [from]..[to], each clipped to the
+     * range — so a month's first bar starts on the 1st even when it is not a
+     * Monday, and the last bar ends on the month's final day.
+     */
+    private fun monthWeeks(from: LocalDate, to: LocalDate): List<List<LocalDate>> {
+        val weeks = mutableListOf<List<LocalDate>>()
+        var weekStart = from.with(DayOfWeek.MONDAY)
+        while (!weekStart.isAfter(to)) {
+            weeks += (0..6).map { weekStart.plusDays(it.toLong()) }
+                .filter { !it.isBefore(from) && !it.isAfter(to) }
+            weekStart = weekStart.plusWeeks(1)
+        }
+        return weeks
     }
 }

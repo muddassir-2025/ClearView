@@ -143,6 +143,15 @@ class TodoStore(context: Context) {
         if (map.remove("$todoId#$index") != null) saveScheduledAlarms(map)
     }
 
+    /**
+     * Forgets EVERY recorded alarm. The full reset deletes the todos, and the
+     * records of alarms that no longer belong to anything must go with them —
+     * [TodoScheduler.cancelAllReminders] cancels the alarms themselves first.
+     */
+    fun clearAllScheduledAlarms() {
+        if (getScheduledAlarms().isNotEmpty()) saveScheduledAlarms(emptyMap())
+    }
+
     /** Removes every recorded alarm belonging to [todoId] (delete / full cancel). */
     fun clearScheduledAlarmsFor(todoId: String) {
         val map = getScheduledAlarms().toMutableMap()
@@ -182,6 +191,11 @@ class TodoStore(context: Context) {
      * by one entry per todo per day forever. Parsing a key back out is the price,
      * and it is paid once per open rather than once per read.
      */
+    /** Forgets every seen-reminder marker (the full reset). */
+    fun clearSeenReminders() {
+        prefs.edit().remove(KEY_SEEN_REMINDERS).apply()
+    }
+
     fun markRemindersSeen(keys: Collection<String>) {
         if (keys.isEmpty()) return
         val startOfToday = LocalDate.now().atStartOfDay(ZoneId.systemDefault())

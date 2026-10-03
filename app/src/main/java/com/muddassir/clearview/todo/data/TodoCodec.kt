@@ -965,35 +965,20 @@ object TodoCodec {
     }
 
     /**
-     * "Reset" (bottom): the DESTRUCTIVE counterpart of the history-only
-     * clears. This genuinely resets the progress / history / statistics data:
-     * every completion record is wiped — so today's completed count becomes
-     * 0, the progress bar 0%, the daily target progress 0 and the weekly
-     * score/statistics recompute to nothing — and BOTH history watermarks are
-     * set to hide every past completed AND missed occurrence, so the History
-     * tab starts empty too. The todos themselves — their plans, schedules,
-     * reminders and types — are untouched; only the record of what was done
-     * is reset. Days after the reset count normally (a fresh start). Always
-     * gated behind a typed confirmation in the UI.
+     * "Reset" (bottom): the DESTRUCTIVE full reset. It deletes EVERY todo, so
+     * the whole feature goes back to its fresh-install state — no todos, no
+     * completions, no attempts or logged time, no history, no streaks, no
+     * score, and nothing left for the progress bar, calendar, bar graph or
+     * heatmap to draw. Because nothing survives, there is no watermark to set:
+     * an empty list is already indistinguishable from a first launch.
+     *
+     * The reminder bookkeeping that lives OUTSIDE the items — scheduled-alarm
+     * records, pending snoozes, seen markers — has to be cleared by the caller
+     * ([com.muddassir.clearview.todo.data.TodoScheduler.cancelAllReminders])
+     * before this runs, since a pure list function cannot touch the alarms
+     * themselves. Always gated behind a typed confirmation in the UI.
      */
-    fun resetHistory(
-        items: List<TodoItem>,
-        today: LocalDate
-    ): List<TodoItem> {
-        val clearedBefore = today.toEpochDay() + 1
-        return items.map {
-            it.copy(
-                // Wipe EVERY historical record — completions, and the attempt /
-                // logged-time events too — so the counts, streaks, scores,
-                // calendar and heatmap all genuinely start from zero. (Clearing
-                // only completions left attempt/time statistics alive.)
-                completions = emptyMap(),
-                events = emptyList(),
-                completedClearedBefore = clearedBefore,
-                missedClearedBefore = clearedBefore
-            )
-        }
-    }
+    fun resetEverything(): List<TodoItem> = emptyList()
 
     // ── Human-readable labels (pure, for the UI) ────────────────────
 

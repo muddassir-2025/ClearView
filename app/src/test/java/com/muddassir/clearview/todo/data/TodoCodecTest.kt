@@ -420,57 +420,19 @@ class TodoCodecTest {
     }
 
     @Test
-    fun `reset wipes the progress and history data but keeps every todo`() {
-        val at = 1_700_000_000_000L
-        val items = listOf(
-            item("done", start = TODAY.minusDays(1), end = TODAY.minusDays(1),
-                completions = mapOf(TODAY.minusDays(1).toEpochDay() to at)),
-            item("doneToday", start = TODAY, end = TODAY,
-                completions = mapOf(TODAY.toEpochDay() to at)),
-            item("missed", start = TODAY.minusDays(1), end = TODAY.minusDays(1)),
-            item("active", start = TODAY, end = TODAY),
-            // Attempted + logged time must be wiped too, not just completions.
-            item("tried", start = TODAY, end = TODAY).copy(
-                events = listOf(
-                    TodoEvent.Attempted(1L, TODAY.toEpochDay()),
-                    TodoEvent.TimeAdded(2L, TODAY.toEpochDay(), 30)
-                )
-            )
-        )
-
-        // Reset is DESTRUCTIVE: the completion records are wiped (today's
-        // count -> 0, progress -> 0%, score/stats reset) AND both history
-        // watermarks hide every past occurrence — but the todos stay.
-        val reset = TodoCodec.resetHistory(items, TODAY)
-        assertEquals(
-            listOf("done", "doneToday", "missed", "active", "tried"),
-            reset.map { it.id }
-        )
-        assertTrue(reset.all { it.completions.isEmpty() })
-        // Attempt / logged-time events are wiped as well, so streaks, scores,
-        // the calendar and the heatmap genuinely reset.
-        assertTrue(reset.all { it.events.isEmpty() })
+    fun `reset deletes every todo so nothing is left to count`() {
+        // Reset is the FULL reset: the plans go with the records, so the feature
+        // reads exactly like a fresh install — no due today, no completions, no
+        // attempts, no logged time, no history, nothing left for the progress
+        // bar, calendar, bar graph or heatmap.
+        val reset = TodoCodec.resetEverything()
+        assertTrue(reset.isEmpty())
+        assertEquals(0, TodoStats.dayStats(reset, TODAY).due)
+        assertEquals(0, TodoStats.dayStats(reset, TODAY).completed)
         assertEquals(0, TodoStats.behaviorCounts(reset, TODAY, TODAY, TODAY).attempted)
         assertEquals(0, TodoStats.behaviorCounts(reset, TODAY, TODAY, TODAY).productiveMinutes)
-        assertFalse(TodoCodec.completedOn(reset.first { it.id == "doneToday" }, TODAY))
-        assertEquals(0, TodoStats.dayStats(reset, TODAY).completed)
         assertTrue(TodoCodec.historySorted(reset, TODAY).isEmpty())
-        // Both watermarks hide everything up to today (the History view is
-        // empty) while days after the reset count normally.
-        assertTrue(
-            reset.all {
-                it.completedClearedBefore == TODAY.toEpochDay() + 1 &&
-                    it.missedClearedBefore == TODAY.toEpochDay() + 1
-            }
-        )
-        // The todos themselves are still fully intact and actionable — only
-        // the history was wiped, never the plans.
-        assertEquals(
-            TODAY.minusDays(1).toEpochDay(),
-            reset.first { it.id == "done" }.startDateEpochDay
-        )
-        assertTrue(reset.any { it.id == "tried" })
-        assertTrue(TodoCodec.canCompleteOn(reset.first { it.id == "active" }, TODAY, atMinutes(TODAY, 12 * 60)))
+        assertTrue(TodoCodec.filter(reset, TodoFilter.ALL, TODAY).isEmpty())
     }
 
     @Test

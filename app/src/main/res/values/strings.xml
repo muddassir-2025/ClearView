@@ -305,7 +305,7 @@
     <string name="todo_empty_note">Add something you want to accomplish today.</string>
     <string name="todo_no_match">No todos match this filter or search</string>
     <string name="todo_delete_confirm_title">Delete todo?</string>
-    <string name="todo_delete_confirm_text">Delete %1$s? Its completion history is removed too.</string>
+    <string name="todo_delete_confirm_text">Delete %1$s?</string>
     <string name="todo_delete_confirm">Delete</string>
     <string name="todo_title_label">Todo name</string>
     <string name="todo_details_label">Details (optional)</string>
@@ -412,6 +412,7 @@
     <string name="todo_completed_title">Completed Today</string>
     <string name="todo_completed_none">Nothing completed yet today — tick a todo off on the Today tab and it shows up here.</string>
     <string name="todo_weekly_score">Weekly Score</string>
+    <string name="todo_score_title_period">%1$s Score</string>
     <string name="todo_score_value">%1$d / 100</string>
     <string name="todo_score_excellent">Excellent</string>
     <string name="todo_score_good">Good</string>
@@ -421,6 +422,15 @@
     <string name="todo_graph_completed">Completed Todos</string>
     <string name="todo_graph_incomplete">Incomplete Todos</string>
     <string name="todo_graph_total">Total Todos</string>
+    <string name="todo_graph_months">Total Todos by month</string>
+    <!-- Month statistics dialog (opened from a bar of the twelve-month chart) -->
+    <string name="todo_month_dialog_completed_label">Completed</string>
+    <string name="todo_month_dialog_completed_value">%1$d of %2$d · %3$d%%</string>
+    <string name="todo_month_dialog_attempted_label">Attempted</string>
+    <string name="todo_month_dialog_incomplete_label">Not completed</string>
+    <string name="todo_month_dialog_active_days_label">Active days</string>
+    <string name="todo_month_dialog_active_days_value">%1$d of %2$d</string>
+    <string name="todo_month_dialog_empty">No todos were due this month.</string>
     <string name="todo_day_title">%1$s\'s Todos</string>
     <string name="todo_day_empty">No todos on this day</string>
     <plurals name="todo_day_mode">
@@ -473,14 +483,14 @@
     </plurals>
     <string name="todo_delete_history_off">The todo is removed from your lists. Its past completions, misses and logged time are kept, so your streaks, heatmap, weekly score and statistics stay intact.</string>
     <string name="todo_delete_history_on">The todo and all of its history are deleted. Its completed and missed days stop counting towards your streaks, heatmap, weekly score and statistics.</string>
-    <string name="todo_history_reset_title">Reset todo progress?</string>
-    <string name="todo_history_reset_text">This permanently resets your todo progress, history and statistics. Today\'s completed count, the progress bar, the daily target, the weekly score and all stats go back to zero. Your todos themselves stay — only the record of what was done is wiped.</string>
+    <string name="todo_history_reset_title">Reset everything?</string>
+    <string name="todo_history_reset_text">This permanently deletes EVERY todo and all of its progress, history and statistics — the app goes back to exactly how it looks on a fresh install. Completed and missed days, streaks, the progress bar, the calendar, the bar graph, the heatmap and the weekly/monthly score all go. Reminders and alarms for those todos are cancelled too. This cannot be undone.</string>
     <string name="todo_history_reset_type_hint">Type RESET to confirm</string>
     <string name="todo_history_reset_type_error">Type RESET exactly to enable the button</string>
     <string name="todo_history_reset_button">Reset everything</string>
     <string name="todo_score_tap_hint">Tap for details</string>
     <string name="todo_score_how_title">How your score was calculated</string>
-    <string name="todo_score_how_note">Based only on todos due this week — future todos never count. Nothing earns points for being empty: a component only scores when there is something to measure, and excluded components rescale the rest to 100.</string>
+    <string name="todo_score_how_note">Based only on todos due in the period shown — future todos never count. Nothing earns points for being empty: a component only scores when there is something to measure, and excluded components rescale the rest to 100.</string>
     <string name="todo_score_component_completion">Completion</string>
     <string name="todo_score_component_consistency">Consistency</string>
     <string name="todo_score_component_streak">Streak</string>
@@ -492,17 +502,27 @@
     <string name="todo_score_expl_consistency">Active on %1$d of %2$d due days</string>
     <string name="todo_score_expl_streak">%1$d-day streak (max 7)</string>
     <string name="todo_score_expl_timeliness">%1$d of %2$d closed items handled on time</string>
-    <string name="todo_score_expl_timeliness_none">Nothing has reached its due time yet this week</string>
-    <string name="todo_score_expl_volume">%1$d completed this week · your usual %2$d</string>
-    <string name="todo_score_expl_volume_none">No earlier week to compare against yet</string>
+    <string name="todo_score_expl_timeliness_none">Nothing has reached its due time yet</string>
+    <string name="todo_score_expl_volume">%1$d completed · your usual %2$d</string>
+    <string name="todo_score_expl_volume_none">No earlier period to compare against yet</string>
     <string name="todo_score_empty_week">No todos due this week</string>
+    <string name="todo_score_empty_period">No todos due this %1$s</string>
     <string name="todo_insight_streak_none">No current streak</string>
     <string name="todo_insight_first_week">First week of tracking — keep completing Todos to build your history.</string>
-    <!-- Weekly Insights & Statistics (one merged card) -->
+    <!-- Weekly Insights & Statistics (one merged card; Week / Month switch) -->
+    <string name="todo_period_week">Weekly</string>
+    <string name="todo_period_month">Monthly</string>
+    <string name="todo_period_week_noun">week</string>
+    <string name="todo_period_month_noun">month</string>
+    <string name="todo_progress_period">%1$s Progress</string>
+    <string name="todo_period_menu">Change the period</string>
     <string name="todo_insights_title">Weekly Insights &amp; Statistics</string>
+    <string name="todo_insights_title_month">Monthly Insights &amp; Statistics</string>
     <string name="todo_insights_empty">No todos were due this week — add a todo to start building your insights.</string>
+    <string name="todo_insights_empty_month">No todos were due this month — add a todo to start building your insights.</string>
     <!-- Productivity card (redesigned dashboard): hero, tiles, trend -->
     <string name="todo_card_week_label">This week</string>
+    <string name="todo_card_period_label">This %1$s</string>
     <string name="todo_card_completed_of">%1$d of %2$d completed</string>
     <string name="todo_card_ring_caption">of %1$d</string>
     <plurals name="todo_card_partial_credit">
@@ -513,14 +533,17 @@
     <string name="todo_card_all_done_today">All done today</string>
     <string name="todo_card_none">—</string>
     <string name="todo_card_first_week">First week — no comparison yet</string>
+    <string name="todo_card_first_period">First %1$s — no comparison yet</string>
     <string name="todo_card_score_trend_up">↑ %1$d%% score vs last week</string>
     <string name="todo_card_score_trend_down">↓ %1$d%% score vs last week</string>
     <string name="todo_card_tile_today_value">%1$d / %2$d</string>
     <string name="todo_card_tile_today_label">Completed today</string>
-    <string name="todo_card_tile_active_days_value">%1$d of 7</string>
+    <string name="todo_card_tile_active_days_value">%1$d of %2$d</string>
     <string name="todo_card_tile_active_days_label">Active days this week</string>
+    <string name="todo_card_tile_active_days_label_period">Active days this %1$s</string>
     <string name="todo_card_tile_volume_value">%1$d</string>
     <string name="todo_card_tile_volume_label">Usual %1$d this week</string>
+    <string name="todo_card_tile_volume_label_period">Usual %1$d this %2$s</string>
     <string name="todo_insight_completion_rate">Completion rate</string>
     <string name="todo_insight_completion_value">%1$d%% · %2$d of %3$d</string>
     <string name="todo_insight_pending_label">Pending today</string>
@@ -550,7 +573,15 @@
     <string name="todo_stats_delta_up">↑ %1$d%% vs last week</string>
     <string name="todo_stats_delta_down">↓ %1$d%% vs last week</string>
     <string name="todo_stats_delta_flat">No change vs last week</string>
+    <string name="todo_stats_delta_up_period">↑ %1$d%% vs last %2$s</string>
+    <string name="todo_stats_delta_down_period">↓ %1$d%% vs last %2$s</string>
+    <string name="todo_stats_delta_flat_period">No change vs last %1$s</string>
     <string name="todo_stats_productive_minutes_label">Productive time</string>
+    <!-- Monthly pace: this month so far vs the same point in past months. -->
+    <string name="todo_stats_pace_label">Pace · usual %1$d by day %2$d</string>
+    <string name="todo_stats_pace_ahead">%1$d%% ahead</string>
+    <string name="todo_stats_pace_behind">%1$d%% behind</string>
+    <string name="todo_stats_pace_on">On your usual pace</string>
     <string name="todo_graph_attempted">Attempted Todos</string>
     <string name="todo_filter_attempted">Attempted</string>
     <!-- Heatmap headline: what the shown window adds up to, above the grid. -->

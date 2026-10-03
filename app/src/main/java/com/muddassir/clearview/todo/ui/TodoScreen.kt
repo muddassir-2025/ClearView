@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.Canvas
@@ -95,6 +96,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -220,6 +222,8 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     var pendingDelete by remember { mutableStateOf<TodoItem?>(null) }
     var snoozing by remember { mutableStateOf<TodoItem?>(null) }
     var dayDialog by remember { mutableStateOf<DayDialogRequest?>(null) }
+    // The month opened from the twelve-month chart (MonthStatsDialog).
+    var monthDialog by remember { mutableStateOf<YearMonth?>(null) }
     var showTargetDialog by remember { mutableStateOf(false) }
     var showScoreDialog by remember { mutableStateOf(false) }
     var showResetDialog by remember { mutableStateOf(false) }
@@ -351,8 +355,22 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     val completedToday = remember(items, today) {
         items.count { TodoCodec.isActiveOn(it, today) && TodoCodec.completedOn(it, today) }
     }
-    val weekStats = remember(items, today, nowMillis) {
-        TodoStats.weekStats(items, today, nowMillis)
+    // The dashboard's period: the WEEK (default) or the MONTH, chosen right on
+    // the insights card. Both sets are built from the same items, so switching
+    // the toggle can never surface a number the other period disagrees with.
+    var statsPeriod by remember { mutableStateOf(TodoStats.TodoPeriod.WEEK) }
+    val weekInsights = remember(items, today, nowMillis) {
+        TodoStats.weekInsights(items, today, nowMillis)
+    }
+    val monthInsights = remember(items, today, nowMillis) {
+        TodoStats.monthInsights(items, today, nowMillis)
+    }
+    val insights =
+        if (statsPeriod == TodoStats.TodoPeriod.WEEK) weekInsights else monthInsights
+    // The month view's chart: a trailing twelve months, so its shape is the
+    // year and any column can be opened for that month's statistics.
+    val monthBars = remember(items, today, nowMillis) {
+        TodoStats.monthBars(items, today, nowMillis)
     }
     val monthStats = remember(items, today) { TodoStats.monthStats(items, today) }
     val calendarStats = remember(items, calendarMonth, today) {
@@ -729,11 +747,15 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
                     // — one coherent surface instead of scattered sections.
                     item {
                         ProductivityDashboard(
-                            weekStats = weekStats,
+                            insights = insights,
+                            period = statsPeriod,
+                            onPeriodChange = { statsPeriod = it },
+                            monthBars = monthBars,
                             items = items,
                             today = today,
                             nowMillis = nowMillis,
                             onDayTap = { dayDialog = DayDialogRequest(it) },
+                            onMonthTap = { monthDialog = it },
                             onScoreClick = { showScoreDialog = true },
                             onShareProgress = { showProgressCard = true }
                         )
@@ -842,6 +864,17 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
         )
     }
 
+    // ── Month statistics (a bar of the twelve-month chart) ──
+    monthDialog?.let { month ->
+        MonthStatsDialog(
+            month = month,
+            items = items,
+            today = today,
+            nowMillis = nowMillis,
+            onDismiss = { monthDialog = null }
+        )
+    }
+
     // ── Daily completion target ──
     if (showTargetDialog) {
         TargetDialog(
@@ -857,8 +890,8 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
 
     // ── Weekly score breakdown ──
     if (showScoreDialog) {
-        weekStats.breakdown?.let {
-            ScoreBreakdownDialog(stats = weekStats, onDismiss = { showScoreDialog = false })
+        insights.breakdown?.let {
+            ScoreBreakdownDialog(insights = insights, onDismiss = { showScoreDialog = false })
         }
     }
 
@@ -877,14 +910,15 @@ private fun TodoScreenContent(onDismiss: () -> Unit) {
     if (showResetDialog) {
         ResetHistoryDialog(
             onConfirm = {
-                // Wipe the records first, THEN the items: the pending-snooze
-                // bookkeeping is the one piece of "what happened" stored outside
-                // the items, and a reset that left a card still promising a
-                // snoozed reminder would not have cleared everything. save()
-                // re-schedules every reminder below, so the now-forgotten snooze
-                // can never come back on its own.
-                store.clearSnoozedReminders()
-                save(TodoCodec.resetHistory(items, today))
+                // A full reset deletes EVERY todo, so the reminder bookkeeping
+                // that lives outside the items goes first: every scheduled
+                // alarm is cancelled by its own request code and the records
+                // (scheduled alarms, pending snoozes, seen markers) are
+                // forgotten. After that the item list is wiped, which leaves
+                // the feature in exactly the state a fresh install starts in
+                // — so save() re-schedules nothing.
+                TodoScheduler.cancelAllReminders(context)
+                save(TodoCodec.resetEverything())
                 showResetDialog = false
             },
             onDismiss = { showResetDialog = false }
@@ -1694,23 +1728,21 @@ private fun HistoryRow(entry: TodoCodec.HistoryEntry) {
 }
 
 /**
- * The week at a glance: one bar per day (Monday first) whose fill shows how much
+ * The WEEK at a glance: one bar per day (Monday first) whose fill shows how much
  * of that day's plan was completed, with the weekday and the completed count
  * underneath and today clearly marked. Tapping a day opens its todos.
  *
- * The bars are scaled against the WEEK'S busiest day (never against an
- * arbitrary maximum), so the shape of the week is readable at a glance; a day
- * that missed its plan keeps an empty track and a red-tinted count, and future
- * days are drawn as empty outlines because a schedule is information, never
- * progress.
+ * The bars are scaled against the WEEK'S busiest day (never against an arbitrary
+ * maximum), so the shape of the week is readable at a glance; a day that missed
+ * its plan keeps an empty track and a red-tinted count, and future days are drawn
+ * as empty outlines because a schedule is information, never progress.
  */
 @Composable
-private fun WeeklyProgressSection(
-    stats: TodoStats.WeekStats,
-    today: LocalDate,
+private fun WeekProgressSection(
+    insights: TodoStats.PeriodInsights,
     onDayTap: (LocalDate) -> Unit
 ) {
-    val maxDue = stats.days.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
+    val maxDue = insights.bars.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
     val trackColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -1718,13 +1750,16 @@ private fun WeeklyProgressSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = stringResource(R.string.todo_weekly_progress),
+                text = stringResource(
+                    R.string.todo_progress_period,
+                    periodAdjective(insights.period)
+                ),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
             Text(
-                text = "${stats.percent}%",
+                text = "${insights.percent}%",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
@@ -1735,13 +1770,11 @@ private fun WeeklyProgressSection(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            stats.days.forEach { day ->
-                val letter = DAY_LETTERS[day.date.dayOfWeek.value - 1]
-                val isToday = day.date == today
-                val isFuture = day.date.isAfter(today)
-                val missed = !isToday && !isFuture && day.due > 0 && day.completed == 0
-                val fraction = if (day.due > 0) {
-                    (day.completed.toFloat() / maxDue).coerceIn(0f, 1f)
+            insights.bars.forEach { bar ->
+                val letter = DAY_LETTERS[bar.start.dayOfWeek.value - 1]
+                val missed = !bar.isToday && !bar.isFuture && bar.due > 0 && bar.completed == 0
+                val fraction = if (bar.due > 0) {
+                    (bar.completed.toFloat() / maxDue).coerceIn(0f, 1f)
                 } else {
                     0f
                 }
@@ -1750,7 +1783,7 @@ private fun WeeklyProgressSection(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(9.dp))
-                        .clickable { onDayTap(day.date) }
+                        .clickable { onDayTap(bar.start) }
                         .padding(vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -1760,7 +1793,7 @@ private fun WeeklyProgressSection(
                             .height(46.dp)
                             .clip(RoundedCornerShape(7.dp))
                             .background(
-                                if (isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                                if (bar.isToday) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                                 else trackColor
                             ),
                         contentAlignment = Alignment.BottomCenter
@@ -1789,16 +1822,16 @@ private fun WeeklyProgressSection(
                     Text(
                         text = letter,
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = if (isToday) FontWeight.Bold else FontWeight.Medium,
-                        color = if (isToday) MaterialTheme.colorScheme.primary
+                        fontWeight = if (bar.isToday) FontWeight.Bold else FontWeight.Medium,
+                        color = if (bar.isToday) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = day.completed.toString(),
+                        text = bar.completed.toString(),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = when {
-                            day.completed > 0 -> DONE_GREEN
+                            bar.completed > 0 -> DONE_GREEN
                             missed -> MISSED_RED
                             else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
                         }
@@ -1811,9 +1844,9 @@ private fun WeeklyProgressSection(
             Text(
                 text = pluralStringResource(
                     R.plurals.todo_weekly_count,
-                    stats.due,
-                    stats.completed,
-                    stats.due
+                    insights.due,
+                    insights.completed,
+                    insights.due
                 ),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f)
@@ -1821,18 +1854,17 @@ private fun WeeklyProgressSection(
         }
         Spacer(Modifier.height(6.dp))
         LinearProgressIndicator(
-            progress = { stats.rate },
+            progress = { insights.rate },
             modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
         )
     }
 }
 
-
 /** \"How your score was calculated\" — every component with its contribution. */
 @Composable
-private fun ScoreBreakdownDialog(stats: TodoStats.WeekStats, onDismiss: () -> Unit) {
-    val b = stats.breakdown ?: return
-    val daysWithDue = stats.days.count { it.due > 0 }
+private fun ScoreBreakdownDialog(insights: TodoStats.PeriodInsights, onDismiss: () -> Unit) {
+    val b = insights.breakdown ?: return
+    val daysWithDue = insights.daysWithDue
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.todo_score_how_title)) },
@@ -1863,7 +1895,7 @@ private fun ScoreBreakdownDialog(stats: TodoStats.WeekStats, onDismiss: () -> Un
                     value = b.consistency,
                     max = b.consistencyMax,
                     explanation = stringResource(
-                        R.string.todo_score_expl_consistency, stats.activeDays, daysWithDue
+                        R.string.todo_score_expl_consistency, insights.activeDays, daysWithDue
                     )
                 )
                 ScoreRow(
@@ -1899,7 +1931,7 @@ private fun ScoreBreakdownDialog(stats: TodoStats.WeekStats, onDismiss: () -> Un
                     } else {
                         stringResource(
                             R.string.todo_score_expl_volume,
-                            stats.completed,
+                            insights.completed,
                             b.baselineCompleted.roundToInt()
                         )
                     }
@@ -1968,31 +2000,32 @@ private fun ScoreRow(
 }
 
 /**
- * The consolidated PRODUCTIVITY DASHBOARD. A single merged "Weekly Insights &
- * Statistics" card carries every number worth reading — completion rate,
- * completed vs pending, weekly progress, volume against the user's own
- * baseline, both streaks, the weekly score (tap for the full breakdown), best
- * day, most productive window and the month summary — followed by the
- * attempted-aware weekly bar graph and the month-organised heatmap.
+ * The consolidated PRODUCTIVITY DASHBOARD. A single merged "Weekly/Monthly
+ * Insights & Statistics" card carries every number worth reading — completion
+ * rate, completed vs pending, progress, volume against the user's own
+ * baseline, both streaks, the score (tap for the full breakdown), best day and
+ * most productive window — followed by the attempted-aware bar graph and the
+ * month-organised heatmap.
  *
- * Before v3 the same figures were repeated across a tile row, a trend card,
- * four separate sections and the score card; now nothing is shown twice, and
- * every value comes from the same [TodoStats.weekStats] /
- * [TodoStats.productivitySummary] call, so no two surfaces can disagree.
+ * The Week / Month switch in the header chooses the period. Every value comes
+ * from the SAME [TodoStats.PeriodInsights] the other surfaces read, so no two
+ * numbers on this screen can disagree — and switching the period changes the
+ * numbers, never the layout.
  */
 @Composable
 private fun ProductivityDashboard(
-    weekStats: TodoStats.WeekStats,
+    insights: TodoStats.PeriodInsights,
+    period: TodoStats.TodoPeriod,
+    onPeriodChange: (TodoStats.TodoPeriod) -> Unit,
+    monthBars: List<TodoStats.MonthBar>,
     items: List<TodoItem>,
     today: LocalDate,
     nowMillis: Long,
     onDayTap: (LocalDate) -> Unit,
+    onMonthTap: (YearMonth) -> Unit,
     onScoreClick: () -> Unit,
     onShareProgress: () -> Unit
 ) {
-    val summary = remember(items, today, nowMillis) {
-        TodoStats.productivitySummary(items, today, nowMillis)
-    }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -2004,6 +2037,10 @@ private fun ProductivityDashboard(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
+            // The Week / Month switch lives here as ONE arrow beside Share:
+            // the period is a lens on the same card, not a second section, so
+            // it costs no row and cannot be mistaken for another chart.
+            PeriodMenu(period = period, onPeriodChange = onPeriodChange)
             IconButton(onClick = onShareProgress, modifier = Modifier.size(34.dp)) {
                 Icon(
                     Icons.Filled.Share,
@@ -2014,69 +2051,135 @@ private fun ProductivityDashboard(
             }
         }
 
-        WeeklyInsightsCard(
-            stats = weekStats,
-            summary = summary,
-            items = items,
-            today = today,
+        InsightsCard(
+            insights = insights,
             onDayTap = { onDayTap(it) },
             onScoreClick = onScoreClick
         )
-        WeeklyBarGraph(
-            stats = weekStats,
-            items = items,
-            onBarTap = onDayTap
-        )
+        // Both periods chart their own unit in the SAME stacked language: seven
+        // days for the week, twelve scrollable months for the month.
+        if (insights.period == TodoStats.TodoPeriod.WEEK) {
+            PeriodBarGraph(insights = insights, onBarTap = onDayTap)
+        } else {
+            MonthTrendChart(bars = monthBars, onBarTap = onMonthTap)
+        }
         TodoProductivityHeatmap(items = items, today = today, nowMillis = nowMillis)
     }
 }
 
 /**
- * ONE card holding the week's insights AND statistics — a scannable
- * productivity dashboard rather than a wall of label/value rows.
+ * The Week / Month switch: ONE compact control beside the share button,
+ * showing the period the dashboard is currently reading with a drop-down
+ * arrow. Replaces the two-chip row — the dashboard header stays a title and
+ * two icons, and the arrow still says "there is another period to pick".
+ */
+@Composable
+private fun PeriodMenu(
+    period: TodoStats.TodoPeriod,
+    onPeriodChange: (TodoStats.TodoPeriod) -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = { menuOpen = true },
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+        ) {
+            Text(
+                text = periodAdjective(period),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1
+            )
+            Icon(
+                Icons.Filled.ArrowDropDown,
+                contentDescription = stringResource(R.string.todo_period_menu),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            listOf(TodoStats.TodoPeriod.WEEK, TodoStats.TodoPeriod.MONTH).forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(stringResource(periodLabel(option))) },
+                    leadingIcon = if (option == period) {
+                        {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    } else {
+                        null
+                    },
+                    onClick = {
+                        onPeriodChange(option)
+                        menuOpen = false
+                    }
+                )
+            }
+        }
+    }
+}
+
+/** The resource of a period's own label ("Weekly" / "Monthly"). */
+private fun periodLabel(period: TodoStats.TodoPeriod): Int =
+    if (period == TodoStats.TodoPeriod.WEEK) R.string.todo_period_week
+    else R.string.todo_period_month
+
+/** The period's noun ("week" / "month") for the card's labels. */
+@Composable
+private fun periodNoun(period: TodoStats.TodoPeriod): String =
+    stringResource(
+        if (period == TodoStats.TodoPeriod.WEEK) R.string.todo_period_week_noun
+        else R.string.todo_period_month_noun
+    )
+
+/** The period's adjective ("Weekly" / "Monthly") for the card's headings. */
+@Composable
+private fun periodAdjective(period: TodoStats.TodoPeriod): String =
+    stringResource(
+        if (period == TodoStats.TodoPeriod.WEEK) R.string.todo_period_week
+        else R.string.todo_period_month
+    )
+
+/**
+ * ONE card holding the selected period's insights AND statistics — a
+ * scannable productivity dashboard rather than a wall of label/value rows.
  *
  * WHAT IT SHOWS (and why each figure earns its place):
- *  1. A completion RING — the week's completion percentage, the single number
- *     that answers "how much did I get done?". Inside it sits the raw ratio
- *     ("34 of 50"), so the percentage is never abstract.
- *  2. The TREND against last week ("↑ 12% vs last week"), i.e. the
- *     improving/falling-behind signal — dormant (with an explanation) in the
- *     first week, where there is nothing honest to compare against.
+ *  1. A completion RING — the period's completion percentage, the single
+ *     number that answers "how much did I get done?". Inside it sits the raw
+ *     ratio ("34 of 50"), so the percentage is never abstract.
+ *  2. The TREND against the period before ("↑ 12% vs last week/month"), i.e.
+ *     the improving/falling-behind signal — dormant (with an explanation) in
+ *     the first period, where there is nothing honest to compare against.
  *  3. TODAY's remaining/complete state — the actual current workload, which is
  *     what the user can still act on right now.
- *  4. The weekly Mon..Sun bars — the shape of the week at a glance, each day
- *     tappable for its todos.
+ *  4. The week's Mon..Sun strip (WEEK view only — the month's breakdown is the
+ *     twelve-month chart below the card), each day tappable for its todos.
  *  5. Four tiles: completed today, current streak, active days (consistency)
  *     and volume against the user's OWN recent baseline (throughput).
  *  6. Secondary facts (longest streak, best day, most productive time, logged
- *     time, this month) and the explainable weekly score.
+ *     time) and the explainable score.
  *
  * Deliberately NOT shown: "todos created", cumulative incomplete counts and
  * other vanity figures that cannot change a decision. Every value comes from
- * the same [TodoStats.weekStats] / [TodoStats.productivitySummary] call, so no
- * two numbers on this screen can disagree, and everything is either real data
- * or explicitly absent ("No history yet").
+ * the same [TodoStats.PeriodInsights], so no two numbers on this screen can
+ * disagree, and everything is either real data or explicitly absent ("No
+ * history yet").
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun WeeklyInsightsCard(
-    stats: TodoStats.WeekStats,
-    summary: TodoStats.ProductivitySummary,
-    items: List<TodoItem>,
-    today: LocalDate,
+private fun InsightsCard(
+    insights: TodoStats.PeriodInsights,
     onDayTap: (LocalDate) -> Unit,
     onScoreClick: () -> Unit
 ) {
     val locale = LocalConfiguration.current.locales[0]
-    val month = remember(items, today) { TodoStats.monthStats(items, today) }
-    val todayStats = remember(items, today) { TodoStats.dayStats(items, today) }
-    val monthWindow = remember(items, today) {
-        val start = YearMonth.from(today).atDay(1).toEpochDay()
-        val end = YearMonth.from(today).atDay(1).plusMonths(1).toEpochDay()
-        TodoStats.mostProductiveWindow(items, start, end)
-    }
-    val productiveWindow = stats.mostProductiveWindow ?: monthWindow
-    val baseline = stats.breakdown?.baselineCompleted
+    val noun = periodNoun(insights.period)
+    val baseline = insights.baselineCompleted
     val wide = LocalConfiguration.current.screenWidthDp >= 600
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -2086,16 +2189,28 @@ private fun WeeklyInsightsCard(
     ) {
         Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text(
-                text = stringResource(R.string.todo_insights_title),
+                text = stringResource(
+                    if (insights.period == TodoStats.TodoPeriod.WEEK) {
+                        R.string.todo_insights_title
+                    } else {
+                        R.string.todo_insights_title_month
+                    }
+                ),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(10.dp))
-            if (stats.due <= 0) {
+            if (insights.due <= 0) {
                 // Nothing to measure: a short prompt instead of a wall of
                 // zeroes and dashes.
                 Text(
-                    text = stringResource(R.string.todo_insights_empty),
+                    text = stringResource(
+                        if (insights.period == TodoStats.TodoPeriod.WEEK) {
+                            R.string.todo_insights_empty
+                        } else {
+                            R.string.todo_insights_empty_month
+                        }
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -2103,11 +2218,15 @@ private fun WeeklyInsightsCard(
             }
 
             // ── 1+2+3. Hero: completion ring, trend, what's left today ──
-            InsightHero(stats = stats, summary = summary)
+            InsightHero(insights = insights, noun = noun)
             Spacer(Modifier.height(16.dp))
 
-            // ── 4. The week at a glance (tap a day for its todos) ──
-            WeeklyProgressSection(stats = stats, today = today, onDayTap = onDayTap)
+            // ── 4. The week at a glance. Only the WEEK has a strip here: the
+            // month's breakdown is the twelve-month chart below, so a second,
+            // coarser week-by-week view of the same month would say it twice. ──
+            if (insights.period == TodoStats.TodoPeriod.WEEK) {
+                WeekProgressSection(insights = insights, onDayTap = onDayTap)
+            }
             Spacer(Modifier.height(14.dp))
             HorizontalDivider()
             Spacer(Modifier.height(12.dp))
@@ -2128,8 +2247,8 @@ private fun WeeklyInsightsCard(
                     icon = Icons.Filled.CheckCircle,
                     value = stringResource(
                         R.string.todo_card_tile_today_value,
-                        todayStats.completed,
-                        todayStats.due
+                        insights.todayCompleted,
+                        insights.todayDue
                     ),
                     label = stringResource(R.string.todo_card_tile_today_label),
                     tint = DONE_GREEN,
@@ -2137,33 +2256,45 @@ private fun WeeklyInsightsCard(
                 )
                 StatTile(
                     icon = Icons.Filled.LocalFireDepartment,
-                    value = if (stats.streak > 0) {
-                        pluralStringResource(R.plurals.todo_stats_days_value, stats.streak, stats.streak)
+                    value = if (insights.streak > 0) {
+                        pluralStringResource(
+                            R.plurals.todo_stats_days_value,
+                            insights.streak,
+                            insights.streak
+                        )
                     } else {
                         stringResource(R.string.todo_card_none)
                     },
                     label = stringResource(R.string.todo_stats_streak_label),
-                    tint = if (stats.streak > 0) ATTEMPT_AMBER
+                    tint = if (insights.streak > 0) ATTEMPT_AMBER
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = tileModifier
                 )
                 StatTile(
                     icon = Icons.Filled.EventAvailable,
-                    value = stringResource(R.string.todo_card_tile_active_days_value, stats.activeDays),
-                    label = stringResource(R.string.todo_card_tile_active_days_label),
+                    value = stringResource(
+                        R.string.todo_card_tile_active_days_value,
+                        insights.activeDays,
+                        insights.activeDaysWindow
+                    ),
+                    label = stringResource(R.string.todo_card_tile_active_days_label_period, noun),
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = tileModifier
                 )
                 StatTile(
                     icon = Icons.AutoMirrored.Filled.TrendingUp,
                     value = baseline?.let {
-                        stringResource(R.string.todo_card_tile_volume_value, stats.completed)
+                        stringResource(R.string.todo_card_tile_volume_value, insights.completed)
                     } ?: stringResource(R.string.todo_card_none),
                     // The comparison is stated in the LABEL so the tile never
                     // shows a bare number with no context — and a missing
                     // baseline says so instead of implying a zero.
                     label = baseline?.let {
-                        stringResource(R.string.todo_card_tile_volume_label, it.roundToInt())
+                        stringResource(
+                            R.string.todo_card_tile_volume_label_period,
+                            it.roundToInt(),
+                            noun
+                        )
                     } ?: stringResource(R.string.todo_insight_volume_none),
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = tileModifier
@@ -2176,25 +2307,56 @@ private fun WeeklyInsightsCard(
 
             // ── 6. Secondary facts + the score, each on a cleanly aligned row
             // (label hard-left, value hard-right, one shared value edge). ──
+            // PACe leads when there is one: of everything below, "am I ahead of
+            // my OWN usual pace?" is the figure a reader can act on today, and
+            // the label states the baseline ("usual 6 by day 10") so the
+            // comparison is never a bare percentage.
+            insights.paceBaseline?.let { baseline ->
+                val pace = insights.pacePercent ?: 0
+                InsightRow(
+                    label = stringResource(
+                        R.string.todo_stats_pace_label,
+                        baseline.roundToInt(),
+                        insights.today.dayOfMonth
+                    ),
+                    value = when {
+                        pace > 0 -> stringResource(R.string.todo_stats_pace_ahead, pace)
+                        pace < 0 -> stringResource(R.string.todo_stats_pace_behind, -pace)
+                        else -> stringResource(R.string.todo_stats_pace_on)
+                    },
+                    valueColor = when {
+                        pace > 0 -> DONE_GREEN
+                        pace < 0 -> MISSED_RED
+                        else -> MaterialTheme.colorScheme.onSurface
+                    }
+                )
+            }
             InsightRow(
                 label = stringResource(R.string.todo_stats_longest_label),
                 value = pluralStringResource(
                     R.plurals.todo_stats_days_value,
-                    summary.longestStreak,
-                    summary.longestStreak
+                    insights.longestStreak,
+                    insights.longestStreak
                 )
             )
-            stats.bestDay?.let { best ->
+            insights.bestDay?.let { best ->
                 InsightRow(
                     label = stringResource(R.string.todo_stats_best_day_label),
                     value = stringResource(
                         R.string.todo_stats_best_day,
-                        best.date.dayOfWeek.getDisplayName(TextStyle.FULL, locale),
+                        // A week has one of each weekday, so the weekday name is
+                        // unambiguous there; a month has four or five of them,
+                        // so the month view names the actual DATE.
+                        if (insights.period == TodoStats.TodoPeriod.WEEK) {
+                            best.date.dayOfWeek.getDisplayName(TextStyle.FULL, locale)
+                        } else {
+                            historyDateFormat(locale).format(best.date)
+                        },
                         (best.rate * 100).toInt()
                     )
                 )
             }
-            productiveWindow?.let { (start, end) ->
+            insights.mostProductiveWindow?.let { (start, end) ->
                 InsightRow(
                     label = stringResource(R.string.todo_stats_productive_label),
                     value = stringResource(
@@ -2204,28 +2366,16 @@ private fun WeeklyInsightsCard(
                     )
                 )
             }
-            if (summary.productiveMinutes > 0) {
+            if (insights.productiveMinutes > 0) {
                 InsightRow(
                     label = stringResource(R.string.todo_stats_productive_minutes_label),
-                    value = formatMinutesLabel(summary.productiveMinutes)
-                )
-            }
-            if (month.due > 0) {
-                InsightRow(
-                    label = stringResource(R.string.todo_stats_this_month),
-                    value = pluralStringResource(
-                        R.plurals.todo_insight_month_value,
-                        month.due,
-                        month.completed,
-                        month.due,
-                        month.percent
-                    )
+                    value = formatMinutesLabel(insights.productiveMinutes)
                 )
             }
 
             Spacer(Modifier.height(4.dp))
             HorizontalDivider()
-            ScoreSummaryRow(stats = stats, summary = summary, onClick = onScoreClick)
+            ScoreSummaryRow(insights = insights, noun = noun, onClick = onScoreClick)
         }
     }
 }
@@ -2241,23 +2391,23 @@ private fun WeeklyInsightsCard(
  * happened). When partial credit is what lifted the ring, a line says so — so
  * "progress" is never mistaken for "completed".
  *
- * Every value is real: creditRate/rate, [TodoStats.WeekStats.remainingToday]
- * and [TodoStats.WeekStats.improvementPoints]; the trend is replaced by an
+ * Every value is real: creditRate/rate, [TodoStats.PeriodInsights.remainingToday]
+ * and [TodoStats.PeriodInsights.improvementPoints]; the trend is replaced by an
  * explanation instead of a fabricated number.
  */
 @Composable
-private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.ProductivitySummary) {
+private fun InsightHero(insights: TodoStats.PeriodInsights, noun: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
         ProgressRing(
-            fraction = stats.creditRate,
-            percentText = "${stats.creditPercent}%",
+            fraction = insights.creditRate,
+            percentText = "${insights.creditPercent}%",
             captionText = stringResource(
                 R.string.todo_card_ring_caption,
-                stats.completed,
-                stats.due
+                insights.completed,
+                insights.due
             ),
             modifier = Modifier.size(94.dp)
         )
@@ -2267,27 +2417,27 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
-                text = stringResource(R.string.todo_card_week_label),
+                text = stringResource(R.string.todo_card_period_label, noun),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = stringResource(
                     R.string.todo_card_completed_of,
-                    stats.completed,
-                    stats.due
+                    insights.completed,
+                    insights.due
                 ),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold
             )
             // Partial credit is real progress — say so when it is what lifted
             // the ring, so the percentage can never be read as "completed".
-            if (stats.hasPartialCredit) {
+            if (insights.hasPartialCredit) {
                 Text(
                     text = pluralStringResource(
                         R.plurals.todo_card_partial_credit,
-                        stats.partialOccurrences,
-                        stats.partialOccurrences
+                        insights.partialOccurrences,
+                        insights.partialOccurrences
                     ),
                     style = MaterialTheme.typography.labelSmall,
                     color = ATTEMPT_AMBER
@@ -2295,7 +2445,7 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
             }
             // Today's workload — the part that is still actionable.
             Row(verticalAlignment = Alignment.CenterVertically) {
-                val allDone = stats.remainingToday == 0
+                val allDone = insights.remainingToday == 0
                 Icon(
                     imageVector = if (allDone) Icons.Filled.CheckCircle
                     else Icons.Filled.HourglassEmpty,
@@ -2308,7 +2458,7 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
                     text = if (allDone) {
                         stringResource(R.string.todo_card_all_done_today)
                     } else {
-                        stringResource(R.string.todo_card_left_today, stats.remainingToday)
+                        stringResource(R.string.todo_card_left_today, insights.remainingToday)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Medium,
@@ -2316,66 +2466,46 @@ private fun InsightHero(stats: TodoStats.WeekStats, summary: TodoStats.Productiv
                 )
             }
             Spacer(Modifier.height(2.dp))
-            TrendChip(
-                completionDeltaPoints = stats.improvementPoints,
-                scoreDeltaPercent = summary.scoreDeltaPercent,
-                firstWeek = stats.firstWeek
-            )
+            TrendChip(insights = insights, noun = noun)
         }
     }
 }
 
 /**
- * The week-over-week trend: completion-rate points when both weeks have
- * completions to compare, the score's percentage change as the fallback, and a
- * plain explanation when there is genuinely nothing to compare yet. Never a
- * made-up percentage.
+ * The period-over-period trend: completion-rate points against the same period
+ * one step back (last week or last month), and a plain explanation when there
+ * is genuinely nothing to compare yet. Never a made-up percentage.
  */
 @Composable
-private fun TrendChip(
-    completionDeltaPoints: Int?,
-    scoreDeltaPercent: Int?,
-    firstWeek: Boolean
-) {
+private fun TrendChip(insights: TodoStats.PeriodInsights, noun: String) {
+    val delta = insights.improvementPoints
     val (text, color, icon) = when {
-        completionDeltaPoints != null && completionDeltaPoints > 0 ->
+        delta != null && delta > 0 ->
             Triple(
-                stringResource(R.string.todo_stats_delta_up, completionDeltaPoints),
+                stringResource(R.string.todo_stats_delta_up_period, delta, noun),
                 DONE_GREEN,
                 Icons.AutoMirrored.Filled.TrendingUp
             )
-        completionDeltaPoints != null && completionDeltaPoints < 0 ->
+        delta != null && delta < 0 ->
             Triple(
-                stringResource(R.string.todo_stats_delta_down, -completionDeltaPoints),
+                stringResource(R.string.todo_stats_delta_down_period, -delta, noun),
                 MISSED_RED,
                 Icons.AutoMirrored.Filled.TrendingDown
             )
-        completionDeltaPoints != null ->
+        delta != null ->
             Triple(
-                stringResource(R.string.todo_stats_delta_flat),
+                stringResource(R.string.todo_stats_delta_flat_period, noun),
                 MaterialTheme.colorScheme.onSurfaceVariant,
                 Icons.AutoMirrored.Filled.TrendingFlat
             )
-        scoreDeltaPercent != null && scoreDeltaPercent > 0 ->
+        insights.firstPeriod ->
             Triple(
-                stringResource(R.string.todo_card_score_trend_up, scoreDeltaPercent),
-                DONE_GREEN,
-                Icons.AutoMirrored.Filled.TrendingUp
-            )
-        scoreDeltaPercent != null && scoreDeltaPercent < 0 ->
-            Triple(
-                stringResource(R.string.todo_card_score_trend_down, -scoreDeltaPercent),
-                MISSED_RED,
-                Icons.AutoMirrored.Filled.TrendingDown
-            )
-        firstWeek ->
-            Triple(
-                stringResource(R.string.todo_card_first_week),
+                stringResource(R.string.todo_card_first_period, noun),
                 MaterialTheme.colorScheme.onSurfaceVariant,
                 Icons.Filled.Timeline
             )
         else -> Triple(
-            stringResource(R.string.todo_stats_delta_flat),
+            stringResource(R.string.todo_stats_delta_flat_period, noun),
             MaterialTheme.colorScheme.onSurfaceVariant,
             Icons.AutoMirrored.Filled.TrendingFlat
         )
@@ -2558,17 +2688,17 @@ private fun InsightRow(
 }
 
 /**
- * The weekly score + week-over-week trend. Tapping it opens the explainable
- * breakdown (the card is not clickable when the week has nothing due).
+ * The period's score + period-over-period trend. Tapping it opens the
+ * explainable breakdown (the row is not clickable when nothing is due).
  */
 @Composable
 private fun ScoreSummaryRow(
-    stats: TodoStats.WeekStats,
-    summary: TodoStats.ProductivitySummary,
+    insights: TodoStats.PeriodInsights,
+    noun: String,
     onClick: () -> Unit
 ) {
-    val score = stats.score
-    val delta = summary.scoreDeltaPercent
+    val score = insights.score
+    val delta = insights.improvementPoints
     // The score's plain-language band, so a raw number still means something at
     // a glance (Excellent / Good / Fair / Keep going).
     val band = score?.let {
@@ -2596,15 +2726,19 @@ private fun ScoreSummaryRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = stringResource(R.string.todo_weekly_score),
+                text = stringResource(R.string.todo_score_title_period, noun),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 text = when {
-                    delta == null -> stringResource(R.string.todo_stats_delta_flat)
-                    delta >= 0 -> stringResource(R.string.todo_stats_delta_up, delta)
-                    else -> stringResource(R.string.todo_stats_delta_down, -delta)
+                    delta == null -> stringResource(R.string.todo_stats_delta_flat_period, noun)
+                    delta >= 0 -> stringResource(R.string.todo_stats_delta_up_period, delta, noun)
+                    else -> stringResource(
+                        R.string.todo_stats_delta_down_period,
+                        -delta,
+                        noun
+                    )
                 },
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.SemiBold,
@@ -2622,7 +2756,7 @@ private fun ScoreSummaryRow(
         }
         Text(
             text = score?.let { stringResource(R.string.todo_score_value, it) }
-                ?: stringResource(R.string.todo_score_empty_week),
+                ?: stringResource(R.string.todo_score_empty_period, noun),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.primary,
@@ -3052,29 +3186,19 @@ private fun CalendarLegend(color: Color, label: String) {
 }
 
 /**
- * The per-day bar graph: one bar per day of the week, each STACKED from what
- * actually happened — green completed, amber attempted, red still incomplete,
- * all measured against the week's busiest day. There is no metric to switch
- * between: the stacked bar answers "how did this day go?" in one look, while
- * Completed / Attempted / Incomplete / Total tabs made the reader pick a view
- * before they could see anything — and hid two thirds of the week's story
- * behind a tap. Days that haven't arrived are empty (the stats carry zero for
- * them), so a future schedule never renders as a completion bar. Tapping a bar
- * opens that day's todos — see [DayTodosDialog].
+ * The WEEK's bar graph: one bar per day, each STACKED from what actually
+ * happened — green completed, amber attempted, red still incomplete, all
+ * measured against the week's busiest day. There is no metric to switch
+ * between: the stacked bar answers "how did this day go?" in one look, and
+ * tapping one opens that day's todos ([DayTodosDialog]).
  */
 @Composable
-private fun WeeklyBarGraph(
-    stats: TodoStats.WeekStats,
-    items: List<TodoItem>,
+private fun PeriodBarGraph(
+    insights: TodoStats.PeriodInsights,
     onBarTap: (LocalDate) -> Unit
 ) {
-    // Attempted per day (marked attempted, not completed) — the middle segment
-    // alongside completed and incomplete.
-    val attemptedByDay = remember(items, stats) {
-        stats.days.associate { it.date to items.count { item -> TodoCodec.isAttemptedOn(item, it.date) } }
-    }
     // One shared scale for the whole week: the busiest day is the full bar.
-    val max = stats.days.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
+    val max = insights.bars.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
     Column(modifier = Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(16.dp))
         Text(
@@ -3083,94 +3207,204 @@ private fun WeeklyBarGraph(
             fontWeight = FontWeight.Bold
         )
         Spacer(Modifier.height(6.dp))
-        // Every bar carries all three outcomes, so the colours are named once
-        // here instead of making the reader discover them by tapping.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            CalendarLegend(color = DONE_GREEN, label = stringResource(R.string.todo_calendar_done))
-            Spacer(Modifier.width(12.dp))
-            CalendarLegend(
-                color = ATTEMPT_AMBER,
-                label = stringResource(R.string.todo_filter_attempted)
-            )
-            Spacer(Modifier.width(12.dp))
-            CalendarLegend(
-                color = MISSED_RED.copy(alpha = 0.7f),
-                label = stringResource(R.string.todo_filter_incomplete)
-            )
-        }
+        BarLegend()
         Spacer(Modifier.height(10.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.Bottom
         ) {
-            stats.days.forEach { day ->
-                val completed = day.completed
-                val attempted = attemptedByDay[day.date] ?: 0
-                val incomplete = (day.due - day.completed - attempted).coerceAtLeast(0)
+            insights.bars.forEach { bar ->
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .clip(RoundedCornerShape(8.dp))
-                        .clickable { onBarTap(day.date) }
+                        .clickable { onBarTap(bar.start) }
                         .padding(vertical = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Box(
-                        modifier = Modifier.fillMaxWidth().height(64.dp),
+                        modifier = Modifier.fillMaxWidth().height(BAR_HEIGHT),
                         contentAlignment = Alignment.BottomCenter
                     ) {
-                        // Stacked mix: green (completed) on top of amber
-                        // (attempted) on top of red (incomplete), all scaled
-                        // to the shared max.
-                        if (day.due <= 0) {
-                            BarStub()
-                        } else {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(64.dp)
-                                    .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp)),
-                                verticalArrangement = Arrangement.Bottom
-                            ) {
-                                if (incomplete > 0) {
-                                    Box(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .height(64.dp * incomplete / max)
-                                            .background(MISSED_RED.copy(alpha = 0.7f))
-                                    )
-                                }
-                                if (attempted > 0) {
-                                    Box(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .height(64.dp * attempted / max)
-                                            .background(ATTEMPT_AMBER)
-                                    )
-                                }
-                                if (completed > 0) {
-                                    Box(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .height(64.dp * completed / max)
-                                            .background(DONE_GREEN)
-                                    )
-                                }
-                            }
-                        }
+                        StackedBar(
+                            due = bar.due,
+                            completed = bar.completed,
+                            attempted = bar.attempted,
+                            max = max
+                        )
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = DAY_LETTERS[day.date.dayOfWeek.value - 1],
+                        text = DAY_LETTERS[bar.start.dayOfWeek.value - 1],
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The MONTH view's bar graph: one bar per month over a trailing TWELVE months —
+ * the monthly counterpart of the week's seven day bars. Twelve columns cannot
+ * fit a phone, so the row scrolls horizontally, oldest on the left and the
+ * current month last, and the current month's label is emphasised. It OPENS
+ * scrolled to the end, so the current month is what the reader sees first and
+ * reaching back through the year is a deliberate move rather than the only way
+ * to get to today. Every bar stacks the same three outcomes as the weekly graph
+ * and is scaled against the busiest month in the window, so the chart's shape
+ * is the year rather than an arbitrary maximum. Tapping a bar opens that
+ * month's statistics ([MonthStatsDialog]).
+ */
+@Composable
+private fun MonthTrendChart(
+    bars: List<TodoStats.MonthBar>,
+    onBarTap: (YearMonth) -> Unit
+) {
+    val locale = LocalConfiguration.current.locales[0]
+    // One shared scale across all twelve months: the busiest month is full.
+    val max = bars.maxOfOrNull { it.due }?.coerceAtLeast(1) ?: 1
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = stringResource(R.string.todo_graph_months),
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(6.dp))
+        BarLegend()
+        Spacer(Modifier.height(10.dp))
+        // The row OPENS on the CURRENT month — its last bar — so today is what
+        // the reader sees without having to drag the year past.
+        //
+        // The offset is computed rather than discovered: every column is a fixed
+        // [BAR_WIDTH] plus one [MONTH_GAP], so the distance that hides the
+        // earlier months is exactly (content − viewport) before the first frame
+        // is drawn. That is deliberately NOT "scroll to the end once something
+        // is measured" — a state seeded at Int.MAX_VALUE has to wait for a
+        // measure pass to clamp it, and waiting for a measure pass to then
+        // scroll is a frame of the wrong month. A window with nothing to hide
+        // resolves to 0 and simply does not scroll.
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val hidden = (BAR_WIDTH * bars.size + MONTH_GAP * (bars.size - 1) - maxWidth)
+                .coerceAtLeast(0.dp)
+            val density = LocalDensity.current
+            val scrollState = rememberScrollState(initial = with(density) { hidden.roundToPx() })
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(scrollState),
+                horizontalArrangement = Arrangement.spacedBy(MONTH_GAP),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                bars.forEach { bar ->
+                    Column(
+                        modifier = Modifier
+                            .width(BAR_WIDTH)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onBarTap(bar.month) }
+                            .padding(vertical = 2.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().height(BAR_HEIGHT),
+                            contentAlignment = Alignment.BottomCenter
+                        ) {
+                            StackedBar(
+                                due = bar.due,
+                                completed = bar.completed,
+                                attempted = bar.attempted,
+                                max = max
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = monthShortFormat(locale).format(bar.month.atDay(1)),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (bar.isCurrent) FontWeight.Bold else FontWeight.Normal,
+                            color = if (bar.isCurrent) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** The bar graphs' single height, so the week and month charts line up. */
+private val BAR_HEIGHT = 64.dp
+
+/** One month's column width — wide enough for its three-letter label. */
+private val BAR_WIDTH = 34.dp
+
+/** The space between two columns of a bar chart. */
+private val MONTH_GAP = 6.dp
+
+/** Names the three outcomes once, above whichever chart is showing. */
+@Composable
+private fun BarLegend() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CalendarLegend(color = DONE_GREEN, label = stringResource(R.string.todo_calendar_done))
+        Spacer(Modifier.width(12.dp))
+        CalendarLegend(
+            color = ATTEMPT_AMBER,
+            label = stringResource(R.string.todo_filter_attempted)
+        )
+        Spacer(Modifier.width(12.dp))
+        CalendarLegend(
+            color = MISSED_RED.copy(alpha = 0.7f),
+            label = stringResource(R.string.todo_filter_incomplete)
+        )
+    }
+}
+
+/**
+ * ONE stacked column: red (still incomplete) under amber (attempted) under green
+ * (completed), scaled to the chart's [max]. A column with nothing due draws the
+ * neutral stub instead, so "nothing was scheduled" can never read as "nothing
+ * was done".
+ */
+@Composable
+private fun StackedBar(due: Int, completed: Int, attempted: Int, max: Int) {
+    if (due <= 0) {
+        BarStub()
+        return
+    }
+    val incomplete = (due - completed - attempted).coerceAtLeast(0)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(BAR_HEIGHT)
+            .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp)),
+        verticalArrangement = Arrangement.Bottom
+    ) {
+        if (incomplete > 0) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(BAR_HEIGHT * incomplete / max)
+                    .background(MISSED_RED.copy(alpha = 0.7f))
+            )
+        }
+        if (attempted > 0) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(BAR_HEIGHT * attempted / max)
+                    .background(ATTEMPT_AMBER)
+            )
+        }
+        if (completed > 0) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(BAR_HEIGHT * completed / max)
+                    .background(DONE_GREEN)
+            )
         }
     }
 }
@@ -3184,6 +3418,109 @@ private fun BarStub() {
             .height(2.dp)
             .clip(RoundedCornerShape(2.dp))
             .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.15f))
+    )
+}
+
+/**
+ * A month's statistics, opened from its bar in the twelve-month chart: the very
+ * outcomes that bar is stacked from — completed, attempted and not completed —
+ * spelled out, plus how many days were worked on, the best day and the logged
+ * time. Every figure comes from [TodoStats], so the dialog can never disagree
+ * with the column that was tapped, and only days that have ARRIVED are counted
+ * (the same date rule as the chart, the card and the calendar).
+ */
+@Composable
+private fun MonthStatsDialog(
+    month: YearMonth,
+    items: List<TodoItem>,
+    today: LocalDate,
+    nowMillis: Long,
+    onDismiss: () -> Unit
+) {
+    val locale = LocalConfiguration.current.locales[0]
+    val stats = remember(items, month, today) { TodoStats.monthStats(items, month, today) }
+    val counts = remember(items, month, today, nowMillis) {
+        TodoStats.behaviorCounts(items, month.atDay(1), month.atEndOfMonth(), today, nowMillis)
+    }
+    val elapsedDays = stats.days.count { !it.isFuture }
+    val activeDays = stats.days.count { !it.isFuture && it.completed > 0 }
+    val bestDay = stats.days
+        .filter { !it.isFuture && it.due > 0 && it.completed > 0 }
+        .maxWithOrNull(
+            compareBy<TodoStats.MonthDayStats>(
+                { it.completed * 100 / it.due },
+                { it.completed }
+            )
+        )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(monthNameFormat(locale).format(month.atDay(1))) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (stats.due == 0) {
+                    // Nothing was due: a sentence, not a wall of zeroes.
+                    Text(
+                        text = stringResource(R.string.todo_month_dialog_empty),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    return@Column
+                }
+                InsightRow(
+                    label = stringResource(R.string.todo_month_dialog_completed_label),
+                    value = stringResource(
+                        R.string.todo_month_dialog_completed_value,
+                        stats.completed,
+                        stats.due,
+                        stats.percent
+                    ),
+                    valueColor = DONE_GREEN
+                )
+                InsightRow(
+                    label = stringResource(R.string.todo_month_dialog_attempted_label),
+                    value = counts.attempted.toString(),
+                    valueColor = if (counts.attempted > 0) ATTEMPT_AMBER
+                    else MaterialTheme.colorScheme.onSurface
+                )
+                InsightRow(
+                    label = stringResource(R.string.todo_month_dialog_incomplete_label),
+                    value = counts.incomplete.toString(),
+                    valueColor = if (counts.incomplete > 0) MISSED_RED
+                    else MaterialTheme.colorScheme.onSurface
+                )
+                InsightRow(
+                    label = stringResource(R.string.todo_month_dialog_active_days_label),
+                    value = stringResource(
+                        R.string.todo_month_dialog_active_days_value,
+                        activeDays,
+                        elapsedDays
+                    )
+                )
+                bestDay?.let { best ->
+                    InsightRow(
+                        label = stringResource(R.string.todo_stats_best_day_label),
+                        value = stringResource(
+                            R.string.todo_stats_best_day,
+                            historyDateFormat(locale).format(best.date),
+                            best.completed * 100 / best.due
+                        )
+                    )
+                }
+                if (counts.productiveMinutes > 0) {
+                    InsightRow(
+                        label = stringResource(R.string.todo_stats_productive_minutes_label),
+                        value = formatMinutesLabel(counts.productiveMinutes)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.todo_ok)) }
+        }
     )
 }
 
