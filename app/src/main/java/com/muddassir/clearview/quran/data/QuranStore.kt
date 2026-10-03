@@ -277,7 +277,10 @@ class QuranStore(context: Context) {
             "quran_en_sahih.json",
             "quran_ar_uthmani.json",
             "quran_en_khattab.json",
-            "quran_ar_indopak.json"
+            "quran_ar_indopak.json",
+            // The font fix took a detour through the Uthmani Hafs edition; a
+            // build that wrote this file leaves it behind unused, so drop it.
+            "quran_ar_uthmanihaf.json"
         )
 
         const val KEY_SURAH_NUMBER = "current_surah_number"

@@ -107,6 +107,7 @@ import com.muddassir.clearview.R
 import com.muddassir.clearview.quran.data.DhikrCodec
 import com.muddassir.clearview.quran.data.DhikrStore
 import com.muddassir.clearview.quran.model.DhikrItem
+import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -436,8 +437,9 @@ private fun DhikrPage(
             Text(
                 text = item.arabic,
                 fontSize = 34.sp,
-                lineHeight = 44.sp,
+                lineHeight = (34 * QURAN_LINE_HEIGHT_RATIO).sp,
                 fontFamily = QuranFontFamily,
+                fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )
         }
@@ -1116,7 +1118,9 @@ private fun ManageRow(
                     Text(
                         text = item.arabic,
                         fontSize = 16.sp,
+                        lineHeight = (16 * QURAN_LINE_HEIGHT_RATIO).sp,
                         fontFamily = QuranFontFamily,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -1446,7 +1450,9 @@ private fun DhikrSearchSheet(
                                 Text(
                                     text = item.arabic,
                                     fontSize = 15.sp,
+                                    lineHeight = (15 * QURAN_LINE_HEIGHT_RATIO).sp,
                                     fontFamily = QuranFontFamily,
+                                    fontWeight = FontWeight.Bold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )

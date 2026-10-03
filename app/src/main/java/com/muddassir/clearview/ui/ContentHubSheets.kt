@@ -125,6 +125,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
+import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import com.muddassir.clearview.quran.ui.QuranFontFamily
 import com.muddassir.clearview.quran.data.verseReference
 import com.muddassir.clearview.quran.model.QuranVerse
@@ -1135,12 +1136,13 @@ private fun SurahReader(
     }
 
     // The opening line, taken from the edition's own 1:1 rather than typed out
-    // here. This corpus is IndoPak, where the basmala is spelled
-    // "بِسْمِ اللَّهِ الرَّحْمٰنِ الرَّحِيمِ" — a hand-written Uthmani rendering would
-    // have put a wasla under the alef on the one line in the surah that did not
-    // match the 6235 around it. Blank when the Arabic is not cached, in which
-    // case the reader opens without it: a missing line is better than an
-    // invented one. Al-Faatiha itself is cached after the first reader opens.
+    // here. Typing it would mean re-deciding its harakat and its waqf mark by
+    // hand on the one line in the surah that is not a numbered ayah, and the
+    // edition already states it — for Uthmani Hafs that is
+    // "بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ", wasla and all. Blank when the Arabic
+    // is not cached, in which case the reader opens without it: a missing line
+    // is better than an invented one. Al-Faatiha itself is cached after the
+    // first reader opens.
     var basmala by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         basmala = withContext(Dispatchers.IO) {
@@ -1602,10 +1604,11 @@ private fun SurahHead(surahNumber: Int, mode: QuranReadMode, basmala: String) {
     Text(
         text = basmala,
         fontSize = 24.sp,
-        lineHeight = 44.sp,
+        lineHeight = (24 * QURAN_LINE_HEIGHT_RATIO).sp,
         // Arabic scripture (opens every surah but At-Tawba): the Quran face, so
         // the basmala's harakat render exactly as the verses' do.
         fontFamily = QuranFontFamily,
+        fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center,
         color = MaterialTheme.colorScheme.primary,
         modifier = Modifier.fillMaxWidth()
@@ -1655,9 +1658,11 @@ private fun ArabicVerse(
     Text(
         text = text,
         fontSize = 30.sp,
-        lineHeight = 52.sp,
-        // Quran font so every harakat in the authoritative text renders (§1).
+        lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
+        // Bold Quran face so every harakat in the authoritative text renders
+        // thick and unclipped (§1).
         fontFamily = QuranFontFamily,
+        fontWeight = FontWeight.Bold,
         textAlign = TextAlign.Center,
         // RTL is the script's own direction — the paragraph direction is taken
         // from the first strong character, so the Arabic lays itself out from the
@@ -2155,10 +2160,11 @@ private fun VerseSearchRow(
                 Text(
                     text = verse.arabicText,
                     fontSize = 18.sp,
-                    lineHeight = 30.sp,
+                    lineHeight = (18 * QURAN_LINE_HEIGHT_RATIO).sp,
                     // Arabic verse preview: the Quran face, so harakat survive
                     // even at this small size.
                     fontFamily = QuranFontFamily,
+                    fontWeight = FontWeight.Bold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )

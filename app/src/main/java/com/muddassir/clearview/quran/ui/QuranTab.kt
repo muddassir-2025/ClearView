@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
 import com.muddassir.clearview.quran.data.IslamicDateFormatter
 import com.muddassir.clearview.quran.model.QuranVerse
+import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import java.time.LocalDate
 import kotlinx.coroutines.delay
 
@@ -290,9 +291,13 @@ private fun VerseDisplay(
         Text(
             text = v.arabicText,
             fontSize = 30.sp,
-            lineHeight = 50.sp,
-            // Quran font so every harakat in the authoritative text renders (§1).
+            // Room for the marks above and below the letters — a line height that
+            // only fits the glyphs clips the outer harakat (§1).
+            lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
+            // Bold Quran face so every harakat in the authoritative text renders
+            // thick, dark and unclipped (§1).
             fontFamily = QuranFontFamily,
+            fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(28.dp))
