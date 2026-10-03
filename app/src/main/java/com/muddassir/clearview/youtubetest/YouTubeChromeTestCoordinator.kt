@@ -1769,18 +1769,10 @@ class YouTubeChromeTestCoordinator(
     }
 
     /** True for labels like "Pause" / "Pause video" (case-insensitive). */
-    private fun isPauseLabel(s: String?): Boolean {
-        if (s == null) return false
-        val lower = s.trim().lowercase(Locale.ROOT)
-        return lower == "pause" || lower == "pause video"
-    }
+    private fun isPauseLabel(s: String?): Boolean = YouTubeNodeRules.isPauseLabel(s)
 
     /** True for labels like "Play" / "Play video" (case-insensitive). */
-    private fun isPlayLabel(s: String?): Boolean {
-        if (s == null) return false
-        val lower = s.trim().lowercase(Locale.ROOT)
-        return lower == "play" || lower == "play video"
-    }
+    private fun isPlayLabel(s: String?): Boolean = YouTubeNodeRules.isPlayLabel(s)
 
     /** A player/playback-related node with its key properties (diagnostics). */
     private class PlayerNode(
@@ -1797,14 +1789,87 @@ class YouTubeChromeTestCoordinator(
     )
 
     /**
+     * True for a node that is a PLAYER or a PLAYBACK CONTROL — never for one of
+     * the video's action buttons.
+     *
+     * This used to answer true for "more actions" and "share this video" as
+     * well, which is what put YouTube's Share sheet on screen. Those are not the
+     * player and not a transport control: they are buttons sitting in the same
+     * toolbar, and classifying them as player candidates made them eligible for
+     * the two things this coordinator does to a player node — an ACTION_CLICK to
+     * reveal the controls, and the center of the node's bounds as the point to
+     * tap. In the current Chrome/YouTube tree there is no node carrying "YouTube
+     * video player", so the clickable fallback below selected whichever of those
+     * buttons came first in the walk, and ClearView clicked Share on a video it
+     * was supposed to pause.
+     */
+    private fun isPlayerNode(text: String?, desc: String?, cls: String?): Boolean =
+        YouTubeNodeRules.isPlayerNode(text, desc, cls)
+
+    private fun isForbiddenActionNode(text: String?, desc: String?, cls: String?, viewId: String?): Boolean =
+        YouTubeNodeRules.isForbiddenActionNode(text, desc, cls, viewId)
+
+    /**
      * The node representing the video player itself (for reveal + overlay).
      * The returned node is NOT recycled — the caller must recycle it. All
      * other collected nodes are recycled inside [findPlayerNodes].
+     *
+     * Selection order, and why it is this order:
+     *
+     *   1. A node that names itself the player. Unambiguous.
+     *   2. A Play/Pause control. It is on the player and it is what the pause
+     *      actually acts on, so it is a better target than a guess.
+     *   3. A node that is genuinely full-screen. A Short's player covers the
+     *      window; a toolbar button is a strip at the edge of it.
+     *
+     * There is deliberately NO "first clickable node" fallback any more. That
+     * fallback was how the Share button was chosen: when nothing matched the
+     * first two tiers it took the first clickable node in the walk, which in the
+     * current tree is a Share/actions button. Returning null is the correct
+     * answer there — the pause flow treats a missing player as "cannot pause
+     * physically" and falls through to its protection overlay, which blocks the
+     * video without touching anything on the page.
      */
     private fun findVideoPlayerNode(root: AccessibilityNodeInfo): PlayerNode? {
         val players = findPlayerNodes(root)
+        val screen = try {
+            val r = Rect()
+            root.getBoundsInScreen(r)
+            r
+        } catch (e: Exception) {
+            null
+        }
         val selected = players.firstOrNull { it.isVideoPlayer }
-            ?: players.firstOrNull { it.clickable }
+            ?: players.firstOrNull {
+                isPlayLabel(it.text) || isPlayLabel(it.desc) ||
+                    isPauseLabel(it.text) || isPauseLabel(it.desc)
+            }
+            ?: players.firstOrNull { p ->
+                val b = boundsOf(p.node)
+                screen != null && b != null &&
+                    b.width() >= screen.width() * 0.9f &&
+                    b.height() >= screen.height() * 0.5f
+            }
+        // Diagnostics: the whole candidate list, so a future Chrome change that
+        // reintroduces a wrong target is visible in logcat rather than guessed
+        // at. Every node considered is named, with its class, label and bounds.
+        if (players.isNotEmpty()) {
+            players.forEachIndexed { i, p ->
+                val b = boundsOf(p.node)
+                Log.i(
+                    TAG,
+                    "YT_BLOCK_PLAYER_CANDIDATE index=$i cls=${p.cls} viewId=${p.viewId} " +
+                        "desc=\"${p.desc}\" text=\"${p.text}\" clickable=${p.clickable} " +
+                        "visible=${p.visible} bounds=$b videoPlayer=${p.isVideoPlayer}"
+                )
+            }
+        }
+        Log.i(
+            TAG,
+            "YT_BLOCK_PLAYER_SELECTED " +
+                (selected?.let { "cls=${it.cls} desc=\"${it.desc}\" text=\"${it.text}\" bounds=${boundsOf(it.node)}" }
+                    ?: "none — no player-shaped node; no click will be made")
+        )
         for (p in players) {
             if (p !== selected) {
                 try { p.node.recycle() } catch (e: Exception) {}
@@ -1831,12 +1896,15 @@ class YouTubeChromeTestCoordinator(
             val text = try { node.text?.toString()?.trim() } catch (e: Exception) { null }
             val desc = try { node.contentDescription?.toString()?.trim() } catch (e: Exception) { null }
             val cls = try { node.className?.toString() } catch (e: Exception) { null }
-            if (isPlayerNode(text, desc, cls)) {
+            val viewId = try { node.viewIdResourceName } catch (e: Exception) { null }
+            // The guard runs BEFORE the player test, so a Share/actions button
+            // can never enter the candidate list even if a later change to
+            // [isPlayerNode] would otherwise have matched it.
+            if (!isForbiddenActionNode(text, desc, cls, viewId) && isPlayerNode(text, desc, cls)) {
                 val clickable = try { node.isClickable } catch (e: Exception) { false }
                 val focusable = try { node.isFocusable } catch (e: Exception) { false }
                 val enabled = try { node.isEnabled } catch (e: Exception) { false }
                 val visible = try { node.isVisibleToUser } catch (e: Exception) { false }
-                val viewId = try { node.viewIdResourceName } catch (e: Exception) { null }
                 val isVideoPlayer = listOf(desc, text, cls).any {
                     it?.lowercase(Locale.ROOT)?.contains("youtube video player") == true
                 }
@@ -1859,18 +1927,6 @@ class YouTubeChromeTestCoordinator(
             depth++
         }
         return out
-    }
-
-    /** True for nodes that look like the player or a playback control. */
-    private fun isPlayerNode(text: String?, desc: String?, cls: String?): Boolean {
-        val hay = ((text ?: "") + " " + (desc ?: "") + " " + (cls ?: "")).lowercase(Locale.ROOT)
-        if (hay.contains("youtube video player")) return true
-        if (hay.contains("player")) return true
-        if (hay.contains("pause")) return true
-        if (hay.contains("more actions")) return true
-        if (hay.contains("share this video")) return true
-        if (isPlayLabel(text) || isPlayLabel(desc) || isPauseLabel(text) || isPauseLabel(desc)) return true
-        return false
     }
 
     /** "0x<hex>:<NAME>,..." for each set bit of the actions bitmask. */

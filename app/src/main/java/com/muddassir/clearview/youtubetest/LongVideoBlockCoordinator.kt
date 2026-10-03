@@ -1349,20 +1349,31 @@ class LongVideoBlockCoordinator(
     }
 
     /** True for labels like "Pause" / "Pause video" (case-insensitive). */
-    private fun isPauseLabel(s: String?): Boolean {
-        if (s == null) return false
-        val lower = s.trim().lowercase(Locale.ROOT)
-        return lower == "pause" || lower == "pause video"
-    }
+    private fun isPauseLabel(s: String?): Boolean = YouTubeNodeRules.isPauseLabel(s)
 
     /** True for labels like "Play" / "Play video" (case-insensitive). */
-    private fun isPlayLabel(s: String?): Boolean {
-        if (s == null) return false
-        val lower = s.trim().lowercase(Locale.ROOT)
-        return lower == "play" || lower == "play video"
-    }
+    private fun isPlayLabel(s: String?): Boolean = YouTubeNodeRules.isPlayLabel(s)
 
-    /** The node representing the video player (for the reveal click / tap). */
+    /**
+     * True for a node the blocker must never click or tap.
+     *
+     * The player is found by walking the tree, and a walk that can land on a
+     * toolbar button is a walk that can click Share — which opens YouTube's share
+     * sheet as the side effect of a keyword match. See [YouTubeNodeRules].
+     */
+    private fun isForbiddenActionNode(text: String?, desc: String?, cls: String?): Boolean =
+        YouTubeNodeRules.isForbiddenActionNode(text, desc, cls)
+
+    /**
+     * The node representing the video player (for the reveal click / tap).
+     *
+     * Matched on the explicit player name or the media surface's own class. It
+     * used to accept ANY node whose text mentioned "player", which is a much
+     * wider net than it looks — the toolbar's own buttons live in a node whose
+     * content description can carry that word — and there is no clickable
+     * fallback here either, for the same reason there is none in the Shorts
+     * coordinator: a fallback is how the Share button gets chosen.
+     */
     private fun findVideoPlayerNode(root: AccessibilityNodeInfo): MediaButton? {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
@@ -1375,9 +1386,15 @@ class LongVideoBlockCoordinator(
             val text = try { node.text?.toString() } catch (e: Exception) { null }
             val desc = try { node.contentDescription?.toString() } catch (e: Exception) { null }
             val cls = try { node.className?.toString() } catch (e: Exception) { null }
-            val hay = ((text ?: "") + " " + (desc ?: "") + " " + (cls ?: "")).lowercase(Locale.ROOT)
-            if (hay.contains("youtube video player") || hay.contains("player")) {
-                return MediaButton(node, "player")
+            if (!isForbiddenActionNode(text, desc, cls)) {
+                val hay = ((text ?: "") + " " + (desc ?: "") + " " + (cls ?: "")).lowercase(Locale.ROOT)
+                val clsLower = (cls ?: "").lowercase(Locale.ROOT)
+                if (hay.contains("youtube video player") ||
+                    clsLower.contains("surfaceview") ||
+                    clsLower.contains("videoview")
+                ) {
+                    return MediaButton(node, "player")
+                }
             }
             val count = try { node.childCount } catch (e: Exception) { 0 }
             for (i in 0 until count) {
