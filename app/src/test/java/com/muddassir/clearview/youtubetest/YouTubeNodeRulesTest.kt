@@ -98,10 +98,65 @@ class YouTubeNodeRulesTest {
         assertFalse(YouTubeNodeRules.isPauseLabel("Pause subscription"))
     }
 
+    // ── The player is found by its own container id ───────────────────────
+
+    @Test
+    fun `youtube's own player containers are recognised by resource id`() {
+        // The exact ids the current Chrome tree carries for a Short. The old
+        // rule read only text/desc/class, none of which name the player, so the
+        // lookup returned nothing and a matched Short kept playing.
+        listOf(
+            "player",
+            "movie_player",
+            "player-container-id",
+            "player-shorts-container",
+            "player-cinematics-container"
+        ).forEach { id ->
+            assertTrue(id, YouTubeNodeRules.isPlayerContainerId(id))
+            assertTrue(
+                id,
+                YouTubeNodeRules.isPlayerNode(null, null, "android.view.View", id)
+            )
+        }
+    }
+
+    @Test
+    fun `a player id with a chrome package prefix still matches`() {
+        assertTrue(YouTubeNodeRules.isPlayerContainerId("com.android.chrome:id/movie_player"))
+    }
+
+    @Test
+    fun `a browser button id is not a player container`() {
+        listOf(
+            "com.android.chrome:id/menu_button",
+            "com.android.chrome:id/home_button",
+            "player_playback_settings"
+        ).forEach { id ->
+            assertFalse(id, YouTubeNodeRules.isPlayerContainerId(id))
+        }
+    }
+
+    @Test
+    fun `the player guard beats the forbidden guard — a share button is still refused`() {
+        // Belt and braces: even if a node carried both a player id and a
+        // forbidden label, the walk applies the forbidden guard first.
+        assertTrue(
+            YouTubeNodeRules.isForbiddenActionNode(null, "Share this video", null, "player")
+        )
+    }
+
     @Test
     fun `a plain container is neither forbidden nor a player`() {
         assertFalse(YouTubeNodeRules.isForbiddenActionNode(null, null, "android.view.View"))
         assertFalse(YouTubeNodeRules.isPlayerNode(null, null, "android.view.View"))
         assertFalse(YouTubeNodeRules.isPlayerNode("Some video title", null, "android.widget.TextView"))
+    }
+
+    @Test
+    fun `a labelled container is not mistaken for a player`() {
+        assertFalse(YouTubeNodeRules.isPlayerNode(null, null, "android.widget.FrameLayout"))
+        assertFalse(
+            YouTubeNodeRules.isPlayerNode(null, null, "android.view.View", "player_title")
+        )
     }
 }

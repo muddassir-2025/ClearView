@@ -55,11 +55,34 @@ internal object YouTubeNodeRules {
     ): Boolean {
         val hay = haystack(text, desc, cls, viewId)
         if (hay.contains("youtube video player")) return true
+        if (isPlayerContainerId(viewId)) return true
         if (isPlayLabel(text) || isPlayLabel(desc)) return true
         if (isPauseLabel(text) || isPauseLabel(desc)) return true
         val clsLower = (cls ?: "").lowercase(Locale.ROOT)
         if (clsLower.contains("surfaceview") || clsLower.contains("videoview")) return true
         return false
+    }
+
+    /**
+     * True for YouTube's OWN player containers, recognised by the resource id
+     * rather than a label.
+     *
+     * This is the rule that was missing. Chrome exposes the web player as a
+     * plain `android.view.View` whose only identity is its DOM id — `player`,
+     * `movie_player`, `player-container-id`, `player-shorts-container` — and
+     * those ids are exactly what the current tree carries. The label the old
+     * rule waited for ("YouTube video player") is not in it at all, and neither
+     * is a SurfaceView, so the player lookup returned nothing and the block
+     * silently did nothing while the Short kept playing.
+     *
+     * Matched as whole, lowercased id parts so `movie_player` counts and an
+     * unrelated `player_playback_settings` does not. The forbidden-action guard
+     * still runs first, so a toolbar button can never win this match.
+     */
+    fun isPlayerContainerId(viewId: String?): Boolean {
+        val id = viewId?.substringAfterLast('/')?.trim()?.lowercase(Locale.ROOT) ?: return false
+        if (id.isEmpty()) return false
+        return id in PLAYER_CONTAINER_IDS
     }
 
     /** True for labels like "Pause" / "Pause video" (case-insensitive). */
@@ -86,6 +109,19 @@ internal object YouTubeNodeRules {
      * again. Matched on the substring rather than the whole label, so
      * "Share this video", "share" and "Share Short" are all caught.
      */
+    /**
+     * YouTube's player containers, by their DOM id. `movie_player` is the
+     * actual `<video>` wrapper; the rest are the shells the Shorts page nests it
+     * in, any of which is a correct thing to cover.
+     */
+    private val PLAYER_CONTAINER_IDS = setOf(
+        "player",
+        "movie_player",
+        "player-container-id",
+        "player-shorts-container",
+        "player-cinematics-container"
+    )
+
     private val FORBIDDEN_ANYWHERE = listOf(
         "share",
         "more actions",

@@ -2,9 +2,17 @@ package com.muddassir.clearview.youtubetest
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.media.AudioManager
+import android.net.Uri
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -289,6 +297,8 @@ class YouTubeChromeTestCoordinator(
     private var blockState: YoutubeBlockState = YoutubeBlockState.NORMAL
     private var lastPauseAttemptAt = 0L
     private var pauseAttempts = 0
+    private val audioManager: AudioManager?
+        get() = try { service.getSystemService(AudioManager::class.java) } catch (e: Exception) { null }
     private var lastReenforceLogAt = 0L
     private var playerNodesDiagnosed = false
     // Consecutive enforcement scans with no Play/Pause control while ENFORCING.
@@ -1010,13 +1020,32 @@ class YouTubeChromeTestCoordinator(
                 }
             }
             PausePhase.OBSERVE -> {
-                Log.i(TAG, "YT_BLOCK_PAUSE_OBSERVE_CHECK videoId=$videoId state=UNKNOWN")
-                if (now - pausePhaseSince >= PAUSE_OBSERVE_MS) {
-                    Log.i(
-                        TAG,
-                        "YT_BLOCK_PAUSE_OBSERVE_TIMEOUT videoId=$videoId — no Play/Pause controls exposed"
-                    )
+                // A Short exposes no Play/Pause control in the accessibility
+                // tree, so playback state cannot be read from the tree. The
+                // device's own audio output can be read, and it is the thing
+                // that matters here: while Chrome is still producing sound the
+                // pause has not taken effect. Silence (or a system that does
+                // not report media audio) is treated as paused.
+                if (!chromeAudioActive()) {
+                    Log.i(TAG, "YT_BLOCK_PAUSE_CONFIRMED_AUDIO videoId=$videoId — Chrome audio silent")
+                    Log.i(TAG, "YT_BLOCK_PAUSE_CONFIRMED videoId=$videoId")
                     playbackUnknown(videoId, root)
+                } else if (now - pausePhaseSince >= PAUSE_OBSERVE_MS) {
+                    if (pauseAttempts < MAX_PAUSE_ATTEMPTS) {
+                        // The tap evidently did not reach the player (audio is
+                        // still playing). Send another centre tap — bounded, and
+                        // it stops the moment the audio goes quiet.
+                        pauseAttempts++
+                        Log.i(TAG, "YT_BLOCK_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — retry tap attempt=$pauseAttempts")
+                        requestPhysicalPause(videoId, root, lastKnownPlayerBounds)
+                        pausePhaseSince = now
+                    } else {
+                        Log.i(
+                            TAG,
+                            "YT_BLOCK_PAUSE_OBSERVE_TIMEOUT videoId=$videoId — audio still playing after $pauseAttempts taps, protecting"
+                        )
+                        playbackUnknown(videoId, root)
+                    }
                 }
             }
         }
@@ -1135,7 +1164,11 @@ class YouTubeChromeTestCoordinator(
      */
     private fun requestPhysicalPause(videoId: String, root: AccessibilityNodeInfo, fallbackBounds: Rect?) {
         val player = findVideoPlayerNode(root)
-        val bounds = player?.let { boundsOf(it.node) } ?: fallbackBounds
+        // The player node can be absent (or hidden, with no bounds) while a
+        // Short is playing. Fall back to the captured player bounds, then to
+        // the window itself — for a full-screen Short the window centre IS the
+        // player centre, so the tap still lands on the video and pauses it.
+        val bounds = player?.let { boundsOf(it.node) } ?: fallbackBounds ?: windowBounds(root)
         try {
             if (bounds == null) {
                 Log.i(TAG, "YT_BLOCK_PAUSE_REQUEST videoId=$videoId skipped — no player bounds")
@@ -1229,6 +1262,17 @@ class YouTubeChromeTestCoordinator(
         } else {
             null
         }
+        // "Go to YouTube Home" button, drawn at the bottom of the overlay.
+        private val buttonPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            alpha = 235
+        }
+        private val buttonTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
+        }
+        private val buttonRect = RectF()
         // Centered message paints (created once; sizes set per-frame in
         // onDraw so they scale with the player bounds).
         private val titlePaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -1256,7 +1300,25 @@ class YouTubeChromeTestCoordinator(
             tintPaint?.let {
                 canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), it)
                 drawProtectionMessage(canvas)
+                drawHomeButton(canvas)
             }
+        }
+
+        /** Draws the bottom "Go to YouTube Home" button. */
+        private fun drawHomeButton(canvas: Canvas) {
+            val cx = width / 2f
+            val unit = min(width, height)
+            val bw = min(width * 0.72f, unit * 1.4f)
+            val bh = unit * 0.10f
+            val bx = cx - bw / 2f
+            val by = height * 0.82f - bh / 2f
+            buttonRect.set(bx, by, bx + bw, by + bh)
+            val r = bh / 2f
+            canvas.drawRoundRect(buttonRect, r, r, buttonPaint)
+            buttonTextPaint.textSize = unit * 0.04f
+            buttonTextPaint.letterSpacing = 0.02f
+            val baseline = by + bh / 2f - (buttonTextPaint.descent() + buttonTextPaint.ascent()) / 2f
+            canvas.drawText("Go to YouTube Home", cx, baseline, buttonTextPaint)
         }
 
         /** Draws the centered "SWIPE — FEAR GOD — BLOCK BRAIN ROT" message. */
@@ -1308,7 +1370,9 @@ class YouTubeChromeTestCoordinator(
          */
         override fun performClick(): Boolean {
             super.performClick()
-            onOverlayTapConsumed()
+            // Accessibility activation of the overlay performs the same action
+            // as tapping the drawn button — leave and go to YouTube Home.
+            onOverlayHomeClicked()
             return true
         }
 
@@ -1332,10 +1396,17 @@ class YouTubeChromeTestCoordinator(
                     val dy = upY - downY
                     val dist = sqrt(dx * dx + dy * dy)
                     if (dist < SWIPE_THRESHOLD_PX) {
-                        // TAP → consume, never reach the player. Routed through
-                        // performClick() so accessibility activation behaves
-                        // identically to a finger tap.
-                        performClick()
+                        // TAP → the bottom button navigates home; anywhere else
+                        // is consumed so it never reaches the player. The button
+                        // hit test uses VIEW-LOCAL coords (event.x/y).
+                        val localX = event.x
+                        val localY = event.y
+                        if (buttonRect.contains(localX, localY)) {
+                            Log.i(TAG, "YT_BLOCK_HOME_BUTTON_TAP x=$localX y=$localY rect=$buttonRect")
+                            onOverlayHomeClicked()
+                        } else {
+                            onOverlayTapConsumed()
+                        }
                     } else if (abs(dy) >= SWIPE_MIN_DY_PX && abs(dy) > abs(dx) * SWIPE_DIAGONAL_RATIO) {
                         // Vertical swipe (diagonal-tolerant) → pass to Chrome.
                         onOverlayVerticalSwipe(downX, downY, upX, upY)
@@ -1353,6 +1424,23 @@ class YouTubeChromeTestCoordinator(
     /** A tap on the blocked player was consumed. */
     private fun onOverlayTapConsumed() {
         Log.i(TAG, "YT_BLOCK_TAP_CONSUMED videoId=${currentVideoId ?: "unknown"}")
+    }
+
+    /**
+     * "Go to YouTube Home" tapped on the blocked-player overlay: release the
+     * block and navigate Chrome to the YouTube home page.
+     */
+    private fun onOverlayHomeClicked() {
+        Log.i(TAG, "YT_BLOCK_HOME_BUTTON_CLICKED videoId=${currentVideoId ?: "unknown"}")
+        releaseBlock(currentVideoId, "home button")
+        try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://m.youtube.com"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            service.startActivity(intent)
+            Log.i(TAG, "YT_BLOCK_HOME_NAVIGATION intent=ACTION_VIEW https://m.youtube.com")
+        } catch (e: Exception) {
+            Log.e(TAG, "ERROR home navigation: ${e.message}")
+        }
     }
 
     /** A vertical swipe on the blocked player — replay it into Chrome. */
@@ -1529,15 +1617,27 @@ class YouTubeChromeTestCoordinator(
         // and loop forever.
         if (swipeReplayInFlight) return
         val player = findVideoPlayerNode(root)
-        val bounds = player?.let { boundsOf(it.node) }
+        var bounds = player?.let { boundsOf(it.node) }
+        // A matched keyword must ALWAYS end up covered. If the tree exposes no
+        // player-shaped node, cover the whole Chrome window instead of giving
+        // up: skipping here is what left a matched Short playing uncovered. The
+        // window bounds are the player's bounds for a full-screen Short anyway.
+        if (bounds == null) {
+            bounds = windowBounds(root)
+            if (bounds != null) {
+                Log.i(TAG, "YT_BLOCK_OVERLAY_FALLBACK_BOUNDS videoId=${currentVideoId ?: "unknown"} bounds=$bounds (no player node — covering the window)")
+            }
+        }
         try {
             if (bounds == null) {
-                Log.i(TAG, "YT_BLOCK_OVERLAY_SKIP videoId=${currentVideoId ?: "unknown"} — no player bounds")
+                Log.i(TAG, "YT_BLOCK_OVERLAY_SKIP videoId=${currentVideoId ?: "unknown"} — no player or window bounds")
                 return
             }
             // The overlay exists only in protected states (confirmed-paused or
             // protected-unknown), so it always carries the translucent black
-            // tint. Gesture handling is identical either way.
+            // tint. It covers the ENTIRE window (not just the player bounds) so
+            // the blocked video is fully hidden and the "Go to YouTube Home"
+            // button at the bottom is always reachable.
             val view = GestureAwarePlayerOverlay(service, tinted = true)
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -1546,16 +1646,14 @@ class YouTubeChromeTestCoordinator(
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
-                x = bounds.left
-                y = bounds.top
-                width = bounds.width()
-                height = bounds.height()
+                width = WindowManager.LayoutParams.MATCH_PARENT
+                height = WindowManager.LayoutParams.MATCH_PARENT
             }
             val wm = service.getSystemService(WindowManager::class.java)
             wm.addView(view, params)
             overlayView = view
             protectedPausedOverlayVisible = true
-            Log.i(TAG, "YT_BLOCK_OVERLAY_ENABLED videoId=${currentVideoId ?: "unknown"} bounds=$bounds")
+            Log.i(TAG, "YT_BLOCK_OVERLAY_ENABLED videoId=${currentVideoId ?: "unknown"} fullscreen=true playerBounds=$bounds")
             Log.i(TAG, "YT_BLOCK_PLAYER_PROTECTED videoId=${currentVideoId ?: "unknown"} bounds=$bounds")
             Log.i(TAG, "YT_BLOCK_BLACK_OVERLAY_ENABLED videoId=${currentVideoId ?: "unknown"}")
         } catch (e: Exception) {
@@ -1774,6 +1872,12 @@ class YouTubeChromeTestCoordinator(
     /** True for labels like "Play" / "Play video" (case-insensitive). */
     private fun isPlayLabel(s: String?): Boolean = YouTubeNodeRules.isPlayLabel(s)
 
+    /** True for the media element's own id (`player` / `movie_player`). */
+    private fun isPlayerElementId(viewId: String?): Boolean {
+        val id = viewId?.substringAfterLast('/')?.trim()?.lowercase(Locale.ROOT) ?: return false
+        return id == "player" || id == "movie_player"
+    }
+
     /** A player/playback-related node with its key properties (diagnostics). */
     private class PlayerNode(
         val node: AccessibilityNodeInfo,
@@ -1803,8 +1907,8 @@ class YouTubeChromeTestCoordinator(
      * buttons came first in the walk, and ClearView clicked Share on a video it
      * was supposed to pause.
      */
-    private fun isPlayerNode(text: String?, desc: String?, cls: String?): Boolean =
-        YouTubeNodeRules.isPlayerNode(text, desc, cls)
+    private fun isPlayerNode(text: String?, desc: String?, cls: String?, viewId: String? = null): Boolean =
+        YouTubeNodeRules.isPlayerNode(text, desc, cls, viewId)
 
     private fun isForbiddenActionNode(text: String?, desc: String?, cls: String?, viewId: String?): Boolean =
         YouTubeNodeRules.isForbiddenActionNode(text, desc, cls, viewId)
@@ -1839,10 +1943,17 @@ class YouTubeChromeTestCoordinator(
         } catch (e: Exception) {
             null
         }
-        val selected = players.firstOrNull { it.isVideoPlayer }
+        // Prefer the actual media element (`player` / `movie_player`) over the
+        // full-screen shells the Shorts page wraps around it — the shells share
+        // the same bounds, but only the media element answers a reveal click.
+        // A node with no bounds is useless as a click target, so it is only
+        // eligible for the named-player tiers when it is actually on screen.
+        fun usable(p: PlayerNode) = boundsOf(p.node) != null
+        val selected = players.firstOrNull { isPlayerElementId(it.viewId) && usable(it) }
+            ?: players.firstOrNull { it.isVideoPlayer && usable(it) }
             ?: players.firstOrNull {
-                isPlayLabel(it.text) || isPlayLabel(it.desc) ||
-                    isPauseLabel(it.text) || isPauseLabel(it.desc)
+                usable(it) && (isPlayLabel(it.text) || isPlayLabel(it.desc) ||
+                    isPauseLabel(it.text) || isPauseLabel(it.desc))
             }
             ?: players.firstOrNull { p ->
                 val b = boundsOf(p.node)
@@ -1900,14 +2011,20 @@ class YouTubeChromeTestCoordinator(
             // The guard runs BEFORE the player test, so a Share/actions button
             // can never enter the candidate list even if a later change to
             // [isPlayerNode] would otherwise have matched it.
-            if (!isForbiddenActionNode(text, desc, cls, viewId) && isPlayerNode(text, desc, cls)) {
+            if (!isForbiddenActionNode(text, desc, cls, viewId) && isPlayerNode(text, desc, cls, viewId)) {
                 val clickable = try { node.isClickable } catch (e: Exception) { false }
                 val focusable = try { node.isFocusable } catch (e: Exception) { false }
                 val enabled = try { node.isEnabled } catch (e: Exception) { false }
                 val visible = try { node.isVisibleToUser } catch (e: Exception) { false }
+                // The player is identified by its own name, by YouTube's player
+                // container id (what the current Chrome tree actually carries),
+                // or by the media surface class — never by a toolbar label.
                 val isVideoPlayer = listOf(desc, text, cls).any {
                     it?.lowercase(Locale.ROOT)?.contains("youtube video player") == true
-                }
+                } || YouTubeNodeRules.isPlayerContainerId(viewId) ||
+                    (cls ?: "").lowercase(Locale.ROOT).let {
+                        it.contains("surfaceview") || it.contains("videoview")
+                    }
                 out.add(
                     PlayerNode(
                         node = node, cls = cls, viewId = viewId, desc = desc, text = text,
@@ -1980,6 +2097,46 @@ class YouTubeChromeTestCoordinator(
         val r = Rect()
         return try {
             node.getBoundsInScreen(r)
+            if (r.isEmpty) null else r
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * True while media audio is still being produced on the device.
+     *
+     * A YouTube Short inside Chrome exposes no Play/Pause control in the
+     * accessibility tree, so there is nothing to read the playback state from.
+     * The audio output is the one observable that actually reflects whether the
+     * video is still playing, and it is what the user hears: as long as media
+     * audio is active the pause has not taken effect, so the coordinator keeps
+     * sending the bounded centre taps instead of declaring success. Returns
+     * false when the system reports no active media stream.
+     */
+    private fun chromeAudioActive(): Boolean =
+        try { audioManager?.isMusicActive == true } catch (e: Exception) { false }
+
+    /**
+     * Bounds of the active Chrome application window, used as the protection
+     * area when no player-shaped node can be found. Prefers the real window
+     * rect; falls back to the root node's own bounds (which are already in
+     * screen coordinates) if the window list is unavailable.
+     */
+    private fun windowBounds(root: AccessibilityNodeInfo): Rect? {
+        try {
+            val active = service.windows?.firstOrNull { it.isActive && it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            val r = Rect()
+            if (active != null) {
+                active.getBoundsInScreen(r)
+                if (!r.isEmpty) return r
+            }
+        } catch (e: Exception) {
+            // fall through to the root bounds
+        }
+        val r = Rect()
+        return try {
+            root.getBoundsInScreen(r)
             if (r.isEmpty) null else r
         } catch (e: Exception) {
             null

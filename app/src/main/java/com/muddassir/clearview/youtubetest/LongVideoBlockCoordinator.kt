@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -119,6 +120,9 @@ class LongVideoBlockCoordinator(
         private const val ENFORCEMENT_INTERVAL_MS = 400L
         private const val PAUSE_OBSERVE_MS = 1200L
         private const val CONTROLS_WAIT_MS = 500L
+        // Bounded extra centre taps when the tree exposes no Play/Pause control
+        // and Chrome's audio is still playing (pause has not taken effect).
+        private const val MAX_PAUSE_RETRIES = 4
         // While a watch page is loading, Chrome may briefly expose no watch
         // signal (bare-domain address bar, title not rendered). Only reset the
         // long-video state after this grace window with no watch signal — a
@@ -254,6 +258,8 @@ class LongVideoBlockCoordinator(
     /** True once the SINGLE pause action (control click or physical tap) has
      *  been sent for this generation. Cleared only by a new instance. */
     private var longVideoPauseAttempted = false
+    /** Bounded retry count for the audio-based pause confirmation. */
+    private var longVideoPauseRetries = 0
     /** True only when a visible Play control confirmed the paused state. */
     private var longVideoPauseConfirmed = false
     private var longVideoOverlayActive = false
@@ -464,6 +470,7 @@ class LongVideoBlockCoordinator(
         longVideoBlocked = false
         longVideoChannelChecked = false
         longVideoPauseAttempted = false
+        longVideoPauseRetries = 0
         longVideoPauseConfirmed = false
         pauseObserveSince = 0L
         controlsRevealGeneration = -1L
@@ -501,6 +508,7 @@ class LongVideoBlockCoordinator(
         longVideoBlocked = false
         longVideoChannelChecked = false
         longVideoPauseAttempted = false
+        longVideoPauseRetries = 0
         longVideoPauseConfirmed = false
         longVideoOverlayActive = false
         pauseObserveSince = 0L
@@ -833,9 +841,12 @@ class LongVideoBlockCoordinator(
     }
 
     /**
-     * Bounded observation after the single pause action: only a visible Play
-     * control CONFIRMS the pause. After the window, protect anyway (the
-     * overlay blocks all interaction even if playback state is unknowable).
+     * Bounded observation after the single pause action. A visible Play
+     * control CONFIRMS the pause; when the tree exposes no control at all, the
+     * device's own audio output is used instead — while Chrome is still making
+     * sound the pause has not taken effect, so a bounded centre tap is retried.
+     * After the window, protect anyway (the overlay blocks all interaction even
+     * if playback state is unknowable).
      */
     private fun runPauseObserve(root: AccessibilityNodeInfo, now: Long) {
         val videoId = longVideoId ?: return
@@ -850,16 +861,43 @@ class LongVideoBlockCoordinator(
             }
             else -> {
                 recycleIfNotRoot(button.node, root)
-                if (now - pauseObserveSince >= PAUSE_OBSERVE_MS) {
-                    Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
+                // No Play/Pause control to read the state from: fall back to the
+                // audio output, which is what the user actually hears.
+                if (!chromeAudioActive()) {
+                    longVideoPauseConfirmed = true
+                    Log.i(TAG, "LONG_VIDEO_PAUSED_CONFIRMED videoId=$videoId (Chrome audio silent)")
                     transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
                     enableOverlay()
+                } else if (now - pauseObserveSince >= PAUSE_OBSERVE_MS) {
+                    if (longVideoPauseRetries < MAX_PAUSE_RETRIES) {
+                        longVideoPauseRetries++
+                        Log.i(TAG, "LONG_VIDEO_PAUSE_AUDIO_STILL_PLAYING videoId=$videoId — retry tap attempt=$longVideoPauseRetries")
+                        if (requestPhysicalPause(root)) {
+                            pauseObserveSince = now
+                        } else {
+                            Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
+                            transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
+                            enableOverlay()
+                        }
+                    } else {
+                        Log.i(TAG, "LONG_VIDEO_PAUSE_NOT_CONFIRMED videoId=$videoId — protecting anyway (single-shot pause already sent)")
+                        transition(LongVideoBlockState.LONG_BLOCKED_PROTECTED)
+                        enableOverlay()
+                    }
                 } else {
                     Log.i(TAG, "LONG_VIDEO_PAUSE_OBSERVE videoId=$videoId — waiting for visible Play control")
                 }
             }
         }
     }
+
+    /** True while media audio is still being produced on the device. */
+    private fun chromeAudioActive(): Boolean =
+        try {
+            service.getSystemService(AudioManager::class.java)?.isMusicActive == true
+        } catch (e: Exception) {
+            false
+        }
 
     /**
      * Protected: overlay stays up, NO pause actions are ever sent for this
@@ -904,7 +942,10 @@ class LongVideoBlockCoordinator(
     private fun requestPhysicalPause(root: AccessibilityNodeInfo): Boolean {
         val videoId = longVideoId ?: return false
         val player = findVideoPlayerNode(root)
-        val bounds = player?.let { boundsOf(it.node) }
+        // Fall back to the window bounds when the tree exposes no player node:
+        // for a full-screen watch page the window centre is the player centre,
+        // so the tap still lands on the video instead of being skipped.
+        val bounds = player?.let { boundsOf(it.node) } ?: windowBounds(root)
         try { player?.node?.recycle() } catch (e: Exception) {}
         if (bounds == null) return false
         val x = (bounds.left + bounds.right) / 2f
@@ -1361,8 +1402,8 @@ class LongVideoBlockCoordinator(
      * toolbar button is a walk that can click Share — which opens YouTube's share
      * sheet as the side effect of a keyword match. See [YouTubeNodeRules].
      */
-    private fun isForbiddenActionNode(text: String?, desc: String?, cls: String?): Boolean =
-        YouTubeNodeRules.isForbiddenActionNode(text, desc, cls)
+    private fun isForbiddenActionNode(text: String?, desc: String?, cls: String?, viewId: String? = null): Boolean =
+        YouTubeNodeRules.isForbiddenActionNode(text, desc, cls, viewId)
 
     /**
      * The node representing the video player (for the reveal click / tap).
@@ -1386,10 +1427,15 @@ class LongVideoBlockCoordinator(
             val text = try { node.text?.toString() } catch (e: Exception) { null }
             val desc = try { node.contentDescription?.toString() } catch (e: Exception) { null }
             val cls = try { node.className?.toString() } catch (e: Exception) { null }
-            if (!isForbiddenActionNode(text, desc, cls)) {
+            val viewId = try { node.viewIdResourceName } catch (e: Exception) { null }
+            if (!isForbiddenActionNode(text, desc, cls, viewId)) {
                 val hay = ((text ?: "") + " " + (desc ?: "") + " " + (cls ?: "")).lowercase(Locale.ROOT)
                 val clsLower = (cls ?: "").lowercase(Locale.ROOT)
+                // The player is identified by its own name, by YouTube's player
+                // container id (the only identity the current Chrome tree
+                // exposes), or by the media surface class.
                 if (hay.contains("youtube video player") ||
+                    YouTubeNodeRules.isPlayerContainerId(viewId) ||
                     clsLower.contains("surfaceview") ||
                     clsLower.contains("videoview")
                 ) {
@@ -1412,6 +1458,33 @@ class LongVideoBlockCoordinator(
         val r = Rect()
         return try {
             node.getBoundsInScreen(r)
+            if (r.isEmpty) null else r
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Bounds of the active Chrome application window, used as the tap target
+     * when no player-shaped node can be found. Prefers the real window rect;
+     * falls back to the root node's own screen bounds.
+     */
+    private fun windowBounds(root: AccessibilityNodeInfo): Rect? {
+        try {
+            val active = service.windows?.firstOrNull {
+                it.isActive && it.type == AccessibilityWindowInfo.TYPE_APPLICATION
+            }
+            val r = Rect()
+            if (active != null) {
+                active.getBoundsInScreen(r)
+                if (!r.isEmpty) return r
+            }
+        } catch (e: Exception) {
+            // fall through to the root bounds
+        }
+        val r = Rect()
+        return try {
+            root.getBoundsInScreen(r)
             if (r.isEmpty) null else r
         } catch (e: Exception) {
             null
