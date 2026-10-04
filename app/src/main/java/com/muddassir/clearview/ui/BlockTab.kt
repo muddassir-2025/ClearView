@@ -1309,6 +1309,8 @@ private fun BrainRotKeywordsCard(viewModel: MainViewModel) {
                             "Queued for review"
                         } else if (viewModel.isApprovedGlobally("keyword", keyword)) {
                             "Approved globally"
+                        } else if (viewModel.isRemovedGlobally("keyword", keyword)) {
+                            "Removed"
                         } else {
                             viewModel.reasonFor(keyword)?.reason
                         }
@@ -1410,27 +1412,15 @@ private fun BrainRotChannelsCard(viewModel: MainViewModel) {
                         icon = Icons.Outlined.PlayCircle,
                         onRemove = { viewModel.removeBrainRotChannel(channel.handle) },
                         removeLabel = "Unblock ${channel.handle}",
-                        // Already sent? The action is not offered at all.
-                        onSend = if (
-                            viewModel.globalRulesAvailable &&
-                            viewModel.submissionStatusFor("channel", channel.handle) == null
-                        ) {
-                            {
-                                viewModel.submitChannelToGlobal(channel.handle, channel.name) { ok ->
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(
-                                            if (ok) R.string.block_global_suggest_queued
-                                            else R.string.block_global_suggest_failed
-                                        ),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
-                        } else null,
+                        // No Send. A channel you blocked yourself is your own
+                        // rule; offering to make it global would be offering to
+                        // decide for everyone else. Only YouTube protection items
+                        // are sendable.
+                        onSend = null,
                         subtitle = when {
                             viewModel.isQueuedForReview("channel", channel.handle) -> "Queued for review"
                             viewModel.isApprovedGlobally("channel", channel.handle) -> "Approved globally"
+                            viewModel.isRemovedGlobally("channel", channel.handle) -> "Removed"
                             else -> channel.name ?: stringResource(R.string.block_channel_my_block)
                         }
                     )
@@ -1606,7 +1596,9 @@ private fun MySubmissionsCard(viewModel: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                submissions.forEach { submission -> SubmissionRow(submission) }
+                submissions.forEach { submission ->
+                    SubmissionRow(submission, viewModel.displayStatus(submission))
+                }
             }
         }
     }
@@ -1614,7 +1606,7 @@ private fun MySubmissionsCard(viewModel: MainViewModel) {
 
 /** One device submission, with its status pill. */
 @Composable
-private fun SubmissionRow(submission: BrainRotClient.SubmissionStatus) {
+private fun SubmissionRow(submission: BrainRotClient.SubmissionStatus, status: String) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
@@ -1644,7 +1636,7 @@ private fun SubmissionRow(submission: BrainRotClient.SubmissionStatus) {
                 modifier = Modifier.weight(1f)
             )
             Spacer(modifier = Modifier.width(10.dp))
-            SubmissionStatusPill(submission.status)
+            SubmissionStatusPill(status)
         }
     }
 }
@@ -1656,12 +1648,14 @@ private fun SubmissionStatusPill(status: String) {
         "approved" -> R.string.block_my_submission_approved
         "rejected" -> R.string.block_my_submission_rejected
         "under_review" -> R.string.block_my_submission_under_review
+        "removed" -> R.string.block_my_submission_removed
         else -> R.string.block_my_submission_pending
     }
     val color = when (status) {
         "approved" -> Color(0xFF2E7D32)
         "rejected" -> MaterialTheme.colorScheme.error
         "under_review" -> Color(0xFF1565C0)
+        "removed" -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Surface(
@@ -1998,14 +1992,15 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
 
     if (open) {
         BlockManagerDialog(title = "Blocked Items", onDismiss = { open = false }) {
-            QueuedForReview(
-                items = viewModel.pendingSubmissions("keyword"),
-                icon = Icons.Outlined.Block
-            )
-            ApprovedGlobally(
-                items = viewModel.approvedSubmissions("keyword"),
-                icon = Icons.Outlined.Block
-            )
+            // Deliberately NO "Queued for review" / "Approved globally" groups
+            // here. Nothing in this list can ever be sent for review — its own
+            // keywords and websites are the user's private rules, and the Send
+            // action is gone from every row for exactly that reason. Showing
+            // them meant a request made from the YouTube section (same "keyword"
+            // kind) appeared as pending/approved against a list it was never
+            // sent from, which reads as "this card submits things" when it does
+            // not. Those groups belong on the YouTube keyword card, which is the
+            // only place a term can actually be submitted.
             Text(
                 text = "Keywords",
                 style = MaterialTheme.typography.labelLarge,
@@ -2032,20 +2027,14 @@ private fun BlockedItemsCard(viewModel: MainViewModel) {
                         subtitle = viewModel.reasonFor(keyword)?.reason,
                         onRemove = { viewModel.removeKeyword(keyword) },
                         removeLabel = "Remove $keyword",
-                        onSend = if (viewModel.globalRulesAvailable) {
-                            {
-                                viewModel.submitKeywordToGlobal(keyword) { ok ->
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(
-                                            if (ok) R.string.block_global_suggest_queued
-                                            else R.string.block_global_suggest_failed
-                                        ),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            }
-                        } else null
+                        // No Send. Your own keywords and websites are YOURS, and
+                        // the shared blocklist is not a place to push them — one
+                        // person's rule must not become everyone's, which is the
+                        // whole reason a rule needs an operator to approve it.
+                        // Only YouTube protection items can be sent (see the
+                        // YouTube section), because those are the terms ClearView
+                        // already suggests on a user's behalf.
+                        onSend = null
                     )
                 }
             }

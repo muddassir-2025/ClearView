@@ -51,6 +51,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Star
@@ -80,6 +84,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.snapshotFlow
@@ -127,6 +132,9 @@ import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
 import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import com.muddassir.clearview.quran.ui.QuranFontFamily
+import com.muddassir.clearview.quran.ui.VerseAudioPlayer
+import com.muddassir.clearview.quran.ui.VerseAudioStatus
+import com.muddassir.clearview.quran.ui.verseAudioUrl
 import com.muddassir.clearview.quran.data.verseReference
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.util.copyVerseToClipboard
@@ -1109,6 +1117,25 @@ private fun SurahReader(
     val context = LocalContext.current
     val density = LocalDensity.current
 
+    // ── Listen: one verse at a time, streamed ─────────────────────-
+    //
+    // ONE player for the whole surah, not one per row: a surah can hold 286
+    // verses, and a decoder per row would be 286 decoders nobody asked for. The
+    // verse being played is tracked by key, so the row that is playing can show
+    // Pause while every other row still offers Listen. The player is released
+    // when the surah (or the screen) goes away, so a recitation is never left
+    // running behind the page. Nothing is downloaded — see [VerseAudioPlayer].
+    val verseAudio = remember { VerseAudioPlayer() }
+    var audioVerseKey by remember(surahNumber) { mutableStateOf<String?>(null) }
+    DisposableEffect(surahNumber) {
+        onDispose { verseAudio.release() }
+    }
+    LaunchedEffect(verseAudio.status) {
+        if (verseAudio.status == VerseAudioStatus.FAILED) {
+            Toast.makeText(context, R.string.quran_verse_listen_failed, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // §1: how far through the surah the reader has scrolled. Derived, and read in
     // the DRAW pass below, so that a value which changes on every frame of a
     // scroll invalidates three pixels of bar rather than the screenful of text it
@@ -1408,6 +1435,7 @@ private fun SurahReader(
                         }
 
                         if (actionsFor == key) {
+                            val listening = audioVerseKey == key
                             Spacer(Modifier.height(10.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 QuranSegment(
@@ -1437,6 +1465,75 @@ private fun SurahReader(
                                         actionsFor = null
                                     }
                                 )
+                            }
+
+                            // Listen sits on its OWN line under the copy /
+                            // bookmark pair: the three labels together were
+                            // wider than the row, and a third segment squeezed
+                            // into it would have shrunk all three to ellipses.
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                QuranSegment(
+                                    selected = listening &&
+                                        verseAudio.status == VerseAudioStatus.PLAYING,
+                                    label = stringResource(
+                                        when {
+                                            listening && verseAudio.status == VerseAudioStatus.PLAYING ->
+                                                R.string.quran_verse_listen_pause
+                                            listening && verseAudio.status == VerseAudioStatus.PAUSED ->
+                                                R.string.quran_verse_listen_resume
+                                            listening && verseAudio.status == VerseAudioStatus.ENDED ->
+                                                R.string.quran_verse_listen_replay
+                                            else -> R.string.quran_verse_listen
+                                        }
+                                    ),
+                                    onClick = {
+                                        when {
+                                            listening && verseAudio.status == VerseAudioStatus.PLAYING ->
+                                                verseAudio.pause()
+                                            listening && verseAudio.status == VerseAudioStatus.PAUSED ->
+                                                verseAudio.resume()
+                                            listening && verseAudio.status == VerseAudioStatus.ENDED ->
+                                                verseAudio.restart()
+                                            // In flight: the tap is inert rather than
+                                            // restarting a request already running.
+                                            listening && verseAudio.status == VerseAudioStatus.LOADING -> Unit
+                                            else -> {
+                                                // A different verse (or the same one
+                                                // after a failure): become the
+                                                // active verse and start it.
+                                                audioVerseKey = key
+                                                verseAudio.start(
+                                                    verseAudioUrl(
+                                                        verse.surahNumber,
+                                                        verse.ayahNumber
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    }
+                                )
+                                // Restart appears only while there is something
+                                // loaded to restart.
+                                if (listening && (
+                                        verseAudio.status == VerseAudioStatus.PLAYING ||
+                                            verseAudio.status == VerseAudioStatus.PAUSED ||
+                                            verseAudio.status == VerseAudioStatus.ENDED
+                                        )
+                                ) {
+                                    IconButton(onClick = { verseAudio.restart() }) {
+                                        Icon(
+                                            Icons.Filled.Refresh,
+                                            contentDescription = stringResource(
+                                                R.string.quran_verse_listen_restart
+                                            ),
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

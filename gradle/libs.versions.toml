@@ -36,6 +36,11 @@ media3 = "1.11.1"
 # Core library desugaring — backports java.time (incl. HijrahDate / Umm al-Qura
 # Islamic calendar) to API 24/25 devices. Compile-time only, no runtime dependency.
 desugarJdkLibs = "2.1.5"
+# androidx.fragment — pulled in transitively, so it is declared explicitly to
+# pin a current version. Play flags an app that ships an older fragment than it
+# recommends as a technical-quality issue, and an explicit dependency is the
+# only way to raise a transitive version on purpose.
+fragment = "1.9.1"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -63,6 +68,7 @@ androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-fragment-ktx = { group = "androidx.fragment", name = "fragment-ktx", version.ref = "fragment" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

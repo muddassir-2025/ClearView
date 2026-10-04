@@ -65,6 +65,18 @@ class GlobalRulesStore(context: Context) {
     @Volatile
     private var syncing = false
 
+    /**
+     * True once a rules snapshot has been loaded or fetched.
+     *
+     * The distinction matters downstream: an EMPTY rule set is a real answer
+     * ("nothing is global right now"), while NEVER having synced is not — the
+     * two look identical as an empty set, so callers that reason about what is
+     * still global must be able to tell them apart.
+     */
+    @Volatile
+    var hasSnapshot = false
+        private set
+
     init {
         loadCached()
     }
@@ -74,6 +86,7 @@ class GlobalRulesStore(context: Context) {
             val raw = prefs.getString(KEY_RULES, null) ?: return
             val json = JSONObject(raw)
             apply(json)
+            hasSnapshot = true
         } catch (e: Exception) {
             Log.e(TAG, "loadCached error: ${e.message}")
         }
@@ -164,6 +177,7 @@ class GlobalRulesStore(context: Context) {
                 .putLong(KEY_LAST_SYNC, System.currentTimeMillis())
                 .apply()
             apply(json)
+            hasSnapshot = true
             Log.i(TAG, "RULES_SYNCED keywords=${rules.keywords.size} channels=${rules.channels.size} version=${rules.version}")
             return true
         } catch (e: Exception) {
@@ -195,8 +209,4 @@ class GlobalRulesStore(context: Context) {
     /** Report a keyword. Returns the new report count, or null on failure. */
     suspend fun reportKeyword(keyword: String, detail: String? = null): Int? =
         client.report("keyword", keyword, detail)
-
-    /** Report a channel. Returns the new report count, or null on failure. */
-    suspend fun reportChannel(handle: String, detail: String? = null): Int? =
-        client.report("channel", handle, detail)
 }

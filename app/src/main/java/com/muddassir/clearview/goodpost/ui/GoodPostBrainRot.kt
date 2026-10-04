@@ -2,6 +2,7 @@ package com.muddassir.clearview.goodpost.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,10 +18,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.HorizontalDivider
@@ -39,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,34 +94,16 @@ internal fun BrainRotReviewScreen(state: GoodPostUiState, viewModel: GoodPostVie
             }
         )
 
-        // The three surfaces as pills, matching every other filter row in the
-        // tab. The dashboard comes first because it is what an operator opens
-        // the screen to see: what is waiting, and what people are asking for.
-        WaFilterRow {
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_dashboard),
-                selected = state.brainRotTab == 0,
-                onClick = { viewModel.selectBrainRotTab(0) }
-            )
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_queue),
-                selected = state.brainRotTab == 1,
-                onClick = { viewModel.selectBrainRotTab(1) }
-            )
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_rules),
-                selected = state.brainRotTab == 2,
-                onClick = { viewModel.selectBrainRotTab(2) }
-            )
-            // The other queue. A submission asks for a rule; a REPORT asks for one
-            // to stop applying, and keeping them apart is what lets an operator
-            // answer one question at a time.
-            WaFilterPill(
-                label = stringResource(R.string.goodpost_brainrot_reports_tab),
-                selected = state.brainRotTab == 3,
-                onClick = { viewModel.selectBrainRotTab(3) }
-            )
-        }
+        // The four surfaces as TABS, not as a row of filter chips.
+        //
+        // They were chips because every other filter row in this tab is chips,
+        // but that is the wrong shape for this: a filter narrows ONE list, while
+        // these four replace the whole screen. Drawn as chips they read as four
+        // options among the rows rather than as the structure of the screen, and
+        // an operator had no way to tell which one they were looking at without
+        // reading a chip's background. A tab strip says "this screen has four
+        // pages" at a glance, and the underline is the page marker.
+        BrainRotTabs(selected = state.brainRotTab, onSelect = viewModel::selectBrainRotTab)
 
         Box(modifier = Modifier.fillMaxSize()) {
             when (state.brainRotTab) {
@@ -182,6 +169,14 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
                                 value = dashboard.underReview,
                                 modifier = Modifier.weight(1f)
                             )
+                        }
+                        // Two rows of two rather than four in a line: four
+                        // labels across a phone left each one about nine
+                        // characters wide, so "Under review" was already being
+                        // clipped and the numbers lost the labels that explain
+                        // them.
+                        Spacer(Modifier.height(14.dp))
+                        Row(modifier = Modifier.fillMaxWidth()) {
                             DashboardStat(
                                 label = stringResource(R.string.goodpost_brainrot_approved),
                                 value = dashboard.approved,
@@ -211,31 +206,22 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
                 }
             }
 
-            item(key = "channels-header") {
-                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_top_channels))
-                }
-            }
-            if (dashboard.topChannels.isEmpty()) {
-                item(key = "channels-empty") {
-                    EmptyDemandNote()
-                }
-            }
-            items(dashboard.topChannels, key = { "dc-${it.value}" }) { row ->
-                DemandRow(row)
+            item(key = "channels-card") {
+                DemandSectionCard(
+                    icon = Icons.Outlined.PlayCircle,
+                    title = stringResource(R.string.goodpost_brainrot_top_channels),
+                    emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
+                    rows = dashboard.topChannels
+                )
             }
 
-            item(key = "keywords-header") {
-                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_top_keywords))
-                }
-            }
-            if (dashboard.topKeywords.isEmpty()) {
-                item(key = "keywords-empty") {
-                    EmptyDemandNote()
-                }            }
-            items(dashboard.topKeywords, key = { "dk-${it.value}" }) { row ->
-                DemandRow(row)
+            item(key = "keywords-card") {
+                DemandSectionCard(
+                    icon = Icons.Outlined.Block,
+                    title = stringResource(R.string.goodpost_brainrot_top_keywords),
+                    emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
+                    rows = dashboard.topKeywords
+                )
             }
 
         }
@@ -271,6 +257,65 @@ private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifi
 }
 
 /**
+ * One demand category — "Most requested channels" / "Most requested keywords" —
+ * as a single collapsed card.
+ *
+ * The two lists used to sit open under a heading, so the dashboard opened on a
+ * wall of rows and the totals it exists to show were pushed off the first
+ * screen. Collapsed, each category is one line — its name and how many targets
+ * are in it — and opening it is a deliberate "I want to look at these", which
+ * is the moment the per-target counts are worth reading.
+ */
+@Composable
+private fun DemandSectionCard(
+    icon: ImageVector,
+    title: String,
+    emptyNote: String,
+    rows: List<GoodPostBrainRotDemand>
+) {
+    var open by remember { mutableStateOf(false) }
+
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaCardHeader(
+                icon = icon,
+                title = title,
+                subtitle = if (rows.isEmpty()) {
+                    emptyNote
+                } else {
+                    stringResource(R.string.goodpost_brainrot_demand_count, rows.size)
+                },
+                onClick = { open = !open },
+                trailing = {
+                    Icon(
+                        imageVector = if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        tint = Wa.TextDim,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+            )
+
+            if (!open) return@WaCard
+
+            Spacer(Modifier.height(10.dp))
+            if (rows.isEmpty()) {
+                Text(
+                    text = emptyNote,
+                    color = Wa.TextDim,
+                    fontSize = 13.sp
+                )
+            } else {
+                rows.forEachIndexed { index, row ->
+                    if (index > 0) Spacer(Modifier.height(8.dp))
+                    DemandRow(row, nested = true)
+                }
+            }
+        }
+    }
+}
+
+/**
  * One target's demand, as a card row.
  *
  * "247 reports · 182 requests" is the sentence an operator needs: the first is
@@ -285,8 +330,15 @@ private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifi
  * blocking".
  */
 @Composable
-private fun DemandRow(row: GoodPostBrainRotDemand) {
-    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+private fun DemandRow(row: GoodPostBrainRotDemand, nested: Boolean = false) {
+    Box(
+        modifier = Modifier.padding(
+            start = if (nested) 0.dp else 16.dp,
+            end = if (nested) 0.dp else 16.dp,
+            top = 4.dp,
+            bottom = if (nested) 0.dp else 4.dp
+        )
+    ) {
         WaCard {
             WaCardHeader(
                 icon = if (row.isChannel) Icons.Outlined.PlayCircle else Icons.Outlined.Block,
@@ -319,16 +371,6 @@ private fun DemandRow(row: GoodPostBrainRotDemand) {
             )
         }
     }
-}
-
-@Composable
-private fun EmptyDemandNote() {
-    Text(
-        text = stringResource(R.string.goodpost_brainrot_no_demand),
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-        color = Wa.TextDim,
-        fontSize = 13.sp
-    )
 }
 
 // ── The review queue ────────────────────────────────────────────────────
@@ -509,6 +551,62 @@ private fun SubmissionRow(
     }
 }
 
+// ── The tabs ────────────────────────────────────────────────────────────
+
+/**
+ * The four pages of the Shared blocklist, as an underlined tab strip.
+ *
+ * Scrollable rather than four equal widths: the labels are the point ("Review
+ * queue" and "False reports" say what they are), and squaring them off to fit a
+ * phone would ellipsize the two that need the words most. The indicator is the
+ * same accent the rest of the tab uses, so the selected page is never a guess.
+ */
+@Composable
+private fun BrainRotTabs(selected: Int, onSelect: (Int) -> Unit) {
+    val tabs = listOf(
+        R.string.goodpost_brainrot_dashboard,
+        R.string.goodpost_brainrot_queue,
+        R.string.goodpost_brainrot_rules,
+        R.string.goodpost_brainrot_reports_tab
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            tabs.forEachIndexed { index, labelRes ->
+                val active = selected == index
+                Column(
+                    modifier = Modifier
+                        .clickable { onSelect(index) }
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = stringResource(labelRes),
+                        color = if (active) Wa.Text else Wa.TextDim,
+                        fontSize = 14.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(if (active) Wa.Accent else Color.Transparent)
+                    )
+                }
+            }
+        }
+        HorizontalDivider(color = Wa.Divider)
+    }
+}
+
 // ── The false-positive queue ────────────────────────────────────────────
 
 /**
@@ -650,30 +748,57 @@ private fun BrainRotRules(
     viewModel: GoodPostViewModel,
     onDelete: (GoodPostBrainRotRule) -> Unit
 ) {
+    // Purely a disclosure, so it is screen state rather than view-model state:
+    // nothing outside this screen can see it and nothing has to survive a
+    // rotation to keep the rules correct.
+    var addOpen by remember { mutableStateOf(false) }
+
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().imePadding(),
             contentPadding = PaddingValues(bottom = 32.dp)
         ) {
-            item(key = "add-keyword") {
-                AddRow(
-                    label = stringResource(R.string.goodpost_brainrot_add_keyword),
-                    hint = stringResource(R.string.goodpost_brainrot_add_keyword_hint),
-                    value = state.brainRotNewKeyword,
-                    onValueChange = viewModel::onBrainRotNewKeywordChange,
-                    onAdd = viewModel::addBrainRotKeyword,
-                    enabled = !state.brainRotBusy
-                )
+            // Adding is behind ONE action, closed by default.
+            //
+            // Two always-open text fields sat above the lists they add to, so
+            // the tab opened on a form rather than on the rules — and a form
+            // nobody came to fill in is two fields of noise in front of the
+            // thing they did come for. Opening it is one tap, and it is the
+            // first thing on the screen when it is open.
+            item(key = "add-toggle") {
+                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    WaTextAction(
+                        text = stringResource(
+                            if (addOpen) R.string.goodpost_brainrot_add_hide
+                            else R.string.goodpost_brainrot_add_rule
+                        ),
+                        enabled = !state.brainRotBusy,
+                        onClick = { addOpen = !addOpen }
+                    )
+                }
             }
-            item(key = "add-channel") {
-                AddRow(
-                    label = stringResource(R.string.goodpost_brainrot_add_channel),
-                    hint = stringResource(R.string.goodpost_brainrot_add_channel_hint),
-                    value = state.brainRotNewChannel,
-                    onValueChange = viewModel::onBrainRotNewChannelChange,
-                    onAdd = viewModel::addBrainRotChannel,
-                    enabled = !state.brainRotBusy
-                )
+
+            if (addOpen) {
+                item(key = "add-keyword") {
+                    AddRow(
+                        label = stringResource(R.string.goodpost_brainrot_add_keyword),
+                        hint = stringResource(R.string.goodpost_brainrot_add_keyword_hint),
+                        value = state.brainRotNewKeyword,
+                        onValueChange = viewModel::onBrainRotNewKeywordChange,
+                        onAdd = viewModel::addBrainRotKeyword,
+                        enabled = !state.brainRotBusy
+                    )
+                }
+                item(key = "add-channel") {
+                    AddRow(
+                        label = stringResource(R.string.goodpost_brainrot_add_channel),
+                        hint = stringResource(R.string.goodpost_brainrot_add_channel_hint),
+                        value = state.brainRotNewChannel,
+                        onValueChange = viewModel::onBrainRotNewChannelChange,
+                        onAdd = viewModel::addBrainRotChannel,
+                        enabled = !state.brainRotBusy
+                    )
+                }
             }
 
             item(key = "keywords-header") {

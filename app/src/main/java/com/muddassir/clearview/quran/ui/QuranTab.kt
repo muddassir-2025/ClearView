@@ -22,7 +22,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -40,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import com.muddassir.clearview.R
 import com.muddassir.clearview.quran.data.IslamicDateFormatter
 import com.muddassir.clearview.quran.model.QuranVerse
@@ -89,6 +94,10 @@ fun QuranTab(
     // the tap target that opens the adjustment sheet.
     islamicDateAdjustment: Int = 0,
     onAdjustDate: () -> Unit = {},
+    // Whether the Listen control is showing. Hidden by default: the audio icon
+    // in the top bar reveals it, so the verse page stays a reading page until
+    // the reader asks to hear it.
+    listenVisible: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -137,7 +146,8 @@ fun QuranTab(
                     onPrevious = onPrevious,
                     onNext = onNext,
                     onNewVerse = onNewVerse,
-                    onCopyVerse = onCopyVerse
+                    onCopyVerse = onCopyVerse,
+                    listenVisible = listenVisible
                 )
             }
         }
@@ -201,7 +211,9 @@ private fun VerseDisplay(
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onNewVerse: () -> Unit,
-    onCopyVerse: () -> Unit
+    onCopyVerse: () -> Unit,
+    /** Whether the Listen control is showing (toggled by the top bar's audio icon). */
+    listenVisible: Boolean
 ) {
     Spacer(Modifier.height(8.dp))
 
@@ -358,6 +370,88 @@ private fun VerseDisplay(
     )
 
     Spacer(Modifier.height(32.dp))
+
+    if (listenVisible) {
+        // The recitation player for THIS verse. It is released the moment the
+        // verse changes — or the control is hidden — so Previous/Next/New never
+        // leaves the old ayah playing underneath the one on screen.
+        val audio = rememberVerseAudioPlayer(v.surahNumber, v.ayahNumber)
+        val context = LocalContext.current
+        LaunchedEffect(audio.status) {
+            if (audio.status == VerseAudioStatus.FAILED) {
+                Toast.makeText(context, R.string.quran_verse_listen_failed, Toast.LENGTH_SHORT)
+                    .show()
+            }
+        }
+
+        // ── Listen: one verse, streamed ────────────────────────────
+        //
+        // It streams the ayah rather than downloading it, so listening costs no
+        // storage and there is no "offline" state to explain: the file is
+        // fetched as it plays. One button carries the three states a reader
+        // needs — play, pause, resume — and turns into Replay once the
+        // recitation ends, while a separate Restart control appears whenever
+        // there is something loaded to restart. A control that cannot do
+        // anything yet is never drawn.
+        val listenLabel = when (audio.status) {
+            VerseAudioStatus.PLAYING -> R.string.quran_verse_listen_pause
+            VerseAudioStatus.PAUSED -> R.string.quran_verse_listen_resume
+            VerseAudioStatus.ENDED -> R.string.quran_verse_listen_replay
+            else -> R.string.quran_verse_listen
+        }
+        val listenIcon = when (audio.status) {
+            VerseAudioStatus.PLAYING -> Icons.Filled.Pause
+            VerseAudioStatus.ENDED -> Icons.Filled.Replay
+            else -> Icons.Filled.PlayArrow
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            OutlinedButton(
+                onClick = {
+                    when (audio.status) {
+                        VerseAudioStatus.PLAYING -> audio.pause()
+                        VerseAudioStatus.PAUSED -> audio.resume()
+                        VerseAudioStatus.ENDED -> audio.restart()
+                        // While loading, the tap is inert rather than restarting
+                        // a request that is already in flight.
+                        VerseAudioStatus.LOADING -> Unit
+                        else -> audio.start(verseAudioUrl(v.surahNumber, v.ayahNumber))
+                    }
+                },
+                enabled = audio.status != VerseAudioStatus.LOADING
+            ) {
+                Icon(listenIcon, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(stringResource(listenLabel))
+            }
+            if (audio.status == VerseAudioStatus.PLAYING ||
+                audio.status == VerseAudioStatus.PAUSED ||
+                audio.status == VerseAudioStatus.ENDED
+            ) {
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = { audio.restart() }) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = stringResource(R.string.quran_verse_listen_restart),
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+            }
+        }
+        if (audio.status == VerseAudioStatus.LOADING) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.quran_verse_listen_loading),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+    }
 
     // Subtle actions.
     Row(

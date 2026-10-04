@@ -80,8 +80,8 @@ android {
         applicationId = "com.muddassir.clearview"
         minSdk = 24
         targetSdk = 37
-        versionCode = 32
-        versionName = "11.2"
+        versionCode = 36
+        versionName = "11.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -169,9 +169,25 @@ android {
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }
+            // R8 on for release: minification, obfuscation and resource
+            // shrinking. Play reports the OBFUSCATION PERCENTAGE of an app in
+            // the DEX-optimisation check, and an unminified build is ~1% — the
+            // class and member names are all still there. Enabling R8 is what
+            // fixes that, and it also strips unused code and resources.
+            //
+            // The keep rules live in proguard-rules.pro. This project uses no
+            // reflection and no JSON/object serialization framework, so almost
+            // nothing needs keeping: the exceptions are NewPipeExtractor (whose
+            // stream resolution is opaque enough that keeping it is cheaper
+            // than discovering a renamed entry point at runtime) and anything a
+            // dependency ships consumer rules for (Compose, Firebase, media3).
             optimization {
-                enable = false
+                enable = true
             }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 
@@ -211,6 +227,10 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
+    // Pin androidx.fragment to a current version (transitively present); see the
+    // catalog comment. Play flags an outdated fragment as a technical-quality
+    // issue, and an explicit declaration is how a transitive version is raised.
+    implementation(libs.androidx.fragment.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.work.runtime.ktx)

@@ -7,6 +7,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.muddassir.clearview.BuildConfig
+import com.muddassir.clearview.brainrot.BrainRotRefreshBus
+import com.muddassir.clearview.brainrot.GlobalRulesStore
 import com.muddassir.clearview.goodpost.data.AD_DEFAULT_BACKGROUND_COLOR
 import com.muddassir.clearview.goodpost.data.AD_DEFAULT_TEXT_COLOR
 import com.muddassir.clearview.goodpost.data.AdDuration
@@ -3579,7 +3581,10 @@ class GoodPostViewModel : ViewModel() {
                     messageCode = adminFailureCode(result)
                 )
             }
-            if (result is ApiResult.Ok) loadBrainRotRules()
+            if (result is ApiResult.Ok) {
+                loadBrainRotRules()
+                notifySharedRulesChanged()
+            }
         }
     }
 
@@ -3601,7 +3606,10 @@ class GoodPostViewModel : ViewModel() {
                     messageCode = adminFailureCode(result)
                 )
             }
-            if (result is ApiResult.Ok) loadBrainRotRules()
+            if (result is ApiResult.Ok) {
+                loadBrainRotRules()
+                notifySharedRulesChanged()
+            }
         }
     }
 
@@ -3619,7 +3627,10 @@ class GoodPostViewModel : ViewModel() {
                     messageCode = adminFailureCode(result)
                 )
             }
-            if (result is ApiResult.Ok) loadBrainRotRules()
+            if (result is ApiResult.Ok) {
+                loadBrainRotRules()
+                notifySharedRulesChanged()
+            }
         }
     }
 
@@ -3693,7 +3704,29 @@ class GoodPostViewModel : ViewModel() {
                 // and the Rules tab must not keep claiming it is enforcing.
                 loadBrainRotReports()
                 loadBrainRotRules()
+                // `removed` switched a rule off, so the rest of the app has to
+                // hear about it; `kept` changed nothing but the queue.
+                if (resolution == "removed") notifySharedRulesChanged()
             }
+        }
+    }
+
+    /**
+     * Bring the rest of the app back in step after a shared rule changed.
+     *
+     * The Block tab draws its “blocked keywords / channels” lists from THIS
+     * DEVICE's copy of the shared blocklist — `GlobalRulesStore` — not from this
+     * screen's read. So a rule deleted here used to keep being listed there, and
+     * worse, keep being ENFORCED against the user's browsing, until something
+     * else happened to re-sync. Two steps, and both are needed: pull the list
+     * from the server again, then tell every other reader (Block tab, widgets,
+     * notification centre) to re-read what it is holding.
+     */
+    private fun notifySharedRulesChanged() {
+        val context = appContext ?: return
+        viewModelScope.launch {
+            runCatching { GlobalRulesStore(context).sync(force = true) }
+            BrainRotRefreshBus.notifyChanged()
         }
     }
 
@@ -3711,7 +3744,10 @@ class GoodPostViewModel : ViewModel() {
                     messageCode = adminFailureCode(result)
                 )
             }
-            if (result is ApiResult.Ok) loadBrainRotRules()
+            if (result is ApiResult.Ok) {
+                loadBrainRotRules()
+                notifySharedRulesChanged()
+            }
         }
     }
 

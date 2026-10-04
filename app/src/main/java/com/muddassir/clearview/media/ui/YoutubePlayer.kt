@@ -493,8 +493,15 @@ fun YoutubePlayer(
                             TAG,
                             "FULLSCREEN_SHOW customView=${view?.javaClass?.simpleName ?: "null"}"
                         )
+                        // USER, not LANDSCAPE: the fullscreen player follows
+                        // the user's rotation (respecting their rotation lock,
+                        // and the sensor when it is unlocked) instead of
+                        // forcing landscape. A forced orientation is an
+                        // orientation restriction — it prevents a large screen
+                        // from using its own layout — which is exactly what
+                        // Play asks apps to remove.
                         activity.requestedOrientation =
-                            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            ActivityInfo.SCREEN_ORIENTATION_USER
                     }
 
                     override fun onHideCustomView() {

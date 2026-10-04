@@ -13,6 +13,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Notifications
@@ -274,6 +275,10 @@ class ContentHubState(appContext: Context) {
 
     // ── Top-bar sheets on the Quran tab (search / settings / notifications) ──
     var showSearchSheet by mutableStateOf(false)
+    // The Listen control on the verse page. Revealed by the audio icon beside
+    // Search and hidden again by a second tap, so the home page reads as a page
+    // of scripture rather than a player until the reader asks to hear it.
+    var showVerseListen by mutableStateOf(false)
     var showSettingsSheet by mutableStateOf(false)
     var showNotificationsSheet by mutableStateOf(false)
     // Dhikr Counter screen opened from the settings sheet's Dhikr card.
@@ -1217,7 +1222,8 @@ fun ContentHubTabContent(
                 onPrevious = { state.goToAdjacentVerse(-1) },
                 onNext = { state.goToAdjacentVerse(+1) },
                 islamicDateAdjustment = state.islamicDateAdjustment,
-                onAdjustDate = { state.showIslamicDateSheet = true }
+                onAdjustDate = { state.showIslamicDateSheet = true },
+                listenVisible = state.showVerseListen
             )
 
             state.selectedTab == ContentTab.MEDIA -> MediaTab(
@@ -1309,6 +1315,22 @@ fun ContentHubTopBar(
                 }
             },
             actions = {
+                // Listen: reveals (or hides) the verse page's audio control. Here
+                // rather than on the page itself so the reading view is unchanged
+                // for someone who never uses it.
+                IconButton(
+                    onClick = { state.showVerseListen = !state.showVerseListen },
+                    enabled = state.verse != null && !state.verseLoading
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Headphones,
+                        contentDescription = stringResource(R.string.quran_verse_listen),
+                        // Accent-tinted while the control is showing, so the icon
+                        // says which state a second tap will leave.
+                        tint = if (state.showVerseListen) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 // Search: by verse number or English translation text.
                 IconButton(
                     onClick = { state.showSearchSheet = true },

@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -238,8 +239,25 @@ object ThumbnailCache {
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         val options = BitmapFactory.Options().apply {
             inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, targetWidth)
+            // JPEGs carry no alpha channel, so decoding one into an opaque
+            // 16-bit bitmap halves the memory it holds for the same picture on
+            // screen — the single biggest per-image cost in a scrolling feed.
+            // PNG/WebP keep the default ARGB_8888 because they CAN carry
+            // transparency, which a 16-bit decode would flatten to black.
+            if (isOpaqueFormat(file)) inPreferredConfig = Bitmap.Config.RGB_565
         }
         return runCatching { BitmapFactory.decodeFile(file.absolutePath, options) }.getOrNull()
+    }
+
+    /** True when [file] starts with a JPEG SOI marker (FF D8): it is opaque. */
+    private fun isOpaqueFormat(file: File): Boolean = try {
+        FileInputStream(file).use { input ->
+            val head = ByteArray(2)
+            input.read(head) == 2 &&
+                head[0] == 0xFF.toByte() && head[1] == 0xD8.toByte()
+        }
+    } catch (e: Exception) {
+        false
     }
 
     /** Largest power-of-two sample that keeps the width ≥ the target. */

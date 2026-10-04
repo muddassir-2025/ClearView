@@ -21,6 +21,7 @@ import com.muddassir.clearview.brainrot.BrainRotStats
 import com.muddassir.clearview.brainrot.BrainRotSummary
 import com.muddassir.clearview.brainrot.GlobalRulesStore
 import com.muddassir.clearview.brainrot.NotificationStore
+import com.muddassir.clearview.brainrot.SubmissionStatusResolver
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import kotlinx.coroutines.launch
@@ -103,6 +104,11 @@ class MainViewModel : ViewModel() {
             refreshYoutubeTestKeywords()
             refreshKeywords()
             refreshNotifications()
+            // The shared blocklist's own lists and counts are read from this
+            // device's copy, which the Good Post admin re-syncs from the server
+            // before notifying — so a rule added or deleted there is reflected
+            // here rather than surviving on a stale count.
+            refreshGlobalRules()
         }
         brainRotRefreshListener?.let { BrainRotRefreshBus.addListener(it) }
         ensureLauncherEnabled(context)   // cleanup stale disabled state first
@@ -410,48 +416,6 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    /** Suggest a keyword for the global repository. Returns true when queued. */
-    fun suggestGlobalKeyword(keyword: String, onResult: (Boolean) -> Unit) {
-        val scope = viewModelScopeRef
-        val store = globalRulesStore
-        if (scope == null || store == null) { onResult(false); return }
-        scope.launch {
-            val ok = runCatching { store.suggestKeyword(keyword) }.getOrDefault(false)
-            onResult(ok)
-        }
-    }
-
-    /** Suggest a channel for the global repository. Returns true when queued. */
-    fun suggestGlobalChannel(handle: String, name: String?, onResult: (Boolean) -> Unit) {
-        val scope = viewModelScopeRef
-        val store = globalRulesStore
-        if (scope == null || store == null) { onResult(false); return }
-        scope.launch {
-            val ok = runCatching { store.suggestChannel(handle, name) }.getOrDefault(false)
-            onResult(ok)
-        }
-    }
-
-    /** Report a keyword. Returns the resulting count, or null on failure. */
-    fun reportGlobalKeyword(keyword: String, detail: String?, onResult: (Int?) -> Unit) {
-        val scope = viewModelScopeRef
-        val store = globalRulesStore
-        if (scope == null || store == null) { onResult(null); return }
-        scope.launch {
-            onResult(runCatching { store.reportKeyword(keyword, detail) }.getOrNull())
-        }
-    }
-
-    /** Report a channel. Returns the resulting count, or null on failure. */
-    fun reportGlobalChannel(handle: String, detail: String?, onResult: (Int?) -> Unit) {
-        val scope = viewModelScopeRef
-        val store = globalRulesStore
-        if (scope == null || store == null) { onResult(null); return }
-        scope.launch {
-            onResult(runCatching { store.reportChannel(handle, detail) }.getOrNull())
-        }
-    }
-
     // ── Notification centre ────────────────────────────────────────
     //
     // Two things land here, and they are the same thing to the person reading
@@ -507,6 +471,12 @@ class MainViewModel : ViewModel() {
         scope.launch {
             val result = runCatching { store.fetchSubmissions() }.getOrNull()
             if (result == null) return@launch
+            // Read the live rule set BEFORE publishing the statuses: whether an
+            // approved request still counts as global is a comparison between
+            // the two, and it is only honest when the rules are at least as
+            // fresh as the statuses being compared against them.
+            runCatching { store.sync(force = true) }
+            refreshGlobalRules()
             val previous = mySubmissions.associate { it.id to it.status }
             mySubmissions.clear()
             mySubmissions.addAll(result)
@@ -554,57 +524,81 @@ class MainViewModel : ViewModel() {
             it.kind == kind && (it.status == "pending" || it.status == "under_review")
         }
 
-    /** This device's APPROVED submissions for one kind — now global rules. */
+    /**
+     * This device's APPROVED submissions for one kind that are STILL global.
+     *
+     * One that was approved and later removed is left out: the "Approved
+     * globally" group says what is in force for everyone right now, and a rule
+     * an operator has since pulled is not part of that.
+     */
     fun approvedSubmissions(kind: String): List<BrainRotClient.SubmissionStatus> =
-        mySubmissions.filter { it.kind == kind && it.status == "approved" }
+        mySubmissions.filter {
+            it.kind == kind && it.status == "approved" && isLiveGlobally(kind, it.value)
+        }
+
+    /** The raw status the server reported, before any local correction. */
+    private fun rawSubmissionStatusFor(kind: String, value: String): String? =
+        mySubmissions
+            .firstOrNull { it.kind == kind && it.value.equals(value.trim(), ignoreCase = true) }
+            ?.status
+
+    /**
+     * Whether a global rule for this value is STILL in force.
+     *
+     * A submission's status records a decision; it is not a claim about right
+     * now. A rule an operator approved and later removed keeps reporting
+     * "approved" from the server, so the only honest source for "is this
+     * blocking anyone" is the live rule set. An unsynced cache counts as "still
+     * live", so a slow network can never relabel a rule that really is global.
+     */
+    private fun isLiveGlobally(kind: String, value: String): Boolean {
+        val store = globalRulesStore ?: return true
+        if (!store.hasSnapshot) return true
+        return if (kind == "channel") {
+            val handle = BrainRotRepository.normalizeHandle(value) ?: value
+            store.channelHandles.contains(handle)
+        } else {
+            store.keywords.contains(value.trim().lowercase())
+        }
+    }
+
+    /** True when this value was approved and has since been removed. */
+    fun isRemovedGlobally(kind: String, value: String): Boolean {
+        val status = rawSubmissionStatusFor(kind, value) ?: return false
+        return SubmissionStatusResolver.isRemoved(status, isLiveGlobally(kind, value))
+    }
 
     /**
      * Where this device's request for one value stands, or null when it was
-     * never sent.
+     * never sent — or was sent, approved, and has since been removed.
      *
      * This is what stops the Send button being offered twice: once a value is
      * queued it shows as queued, and once it is approved it shows as approved —
      * the button is not drawn again, so the same request cannot be re-submitted
      * from the list it came from. A REJECTED request returns null, deliberately:
-     * a rejection is not a reason to stop somebody asking again.
+     * a rejection is not a reason to stop somebody asking again. So does a
+     * REMOVED one: a term pulled from the blocklist is exactly the kind of thing
+     * worth asking for again.
      */
-    fun submissionStatusFor(kind: String, value: String): String? =
-        mySubmissions
-            .firstOrNull { it.kind == kind && it.value.equals(value.trim(), ignoreCase = true) }
-            ?.status
+    fun submissionStatusFor(kind: String, value: String): String? {
+        val status = rawSubmissionStatusFor(kind, value) ?: return null
+        return SubmissionStatusResolver.effective(status, isLiveGlobally(kind, value))
+    }
 
     /** True while this value is still waiting on a decision. */
     fun isQueuedForReview(kind: String, value: String): Boolean =
         submissionStatusFor(kind, value).let { it == "pending" || it == "under_review" }
 
-    /** True once this value became a global rule. */
+    /** True once this value became a global rule and is still in force. */
     fun isApprovedGlobally(kind: String, value: String): Boolean =
         submissionStatusFor(kind, value) == "approved"
 
-    /** Suggest a channel globally and record the queued state in the centre. */
-    fun submitChannelToGlobal(handle: String, name: String?, onResult: (Boolean) -> Unit) {
-        val scope = viewModelScopeRef
-        val store = globalRulesStore
-        if (scope == null || store == null) { onResult(false); return }
-        scope.launch {
-            val ok = runCatching {
-                store.suggestChannel(handle, name, source = "app")
-            }.getOrDefault(false)
-            if (ok) {
-                notificationStore?.add(
-                    id = "submitted:channel:$handle",
-                    kind = NotificationStore.Kind.GLOBAL_SUBMITTED,
-                    value = handle,
-                    displayName = name,
-                    message = "$handle was submitted to the global repository and is pending " +
-                        "admin review."
-                )
-                refreshNotifications()
-                refreshMySubmissions(notifyOnChange = false)
-            }
-            onResult(ok)
-        }
-    }
+    /** The status to SHOW for a submission row, correcting a stale "approved". */
+    fun displayStatus(submission: BrainRotClient.SubmissionStatus): String =
+        SubmissionStatusResolver.display(
+            submission.status,
+            isLiveGlobally(submission.kind, submission.value)
+        )
 
     /** Suggest a keyword globally and record the queued state in the centre. */
     fun submitKeywordToGlobal(keyword: String, onResult: (Boolean) -> Unit) {

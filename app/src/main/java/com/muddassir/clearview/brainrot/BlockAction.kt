@@ -153,15 +153,6 @@ class BlockAction(context: Context) {
         meta.forget(normalized)
     }
 
-    /** Remove a keyword block from both scopes, and forget why it was blocked. */
-    fun unblockKeyword(keyword: String) {
-        val trimmed = keyword.trim().lowercase()
-        if (trimmed.isEmpty()) return
-        youtubeKeywords.removeKeyword(trimmed)
-        blockRepository.removeUserKeyword(trimmed)
-        meta.forget(trimmed)
-    }
-
     /** Why an item is blocked, or null when nothing was recorded. */
     fun reasonFor(item: String): BlockedItemMeta.Meta? = meta.get(item)
 

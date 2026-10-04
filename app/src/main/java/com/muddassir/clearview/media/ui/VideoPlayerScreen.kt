@@ -1002,7 +1002,7 @@ fun VideoPlayerScreen(
             // switches to a YouTube Shorts-style vertical fullscreen (video
             // fills the whole screen, bars hide); tapping again (or back)
             // returns to the normal 16:9 layout. In landscape the video is
-            // already fullscreen, so the button rotates back to portrait.
+            // already fullscreen, so the button clears the rotation lock.
             // Rotation never restarts playback — the activities declare
             // configChanges, so the WebView survives it.
             Surface(
@@ -1021,8 +1021,14 @@ fun VideoPlayerScreen(
                             // otherwise the video stays fullscreen after
                             // rotating back.
                             if (fullscreenVertical) onToggleFullscreen()
+                            // UNSPECIFIED, not PORTRAIT: clearing the lock lets
+                            // the device return to whatever the user/sensor
+                            // wants instead of FORCING portrait. A hard
+                            // orientation lock is what Play flags as an
+                            // orientation restriction and what stops a large
+                            // screen from laying the app out its own way.
                             activity?.requestedOrientation =
-                                ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                         } else {
                             onToggleFullscreen()
                         }

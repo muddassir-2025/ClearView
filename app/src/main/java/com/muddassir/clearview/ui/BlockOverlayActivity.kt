@@ -103,6 +103,21 @@ class BlockOverlayActivity : ComponentActivity() {
         val userKeyword = blockedType == "USER_KEYWORD"
         val isKeywordBlock = blockedType == "USER_KEYWORD" || blockedType == "BUILT_IN_KEYWORD"
 
+        // Reporting a false positive is for the SHARED BLOCKLIST only — the
+        // YouTube channels and keywords ClearView maintains for everyone. Those
+        // arrive here as `BUILT_IN_KEYWORD` matches: a blocked channel is matched
+        // on its name/handle like any other list entry, so one case covers both.
+        //
+        //  * Strict Mode's broad keywords are NOT on that list. "Strict Mode
+        //    matched" is not a term an operator can drop for one person, and a
+        //    report about it would be a report nobody could act on — the overlay
+        //    already tells the user how to search that term legitimately.
+        //  * A blocked WEBSITE is not on that list either.
+        //  * A user's own keyword is theirs to remove right here, so offering to
+        //    report their own rule back to themselves would be nonsense — and it
+        //    would fill the operator's queue with personal rules.
+        val canReport = !strictHit && !userKeyword && blockedType == "BUILT_IN_KEYWORD"
+
         // NOTE: incognito never reaches this overlay anymore — the service
         // closes the incognito tabs and lands the user on Home directly (simple,
         // clean behavior). This overlay is only for keyword/domain blocks and
@@ -115,30 +130,20 @@ class BlockOverlayActivity : ComponentActivity() {
                     blockedItem = blockedItem,
                     blockedType = blockedType,
                     strictHit = strictHit,
+                    canReport = canReport,
                     isUserKeyword = userKeyword,
                     isKeywordBlock = isKeywordBlock,
-                    onRemoveKeyword = {
-                        // Removing the rule is the whole point of the control: it
-                        // must take effect immediately, so the next scan cannot
-                        // block the same thing again. Routed through BlockAction
-                        // so the provenance behind the item is dropped with it —
-                        // otherwise the reason would outlive the block and keep
-                        // explaining something that is no longer blocked.
-                        try {
-                            com.muddassir.clearview.brainrot.BlockAction(applicationContext)
-                                .unblockKeyword(blockedItem)
-                            Log.i(TAG, "Removed user keyword from rules: $blockedItem")
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Could not remove keyword: ${e.message}")
-                        }
-                        exitToDestination()
-                    },
                     onReport = { onResult ->
                         val store = com.muddassir.clearview.brainrot.GlobalRulesStore(applicationContext)
                         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                            // Always a KEYWORD on the wire. Only shared-blocklist
+                            // matches are reportable (see `canReport`), and a
+                            // blocked CHANNEL arrives as a keyword match on its
+                            // name/handle — there is no channel kind here, and
+                            // guessing one from a leading "@" would send the
+                            // server something it would refuse.
                             val count = runCatching {
-                                if (isKeywordBlock) store.reportKeyword(blockedItem, "Blocked in error")
-                                else store.reportChannel(blockedItem, "Blocked in error")
+                                store.reportKeyword(blockedItem, "Blocked in error")
                             }.getOrNull()
                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                                 onResult(count != null)
@@ -249,8 +254,15 @@ private fun BlockOverlayScreen(
     isUserKeyword: Boolean = false,
     /** True for any keyword block (as opposed to a domain block). */
     isKeywordBlock: Boolean = false,
-    /** Remove the user's own keyword, then dismiss. */
-    onRemoveKeyword: () -> Unit = {},
+    /**
+     * True when the user may report this block as wrong.
+     *
+     * Decided by the caller, because it depends on WHERE the rule came from —
+     * a list ClearView maintains (a global keyword or a blocked website) and
+     * nothing else. Strict Mode's broad keywords and the user's own rules are
+     * deliberately outside it.
+     */
+    canReport: Boolean = false,
     /** Report a false positive; the callback receives whether it was accepted. */
     onReport: ((Boolean) -> Unit) -> Unit = { it(false) },
     onDismiss: () -> Unit
@@ -434,12 +446,15 @@ private fun BlockOverlayScreen(
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = if (isUserKeyword) {
-                                    "This is one of your own rules, so you can remove it."
-                                } else if (isKeywordBlock) {
-                                    "This keyword is part of the global ClearView rules, so it cannot be removed here — but you can report it."
-                                } else {
-                                    "This website is on the blocked list."
+                                text = when {
+                                    isUserKeyword ->
+                                        "This is one of your own rules. You can change it in the Block tab."
+                                    strictHit ->
+                                        "Strict Mode matched this, not the shared blocklist — there is no single rule here to report."
+                                    canReport ->
+                                        "This channel or keyword is on the shared blocklist ClearView maintains for everyone, so it cannot be removed here — but you can report it."
+                                    else ->
+                                        "This website is on the blocked list."
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -448,19 +463,7 @@ private fun BlockOverlayScreen(
 
                             Spacer(modifier = Modifier.height(12.dp))
 
-                            if (isUserKeyword) {
-                                // The rule is theirs, so removing it is the direct
-                                // fix and it takes effect immediately.
-                                OutlinedButton(
-                                    onClick = onRemoveKeyword,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Text("Remove \"$blockedItem\" from my rules", fontSize = 13.sp)
-                                }
-                                Spacer(modifier = Modifier.height(8.dp))
-                            }
-
-                            if (isKeywordBlock) {
+                            if (canReport) {
                                 OutlinedButton(
                                     onClick = {
                                         if (reportState == ReportState.SENDING) return@OutlinedButton

@@ -84,6 +84,13 @@
     <string name="quran_bookmark_removed">Bookmark removed</string>
     <string name="quran_verse_new">New Verse</string>
     <string name="quran_verse_copy">Copy verse</string>
+    <string name="quran_verse_listen">Listen</string>
+    <string name="quran_verse_listen_pause">Pause</string>
+    <string name="quran_verse_listen_resume">Resume</string>
+    <string name="quran_verse_listen_replay">Replay</string>
+    <string name="quran_verse_listen_restart">Restart</string>
+    <string name="quran_verse_listen_loading">Loading recitation\u2026</string>
+    <string name="quran_verse_listen_failed">Could not load the recitation. Check your connection and try again.</string>
     <string name="quran_verse_previous">Previous</string>
     <string name="quran_verse_next">Next</string>
     <string name="quran_verse_copied">Verse copied to clipboard</string>
@@ -1162,6 +1169,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_brainrot_top_channels">MOST REQUESTED CHANNELS</string>
     <string name="goodpost_brainrot_top_keywords">MOST REQUESTED KEYWORDS</string>
     <string name="goodpost_brainrot_no_demand">No requests yet.</string>
+    <string name="goodpost_brainrot_demand_count">%1$d requested</string>
     <string name="goodpost_brainrot_global_requests">%1$d requests</string>
     <string name="goodpost_brainrot_source_youtube">From YouTube \u201cNot interested\u201d</string>
     <string name="goodpost_brainrot_source_app">Added in the app</string>
@@ -1184,6 +1192,8 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_brainrot_channel">Channel</string>
     <string name="goodpost_brainrot_rules_empty_title">No shared rules</string>
     <string name="goodpost_brainrot_rules_empty_note">Add a keyword or a channel to protect everyone.</string>
+    <string name="goodpost_brainrot_add_rule">Add a rule</string>
+    <string name="goodpost_brainrot_add_hide">Hide</string>
     <string name="goodpost_brainrot_add_keyword">Add a keyword</string>
     <string name="goodpost_brainrot_add_keyword_hint">e.g. brainrot</string>
     <string name="goodpost_brainrot_add_channel">Add a channel</string>
@@ -1361,6 +1371,7 @@ This video cannot be played inside the app.</string>
     <string name="block_my_submission_under_review">Under review</string>
     <string name="block_my_submission_approved">Approved \u2014 blocked for everyone</string>
     <string name="block_my_submission_rejected">Rejected</string>
+    <string name="block_my_submission_removed">Removed</string>
     <string name="block_my_submission_submit">Ask to block it for everyone</string>
 
     <!-- Channel directory (user-facing) -->
