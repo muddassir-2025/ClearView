@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -167,9 +168,9 @@ internal fun GoodPostChannelInfo(
             Text(
                 text = channel.name,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                color = Wa.Text,
-                fontSize = 24.sp,
+                style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
+                color = Wa.Text,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
 
@@ -357,44 +358,36 @@ private fun StarredMessages(
     count: Int,
     onOpen: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpen)
-            .padding(horizontal = 20.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Star,
-            contentDescription = null,
-            tint = Wa.Accent,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = stringResource(R.string.goodpost_starred),
-                color = Wa.Text,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = if (count == 0) {
-                    stringResource(R.string.goodpost_starred_none)
-                } else {
-                    pluralStringResource(R.plurals.goodpost_starred_count, count, count)
-                },
-                color = Wa.TextDim,
-                fontSize = 13.sp
-            )
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        WaCard(onClick = onOpen) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Star,
+                    contentDescription = null,
+                    tint = Wa.Accent,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.goodpost_starred),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Wa.Text
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = if (count == 0) {
+                            stringResource(R.string.goodpost_starred_none)
+                        } else {
+                            pluralStringResource(R.plurals.goodpost_starred_count, count, count)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Wa.TextDim
+                    )
+                }
+                WaManageArrow()
+            }
         }
-        Icon(
-            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-            contentDescription = null,
-            tint = Wa.TextDim,
-            modifier = Modifier.size(20.dp)
-        )
     }
 }
 
@@ -455,31 +448,30 @@ private fun ChannelDescription(description: String?, expanded: Boolean, onToggle
     val text = description?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.goodpost_no_description)
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
-        Text(
-            text = stringResource(R.string.goodpost_channel_description),
-            color = Wa.Text,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = text,
-            color = Wa.TextDim,
-            fontSize = 14.sp,
-            maxLines = if (expanded) Int.MAX_VALUE else 3,
-            overflow = TextOverflow.Ellipsis
-        )
-        if (!expanded && description != null && description.length > 80) {
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        WaCard {
             Text(
-                text = stringResource(R.string.goodpost_read_more),
-                color = Wa.StampRecent,
-                fontSize = 14.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier
-                    .clickable(onClick = onToggle)
-                    .padding(top = 4.dp)
+                text = stringResource(R.string.goodpost_channel_description),
+                style = MaterialTheme.typography.titleSmall,
+                color = Wa.Text
             )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Wa.TextDim,
+                maxLines = if (expanded) Int.MAX_VALUE else 3,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!expanded && description != null && description.length > 80) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = stringResource(R.string.goodpost_read_more),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Wa.Accent,
+                    modifier = Modifier.clickable(onClick = onToggle)
+                )
+            }
         }
     }
 }
@@ -623,47 +615,48 @@ private fun NotificationsRow(
     following: Boolean,
     onToggle: (Boolean) -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Notifications,
-            contentDescription = null,
-            tint = Wa.TextDim,
-            modifier = Modifier.size(20.dp)
-        )
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = stringResource(R.string.goodpost_notifications),
-                color = Wa.Text,
-                fontSize = 15.sp
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = when {
-                    !following -> stringResource(R.string.goodpost_notifications_follow_first)
-                    enabled -> stringResource(R.string.goodpost_notifications_on)
-                    else -> stringResource(R.string.goodpost_notifications_off)
-                },
-                color = Wa.TextDim,
-                fontSize = 13.sp
-            )
-        }
-
-        if (following) {
-            Spacer(Modifier.width(12.dp))
-            Switch(
-                checked = enabled,
-                onCheckedChange = onToggle,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Wa.OnAccent,
-                    checkedTrackColor = Wa.Accent,
-                    uncheckedThumbColor = Wa.TextDim,
-                    uncheckedTrackColor = Wa.Pressed
+    Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        WaCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Notifications,
+                    contentDescription = null,
+                    tint = Wa.TextDim,
+                    modifier = Modifier.size(20.dp)
                 )
-            )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.goodpost_notifications),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Wa.Text
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = when {
+                            !following -> stringResource(R.string.goodpost_notifications_follow_first)
+                            enabled -> stringResource(R.string.goodpost_notifications_on)
+                            else -> stringResource(R.string.goodpost_notifications_off)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Wa.TextDim
+                    )
+                }
+
+                if (following) {
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = enabled,
+                        onCheckedChange = onToggle,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Wa.OnAccent,
+                            checkedTrackColor = Wa.Accent,
+                            uncheckedThumbColor = Wa.TextDim,
+                            uncheckedTrackColor = Wa.Pressed
+                        )
+                    )
+                }
+            }
         }
     }
 }

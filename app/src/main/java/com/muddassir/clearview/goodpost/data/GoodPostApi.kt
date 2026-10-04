@@ -167,6 +167,17 @@ class GoodPostApi(
             GoodPostCodec::adList
         )
 
+    /**
+     * The external channel directory (§ new).
+     *
+     * Anonymous and read-only, like every other public read: the list is the
+     * same for everybody, so there is nothing on this call that could carry a
+     * credential. The whole list comes back in one response; the app caches it
+     * and re-fetches only when a reader asks.
+     */
+    suspend fun directory(): ApiResult<DirectorySnapshot> =
+        parsedGet("$PUBLIC_PATH/directory", DirectoryCodec::snapshot)
+
     // ── A reader's own state (§3–§6) ────────────────────────────────────
     //
     // The token is a parameter rather than something this class fetches: the
@@ -678,6 +689,116 @@ class GoodPostApi(
             bearer = token,
             parse = { }
         )
+
+    // ── Channel directory (admin, /admin/api/directory) ─────────────────
+    //
+    // Super administrators only, checked on the server: every route here sits
+    // behind a `directory.*` permission that only a super administrator holds.
+    // The app hides the way in, and the server refuses it anyway.
+    //
+    // Mutations answer with nothing usable and the manager re-reads the whole
+    // directory afterwards. The list is a curated one, so the extra read is
+    // cheap, and it keeps every change rendering from a single source of truth
+    // rather than from whatever fragment a route happened to return.
+
+    /** The whole directory, for the manager screen. */
+    suspend fun adminDirectory(token: String): ApiResult<DirectorySnapshot> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/directory",
+            body = null,
+            bearer = token,
+            parse = DirectoryCodec::snapshot
+        )
+
+    suspend fun adminCreateDirectoryCategory(
+        token: String,
+        body: JSONObject
+    ): ApiResult<Unit> = adminDirectoryMutation("POST", "$ADMIN_PATH/directory/categories", token, body)
+
+    suspend fun adminUpdateDirectoryCategory(
+        token: String,
+        categoryId: String,
+        body: JSONObject
+    ): ApiResult<Unit> =
+        adminDirectoryMutation("PATCH", "$ADMIN_PATH/directory/categories/${encode(categoryId)}", token, body)
+
+    suspend fun adminDeleteDirectoryCategory(token: String, categoryId: String): ApiResult<Unit> =
+        adminDirectoryMutation("DELETE", "$ADMIN_PATH/directory/categories/${encode(categoryId)}", token, null)
+
+    suspend fun adminCreateDirectorySubcategory(
+        token: String,
+        body: JSONObject
+    ): ApiResult<Unit> =
+        adminDirectoryMutation("POST", "$ADMIN_PATH/directory/subcategories", token, body)
+
+    suspend fun adminUpdateDirectorySubcategory(
+        token: String,
+        subcategoryId: String,
+        body: JSONObject
+    ): ApiResult<Unit> = adminDirectoryMutation(
+        "PATCH",
+        "$ADMIN_PATH/directory/subcategories/${encode(subcategoryId)}",
+        token,
+        body
+    )
+
+    suspend fun adminDeleteDirectorySubcategory(
+        token: String,
+        subcategoryId: String
+    ): ApiResult<Unit> = adminDirectoryMutation(
+        "DELETE",
+        "$ADMIN_PATH/directory/subcategories/${encode(subcategoryId)}",
+        token,
+        null
+    )
+
+    /** Add a channel by handle. The server fills in the name and icon. */
+    suspend fun adminCreateDirectoryChannel(
+        token: String,
+        body: JSONObject
+    ): ApiResult<Unit> = adminDirectoryMutation("POST", "$ADMIN_PATH/directory/channels", token, body)
+
+    suspend fun adminUpdateDirectoryChannel(
+        token: String,
+        channelId: String,
+        body: JSONObject
+    ): ApiResult<Unit> =
+        adminDirectoryMutation("PATCH", "$ADMIN_PATH/directory/channels/${encode(channelId)}", token, body)
+
+    /** Re-copy a channel's name and icon from its platform, on demand. */
+    suspend fun adminRefreshDirectoryChannel(token: String, channelId: String): ApiResult<Unit> =
+        adminDirectoryMutation(
+            "POST",
+            "$ADMIN_PATH/directory/channels/${encode(channelId)}/refresh",
+            token,
+            null,
+            sendEmptyBody = true
+        )
+
+    suspend fun adminDeleteDirectoryChannel(token: String, channelId: String): ApiResult<Unit> =
+        adminDirectoryMutation("DELETE", "$ADMIN_PATH/directory/channels/${encode(channelId)}", token, null)
+
+    /**
+     * One directory write, whose body is discarded on success.
+     *
+     * [sendEmptyBody] exists because the refresh route is a POST with no input:
+     * the server reads no body, but a request that declares one has to send it,
+     * or the connection writes a `Content-Length` header with nothing behind it.
+     */
+    private suspend fun adminDirectoryMutation(
+        method: String,
+        path: String,
+        token: String,
+        body: JSONObject?,
+        sendEmptyBody: Boolean = false
+    ): ApiResult<Unit> = parsedCall(
+        method = method,
+        path = path,
+        body = body ?: if (sendEmptyBody) JSONObject() else null,
+        bearer = token,
+        parse = { }
+    )
 
     // ── Brain Rot repository (admin, /admin/api/brainrot) ────────────────
     //

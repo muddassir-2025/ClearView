@@ -56,6 +56,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import com.muddassir.clearview.ui.BlockTab
 import com.muddassir.clearview.ui.ContentHubOverlays
 import com.muddassir.clearview.ui.MoreTab
+import com.muddassir.clearview.ui.ThemePickerDialog
 import com.muddassir.clearview.ui.ContentHubTabContent
 import com.muddassir.clearview.ui.ContentHubTopBar
 import com.muddassir.clearview.ui.ContentTab
@@ -318,6 +319,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     // More tab sets it and every tab is composed below MainScreen, so changing
     // it recomposes all of them in one pass.
     var themeMode by remember { mutableStateOf(ThemeStore.current(context)) }
+    // Opened from the theme icon in the More tab's top bar. The scheme is a
+    // switch the reader throws, not a place they visit, so the picker is a dialog
+    // behind a top-bar action rather than a card in the list (§8).
+    var showThemeDialog by remember { mutableStateOf(false) }
 
     // A Todo-reminder notification tap opens straight into the Todo screen —
     // either from a cold start (the launcher intent carries EXTRA_OPEN_TODO) or
@@ -530,11 +535,11 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             }
                         },
                         actions = {
-                            // Lock indicator — tap to re-lock Protection. Only on
-                            // the Protection page: there is nothing to lock on the
-                            // card list, and an open padlock beside a todo list
-                            // would be a control that does nothing.
                             if (moreProtection) {
+                                // Lock indicator — tap to re-lock Protection. Only
+                                // on the Protection page: there is nothing to lock
+                                // on the card list, and an open padlock beside a
+                                // todo list would be a control that does nothing.
                                 IconButton(onClick = {
                                     if (viewModel.hasPassword) {
                                         viewModel.lockApp()
@@ -553,6 +558,25 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                             MaterialTheme.colorScheme.error
                                         else
                                             MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                // The app-wide scheme and Settings, beside the
+                                // title. Both were reached from elsewhere before —
+                                // the scheme from a card in this very list, the
+                                // gear from the Quran tab's bar — and neither
+                                // belonged where it was: the scheme is app-wide,
+                                // and Settings is not about reciting.
+                                IconButton(onClick = { showThemeDialog = true }) {
+                                    Icon(
+                                        Icons.Filled.DarkMode,
+                                        contentDescription = stringResource(R.string.theme_card_title)
+                                    )
+                                }
+                                IconButton(onClick = { hub.showSettingsSheet = true }) {
+                                    Icon(
+                                        Icons.Filled.Settings,
+                                        contentDescription = stringResource(R.string.quran_settings_title)
                                     )
                                 }
                             }
@@ -614,9 +638,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         onClick = {
                             selectedTab = MainTab.GOODPOST
                             // Like the Block tab, Good Post replaces the hub
-                            // content entirely — a stale Haramayn overlay must
-                            // not reappear on the next content tab.
+                            // content entirely — a stale Haramayn or directory
+                            // overlay must not reappear on the next content tab.
                             hub.showHaramaynLive = false
+                            hub.showChannelDirectory = false
                         },
                         icon = { Icon(Icons.Filled.Campaign, contentDescription = null) },
                         label = { Text(stringResource(R.string.goodpost_tab)) }
@@ -630,9 +655,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             // bottom bar opened.
                             moreProtection = false
                             // The More tab replaces the hub content entirely —
-                            // a stale Haramayn overlay must not reappear when the
-                            // user comes back to a content tab.
+                            // a stale Haramayn or directory overlay must not
+                            // reappear when the user comes back to a content tab.
                             hub.showHaramaynLive = false
+                            hub.showChannelDirectory = false
                         },
                         icon = { Icon(Icons.Filled.MoreHoriz, contentDescription = null) },
                         label = { Text(stringResource(R.string.more_tab)) }
@@ -686,18 +712,21 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     } else {
                         MoreTab(
-                            // Read through the store, not as a parameter, so the
-                            // card always names the scheme actually in force.
-                            themeMode = themeMode,
-                            onThemeModeChange = { mode ->
-                                ThemeStore.set(context, mode)
-                                themeMode = mode
-                            },
                             onOpenTodo = { hub.showTodoScreen = true },
                             onOpenPhoneLimit = { hub.showPhoneLimitSheet = true },
                             onOpenZikr = { hub.showDhikrCounter = true },
                             onOpenProtection = { moreProtection = true }
                         )
+                        if (showThemeDialog) {
+                            ThemePickerDialog(
+                                themeMode = themeMode,
+                                onThemeModeChange = { mode ->
+                                    ThemeStore.set(context, mode)
+                                    themeMode = mode
+                                },
+                                onDismiss = { showThemeDialog = false }
+                            )
+                        }
                     }
                     // These utilities ARE the hub's screens (todo, zikr, phone
                     // limit), so the hub's overlays have to be composed on this

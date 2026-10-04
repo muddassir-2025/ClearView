@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
@@ -81,13 +82,13 @@ private val LocalSkeletonSweep = compositionLocalOf<State<Float>> {
 }
 
 /** The sweep as a brush, at one instant of it. Called only from a draw pass. */
-private fun skeletonBrush(head: Float): Brush {
+private fun skeletonBrush(head: Float, base: Color, highlight: Color): Brush {
     // A fixed range rather than the block's own measured width: the sheen is a
     // texture, not a highlight anyone lines up, and measuring every block would
     // be a layout pass per frame for something nobody can see the edges of.
     val travel = 1200f
     return Brush.linearGradient(
-        colors = listOf(SKELETON, SKELETON_HIGHLIGHT, SKELETON),
+        colors = listOf(base, highlight, base),
         start = Offset(head - travel / 2f, 0f),
         end = Offset(head, 0f)
     )
@@ -105,10 +106,6 @@ private fun Shimmer(content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalSkeletonSweep provides sweep) { content() }
 }
 
-/** The two tones the sheen moves between. One step above the list's own surface. */
-private val SKELETON = Color(0xFF1C262D)
-private val SKELETON_HIGHLIGHT = Color(0xFF2B3940)
-
 /** One placeholder block: a bar, a circle, a bubble — anything with a shape. */
 @Composable
 private fun SkeletonBlock(
@@ -116,13 +113,18 @@ private fun SkeletonBlock(
     shape: Shape = RoundedCornerShape(6.dp)
 ) {
     val sweep = LocalSkeletonSweep.current
+    // The two tones the sheen moves between, taken from the theme so the
+    // placeholder sits one step above the surface it is drawn on in either
+    // scheme, rather than in a hardcoded dark pair.
+    val base = MaterialTheme.colorScheme.surfaceContainerHigh
+    val highlight = MaterialTheme.colorScheme.surfaceContainerHighest
     Box(
         modifier = modifier
             .clip(shape)
             // `drawBehind` and not `background`: the sweep is read here, in the
             // draw phase, so a frame of it repaints this block and never
             // recomposes it or its parent.
-            .drawBehind { drawRect(brush = skeletonBrush(sweep.value * 1200f)) }
+            .drawBehind { drawRect(brush = skeletonBrush(sweep.value * 1200f, base, highlight)) }
     )
 }
 
@@ -376,7 +378,7 @@ internal fun WaLoadingDots(modifier: Modifier = Modifier) {
                         scaleY = 1f + 0.5f * lift
                     }
                     .clip(CircleShape)
-                    .background(SKELETON)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             )
         }
     }

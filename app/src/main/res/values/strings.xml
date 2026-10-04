@@ -805,6 +805,14 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_create_channel">Create a channel</string>
     <string name="goodpost_save">Save</string>
     <string name="goodpost_cancel">Cancel</string>
+    <string name="goodpost_crop_title">Crop</string>
+    <string name="goodpost_crop_done">Done</string>
+    <string name="goodpost_crop_hint">Drag the corners or edges to adjust</string>
+    <string name="goodpost_crop_free">Free</string>
+    <string name="goodpost_crop_original">Original</string>
+    <string name="goodpost_crop_square">Square</string>
+    <string name="goodpost_crop_portrait">Portrait</string>
+    <string name="goodpost_crop_wide">Wide</string>
     <string name="goodpost_share">Share link</string>
     <string name="goodpost_stale_note">Showing saved data — it may be out of date.</string>
 
@@ -1227,6 +1235,7 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ad_schedule_note">Tap a date to choose another. A card with no end runs until you switch it off or delete it.</string>
     <string name="goodpost_ad_status_on">On</string>
     <string name="goodpost_ad_status_off">Off</string>
+    <string name="goodpost_ad_image_card">Image card</string>
     <string name="goodpost_ad_no_text">No text</string>
     <string name="goodpost_ad_preview">Preview</string>
     <string name="goodpost_ad_text_color">Text colour</string>
@@ -1346,6 +1355,52 @@ This video cannot be played inside the app.</string>
     <string name="block_my_submission_approved">Approved \u2014 now global</string>
     <string name="block_my_submission_rejected">Rejected</string>
     <string name="block_my_submission_submit">Submit to global</string>
+
+    <!-- Channel directory (user-facing) -->
+    <string name="channel_directory_title">Channel directory</string>
+    <string name="channel_directory_short">Directory</string>
+    <string name="channel_directory_subtitle">Curated channels to follow</string>
+    <string name="channel_directory_all">All</string>
+    <string name="channel_directory_empty_title">No channels yet</string>
+    <string name="channel_directory_empty_note">Nothing has been added to the directory yet.</string>
+    <string name="channel_directory_error_title">Could not load the directory</string>
+    <string name="channel_directory_error_note">Check your connection and refresh.</string>
+    <string name="channel_directory_refresh">Refresh</string>
+    <string name="channel_directory_copy_handle">Copy handle</string>
+    <string name="channel_directory_copied">Handle copied</string>
+    <string name="channel_directory_saved">Saved copy</string>
+
+    <!-- Channel directory (super-admin manager, GoodPost) -->
+    <string name="goodpost_directory">Channel directory</string>
+    <string name="goodpost_directory_categories">Categories</string>
+    <string name="goodpost_directory_add_category">Add category</string>
+    <string name="goodpost_directory_add_subcategory">Add subcategory</string>
+    <string name="goodpost_directory_add_channel">Add channel</string>
+    <string name="goodpost_directory_new_category">New category name</string>
+    <string name="goodpost_directory_new_subcategory">New subcategory name</string>
+    <string name="goodpost_directory_rename">Rename</string>
+    <string name="goodpost_directory_delete">Delete</string>
+    <string name="goodpost_directory_uncategorised">Uncategorised</string>
+    <string name="goodpost_directory_empty">The directory is empty. Add a category, then add channels to it.</string>
+    <string name="goodpost_directory_no_channels">No channels here yet.</string>
+    <string name="goodpost_directory_handle_label">Handle</string>
+    <string name="goodpost_directory_handle_hint">nasa</string>
+    <string name="goodpost_directory_platform_label">Platform</string>
+    <string name="goodpost_directory_name_label">Name</string>
+    <string name="goodpost_directory_name_optional">Optional \u2014 fetched automatically</string>
+    <string name="goodpost_directory_file_under">File under</string>
+    <string name="goodpost_directory_refresh_icon">Fetch name and icon</string>
+    <string name="goodpost_directory_delete_category">Delete category?</string>
+    <string name="goodpost_directory_delete_category_note">Its channels are kept and become uncategorised.</string>
+    <string name="goodpost_directory_delete_subcategory">Delete subcategory?</string>
+    <string name="goodpost_directory_delete_subcategory_note">Its channels move up to the category.</string>
+    <string name="goodpost_directory_delete_channel">Remove channel?</string>
+    <string name="goodpost_directory_delete_channel_note">It is removed from the directory for everyone.</string>
+    <string name="goodpost_directory_error_exists">That channel is already in the directory.</string>
+    <string name="goodpost_directory_error_handle">A handle may contain letters, numbers, dots, dashes and underscores.</string>
+    <string name="goodpost_directory_error_mismatch">That subcategory belongs to a different category.</string>
+    <string name="goodpost_directory_error_missing">That item no longer exists.</string>
+    <string name="goodpost_directory_error_generic">That change could not be saved.</string>
 
     <!-- Reasons shown wherever a block is explained -->
     <string name="block_reason_title">Why was this blocked?</string>

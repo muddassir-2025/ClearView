@@ -15,6 +15,7 @@ import com.muddassir.clearview.goodpost.data.ChannelSection
 import com.muddassir.clearview.goodpost.data.ApiResult
 import com.muddassir.clearview.goodpost.data.CachedChannels
 import com.muddassir.clearview.goodpost.data.CachedPosts
+import com.muddassir.clearview.goodpost.data.DirectorySnapshot
 import com.muddassir.clearview.goodpost.data.GoodPostAd
 import com.muddassir.clearview.goodpost.data.GoodPostAdPlacement
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
@@ -205,6 +206,15 @@ sealed interface GoodPostScreen {
      * only, and the server refuses every route here to anyone else.
      */
     data object BrainRotReview : GoodPostScreen
+
+    /**
+     * The external channel directory, as a super administrator maintains it.
+     *
+     * A platform concern like the ad manager: the directory is one list every
+     * reader sees, so it is the same kind of power. Held by super administrators
+     * only, and the server refuses every directory route to anyone else.
+     */
+    data object DirectoryAdmin : GoodPostScreen
 }
 
 /**
@@ -542,6 +552,19 @@ data class GoodPostUiState(
     /** The channel handle being typed into the add field. */
     val brainRotNewChannel: String = "",
     val brainRotBusy: Boolean = false,
+
+    // ── External channel directory, administrator ──────────────────────
+    //
+    // The whole curated list as the manager reads it. Mutations answer with
+    // nothing the screen interprets: every successful write re-reads this, so the
+    // list has a single source of truth rather than whatever fragment a route
+    // happened to return.
+
+    /** The whole directory: categories, subcategories and channels. */
+    val directory: DirectorySnapshot = DirectorySnapshot(),
+    val directoryLoading: Boolean = false,
+    /** True while a write is in flight, so its control cannot be tapped twice. */
+    val directoryBusy: Boolean = false,
     /**
      * True from the moment a card is drawn over the list until it is closed (§16).
      *
@@ -3608,10 +3631,122 @@ class GoodPostViewModel : ViewModel() {
     }
 
 
+    // ── External channel directory management ───────────────────────────
+    //
+    // Only a super administrator holds `directory.read`/`directory.manage`, and
+    // the server re-checks that on every call. The app gates the entry so a
+    // channel administrator is never offered a screen that would fail, but the
+    // authority is never the app's.
+
+    /** Open the directory manager, and read the list. */
+    fun openDirectoryAdmin() {
+        if (uiState.admin?.isSuperAdmin != true) return
+        open(GoodPostScreen.DirectoryAdmin)
+        loadDirectoryAdmin()
+    }
+
+    /** The whole directory, cached first so the screen draws instantly. */
+    fun loadDirectoryAdmin() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+
+        repo.cachedDirectory()?.let { cached ->
+            uiState = uiState.copy(directory = cached.snapshot)
+        }
+
+        uiState = uiState.copy(directoryLoading = true)
+        viewModelScope.launch {
+            val result = repo.adminDirectory()
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    directory = result.value,
+                    directoryLoading = false
+                )
+                else -> uiState.copy(
+                    directoryLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+        }
+    }
+
+    /**
+     * Run one directory write, then re-read the list.
+     *
+     * The re-read is not an optimisation to weigh: without it the screen would
+     * have to reconstruct the new state from its own request, and the two could
+     * disagree. One source of truth is worth the round trip on a list this small.
+     */
+    private fun directoryWrite(block: suspend (GoodPostRepository) -> ApiResult<Unit>) {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        uiState = uiState.copy(directoryBusy = true)
+        viewModelScope.launch {
+            val result = block(repo)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(directoryBusy = false)
+                else -> uiState.copy(
+                    directoryBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) loadDirectoryAdmin()
+        }
+    }
+
+    fun createDirectoryCategory(name: String) =
+        directoryWrite { repo -> repo.adminCreateDirectoryCategory(name) }
+
+    fun renameDirectoryCategory(categoryId: String, name: String) =
+        directoryWrite { repo -> repo.adminUpdateDirectoryCategory(categoryId, name) }
+
+    fun deleteDirectoryCategory(categoryId: String) =
+        directoryWrite { repo -> repo.adminDeleteDirectoryCategory(categoryId) }
+
+    fun createDirectorySubcategory(categoryId: String, name: String) =
+        directoryWrite { repo -> repo.adminCreateDirectorySubcategory(categoryId, name) }
+
+    fun renameDirectorySubcategory(subcategoryId: String, name: String) =
+        directoryWrite { repo -> repo.adminUpdateDirectorySubcategory(subcategoryId, name) }
+
+    fun deleteDirectorySubcategory(subcategoryId: String) =
+        directoryWrite { repo -> repo.adminDeleteDirectorySubcategory(subcategoryId) }
+
+    fun createDirectoryChannel(
+        platform: String,
+        handle: String,
+        categoryId: String?,
+        subcategoryId: String?
+    ) = directoryWrite { repo ->
+        repo.adminCreateDirectoryChannel(platform, handle, categoryId, subcategoryId)
+    }
+
+    fun updateDirectoryChannel(
+        channelId: String,
+        name: String?,
+        categoryId: String?,
+        subcategoryId: String?
+    ) = directoryWrite { repo ->
+        repo.adminUpdateDirectoryChannel(channelId, name, categoryId, subcategoryId)
+    }
+
+    fun refreshDirectoryChannel(channelId: String) =
+        directoryWrite { repo -> repo.adminRefreshDirectoryChannel(channelId) }
+
+    fun deleteDirectoryChannel(channelId: String) =
+        directoryWrite { repo -> repo.adminDeleteDirectoryChannel(channelId) }
+
     /** Every card, active or not, for the manager list (§15). */
     fun loadAdminAds() {
         val repo = repository ?: return
         if (uiState.admin == null) return
+
+        // Drawn from disk first, so the list is there on the first frame and the
+        // request below only ever updates it (§27). The screen was the one place
+        // that always waited on the network to show rows that had not changed.
+        repo.cachedAdminAds()?.let { cached ->
+            uiState = uiState.copy(adminAds = cached.ads)
+        }
 
         uiState = uiState.copy(adminAdsLoading = true)
         viewModelScope.launch {

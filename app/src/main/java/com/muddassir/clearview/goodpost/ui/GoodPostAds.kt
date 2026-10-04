@@ -47,6 +47,7 @@ import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -131,10 +132,12 @@ private const val AD_AUTO_SLIDE_MS = 5_000L
  * cannot read, so a hand-edited row or an older payload draws a legible card
  * rather than an invisible one.
  */
+@Composable
 private fun adTextColor(value: String?): Color =
     adParseColor(value ?: AD_DEFAULT_TEXT_COLOR, Wa.Text)
 
 /** A card's surface, parsed the same way, falling back to the app's bar colour. */
+@Composable
 private fun adBackgroundColor(value: String?): Color =
     adParseColor(value ?: AD_DEFAULT_BACKGROUND_COLOR, Wa.Bar)
 
@@ -237,8 +240,12 @@ internal fun AdCarousel(ads: List<GoodPostAd>, modifier: Modifier = Modifier) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(horizontal = 16.dp),
-            pageSpacing = 10.dp
+            // ONE card on screen at a time, with the next one peeking past the
+            // right edge. The peek is what says there is more than one without
+            // making the cards share the width: the end padding is wider than the
+            // gap between pages, so the following card shows a strip of itself.
+            contentPadding = PaddingValues(start = 16.dp, end = 56.dp),
+            pageSpacing = 12.dp
         ) { page ->
             AdCard(ad = ads[page], onClick = { openAdTarget(context, ads[page].targetUrl) })
         }
@@ -410,34 +417,77 @@ private fun AdAdminRow(
 
     Box(modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         WaCard(onClick = onClick) {
-            WaCardHeader(
-                icon = if (ad.isImage) Icons.Filled.Image else Icons.Filled.TextFields,
-                title = ad.text?.takeIf { it.isNotBlank() }
-                    ?: stringResource(R.string.goodpost_ad_no_text),
-                subtitle = if (placements.isBlank()) {
-                    stringResource(R.string.goodpost_ad_explore_placement)
-                } else {
-                    placements
-                },
-                trailing = {
-                    WaStatusPill(
-                        text = stringResource(
-                            if (ad.enabled) R.string.goodpost_ad_status_on
-                            else R.string.goodpost_ad_status_off
-                        ),
-                        color = if (ad.enabled) Wa.Accent else Wa.TextDim
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // The card itself, drawn small, rather than an icon standing in
+                // for it: an image card the manager cannot see is a card they
+                // have to open to recognise, and "No text" was the only thing
+                // this row could say about one before.
+                AdAdminThumb(ad)
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = ad.text?.takeIf { it.isNotBlank() }
+                            ?: stringResource(
+                                if (ad.isImage) R.string.goodpost_ad_image_card
+                                else R.string.goodpost_ad_no_text
+                            ),
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Wa.Text,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.width(4.dp))
-                    IconButton(onClick = onDelete) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = stringResource(R.string.goodpost_delete),
-                            tint = Wa.Danger,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    WaManageArrow()
+                    Text(
+                        text = if (placements.isBlank()) {
+                            stringResource(R.string.goodpost_ad_explore_placement)
+                        } else {
+                            placements
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Wa.TextDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
+                WaStatusPill(
+                    text = stringResource(
+                        if (ad.enabled) R.string.goodpost_ad_status_on
+                        else R.string.goodpost_ad_status_off
+                    ),
+                    color = if (ad.enabled) Wa.Accent else Wa.TextDim
+                )
+                Spacer(Modifier.width(4.dp))
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = stringResource(R.string.goodpost_delete),
+                        tint = Wa.Danger,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                WaManageArrow()
+            }
+        }
+    }
+}
+
+/** A card's own picture, drawn small at the head of its manager row. */
+@Composable
+private fun AdAdminThumb(ad: GoodPostAd) {
+    Box(
+        modifier = Modifier
+            .size(46.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Wa.Pressed),
+        contentAlignment = Alignment.Center
+    ) {
+        if (ad.isImage && ad.imageUrl != null) {
+            AdRemoteImage(url = ad.imageUrl)
+        } else {
+            Icon(
+                imageVector = if (ad.isImage) Icons.Filled.Image else Icons.Filled.TextFields,
+                contentDescription = null,
+                tint = if (ad.isImage) Wa.TextDim else Wa.Accent,
+                modifier = Modifier.size(20.dp)
             )
         }
     }
@@ -1239,12 +1289,14 @@ private fun AdCropScreen(
 
                     // The centre of the crop, so the drag has a visible state.
                     if (fit != "contain") {
+                        val accentColor = Wa.Accent
+                        val onAccentColor = Wa.OnAccent
                         Canvas(modifier = Modifier.fillMaxSize()) {
                             val cx = x * size.width
                             val cy = y * size.height
-                            drawCircle(Wa.Accent, radius = 6.dp.toPx(), center = Offset(cx, cy))
+                            drawCircle(accentColor, radius = 6.dp.toPx(), center = Offset(cx, cy))
                             drawCircle(
-                                Wa.OnAccent,
+                                onAccentColor,
                                 radius = 6.dp.toPx(),
                                 center = Offset(cx, cy),
                                 style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx())

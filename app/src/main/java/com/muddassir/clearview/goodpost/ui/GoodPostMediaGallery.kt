@@ -200,8 +200,10 @@ internal fun GoodPostMediaGallery(
                         item = item,
                         // §22: deleting files from this device removes them from
                         // the grid, and a tile going away should close the gap
-                        // rather than make the rest jump into it.
-                        modifier = Modifier.animateItem(),
+                        // rather than make the rest jump into it. Appearance and
+                        // disappearance are off so a deleted tile leaves at once
+                        // rather than lingering on screen until a refresh.
+                        modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
                         selected = state.selectedMediaIds.contains(item.id),
                         selectionActive = state.selectedMediaIds.isNotEmpty(),
                         onClick = {

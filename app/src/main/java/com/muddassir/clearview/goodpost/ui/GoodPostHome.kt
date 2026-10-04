@@ -140,6 +140,15 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                             onClick = viewModel::openBrainRotReview
                                         )
                                     )
+                                    // The external channel directory's manager.
+                                    // A platform list every reader sees, so it is
+                                    // the same kind of power as the two above.
+                                    add(
+                                        WaMenuItem(
+                                            label = stringResource(R.string.goodpost_directory),
+                                            onClick = viewModel::openDirectoryAdmin
+                                        )
+                                    )
                                 }
                                 add(
                                     WaMenuItem(

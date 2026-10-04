@@ -45,6 +45,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.muddassir.clearview.R
+import com.muddassir.clearview.directory.ui.ChannelDirectoryScreen
 import com.muddassir.clearview.media.data.MediaBadge
 import com.muddassir.clearview.media.data.MediaRepository
 import com.muddassir.clearview.media.download.AudioDownloads
@@ -265,6 +266,11 @@ class ContentHubState(appContext: Context) {
     // Rendered as a full-screen overlay (its own embedded player) so it never
     // interferes with the Media feed's composition slot.
     var showHaramaynLive by mutableStateOf(false)
+
+    // The external channel directory, opened from the icon beside Haramayn Live
+    // in the Media tab's channel strip. Like Haramayn it replaces the tab content
+    // whole, so it is a hub flag rather than a Media-tab-local one.
+    var showChannelDirectory by mutableStateOf(false)
 
     // ── Top-bar sheets on the Quran tab (search / settings / notifications) ──
     var showSearchSheet by mutableStateOf(false)
@@ -717,6 +723,7 @@ class ContentHubState(appContext: Context) {
     fun selectTab(tab: ContentTab) {
         selectedTab = tab
         showHaramaynLive = false
+        showChannelDirectory = false
     }
 
     /**
@@ -1192,6 +1199,14 @@ fun ContentHubTabContent(
                 onExit = { state.showHaramaynLive = false }
             )
 
+            // The external channel directory, opened from the Media tab's channel
+            // strip. A screen of its own rather than a sheet: it is a browsable
+            // list a reader moves around in, and a sheet that big reads as a
+            // pop-up rather than a place.
+            state.showChannelDirectory -> ChannelDirectoryScreen(
+                onExit = { state.showChannelDirectory = false }
+            )
+
             state.selectedTab == ContentTab.QURAN -> QuranTab(
                 verse = state.verse,
                 isLoading = state.verseLoading,
@@ -1214,7 +1229,8 @@ fun ContentHubTabContent(
                 onPlayOffline = { video -> state.playAudio(video) },
                 onPlayAudio = { item, queue -> state.playAudioItem(item, queue) },
                 onMediaOpened = { state.markMediaUpdatesSeen() },
-                onOpenHaramaynLive = { state.showHaramaynLive = true }
+                onOpenHaramaynLive = { state.showHaramaynLive = true },
+                onOpenChannelDirectory = { state.showChannelDirectory = true }
             )
         }
     }
@@ -1270,6 +1286,19 @@ fun ContentHubTopBar(
             }
         )
 
+        // The channel directory replaces the tab content whole, so its bar is the
+        // only one on screen: a title and the way back. Placed above the tab
+        // branches because it can be open OVER the Media tab, whose own bar would
+        // otherwise draw its feed actions over a list that has none.
+        state.showChannelDirectory -> TopAppBar(
+            title = { Text(stringResource(R.string.channel_directory_title)) },
+            navigationIcon = {
+                IconButton(onClick = { state.showChannelDirectory = false }) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+            }
+        )
+
         state.selectedTab == ContentTab.QURAN -> TopAppBar(
             title = { Text(stringResource(R.string.quran_verse_header)) },
             navigationIcon = {
@@ -1290,20 +1319,10 @@ fun ContentHubTopBar(
                         contentDescription = stringResource(R.string.quran_search)
                     )
                 }
-                // Settings: the verse refresh interval and the notification
-                // toggles — everything this sheet decides. The To Do, Dhikr,
-                // Bookmarks and Phone Limit cards that used to sit under them are
-                // no longer features of the Quran tab; they live in More, and a
-                // gear is the honest icon for what is left (§4).
-                IconButton(
-                    onClick = { state.showSettingsSheet = true },
-                    enabled = state.verse != null && !state.verseLoading
-                ) {
-                    Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = stringResource(R.string.quran_settings_title)
-                    )
-                }
+                // The gear is gone from this bar (§8): the settings sheet it
+                // opened is not about reciting, so it lives in the More tab's
+                // top bar instead. The sheet itself is unchanged and is still
+                // drawn by ContentHubOverlays.
                 IconButton(
                     onClick = { state.toggleBookmark(context) },
                     enabled = state.verse != null && !state.verseLoading

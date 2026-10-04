@@ -172,6 +172,21 @@ export async function resetData(pglite: PGlite): Promise<void> {
       WHERE id NOT IN (SELECT channel_id FROM admin_users WHERE channel_id IS NOT NULL)`
   );
   await pglite.exec(`DELETE FROM readers`);
+  // The channel directory is curated CONTENT: every row a fixture adds must go,
+  // and the seed is restored so a case that renamed or reordered a category
+  // cannot change what the next case sees.
+  await pglite.exec(`DELETE FROM directory_channels`);
+  await pglite.exec(`DELETE FROM directory_subcategories`);
+  await pglite.exec(`DELETE FROM directory_categories`);
+  await pglite.exec(`
+    INSERT INTO directory_categories (name, slug, sort) VALUES
+      ('Islamic', 'islamic', 10),
+      ('Education', 'education', 20),
+      ('Technology', 'technology', 30),
+      ('News', 'news', 40),
+      ('Entertainment', 'entertainment', 50)
+    ON CONFLICT (slug) DO NOTHING
+  `);
 }
 
 /** First row, or a clear failure — avoids `rows[0]!` noise under strict mode. */

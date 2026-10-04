@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
@@ -42,12 +43,19 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
@@ -130,44 +138,48 @@ import kotlin.math.abs
 internal object Wa {
 
     /** Behind the list and every pushed screen. */
-    val Canvas = Color(0xFF0B141A)
+    val Canvas: Color @Composable get() = MaterialTheme.colorScheme.background
 
     /** Top bar surface - seamless with dark canvas */
-    val TopBar = Color(0xFF0B141A)
+    val TopBar: Color @Composable get() = MaterialTheme.colorScheme.surface
 
     /** Behind a list — channels, Explore, the administrator list. */
-    val List = Color(0xFF0B141A)
+    val List: Color @Composable get() = MaterialTheme.colorScheme.background
 
     /** The bars: search field, pill button, dialog surfaces. */
-    val Bar = Color(0xFF202C33)
+    val Bar: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerHigh
 
     /** A pressed row, and any control that is present but inert. */
-    val Pressed = Color(0xFF182229)
+    val Pressed: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerHighest
 
     /** A post's container on the feed - WhatsApp channel update olive green (§9, Screenshot 4). */
+    // Deliberately NOT themed (unlike the rest of this palette): a post card is
+    // the channel-update olive green with white text in BOTH app themes, by
+    // request. It is the one surface that looks the same whatever the reader's
+    // scheme is.
     val Bubble = Color(0xFF334B19)
 
     /** Text inside the post bubble */
-    val BubbleText = Color(0xFFE9EDEF)
+    val BubbleText = Color(0xFFFFFFFF)
 
     /** Subtle sage-green timestamp inside the olive bubble */
     val BubbleTime = Color(0xFFA4B898)
 
     /** Small forward button background next to post bubbles */
-    val ForwardBg = Color(0xFF182229)
+    val ForwardBg: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerHigh
 
     /** Background for centered date separators */
-    val DatePillBg = Color(0xFF182229)
+    val DatePillBg: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerHigh
 
     /** The accent: WhatsApp green, unread stamps, FAB, primary button. */
-    val Accent = Color(0xFF00A884)
+    val Accent: Color @Composable get() = MaterialTheme.colorScheme.primary
 
     /** Ink that goes ON the accent. */
-    val OnAccent = Color(0xFF0B141A)
+    val OnAccent: Color @Composable get() = MaterialTheme.colorScheme.onPrimary
 
-    val Text = Color(0xFFE9EDEF)
-    val TextDim = Color(0xFF8696A0)
-    val Divider = Color(0xFF1F2C34)
+    val Text: Color @Composable get() = MaterialTheme.colorScheme.onSurface
+    val TextDim: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+    val Divider: Color @Composable get() = MaterialTheme.colorScheme.outlineVariant
 
     /**
      * The fill of a selected row, and of the bar that acts on it (§5).
@@ -177,12 +189,12 @@ internal object Wa {
      * the bar, and doing it with a green wash instead would collide with the
      * accent that means "this is a control".
      */
-    val Selected = Color(0xFF2A3942)
+    val Selected: Color @Composable get() = MaterialTheme.colorScheme.surfaceContainerHighest
 
     /** A recent timestamp, tinted WhatsApp vibrant green (§4). */
-    val StampRecent = Color(0xFF25D366)
+    val StampRecent: Color @Composable get() = MaterialTheme.colorScheme.primary
 
-    val Danger = Color(0xFFF15C6D)
+    val Danger: Color @Composable get() = MaterialTheme.colorScheme.error
 
     /**
      * The Google button's own palette, and the sign-in screen's one departure
@@ -351,9 +363,10 @@ internal fun WaTopBar(
                 if (title.isNotEmpty()) {
                     Text(
                         text = title,
+                        style = if (subtitle == null) MaterialTheme.typography.titleLarge
+                        else MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
                         color = Wa.Text,
-                        fontSize = if (subtitle == null) 24.sp else 18.sp,
-                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -361,8 +374,8 @@ internal fun WaTopBar(
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
                         color = Wa.TextDim,
-                        fontSize = 13.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -753,45 +766,51 @@ internal fun WaTypedConfirmDialog(
     var typed by remember { mutableStateOf("") }
     val matched = typed.trim().equals(expected.trim(), ignoreCase = true)
 
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .background(Wa.Bar, RoundedCornerShape(16.dp))
-                .padding(20.dp)
-        ) {
-            Text(text = title, color = Wa.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(10.dp))
-            Text(text = message, color = Wa.TextDim, fontSize = 14.sp, lineHeight = 20.sp)
-            Spacer(Modifier.height(16.dp))
-
-            // The same field every other form in the tab uses, so the dialog
-            // does not introduce a second visual language for one input.
-            WaField(
-                value = typed,
-                onValueChange = { typed = it },
-                label = label,
-                placeholder = expected,
-                singleLine = true
-            )
-
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_cancel),
-                    onClick = onDismiss
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(text = title, style = MaterialTheme.typography.titleLarge, color = Wa.Text)
+        },
+        text = {
+            Column {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Wa.TextDim
                 )
-                Spacer(Modifier.weight(1f))
-                WaTextAction(
-                    text = confirmLabel,
-                    onClick = onConfirm,
-                    destructive = true,
-                    // Disabled rather than hidden: the rule has to be visible
-                    // BEFORE it is satisfied, or the button simply looks broken.
-                    enabled = matched
+                Spacer(Modifier.height(16.dp))
+                // The same field every other form in the tab uses, so the dialog
+                // does not introduce a second visual language for one input.
+                WaField(
+                    value = typed,
+                    onValueChange = { typed = it },
+                    label = label,
+                    placeholder = expected,
+                    singleLine = true
                 )
             }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = matched) {
+                Text(
+                    text = confirmLabel,
+                    color = if (matched) Wa.Danger else Wa.TextDim,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = stringResource(R.string.goodpost_cancel),
+                    color = Wa.Accent,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        },
+        shape = RoundedCornerShape(28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    )
 }
 
 /**
@@ -839,32 +858,49 @@ internal fun WaConfirmDialog(
      */
     hideDismiss: Boolean = false
 ) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .background(Wa.Bar, RoundedCornerShape(16.dp))
-                .padding(20.dp)
-        ) {
-            Text(text = title, color = Wa.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(10.dp))
-            Text(text = message, color = Wa.TextDim, fontSize = 14.sp, lineHeight = 20.sp)
-            Spacer(Modifier.height(14.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (!hideDismiss) {
-                    WaTextAction(
-                        text = stringResource(R.string.goodpost_cancel),
-                        onClick = onDismiss
-                    )
-                }
-                Spacer(Modifier.weight(1f))
-                WaTextAction(
-                    text = confirmLabel,
-                    onClick = onConfirm,
-                    destructive = destructive
+    val dismissButton: (@Composable () -> Unit)? = if (hideDismiss) {
+        null
+    } else {
+        {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = stringResource(R.string.goodpost_cancel),
+                    color = Wa.Accent,
+                    style = MaterialTheme.typography.labelLarge
                 )
             }
         }
     }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleLarge,
+                color = Wa.Text
+            )
+        },
+        text = {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = Wa.TextDim
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(
+                    text = confirmLabel,
+                    color = if (destructive) Wa.Danger else Wa.Accent,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        },
+        dismissButton = dismissButton,
+        shape = RoundedCornerShape(28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    )
 }
 
 /**
@@ -970,20 +1006,26 @@ internal fun WaPillButton(
     modifier: Modifier = Modifier,
     filled: Boolean = false
 ) {
-    Box(
-        modifier = modifier
-            .clip(CircleShape)
-            .background(if (filled) Wa.Accent else Wa.Bar)
-            // §22: the press is answered on the pill.
-            .waTappable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 7.dp),
-        contentAlignment = Alignment.Center
+    Button(
+        onClick = onClick,
+        modifier = modifier,
+        shape = CircleShape,
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        colors = if (filled) {
+            ButtonDefaults.buttonColors(
+                containerColor = Wa.Accent,
+                contentColor = Wa.OnAccent
+            )
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = Wa.Bar,
+                contentColor = Wa.Text
+            )
+        }
     ) {
         Text(
             text = text,
-            color = if (filled) Wa.OnAccent else Wa.Text,
-            fontSize = 13.5.sp,
-            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.labelMedium,
             maxLines = 1
         )
     }
@@ -1080,14 +1122,15 @@ internal fun WaPrimaryButton(
     enabled: Boolean = true,
     busy: Boolean = false
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(48.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(if (enabled && !busy) Wa.Accent else Wa.Pressed)
-            .clickable(enabled = enabled && !busy, onClick = onClick),
-        contentAlignment = Alignment.Center
+    Button(
+        onClick = onClick,
+        modifier = modifier.fillMaxWidth().height(48.dp),
+        enabled = enabled && !busy,
+        shape = RoundedCornerShape(24.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Wa.Accent,
+            contentColor = Wa.OnAccent
+        )
     ) {
         if (busy) {
             CircularProgressIndicator(
@@ -1098,9 +1141,7 @@ internal fun WaPrimaryButton(
         } else {
             Text(
                 text = text,
-                color = if (enabled) Wa.OnAccent else Wa.TextDim,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium
+                style = MaterialTheme.typography.labelLarge
             )
         }
     }
@@ -1311,20 +1352,21 @@ internal fun WaTextAction(
      */
     destructive: Boolean = false
 ) {
-    Text(
-        text = text,
+    TextButton(
+        onClick = onClick,
+        enabled = enabled,
         modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        color = when {
-            !enabled -> Wa.TextDim
-            destructive -> Wa.Danger
-            else -> Wa.Accent
-        },
-        fontSize = 15.sp,
-        fontWeight = FontWeight.Medium
-    )
+    ) {
+        Text(
+            text = text,
+            color = when {
+                !enabled -> Wa.TextDim
+                destructive -> Wa.Danger
+                else -> Wa.Accent
+            },
+            style = MaterialTheme.typography.labelLarge
+        )
+    }
 }
 
 /**
@@ -1471,7 +1513,8 @@ internal fun WaSectionHeading(label: String, modifier: Modifier = Modifier) {
         Spacer(Modifier.width(8.dp))
         Text(
             text = label.uppercase(),
-            color = Wa.Text
+            style = MaterialTheme.typography.labelLarge,
+            color = Wa.TextDim
         )
     }
 }
@@ -1552,15 +1595,21 @@ internal fun WaCard(
     onClick: (() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Column(
+    Card(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(Wa.Bar)
-            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
-            .padding(16.dp),
-        content = content
-    )
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            content = content
+        )
+    }
 }
 
 /**
@@ -2100,6 +2149,16 @@ internal fun goodPostErrorText(code: String): String {
             return stringResource(R.string.goodpost_error_ad_content_required)
         "ad_image_required", "ad_image_must_be_image" ->
             return stringResource(R.string.goodpost_error_ad_image_required)
+        // The external channel directory. Each code names the one thing the
+        // administrator has to change: a handle already used, a handle that is
+        // not a handle, a subcategory that belongs somewhere else, or a row that
+        // is already gone.
+        "channel_exists" -> return stringResource(R.string.goodpost_directory_error_exists)
+        "invalid_handle" -> return stringResource(R.string.goodpost_directory_error_handle)
+        "category_mismatch" -> return stringResource(R.string.goodpost_directory_error_mismatch)
+        "category_not_found", "subcategory_not_found", "channel_not_found",
+        "invalid_category_id", "invalid_subcategory_id", "invalid_channel_id" ->
+            return stringResource(R.string.goodpost_directory_error_missing)
         // §9: a reaction that did not save, and reactions this deployment cannot
         // take at all. The second is not the reader's fault and not worth a
         // retry, so it says so instead of blaming the network.

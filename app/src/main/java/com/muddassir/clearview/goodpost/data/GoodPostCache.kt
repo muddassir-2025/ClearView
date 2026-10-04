@@ -18,6 +18,9 @@ data class CachedPosts(val posts: List<GoodPostPost>, val savedAtMs: Long)
 /** A cached advertisement list for one placement. */
 data class CachedAds(val ads: List<GoodPostAd>, val savedAtMs: Long)
 
+/** The cached external channel directory, and when it was stored. */
+data class CachedDirectory(val snapshot: DirectorySnapshot, val savedAtMs: Long)
+
 /**
  * Offline cache for Good Post (§27).
  *
@@ -47,10 +50,33 @@ internal class GoodPostCache(context: Context) {
         const val KEY_FOLLOWED_SAVED_AT = "followed_saved_at"
         const val ADS_PREFIX = "ads:"
 
+        /**
+         * The external channel directory.
+         *
+         * Its own key rather than one per category: the read is a single
+         * snapshot, so it is stored as one, and the screen draws the whole thing
+         * from disk before any request is made.
+         */
+        const val DIRECTORY_KEY = "directory"
+
+        /**
+         * The administrator's full card list, kept under its own key.
+         *
+         * Separate from the per-placement public cache because it holds every
+         * card, disabled ones included, and is not filtered by the clock — the
+         * manager list is where an operator finds the card that has not started
+         * or has finished. Its own key means a public placement's TTL rules
+         * never touch it and vice versa.
+         */
+        const val ADMIN_ADS_KEY = "admin_ads"
+
         /** Enough to browse offline; small enough to stay off the heap. */
         const val MAX_CHANNELS = 200
         const val MAX_POSTS_PER_CHANNEL = 60
         const val MAX_ADS = 10
+
+        /** The manager list is small and worth keeping whole. */
+        const val MAX_ADMIN_ADS = 60
 
         /**
          * How long a saved channel list is trusted before the tab refetches it.
@@ -192,6 +218,51 @@ internal class GoodPostCache(context: Context) {
         val active = decoded.filter { it.isActiveAt(nowMs) }
         if (active.isEmpty()) return null
         return CachedAds(active, prefs.getLong(key + KEY_SAVED_AT, 0L))
+    }
+
+    /**
+     * Cache the administrator's whole card list, active or not.
+     *
+     * The manager screen was the one place that waited on the network every
+     * time it opened, which is what made it feel slow: the cards are the same
+     * few rows on every visit, and a list that has not changed should not be
+     * re-fetched to be drawn.
+     */
+    fun saveAdminAds(ads: List<GoodPostAd>, nowMs: Long) {
+        prefs.edit()
+            .putString(ADMIN_ADS_KEY, GoodPostCodec.encodeAds(ads.take(MAX_ADMIN_ADS)))
+            .putLong(ADMIN_ADS_KEY + KEY_SAVED_AT, nowMs)
+            .apply()
+    }
+
+    /** The cached card list, unfiltered by the clock. */
+    fun loadAdminAds(): CachedAds? {
+        val decoded = GoodPostCodec.decodeAds(prefs.getString(ADMIN_ADS_KEY, null))
+        if (decoded.isEmpty()) return null
+        return CachedAds(decoded, prefs.getLong(ADMIN_ADS_KEY + KEY_SAVED_AT, 0L))
+    }
+
+    // ── The external channel directory ───────────────────────────────────
+
+    /**
+     * Cache the whole directory.
+     *
+     * Written on every successful read, including a reader-triggered refresh, so
+     * the next open is instant and the screen works offline. Age is not used to
+     * expire it — the server list changes rarely, and stale-but-readable beats an
+     * empty screen — the [GoodPostRepository] lets the UI label the saved copy.
+     */
+    fun saveDirectory(snapshot: DirectorySnapshot, nowMs: Long) {
+        prefs.edit()
+            .putString(DIRECTORY_KEY, DirectoryCodec.encode(snapshot))
+            .putLong(DIRECTORY_KEY + KEY_SAVED_AT, nowMs)
+            .apply()
+    }
+
+    fun loadDirectory(): CachedDirectory? {
+        val decoded = DirectoryCodec.decode(prefs.getString(DIRECTORY_KEY, null))
+        if (decoded == null || decoded.isEmpty) return null
+        return CachedDirectory(decoded, prefs.getLong(DIRECTORY_KEY + KEY_SAVED_AT, 0L))
     }
 
     // ── Following (§1, §2) ───────────────────────────────────────────────

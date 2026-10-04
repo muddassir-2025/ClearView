@@ -19,9 +19,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -219,6 +222,11 @@ fun GoodPostTab(
                 GoodPostScreen.BrainRotReview ->
                     BrainRotReviewScreen(state = state, viewModel = viewModel)
 
+                // The external channel directory's manager. A platform surface
+                // like the two above, and super administrators only.
+                GoodPostScreen.DirectoryAdmin ->
+                    DirectoryAdminScreen(state = state, viewModel = viewModel)
+
             }
         }
     }
@@ -413,27 +421,29 @@ internal fun CenteredProgress(modifier: Modifier = Modifier) {
  */
 @Composable
 private fun MessageDialog(code: String, onDismiss: () -> Unit) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .background(Wa.Bar, androidx.compose.foundation.shape.RoundedCornerShape(16.dp))
-                .padding(20.dp)
-        ) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        text = {
             Text(
                 // Through the shared renderer rather than the resource id, so a
                 // message that has to name a number is worded on every surface
                 // that shows it (§10).
                 text = goodPostErrorText(code),
-                color = Wa.Text,
-                fontSize = 15.sp
+                style = MaterialTheme.typography.bodyMedium,
+                color = Wa.Text
             )
-            Spacer(Modifier.height(6.dp))
-            WaTextAction(
-                text = stringResource(R.string.goodpost_dismiss),
-                onClick = onDismiss,
-                modifier = Modifier.align(Alignment.End)
-            )
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(
+                    text = stringResource(R.string.goodpost_dismiss),
+                    color = Wa.Accent,
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+        },
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    )
 }
 

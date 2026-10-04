@@ -385,7 +385,14 @@ internal fun GoodPostFeed(
                                 // The day a post belongs to arrives and leaves with
                                 // it, so the pill animates like any other row
                                 // rather than blinking into a gap.
-                                modifier = Modifier.animateItem()
+                                // Appearance/disappearance are off; the placement
+                                // animation stays. The fade-out is what kept a
+                                // deleted post's card drawn until the list was
+                                // rebuilt — it lingered behind its neighbours
+                                // instead of leaving, which read as the delete
+                                // not having worked. A removed card is disposed
+                                // at once now; its neighbours still close the gap.
+                                modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null)
                             )
 
                             is FeedEntry.Post -> PostItem(
@@ -402,7 +409,7 @@ internal fun GoodPostFeed(
                                 // §12, §22: a post that arrives over the poll, or
                                 // that is deleted while the feed is open, moves
                                 // its neighbours instead of snapping them.
-                                modifier = Modifier.animateItem(),
+                                modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
                                 selected = state.selectedPostIds.contains(entry.post.id),
                                 starred = entry.post.id in state.starredPostIds,
                                 // §9: tapping a chip on the card does what the
@@ -1618,6 +1625,7 @@ internal fun PostItem(
     // it read as the card answering. Both values are driven from `selected`, so
     // the tint and the layer always arrive together — a half-applied selection is
     // the one look that would be worse than no animation at all.
+    val selectionLayerColor = Wa.Accent
     val selectionFill by animateColorAsState(
         targetValue = if (selected) Wa.Selected else Color.Transparent,
         animationSpec = tween(durationMillis = WaMotion.SELECT_MS),
@@ -1645,7 +1653,7 @@ internal fun PostItem(
                 // §5: the layer a selected post gets, like a selected message in
                 // a chat. Over the whole card — bubble, photo, video poster — so
                 // "this one is picked" is visible from the picture alone.
-                if (scrim > 0f) drawRect(color = Wa.Accent.copy(alpha = scrim))
+                if (scrim > 0f) drawRect(color = selectionLayerColor.copy(alpha = scrim))
             }
     ) {
         // How wide this post's media is, and therefore how wide the bubble is.

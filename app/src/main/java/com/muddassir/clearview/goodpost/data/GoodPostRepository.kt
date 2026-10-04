@@ -106,6 +106,12 @@ internal class GoodPostRepository(
         nowMs: Long = System.currentTimeMillis()
     ): CachedAds? = cache.loadAds(placement, nowMs)
 
+    /** The cached manager list, for the first frame of the ads screen (§15). */
+    fun cachedAdminAds(): CachedAds? = cache.loadAdminAds()
+
+    /** The cached external channel directory, for the first frame. */
+    fun cachedDirectory(): CachedDirectory? = cache.loadDirectory()
+
     /** The channel list, or a search over it (§3, §7). */
     suspend fun channels(
         query: String? = null,
@@ -363,6 +369,18 @@ internal class GoodPostRepository(
     ): ApiResult<List<GoodPostAd>> =
         api.ads(placement).also { result ->
             if (result is ApiResult.Ok) cache.saveAds(placement, result.value, nowMs)
+        }
+
+    /**
+     * The external channel directory, cached on the way through.
+     *
+     * One read for the whole list, and every success replaces the stored copy, so
+     * a reader-triggered refresh is also what updates what they see next time with
+     * no network.
+     */
+    suspend fun directory(nowMs: Long = System.currentTimeMillis()): ApiResult<DirectorySnapshot> =
+        api.directory().also { result ->
+            if (result is ApiResult.Ok) cache.saveDirectory(result.value, nowMs)
         }
 
     // ── Administrator session (§16) ─────────────────────────────────────
@@ -625,7 +643,12 @@ internal class GoodPostRepository(
 
     /** Every card, active or not, for the admin list (§15). */
     suspend fun adminAds(): ApiResult<List<GoodPostAd>> =
-        authorized { token -> api.adminAds(token) }
+        authorized { token -> api.adminAds(token) }.also { result ->
+            // Saved so the manager list draws from disk on the next open: the
+            // cards change rarely, and waiting on the network to redraw the same
+            // rows is what made the screen feel slow.
+            if (result is ApiResult.Ok) cache.saveAdminAds(result.value, System.currentTimeMillis())
+        }
 
     /** One card, for the editor (§15). */
     suspend fun adminAd(adId: String): ApiResult<GoodPostAd> =
@@ -639,6 +662,92 @@ internal class GoodPostRepository(
 
     suspend fun adminDeleteAd(adId: String): ApiResult<Unit> =
         authorized { token -> api.adminDeleteAd(token, adId) }
+
+    // ── Channel directory (admin) ───────────────────────────────────────
+    //
+    // Super administrators only, and the server is where that is enforced. The
+    // manager re-reads the whole list after every write, so each mutation here
+    // returns nothing the screen has to interpret.
+
+    suspend fun adminDirectory(): ApiResult<DirectorySnapshot> =
+        authorized { token -> api.adminDirectory(token) }.also { result ->
+            // Saved like every other successful directory read, so an
+            // administrator's change is what a reader will see offline next.
+            if (result is ApiResult.Ok) cache.saveDirectory(result.value, System.currentTimeMillis())
+        }
+
+    suspend fun adminCreateDirectoryCategory(name: String): ApiResult<Unit> =
+        authorized { token ->
+            api.adminCreateDirectoryCategory(token, JSONObject().put("name", name))
+        }
+
+    suspend fun adminUpdateDirectoryCategory(categoryId: String, name: String): ApiResult<Unit> =
+        authorized { token ->
+            api.adminUpdateDirectoryCategory(token, categoryId, JSONObject().put("name", name))
+        }
+
+    suspend fun adminDeleteDirectoryCategory(categoryId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteDirectoryCategory(token, categoryId) }
+
+    suspend fun adminCreateDirectorySubcategory(
+        categoryId: String,
+        name: String
+    ): ApiResult<Unit> = authorized { token ->
+        api.adminCreateDirectorySubcategory(
+            token,
+            JSONObject().put("categoryId", categoryId).put("name", name)
+        )
+    }
+
+    suspend fun adminUpdateDirectorySubcategory(
+        subcategoryId: String,
+        name: String
+    ): ApiResult<Unit> = authorized { token ->
+        api.adminUpdateDirectorySubcategory(token, subcategoryId, JSONObject().put("name", name))
+    }
+
+    suspend fun adminDeleteDirectorySubcategory(subcategoryId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteDirectorySubcategory(token, subcategoryId) }
+
+    /**
+     * Add a channel by handle.
+     *
+     * The name and the icon are left null so the server copies them from the
+     * platform: the point of adding by handle is that the administrator should
+     * not have to look the channel up themselves.
+     */
+    suspend fun adminCreateDirectoryChannel(
+        platform: String,
+        handle: String,
+        categoryId: String?,
+        subcategoryId: String?
+    ): ApiResult<Unit> = authorized { token ->
+        val body = JSONObject()
+            .put("platform", platform)
+            .put("handle", handle)
+        categoryId?.let { body.put("categoryId", it) }
+        subcategoryId?.let { body.put("subcategoryId", it) }
+        api.adminCreateDirectoryChannel(token, body)
+    }
+
+    suspend fun adminUpdateDirectoryChannel(
+        channelId: String,
+        name: String?,
+        categoryId: String?,
+        subcategoryId: String?
+    ): ApiResult<Unit> = authorized { token ->
+        val body = JSONObject()
+            .put("name", name ?: JSONObject.NULL)
+            .put("categoryId", categoryId ?: JSONObject.NULL)
+            .put("subcategoryId", subcategoryId ?: JSONObject.NULL)
+        api.adminUpdateDirectoryChannel(token, channelId, body)
+    }
+
+    suspend fun adminRefreshDirectoryChannel(channelId: String): ApiResult<Unit> =
+        authorized { token -> api.adminRefreshDirectoryChannel(token, channelId) }
+
+    suspend fun adminDeleteDirectoryChannel(channelId: String): ApiResult<Unit> =
+        authorized { token -> api.adminDeleteDirectoryChannel(token, channelId) }
 
     // ── Media (§21, §22) ────────────────────────────────────────────────
 

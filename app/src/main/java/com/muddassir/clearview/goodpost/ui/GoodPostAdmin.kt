@@ -366,12 +366,21 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
     val editsPassword = !mintsAdmin && state.channelFormAdminPassword != null
     val context = LocalContext.current
 
+    // The picture waiting to be cropped into the channel's avatar (§19, §21).
+    var croppingIcon by remember { mutableStateOf<String?>(null) }
+
     val iconPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         val attachment = readGoodPostAttachment(context, uri)
-        if (attachment == null) viewModel.reportUnsupportedMedia() else viewModel.onChannelIconPicked(attachment)
+        when {
+            attachment == null -> viewModel.reportUnsupportedMedia()
+            // An avatar is drawn in a circle, so the pick gets the crop step —
+            // opened square, because that is the shape it will be shown in.
+            attachment.kind == "image" -> croppingIcon = uri.toString()
+            else -> viewModel.onChannelIconPicked(attachment)
+        }
     }
 
     val picked = state.channelFormIcon
@@ -682,5 +691,21 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+
+    croppingIcon?.let { uri ->
+        GoodPostCropScreen(
+            imageUri = uri,
+            startSquare = true,
+            onCropped = { attachment ->
+                croppingIcon = null
+                viewModel.onChannelIconPicked(attachment)
+            },
+            onCancel = { croppingIcon = null },
+            onFailed = {
+                croppingIcon = null
+                viewModel.reportUnsupportedMedia()
+            }
+        )
     }
 }

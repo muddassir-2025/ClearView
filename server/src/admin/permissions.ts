@@ -62,6 +62,8 @@ export type AdminAction =
   | 'ads.manage'
   | 'brainrot.read'
   | 'brainrot.manage'
+  | 'directory.read'
+  | 'directory.manage'
   | 'audit.read';
 
 /**
@@ -109,6 +111,12 @@ const GRANTS: Readonly<Record<AdminRole, readonly AdminAction[]>> = {
     // card and is held by the same role for the same reason.
     'brainrot.read',
     'brainrot.manage',
+    // The channel directory is a single platform-wide list every reader sees,
+    // which makes it the same kind of power as an advertisement card: a channel
+    // administrator runs one channel and has no business curating what
+    // everybody else is shown.
+    'directory.read',
+    'directory.manage',
     'audit.read',
   ],
 };
@@ -162,5 +170,7 @@ export const ACTION_LABELS: Readonly<Record<AdminAction, string>> = {
   'ads.manage': 'Create, edit and remove advertisement cards',
   'brainrot.read': 'View the global brain-rot rules and the review queue',
   'brainrot.manage': 'Change the global brain-rot rules and review submissions',
+  'directory.read': 'View the channel directory',
+  'directory.manage': 'Create, edit and remove directory categories and channels',
   'audit.read': 'Read the audit log',
 };

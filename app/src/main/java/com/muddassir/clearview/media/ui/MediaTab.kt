@@ -196,6 +196,8 @@ fun MediaTab(
     onMediaOpened: () -> Unit = {},
     /** Opens the Makkah &amp; Madinah live broadcasts (Haramayn Live shortcut). */
     onOpenHaramaynLive: () -> Unit = {},
+    /** Opens the curated external channel directory shortcut. */
+    onOpenChannelDirectory: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -840,6 +842,12 @@ fun MediaTab(
             // old bottom Live tab into this shortcut.
             item(key = "haramayn") {
                 HaramaynLiveAvatar(onClick = onOpenHaramaynLive)
+            }
+            // The curated external channel directory, immediately beside
+            // Haramayn: the two are the strip's hand-picked shortcuts, as opposed
+            // to the subscriptions that follow.
+            item(key = "directory") {
+                ChannelDirectoryAvatar(onClick = onOpenChannelDirectory)
             }
             // Show every saved subscription; latest activity only controls
             // ordering, never whether a channel disappears from the row.
@@ -2119,6 +2127,47 @@ private fun HaramaynLiveAvatar(onClick: () -> Unit) {
     }
 }
 
+/**
+ * "Directory" shortcut, beside Haramayn in the channel strip.
+ *
+ * Opens the curated list of EXTERNAL channels a super administrator maintains.
+ * A different mark from Haramayn's broadcast glyph on purpose: this opens a list
+ * of places to go rather than a stream to watch.
+ */
+@Composable
+private fun ChannelDirectoryAvatar(onClick: () -> Unit) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(listOf(Color(0xFF0F4C81), Color(0xFF2196F3)))
+                )
+                .border(width = 2.dp, color = MaterialTheme.colorScheme.primary, shape = CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                Icons.Filled.Collections,
+                contentDescription = stringResource(R.string.channel_directory_title),
+                tint = Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = stringResource(R.string.channel_directory_short),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
 /** Opens the full saved-channel directory. */
 @Composable
 private fun ViewAllChannelsChip(onClick: () -> Unit) {
@@ -3267,71 +3316,38 @@ private fun FeedHeader(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false }
                 ) {
-                        // Feed-only actions — hidden inside a playlist, where they
-                    // don't apply (the ✕ button already exits the playlist).
-                    if (!isPlaylistContext) {
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    if (hiddenCount > 0) "Hidden videos ($hiddenCount)"
-                                    else "Hidden videos"
-                                )
-                            },
-                            onClick = {
-                                showMenu = false
-                                onOpenHidden()
-                            }
-                        )
-                        if (showHiddenChannelsManager) {
-                            DropdownMenuItem(
-                                // The count is read from the live hidden-channel
-                                // collection, so it updates the moment a channel
-                                // is hidden or unhidden (§6).
-                                text = { Text("Hidden channels ($hiddenChannelCount)") },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenHiddenChannels()
-                                }
+                    // Four entries, and deliberately only four (§4). This menu
+                    // had grown into a directory — All channels, My playlists,
+                    // Add playlist by URL, Reset Continue Watching, Rename
+                    // playlist — and a ⋮ that lists everything is a ⋮ nobody
+                    // reads. What is left is what the feed itself needs: the two
+                    // hidden-things managers, and the two ways to add something.
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (hiddenCount > 0) "Hidden videos ($hiddenCount)"
+                                else "Hidden videos"
                             )
+                        },
+                        onClick = {
+                            showMenu = false
+                            onOpenHidden()
                         }
-                        // The strip's own "View all", in the menu: folding the
-                        // strip away must never strand the channel directory.
+                    )
+                    // Only where hiding a CHANNEL is a thing this screen does —
+                    // not inside one channel's own feed, where the menu drops it.
+                    if (showHiddenChannelsManager) {
                         DropdownMenuItem(
-                            text = { Text("All channels") },
+                            // The count is read from the live hidden-channel
+                            // collection, so it updates the moment a channel
+                            // is hidden or unhidden (§6).
+                            text = { Text("Hidden channels ($hiddenChannelCount)") },
                             onClick = {
                                 showMenu = false
-                                onOpenChannels()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("My playlists") },
-                            enabled = onOpenMyPlaylists != null,
-                            onClick = {
-                                showMenu = false
-                                onOpenMyPlaylists?.invoke()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Add playlist by URL") },
-                            enabled = onAddPlaylist != null,
-                            onClick = {
-                                showMenu = false
-                                onAddPlaylist?.invoke()
+                                onOpenHiddenChannels()
                             }
                         )
                     }
-                    // Offered in every context — a playlist included. Continue
-                    // Watching is fed by whatever you watch anywhere, so the
-                    // menu item that empties it must not depend on where you
-                    // happen to be standing. It asks first: this throws away
-                    // resume positions, and a ⋮ menu is one tap from any card.
-                    DropdownMenuItem(
-                        text = { Text("Reset Continue Watching") },
-                        onClick = {
-                            showMenu = false
-                            showResetContinueWatching = true
-                        }
-                    )
                     DropdownMenuItem(
                         text = { Text("Add video by URL") },
                         enabled = canAddVideo,
@@ -3346,14 +3362,6 @@ private fun FeedHeader(
                         onClick = {
                             showMenu = false
                             onAddFromSystem?.invoke()
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Rename playlist") },
-                        enabled = onRenamePlaylist != null,
-                        onClick = {
-                            showMenu = false
-                            onRenamePlaylist?.invoke()
                         }
                     )
                 }

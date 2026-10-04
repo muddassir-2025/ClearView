@@ -12,6 +12,8 @@ import { buildAdsPublicRouter } from './ads/publicRoutes.js';
 import { buildAdsAdminRouter } from './ads/adminRoutes.js';
 import { buildBrainRotPublicRouter } from './brainrot/routes.js';
 import { buildBrainRotAdminRouter } from './brainrot/adminRoutes.js';
+import { buildDirectoryPublicRouter } from './directory/routes.js';
+import { buildDirectoryAdminRouter } from './directory/adminRoutes.js';
 import { createFirebaseVerifier, type IdentityVerifier } from './identity/verifier.js';
 import { createObjectStore, type ObjectStore } from './media/store.js';
 import { createPushSender, type PushSender } from './notifications/fcm.js';
@@ -288,6 +290,10 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // reason the ads router is: `brainrot` must be matched exactly rather than
   // being read as a channel id.
   app.use('/api/v1/brainrot', buildBrainRotPublicRouter(database));
+  // The curated channel directory — a platform-wide list of external channels.
+  // On its own path for the same exact-match reason as the two routers above:
+  // `directory` must not be read as a channel id by the parameterised router.
+  app.use('/api/v1/directory', buildDirectoryPublicRouter(database));
   app.use('/api/v1', buildPublicRouter(database, store));
 
   // ── Reader state (§3–§6) ──
@@ -345,6 +351,9 @@ export function buildApp(deps: AppDeps = {}): express.Express {
   // the same exact-match reason as the ads router. Every route re-checks a
   // `brainrot.*` permission, which only a super admin holds.
   app.use('/admin/api/brainrot', buildBrainRotAdminRouter(database));
+  // Channel-directory management. Its own path and its own `directory.*`
+  // permissions, which only a super admin holds.
+  app.use('/admin/api/directory', buildDirectoryAdminRouter(database));
   app.use(
     '/admin/api',
     buildAdminRouter(database, store, limiter, rateLimits, verifier, pushSender)

@@ -45,7 +45,11 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -527,9 +531,9 @@ private fun ComposerTopBar(title: String, onClose: () -> Unit) {
         Text(
             text = title,
             modifier = Modifier.weight(1f).padding(start = 4.dp),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
             color = Wa.Text,
-            fontSize = 19.sp,
-            fontWeight = FontWeight.Bold,
             maxLines = 1
         )
     }
@@ -569,20 +573,20 @@ private fun ComposerBottomBar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (!editing && mediaAvailable && attachmentCount < COMPOSER_MAX_ATTACHMENTS) {
-            Box(
-                modifier = Modifier
-                    .size(46.dp)
-                    .clip(CircleShape)
-                    .background(Wa.Bar)
-                    .clickable(enabled = !busy, onClick = onAttach),
-                contentAlignment = Alignment.Center
+            FilledTonalIconButton(
+                onClick = onAttach,
+                enabled = !busy,
+                modifier = Modifier.size(46.dp),
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = Wa.Bar,
+                    contentColor = Wa.Accent
+                )
             ) {
                 Icon(
                     // The same paperclip the bar under the feed wears, so the way
                     // to add a file looks the same in both places it exists.
                     Icons.Filled.AttachFile,
                     contentDescription = stringResource(R.string.goodpost_add_media),
-                    tint = if (busy) Wa.TextDim else Wa.Accent,
                     modifier = Modifier.size(23.dp)
                 )
             }
@@ -605,13 +609,16 @@ private fun ComposerBottomBar(
             maxLines = 1
         )
 
-        Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(sendFill)
-                .clickable(enabled = canSubmit, onClick = onSend),
-            contentAlignment = Alignment.Center
+        FilledIconButton(
+            onClick = onSend,
+            enabled = canSubmit,
+            modifier = Modifier.size(52.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = sendFill,
+                contentColor = Wa.OnAccent,
+                disabledContainerColor = Wa.Bar,
+                disabledContentColor = Wa.TextDim
+            )
         ) {
             if (busy) {
                 CircularProgressIndicator(
@@ -725,10 +732,23 @@ private fun rememberAttachmentPicker(
 ): () -> Unit {
     val context = LocalContext.current
     var choosing by remember { mutableStateOf(false) }
+    // The picture waiting to be cropped, held as its uri (§21). A single picked
+    // picture goes through the crop screen before it is uploaded; a batch does
+    // not, because a queue of crop screens is not a flow anybody asked for.
+    var cropping by remember { mutableStateOf<String?>(null) }
 
-    val accept = remember(room, onAttached, onUnsupported) {
-        { uris: List<Uri> ->
-            uris.take(room.coerceAtLeast(0)).forEach { uri ->
+    val accept = { uris: List<Uri> ->
+        val picked = uris.take(room.coerceAtLeast(0))
+        val only = picked.singleOrNull()
+        if (only != null) {
+            val attachment = readGoodPostAttachment(context, only)
+            when {
+                attachment == null -> onUnsupported()
+                attachment.kind == "image" -> cropping = only.toString()
+                else -> onAttached(attachment)
+            }
+        } else {
+            picked.forEach { uri ->
                 val attachment = readGoodPostAttachment(context, uri)
                 if (attachment == null) onUnsupported() else onAttached(attachment)
             }
@@ -775,6 +795,23 @@ private fun rememberAttachmentPicker(
             // is the way out, so the buttons below the list are deliberately
             // absent rather than a Cancel that says the same thing.
             confirmButton = {}
+        )
+    }
+
+    cropping?.let { uri ->
+        GoodPostCropScreen(
+            imageUri = uri,
+            onCropped = { attachment ->
+                cropping = null
+                onAttached(attachment)
+            },
+            onCancel = { cropping = null },
+            // A picture this app cannot decode is a picture it cannot post, and
+            // that is the same refusal every other unsupported pick gets.
+            onFailed = {
+                cropping = null
+                onUnsupported()
+            }
         )
     }
 

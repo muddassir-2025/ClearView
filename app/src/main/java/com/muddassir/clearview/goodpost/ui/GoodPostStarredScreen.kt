@@ -176,7 +176,7 @@ internal fun GoodPostStarredScreen(
                     media = state.starredMedia[entry.postId],
                     // §22: unstarring a message removes it from this list, which
                     // is the list's whole purpose — the rest close the gap.
-                    modifier = Modifier.animateItem(),
+                    modifier = Modifier.animateItem(fadeInSpec = null, fadeOutSpec = null),
                     highlight = query,
                     onOpen = { viewModel.openChannel(channelId) },
                     onUnstar = { viewModel.unstarPost(entry.postId) }
@@ -231,7 +231,7 @@ private fun StarredRow(
 
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = highlightStarred(text, highlight),
+                text = highlightStarred(text, highlight, Wa.Accent),
                 color = Wa.Text,
                 // §17: a starred message is a post's own words, so it wears the
                 // post's face. The fallback label for a media-only bookmark is a
@@ -368,7 +368,7 @@ private fun starredMediaLabel(kind: String): Int = when (kind) {
  * A blank or numeric term matches reference-shaped queries, which have no words
  * to mark, so nothing is highlighted.
  */
-private fun highlightStarred(text: String, query: String): AnnotatedString {
+private fun highlightStarred(text: String, query: String, highlightColor: Color): AnnotatedString {
     val term = query.trim()
     if (term.isEmpty()) return AnnotatedString(text)
 
@@ -383,7 +383,7 @@ private fun highlightStarred(text: String, query: String): AnnotatedString {
                 break
             }
             append(text, index, match)
-            withStyle(SpanStyle(color = Wa.Accent, fontWeight = FontWeight.Bold)) {
+            withStyle(SpanStyle(color = highlightColor, fontWeight = FontWeight.Bold)) {
                 append(text, match, match + term.length)
             }
             index = match + term.length

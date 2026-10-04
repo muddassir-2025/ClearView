@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
@@ -389,9 +390,9 @@ private fun SubmissionRow(
     onReview: () -> Unit
 ) {
     val statusColor = when (submission.status) {
-        "approved" -> Color(0xFF25D366)
+        "approved" -> Wa.Accent
         "rejected" -> Wa.Danger
-        "under_review" -> Color(0xFF53BDEB)
+        "under_review" -> MaterialTheme.colorScheme.tertiary
         else -> Wa.TextDim
     }
 

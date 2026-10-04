@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -56,52 +58,51 @@ internal fun WaDeleteDialog(
     onDeleteForMe: () -> Unit,
     onDeleteForEveryone: () -> Unit = {}
 ) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(Wa.Bar)
-                .padding(horizontal = 18.dp, vertical = 18.dp)
-        ) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
             Text(
                 text = title,
-                color = Wa.Text,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold
+                style = MaterialTheme.typography.titleLarge,
+                color = Wa.Text
             )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                text = message,
-                color = Wa.TextDim,
-                fontSize = 14.sp,
-                lineHeight = 19.sp
-            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Wa.TextDim
+                )
 
-            Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
 
-            // Cancel first: the safe answer sits where the reading starts, and
-            // the red one is the last thing under the thumb rather than the first.
-            Choice(
-                label = stringResource(R.string.goodpost_cancel),
-                onClick = onDismiss
-            )
-            Spacer(Modifier.height(6.dp))
-            Choice(
-                label = stringResource(R.string.goodpost_delete_for_me),
-                destructive = !canDeleteForEveryone,
-                onClick = onDeleteForMe
-            )
-            if (canDeleteForEveryone) {
+                // Cancel first: the safe answer sits where the reading starts, and
+                // the red one is the last thing under the thumb rather than the first.
+                Choice(
+                    label = stringResource(R.string.goodpost_cancel),
+                    onClick = onDismiss
+                )
                 Spacer(Modifier.height(6.dp))
                 Choice(
-                    label = stringResource(R.string.goodpost_delete_for_everyone),
-                    destructive = true,
-                    onClick = onDeleteForEveryone
+                    label = stringResource(R.string.goodpost_delete_for_me),
+                    destructive = !canDeleteForEveryone,
+                    onClick = onDeleteForMe
                 )
+                if (canDeleteForEveryone) {
+                    Spacer(Modifier.height(6.dp))
+                    Choice(
+                        label = stringResource(R.string.goodpost_delete_for_everyone),
+                        destructive = true,
+                        onClick = onDeleteForEveryone
+                    )
+                }
             }
-        }
-    }
+        },
+        confirmButton = {},
+        shape = RoundedCornerShape(28.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+    )
 }
 
 /** One answer, on its own row so a tap cannot land between two of them. */
