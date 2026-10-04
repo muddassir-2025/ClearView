@@ -41,10 +41,12 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -346,6 +348,12 @@ internal fun GoodPostAdsScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(bottom = 32.dp)
             ) {
+                item(key = "ads-heading") {
+                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                        WaSectionHeading(stringResource(R.string.goodpost_ads))
+                    }
+                }
+
                 items(state.adminAds, key = { it.id }) { ad ->
                     AdAdminRow(
                         ad = ad,
@@ -400,75 +408,38 @@ private fun AdAdminRow(
         if (ad.showInExplore) add(stringResource(R.string.goodpost_ad_explore_placement))
     }.joinToString(" · ")
 
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(56.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Wa.Pressed),
-            contentAlignment = Alignment.Center
-        ) {
-            if (ad.isImage && ad.imageUrl != null) {
-                AdRemoteImage(url = ad.imageUrl)
-            } else {
-                Icon(
-                    Icons.Filled.Image,
-                    contentDescription = null,
-                    tint = Wa.TextDim,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        }
-
-        Spacer(Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = ad.text?.takeIf { it.isNotBlank() }
+    Box(modifier = modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard(onClick = onClick) {
+            WaCardHeader(
+                icon = if (ad.isImage) Icons.Filled.Image else Icons.Filled.TextFields,
+                title = ad.text?.takeIf { it.isNotBlank() }
                     ?: stringResource(R.string.goodpost_ad_no_text),
-                color = Wa.Text,
-                fontSize = 15.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                text = if (placements.isBlank()) {
+                subtitle = if (placements.isBlank()) {
                     stringResource(R.string.goodpost_ad_explore_placement)
                 } else {
                     placements
                 },
-                color = Wa.TextDim,
-                fontSize = 12.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                trailing = {
+                    WaStatusPill(
+                        text = stringResource(
+                            if (ad.enabled) R.string.goodpost_ad_status_on
+                            else R.string.goodpost_ad_status_off
+                        ),
+                        color = if (ad.enabled) Wa.Accent else Wa.TextDim
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = stringResource(R.string.goodpost_delete),
+                            tint = Wa.Danger,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    WaManageArrow()
+                }
             )
         }
-
-        Spacer(Modifier.width(8.dp))
-
-        Text(
-            text = stringResource(
-                if (ad.enabled) R.string.goodpost_ad_status_on
-                else R.string.goodpost_ad_status_off
-            ),
-            color = if (ad.enabled) Wa.Accent else Wa.TextDim,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium
-        )
-
-        WaIconAction(
-            icon = Icons.Filled.Delete,
-            description = stringResource(R.string.goodpost_delete),
-            tint = Wa.Danger,
-            onClick = onDelete
-        )
     }
 }
 

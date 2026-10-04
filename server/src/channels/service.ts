@@ -628,20 +628,39 @@ export async function loadChannelRow(
 /**
  * Every channel an administrator may work with (§17, §18).
  *
- * A super administrator sees all of them; a channel administrator sees exactly
- * the one they are bound to. The restriction is in the WHERE clause, so it is
- * not a filter the caller could forget — and a channel administrator therefore
- * cannot enumerate channels even by guessing at a listing endpoint.
+ * This is the account's OWN list, not the catalogue: a channel administrator
+ * sees exactly the one they are bound to, and a super administrator sees the
+ * channels THEY created plus any channel left without an administrator at all.
+ * The restriction is in the WHERE clause, so it is not a filter the caller
+ * could forget — and neither role can enumerate the platform's channels by
+ * asking this endpoint.
+ *
+ * A super administrator is bound to no channel (`channel_id` is NULL by
+ * design), so "their" channels are the ones whose administrator row records
+ * them as the creator — `created_by_admin_id` is set when a channel is created
+ * with credentials — together with the ownerless channels. The ownerless ones
+ * matter: a channel created without a login is a channel nobody can publish to
+ * or run, and the super administrator's delete path is the only way to clean it
+ * up, so hiding it here would make it unreachable from the app. Showing them is
+ * also why the rule is not "created by me" alone.
  */
 export async function listChannelsForAdmin(
   database: Queryable,
   store: ObjectStore,
-  scope: { readonly role: string; readonly channelId: string | null }
+  scope: { readonly role: string; readonly channelId: string | null; readonly adminId: string }
 ): Promise<ChannelPayload[]> {
   const params: unknown[] = [];
   const conditions: string[] = [];
 
-  if (scope.role !== 'super_admin') {
+  if (scope.role === 'super_admin') {
+    params.push(scope.adminId);
+    const adminId = `$${params.length}`;
+    conditions.push(
+      `(EXISTS (SELECT 1 FROM admin_users a
+                 WHERE a.channel_id = c.id AND a.created_by_admin_id = ${adminId})
+        OR NOT EXISTS (SELECT 1 FROM admin_users a WHERE a.channel_id = c.id))`
+    );
+  } else {
     params.push(scope.channelId);
     conditions.push(`c.id = $${params.length}`);
   }

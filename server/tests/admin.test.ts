@@ -247,6 +247,34 @@ describe('a channel administrator is confined to one channel (§18)', () => {
   });
 });
 
+describe('a super administrator’s own list is the channels they created (§17)', () => {
+  /** The channel names in a listing, sorted, so the assertion reads as a set. */
+  async function namesFor(session: Session): Promise<string[]> {
+    const res = await request(app).get('/admin/api/channels').set(authed(session.accessToken));
+    expect(res.status).toBe(200);
+    return (res.body.channels as { name: string }[]).map((c) => c.name).sort();
+  }
+
+  it('lists the channels they created and the ownerless ones, and nobody else’s', async () => {
+    const mine = await superAdminSession(app, pglite);
+    const theirs = await superAdminSession(app, pglite);
+
+    const created = await createChannelWithAdmin(app, mine, uniqueName('Mine'));
+    const ownerless = await createBareChannel(app, mine, uniqueName('Unclaimed'));
+    const other = await createChannelWithAdmin(app, theirs, uniqueName('Theirs'));
+
+    const names = await namesFor(mine);
+
+    // The channels this account created, plus the one left with no
+    // administrator — the only one the app can still be pointed at to delete.
+    expect(names).toContain(created.channel.name);
+    expect(names).toContain(ownerless.name);
+    // …and NOT the other super administrator's channel. A tab is an account's
+    // own list, not the platform catalogue.
+    expect(names).not.toContain(other.channel.name);
+  });
+});
+
 describe('creating a channel (§20)', () => {
   it('creates the channel and the login that runs it, together', async () => {
     const superSession = await superAdminSession(app, pglite);

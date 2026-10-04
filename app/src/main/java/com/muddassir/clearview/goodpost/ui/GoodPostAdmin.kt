@@ -33,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
@@ -409,9 +410,17 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // ── The picture ────────────────────────────────────
+                // Its own card, because it is its own decision: the avatar is
+                // the one field a person looks at rather than types into.
+                WaCard {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                 // Centered circular avatar
                 Box(
                     modifier = Modifier
@@ -511,8 +520,14 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                     )
                 }
 
-                Spacer(Modifier.height(24.dp))
+                }
+                }
 
+                // ── The channel itself ─────────────────────────────
+                Box(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    WaSectionHeading(stringResource(R.string.goodpost_channel_section_details))
+                }
+                WaCard {
                 WaField(
                     value = state.channelFormName,
                     onValueChange = viewModel::onChannelFormNameChange,
@@ -565,72 +580,51 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                     // field from anyone else, and a switch that does nothing is
                     // worse than one that is not there.
                     if (state.admin?.isSuperAdmin == true) {
-                        Spacer(Modifier.height(18.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable(enabled = !state.adminBusy) {
-                                    viewModel.toggleChannelFormVerified()
-                                }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = stringResource(R.string.goodpost_channel_verified),
-                                    color = Wa.Text,
-                                    fontSize = 15.sp
-                                )
-                                Spacer(Modifier.height(2.dp))
-                                Text(
-                                    text = stringResource(R.string.goodpost_channel_verified_note),
-                                    color = Wa.TextDim,
-                                    fontSize = 12.sp,
-                                    lineHeight = 17.sp
+                        Spacer(Modifier.height(16.dp))
+                        WaCardHeader(
+                            icon = Icons.Filled.Verified,
+                            title = stringResource(R.string.goodpost_channel_verified),
+                            subtitle = stringResource(R.string.goodpost_channel_verified_note),
+                            onClick = { viewModel.toggleChannelFormVerified() },
+                            trailing = {
+                                Switch(
+                                    checked = state.channelFormVerified,
+                                    onCheckedChange = { viewModel.toggleChannelFormVerified() },
+                                    enabled = !state.adminBusy,
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Wa.OnAccent,
+                                        checkedTrackColor = Wa.Accent,
+                                        checkedBorderColor = Wa.Accent,
+                                        uncheckedThumbColor = Wa.TextDim,
+                                        uncheckedTrackColor = Wa.Bar,
+                                        uncheckedBorderColor = Wa.Divider
+                                    )
                                 )
                             }
-                            Spacer(Modifier.width(12.dp))
-                            Switch(
-                                checked = state.channelFormVerified,
-                                onCheckedChange = { viewModel.toggleChannelFormVerified() },
-                                enabled = !state.adminBusy,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Wa.OnAccent,
-                                    checkedTrackColor = Wa.Accent,
-                                    checkedBorderColor = Wa.Accent,
-                                    uncheckedThumbColor = Wa.TextDim,
-                                    uncheckedTrackColor = Wa.Bar,
-                                    uncheckedBorderColor = Wa.Divider
-                                )
-                            )
-                        }
+                        )
                     }
+                }
                 }
 
                 if (mintsAdmin || editsPassword) {
-                    Spacer(Modifier.height(20.dp))
-
-                    Text(
-                        text = stringResource(
-                            if (mintsAdmin) R.string.goodpost_channel_admin_section
-                            else R.string.goodpost_channel_admin_section_edit
-                        ),
-                        color = Wa.TextDim,
-                        fontSize = 13.sp,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
+                    Box(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        WaSectionHeading(
+                            stringResource(
+                                if (mintsAdmin) R.string.goodpost_channel_admin_section
+                                else R.string.goodpost_channel_admin_section_edit
+                            )
+                        )
+                    }
+                    WaCard {
                     if (editsPassword) {
-                        Spacer(Modifier.height(6.dp))
                         Text(
                             text = stringResource(R.string.goodpost_admin_password_keep),
                             color = Wa.TextDim,
                             fontSize = 12.sp,
                             modifier = Modifier.fillMaxWidth()
                         )
+                        Spacer(Modifier.height(12.dp))
                     }
-
-                    Spacer(Modifier.height(10.dp))
 
                     if (mintsAdmin) {
                         WaField(
@@ -671,9 +665,10 @@ internal fun ChannelFormScreen(state: GoodPostUiState, viewModel: GoodPostViewMo
                         // stops volunteering the operator's own login.
                         autofillContentType = ContentType.NewPassword
                     )
+                    }
                 }
 
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(20.dp))
 
                 WaPrimaryButton(
                     text = stringResource(

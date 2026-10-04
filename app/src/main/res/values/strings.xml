@@ -1145,6 +1145,9 @@ This video cannot be played inside the app.</string>
     <!-- Global Brain Rot repository (admin review queue and rules) -->
     <string name="goodpost_brainrot">Global protection</string>
     <string name="goodpost_brainrot_dashboard">Dashboard</string>
+    <string name="goodpost_channel_section_details">Channel details</string>
+    <string name="goodpost_brainrot_rule_on">Enforced for everyone</string>
+    <string name="goodpost_brainrot_rule_off">Switched off \u2014 not enforced</string>
     <string name="goodpost_brainrot_queue">Review queue</string>
     <string name="goodpost_brainrot_total">Total submissions</string>
     <string name="goodpost_brainrot_under_review">Under review</string>

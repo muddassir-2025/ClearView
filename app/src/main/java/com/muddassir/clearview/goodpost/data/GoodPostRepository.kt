@@ -62,6 +62,34 @@ internal class GoodPostRepository(
     /** Cached channels, for the first frame. Null when nothing is stored. */
     fun cachedChannels(): CachedChannels? = cache.loadChannels()
 
+    /**
+     * The saved channel list when it is fresh enough to skip a refetch.
+     *
+     * Both lists are consulted because the tab can legitimately be showing
+     * either one: the reader's follows when there is an identity, the public
+     * catalogue otherwise. Returning whichever was saved most recently is what
+     * lets a re-open render from disk with no request.
+     */
+    fun freshChannels(nowMs: Long = System.currentTimeMillis()): CachedChannels? {
+        val followed = cache.loadFollowedChannels()
+        val public = cache.loadChannels()
+        return listOfNotNull(
+            followed?.takeIf { cache.followedChannelsAreFresh(nowMs) },
+            public?.takeIf { cache.channelsAreFresh(nowMs) }
+        ).maxByOrNull { it.savedAtMs }
+    }
+
+    /** The reader's own channel list as last saved, for the first frame. */
+    fun cachedFollowedChannels(): CachedChannels? = cache.loadFollowedChannels()
+
+    /**
+     * Which channels the reader followed as of the last successful read.
+     *
+     * The follow switches are drawn from this before any request, so they do not
+     * flash from off to on while the network answers.
+     */
+    fun cachedFollowedIds(): Set<String> = cache.loadFollowedIds()
+
     fun cachedCategories(): List<GoodPostCategory> = cache.loadCategories()
 
     fun cachedPosts(channelId: String): CachedPosts? = cache.loadPosts(channelId)
@@ -153,8 +181,15 @@ internal class GoodPostRepository(
     ): ApiResult<GoodPostPage<GoodPostChannel>> {
         val token = identity.token() ?: return unverified()
         return api.following(token, cursor).also { result ->
-            if (result is ApiResult.Ok && cursor == null && result.value.items.isNotEmpty()) {
-                cache.saveChannels(result.value.items, nowMs)
+            if (result is ApiResult.Ok && cursor == null) {
+                // Saved under the FOLLOWS key, not the public one. The reader's
+                // own list and the catalogue are two different lists, and
+                // writing one over the other is what made a cold start show the
+                // wrong one. An empty result is saved too — "you follow nothing"
+                // is an answer, and not caching it would refetch on every open
+                // for a reader who follows nobody.
+                cache.saveFollowedChannels(result.value.items, nowMs)
+                cache.saveFollowedIds(result.value.items.map { it.id }.toSet())
             }
         }
     }

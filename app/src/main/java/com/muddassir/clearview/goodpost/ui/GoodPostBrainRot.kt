@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,7 +21,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.Block
+import androidx.compose.material.icons.outlined.PlayCircle
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -32,8 +37,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
@@ -151,42 +158,52 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
         ) {
             item(key = "totals") {
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        DashboardStat(
-                            label = stringResource(R.string.goodpost_brainrot_pending),
-                            value = dashboard.pending,
-                            modifier = Modifier.weight(1f)
+                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_dashboard))
+                    WaCard {
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            DashboardStat(
+                                label = stringResource(R.string.goodpost_brainrot_pending),
+                                value = dashboard.pending,
+                                modifier = Modifier.weight(1f)
+                            )
+                            DashboardStat(
+                                label = stringResource(R.string.goodpost_brainrot_under_review),
+                                value = dashboard.underReview,
+                                modifier = Modifier.weight(1f)
+                            )
+                            DashboardStat(
+                                label = stringResource(R.string.goodpost_brainrot_approved),
+                                value = dashboard.approved,
+                                modifier = Modifier.weight(1f)
+                            )
+                            DashboardStat(
+                                label = stringResource(R.string.goodpost_brainrot_rejected),
+                                value = dashboard.rejected,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        HorizontalDivider(color = Wa.Divider)
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = stringResource(R.string.goodpost_brainrot_total),
+                            color = Wa.TextDim,
+                            fontSize = 12.sp
                         )
-                        DashboardStat(
-                            label = stringResource(R.string.goodpost_brainrot_under_review),
-                            value = dashboard.underReview,
-                            modifier = Modifier.weight(1f)
+                        Text(
+                            text = dashboard.total.toString(),
+                            color = Wa.Text,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
-                    Spacer(Modifier.height(10.dp))
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        DashboardStat(
-                            label = stringResource(R.string.goodpost_brainrot_approved),
-                            value = dashboard.approved,
-                            modifier = Modifier.weight(1f)
-                        )
-                        DashboardStat(
-                            label = stringResource(R.string.goodpost_brainrot_rejected),
-                            value = dashboard.rejected,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    DashboardStat(
-                        label = stringResource(R.string.goodpost_brainrot_total),
-                        value = dashboard.total,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                 }
             }
 
             item(key = "channels-header") {
-                SectionHeading(stringResource(R.string.goodpost_brainrot_top_channels))
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_top_channels))
+                }
             }
             if (dashboard.topChannels.isEmpty()) {
                 item(key = "channels-empty") {
@@ -198,16 +215,18 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
             }
 
             item(key = "keywords-header") {
-                SectionHeading(stringResource(R.string.goodpost_brainrot_top_keywords))
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_top_keywords))
+                }
             }
             if (dashboard.topKeywords.isEmpty()) {
                 item(key = "keywords-empty") {
                     EmptyDemandNote()
-                }
-            }
+                }            }
             items(dashboard.topKeywords, key = { "dk-${it.value}" }) { row ->
                 DemandRow(row)
             }
+
         }
 
         if (state.brainRotDashboardLoading && dashboard.total == 0) {
@@ -216,28 +235,32 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
     }
 }
 
-/** One headline number with its label. */
+/** One headline number with its label, centred in its tile. */
 @Composable
 private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifier) {
     Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(Wa.Bar)
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
             text = value.toString(),
             color = Wa.Text,
-            fontSize = 22.sp,
+            fontSize = 20.sp,
             fontWeight = FontWeight.SemiBold
         )
         Spacer(Modifier.height(2.dp))
-        Text(text = label, color = Wa.TextDim, fontSize = 12.sp)
+        Text(
+            text = label,
+            color = Wa.TextDim,
+            fontSize = 11.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
 /**
- * One target's demand.
+ * One target's demand, as a card row.
  *
  * "247 users blocking · 182 global requests" is the sentence an operator needs:
  * the first is how many devices independently reported it, the second is how
@@ -246,35 +269,38 @@ private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifi
  */
 @Composable
 private fun DemandRow(row: GoodPostBrainRotDemand) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            KindChip(isChannel = row.isChannel)
-            Spacer(Modifier.width(10.dp))
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaCardHeader(
+                icon = if (row.isChannel) Icons.Outlined.PlayCircle else Icons.Outlined.Block,
+                title = row.displayName ?: row.value,
+                // The handle under a channel's name, so the identity is never
+                // hidden by the display name.
+                subtitle = if (row.isChannel && row.displayName != null) {
+                    row.value
+                } else {
+                    stringResource(R.string.goodpost_brainrot_keyword)
+                },
+                trailing = {
+                    WaStatusPill(
+                        text = stringResource(
+                            R.string.goodpost_brainrot_users_blocking,
+                            row.usersBlocking
+                        ),
+                        color = Wa.Accent
+                    )
+                }
+            )
+            Spacer(Modifier.height(6.dp))
             Text(
-                text = row.displayName ?: row.value,
-                color = Wa.Text,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
+                text = stringResource(
+                    R.string.goodpost_brainrot_global_requests,
+                    row.globalRequests
+                ),
+                color = Wa.TextDim,
+                fontSize = 12.sp
             )
         }
-        // The handle under a channel's name, so the identity is never hidden by
-        // the display name.
-        if (row.isChannel && row.displayName != null) {
-            Text(text = row.value, color = Wa.TextDim, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = stringResource(R.string.goodpost_brainrot_users_blocking, row.usersBlocking) +
-                "  ·  " +
-                stringResource(R.string.goodpost_brainrot_global_requests, row.globalRequests),
-            color = Wa.Accent,
-            fontSize = 12.sp
-        )
     }
 }
 
@@ -282,7 +308,7 @@ private fun DemandRow(row: GoodPostBrainRotDemand) {
 private fun EmptyDemandNote() {
     Text(
         text = stringResource(R.string.goodpost_brainrot_no_demand),
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
         color = Wa.TextDim,
         fontSize = 13.sp
     )
@@ -362,100 +388,106 @@ private fun SubmissionRow(
     onReject: () -> Unit,
     onReview: () -> Unit
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            KindChip(isChannel = submission.isChannel)
-            Spacer(Modifier.width(10.dp))
-            Text(
-                text = submission.displayName ?: submission.value,
-                color = Wa.Text,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f)
-            )
-        }
+    val statusColor = when (submission.status) {
+        "approved" -> Color(0xFF25D366)
+        "rejected" -> Wa.Danger
+        "under_review" -> Color(0xFF53BDEB)
+        else -> Wa.TextDim
+    }
 
-        // The handle under a channel's name, so the identity the block will use
-        // is never hidden behind a display name.
-        if (submission.isChannel && submission.displayName != null) {
-            Text(text = submission.value, color = Wa.TextDim, fontSize = 12.sp)
-        }
-
-        // Where the request came from. "Not interested" is a decision the user
-        // made in YouTube; "added in the app" is one they typed. A reviewer
-        // weighing a request is entitled to know which they have.
-        Spacer(Modifier.height(2.dp))
-        Text(
-            text = stringResource(
-                when (submission.source) {
-                    "youtube_not_interested" -> R.string.goodpost_brainrot_source_youtube
-                    "app" -> R.string.goodpost_brainrot_source_app
-                    else -> R.string.goodpost_brainrot_source_unknown
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaCardHeader(
+                icon = if (submission.isChannel) Icons.Outlined.PlayCircle else Icons.Outlined.Block,
+                title = submission.displayName ?: submission.value,
+                // The handle under a channel's name, so the identity the block
+                // will use is never hidden behind a display name.
+                subtitle = if (submission.isChannel && submission.displayName != null) {
+                    submission.value
+                } else {
+                    stringResource(
+                        when (submission.source) {
+                            "youtube_not_interested" -> R.string.goodpost_brainrot_source_youtube
+                            "app" -> R.string.goodpost_brainrot_source_app
+                            else -> R.string.goodpost_brainrot_source_unknown
+                        }
+                    )
+                },
+                trailing = {
+                    WaStatusPill(
+                        text = stringResource(
+                            when (submission.status) {
+                                "approved" -> R.string.goodpost_brainrot_approved
+                                "rejected" -> R.string.goodpost_brainrot_rejected
+                                "under_review" -> R.string.goodpost_brainrot_under_review
+                                else -> R.string.goodpost_brainrot_pending
+                            }
+                        ),
+                        color = statusColor
+                    )
                 }
-            ),
-            color = Wa.TextDim,
-            fontSize = 12.sp
-        )
-
-        // The two demand numbers, on the row they decide. One person asking and
-        // two hundred devices asking are very different cases, and a reviewer
-        // should not have to leave the screen to tell them apart.
-        if (submission.reports > 0 || submission.requesters > 0) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = stringResource(R.string.goodpost_brainrot_users_blocking, submission.reports) +
-                    "  ·  " +
-                    stringResource(R.string.goodpost_brainrot_global_requests, submission.requesters),
-                color = Wa.Accent,
-                fontSize = 12.sp
             )
-        }
 
-        // A note the suggestor wrote, when there is one.
-        submission.note?.takeIf { it.isNotBlank() }?.let { note ->
-            Spacer(Modifier.height(4.dp))
-            Text(text = note, color = Wa.TextDim, fontSize = 13.sp)
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        if (submission.isOpen) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_brainrot_approve),
-                    enabled = !busy,
-                    onClick = onApprove
-                )
-                Spacer(Modifier.width(8.dp))
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_brainrot_reject),
-                    enabled = !busy,
-                    onClick = onReject,
-                    destructive = true
-                )
-                Spacer(Modifier.width(8.dp))
-                WaTextAction(
-                    text = stringResource(R.string.goodpost_brainrot_mark_review),
-                    enabled = !busy && submission.status == "pending",
-                    onClick = onReview
+            // The two demand numbers, on the row they decide. One person asking
+            // and two hundred devices asking are very different cases, and a
+            // reviewer should not have to leave the screen to tell them apart.
+            if (submission.reports > 0 || submission.requesters > 0) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(
+                        R.string.goodpost_brainrot_users_blocking,
+                        submission.reports
+                    ) + "  ·  " + stringResource(
+                        R.string.goodpost_brainrot_global_requests,
+                        submission.requesters
+                    ),
+                    color = Wa.Accent,
+                    fontSize = 12.sp
                 )
             }
-        } else {
-            // An already-decided row says so rather than offering the buttons
-            // again: the server refuses a second review, and a button that can
-            // only fail is worse than a label.
-            Text(
-                text = stringResource(
-                    if (submission.status == "approved") R.string.goodpost_brainrot_approved_note
-                    else R.string.goodpost_brainrot_rejected_note
-                ),
-                color = Wa.TextDim,
-                fontSize = 12.sp
-            )
+
+            // A note the suggestor wrote, when there is one.
+            submission.note?.takeIf { it.isNotBlank() }?.let { note ->
+                Spacer(Modifier.height(6.dp))
+                Text(text = note, color = Wa.TextDim, fontSize = 13.sp)
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            if (submission.isOpen) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_approve),
+                        enabled = !busy,
+                        onClick = onApprove
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_reject),
+                        enabled = !busy,
+                        onClick = onReject,
+                        destructive = true
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_mark_review),
+                        enabled = !busy && submission.status == "pending",
+                        onClick = onReview
+                    )
+                }
+            } else {
+                // An already-decided row says so rather than offering the
+                // buttons again: the server refuses a second review, and a
+                // button that can only fail is worse than a label.
+                Text(
+                    text = stringResource(
+                        if (submission.status == "approved") R.string.goodpost_brainrot_approved_note
+                        else R.string.goodpost_brainrot_rejected_note
+                    ),
+                    color = Wa.TextDim,
+                    fontSize = 12.sp
+                )
+            }
         }
     }
 }
@@ -495,7 +527,9 @@ private fun BrainRotRules(
             }
 
             item(key = "keywords-header") {
-                SectionHeading(stringResource(R.string.goodpost_brainrot_section_keywords))
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_section_keywords))
+                }
             }
             items(state.brainRotKeywords, key = { "k-${it.id}" }) { rule ->
                 RuleRow(
@@ -507,7 +541,9 @@ private fun BrainRotRules(
             }
 
             item(key = "channels-header") {
-                SectionHeading(stringResource(R.string.goodpost_brainrot_section_channels))
+                Box(modifier = Modifier.padding(horizontal = 16.dp)) {
+                    WaSectionHeading(stringResource(R.string.goodpost_brainrot_section_channels))
+                }
             }
             items(state.brainRotChannels, key = { "c-${it.id}" }) { rule ->
                 RuleRow(
@@ -550,20 +586,23 @@ private fun AddRow(
     onAdd: () -> Unit,
     enabled: Boolean
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
-        WaField(
-            value = value,
-            onValueChange = onValueChange,
-            label = label,
-            placeholder = hint,
-            enabled = enabled
-        )
-        Spacer(Modifier.height(6.dp))
-        WaTextAction(
-            text = stringResource(R.string.goodpost_brainrot_add),
-            enabled = enabled && value.isNotBlank(),
-            onClick = onAdd
-        )
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaField(
+                value = value,
+                onValueChange = onValueChange,
+                label = label,
+                placeholder = hint,
+                enabled = enabled
+            )
+            Spacer(Modifier.height(10.dp))
+            WaPrimaryButton(
+                text = stringResource(R.string.goodpost_brainrot_add),
+                enabled = enabled && value.isNotBlank(),
+                onClick = onAdd,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
     }
 }
 
@@ -575,24 +614,48 @@ private fun RuleRow(
     onToggle: (Boolean) -> Unit,
     onDelete: () -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = rule.value,
-                color = if (rule.enabled) Wa.Text else Wa.TextDim,
-                fontSize = 15.sp
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaCardHeader(
+                icon = Icons.Outlined.Block,
+                title = rule.value,
+                subtitle = rule.reason?.takeIf { it.isNotBlank() }
+                    ?: if (rule.enabled) {
+                        stringResource(R.string.goodpost_brainrot_rule_on)
+                    } else {
+                        stringResource(R.string.goodpost_brainrot_rule_off)
+                    },
+                trailing = {
+                    // Enable/disable rather than delete-and-recreate: a rule
+                    // switched off because it was too broad can be switched back
+                    // on once it is narrowed, and the row it lived in is where
+                    // that decision belongs.
+                    Switch(
+                        checked = rule.enabled,
+                        onCheckedChange = onToggle,
+                        enabled = !busy,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Wa.OnAccent,
+                            checkedTrackColor = Wa.Accent,
+                            checkedBorderColor = Wa.Accent,
+                            uncheckedThumbColor = Wa.TextDim,
+                            uncheckedTrackColor = Wa.Bar,
+                            uncheckedBorderColor = Wa.Divider
+                        )
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(onClick = onDelete, enabled = !busy) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = stringResource(R.string.goodpost_delete),
+                            tint = Wa.Danger,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             )
-            rule.reason?.takeIf { it.isNotBlank() }?.let { reason ->
-                Spacer(Modifier.height(2.dp))
-                Text(text = reason, color = Wa.TextDim, fontSize = 12.sp)
-            }
             if (rule.reports > 0) {
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(8.dp))
                 Text(
                     text = stringResource(R.string.goodpost_brainrot_reports, rule.reports),
                     color = Wa.Accent,
@@ -600,35 +663,6 @@ private fun RuleRow(
                 )
             }
         }
-
-        // Enable/disable rather than delete-and-recreate: a rule switched off
-        // because it was too broad can be switched back on once it is narrowed,
-        // and the row it lived in is where that decision belongs.
-        Switch(
-            checked = rule.enabled,
-            onCheckedChange = onToggle,
-            enabled = !busy,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Wa.OnAccent,
-                checkedTrackColor = Wa.Accent,
-                checkedBorderColor = Wa.Accent,
-                uncheckedThumbColor = Wa.TextDim,
-                uncheckedTrackColor = Wa.Bar,
-                uncheckedBorderColor = Wa.Divider
-            )
-        )
-
-        Spacer(Modifier.width(4.dp))
-
-        Icon(
-            Icons.Filled.Delete,
-            contentDescription = stringResource(R.string.goodpost_delete),
-            tint = Wa.Danger,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = !busy, onClick = onDelete)
-                .padding(8.dp)
-        )
     }
 }
 
@@ -651,16 +685,4 @@ private fun KindChip(isChannel: Boolean) {
     )
 }
 
-/** A quiet all-caps heading between two groups in the rules list. */
-@Composable
-private fun SectionHeading(text: String) {
-    Text(
-        text = text,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, top = 20.dp, bottom = 6.dp),
-        color = Wa.TextDim,
-        fontSize = 12.sp,
-        fontWeight = FontWeight.Medium
-    )
-}
+

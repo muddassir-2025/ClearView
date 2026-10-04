@@ -144,7 +144,9 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                                 add(
                                     WaMenuItem(
                                         label = stringResource(R.string.goodpost_refresh),
-                                        onClick = viewModel::refreshChannels
+                                        // Explicit refresh means now, so it skips
+                                        // the freshness window.
+                                        onClick = { viewModel.refreshChannels(force = true) }
                                     )
                                 )
                                 if (state.isAdmin) {
@@ -181,7 +183,7 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
 
                 if (state.channelsStale) {
                     item(key = "stale") {
-                        WaStaleBanner(onRetry = viewModel::refreshChannels)
+                        WaStaleBanner(onRetry = { viewModel.refreshChannels(force = true) })
                     }
                 }
 
@@ -224,14 +226,14 @@ internal fun GoodPostHome(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                     )
                 }
 
-                if (state.tabChannels.isEmpty() && state.tabLoading) {
+                if (state.tabListIsWaiting) {
                     // §22: the list's own shape, held open under a slow sheen,
                     // rather than a spinner in the middle of an empty screen.
                     item(key = "loading") { WaChannelListSkeleton() }
                 }
 
                 if (state.tabChannels.isEmpty() && !state.tabLoading &&
-                    state.channelsError == null
+                    state.channelsError == null && !state.tabListIsWaiting
                 ) {
                     item(key = "empty") {
                         EmptyChannels(state = state, viewModel = viewModel)

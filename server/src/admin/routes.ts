@@ -107,8 +107,12 @@ export interface AdminContext {
 }
 
 /** The account context, for the scope checks. Derived from the session. */
-function scopeOf(context: AdminContext): { role: string; channelId: string | null } {
-  return { role: context.role, channelId: context.channelId };
+function scopeOf(context: AdminContext): {
+  role: string;
+  channelId: string | null;
+  adminId: string;
+} {
+  return { role: context.role, channelId: context.channelId, adminId: context.adminId };
 }
 
 function adminOf(req: Request): AdminContext {

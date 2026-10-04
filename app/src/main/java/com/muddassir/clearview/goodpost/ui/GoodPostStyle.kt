@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,6 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -1432,6 +1435,262 @@ internal fun WaUnreadBadge(count: Int) {
                 fontSize = if (count > 99) 9.sp else 11.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
+            )
+        }
+    }
+}
+
+// ── The card kit ─────────────────────────────────────────────────────────
+//
+// The shape the whole app is being moved onto: a page is a stack of one-line
+// CARDS, each with a tinted icon badge, a title and a one-line subtitle, and
+// anything long lives on the screen its arrow opens. It replaces the previous
+// habit of printing every control inline, which is what made the administrator
+// screens read as a wall of fields.
+
+/**
+ * A section label: a short accent bar, then the section name.
+ *
+ * The bar is what makes a long form scannable — sections read as groups at a
+ * glance instead of one undifferentiated column of fields.
+ */
+@Composable
+internal fun WaSectionHeading(label: String, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(top = 18.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 3.dp, height = 14.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Wa.Accent)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = label.uppercase(),
+            color = Wa.Text
+        )
+    }
+}
+
+/** The right-pointing arrow a card uses to say "this opens a screen". */
+@Composable
+internal fun WaManageArrow(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+        contentDescription = null,
+        tint = Wa.TextDim,
+        modifier = modifier.size(24.dp)
+    )
+}
+
+/**
+ * A card's header: a tinted icon badge, a title, one subtitle line, then
+ * whatever trailing control the card needs.
+ *
+ * One header shape across a page is what stops it reading as a pile of
+ * differently-built boxes.
+ */
+@Composable
+internal fun WaCardHeader(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    trailing: @Composable RowScope.() -> Unit = {}
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Wa.Accent.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Wa.Accent,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = subtitle,
+                color = Wa.TextDim,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        trailing()
+    }
+}
+
+/** A rounded card: the container every one-line header sits in. */
+@Composable
+internal fun WaCard(
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .background(Wa.Bar)
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(16.dp),
+        content = content
+    )
+}
+
+/**
+ * A labelled field row for a form, with the label ABOVE the box.
+ *
+ * The label is deliberately outside the box: an inline floating label on a dark
+ * fill is what made these forms hard to scan, because the label moved depending
+ * on whether the field had anything in it.
+ */
+@Composable
+internal fun WaFormField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    singleLine: Boolean = true,
+    minHeight: Dp = 0.dp,
+    keyboardType: KeyboardType = KeyboardType.Text
+) {
+    WaField(
+        value = value,
+        onValueChange = onValueChange,
+        label = label,
+        placeholder = placeholder,
+        modifier = modifier,
+        enabled = enabled,
+        singleLine = singleLine,
+        minHeight = minHeight,
+        keyboardType = keyboardType
+    )
+}
+
+/**
+ * A small rounded status chip.
+ *
+ * Used for review states and counts. The colour carries the meaning and the tint
+ * is derived from it, so a chip can never be the wrong shade of the right colour.
+ */
+@Composable
+internal fun WaStatusPill(text: String, color: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.16f))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = text,
+            color = color,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * One editable row in a list: a glyph, the value on ONE ellipsised line, then
+ * fixed-size actions.
+ *
+ * The text is always one line and the actions are fixed 40dp targets, so a long
+ * value can never squeeze the text into a vertical stack and two actions can
+ * never overlap — which is exactly what a weighted text column next to a text
+ * button used to do.
+ */
+@Composable
+internal fun WaListRow(
+    label: String,
+    icon: ImageVector,
+    onRemove: () -> Unit,
+    removeLabel: String,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+    onSend: (() -> Unit)? = null,
+    sendLabel: String = "Send to global review",
+    trailing: @Composable RowScope.() -> Unit = {}
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Wa.Pressed)
+            .padding(start = 12.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = Wa.TextDim,
+            modifier = Modifier.size(16.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f).padding(vertical = 8.dp)) {
+            Text(
+                text = label,
+                color = Wa.Text,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    text = subtitle,
+                    color = Wa.TextDim,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        trailing()
+        if (onSend != null) {
+            IconButton(onClick = onSend, modifier = Modifier.size(40.dp)) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Send,
+                    contentDescription = sendLabel,
+                    tint = Wa.Accent,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+        IconButton(onClick = onRemove, modifier = Modifier.size(40.dp)) {
+            Icon(
+                imageVector = Icons.Filled.Close,
+                contentDescription = removeLabel,
+                tint = Wa.TextDim,
+                modifier = Modifier.size(18.dp)
             )
         }
     }

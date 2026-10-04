@@ -701,11 +701,13 @@ data class GoodPostUiState(
      * with no reader identity at all (`GoodPostRepository.identifiesReaders`),
      * where there is no list of follows to fetch and never will be.
      *
-     * A signed-in account sees the channels it has access to instead — the whole
-     * product for a super administrator, exactly one channel for an account
-     * created for one. That replacement is the point: an account made for a
-     * channel must not be handed the rest of Good Post, and its list therefore
-     * carries only the controls it is entitled to.
+     * A signed-in account sees the channels it has access to instead — the ones
+     * it created (plus any left ownerless) for a super administrator, exactly
+     * one channel for an account created for one. [adminChannels] is already
+     * scoped by the server; it is NOT the catalogue, and a tab that listed every
+     * channel would be a second Explore with controls on rows the account does
+     * not run. Following a channel while signed in still puts it here, because
+     * running one does not stop you being a reader.
      */
     val tabChannels: List<GoodPostChannel>
         get() = if (admin != null) {
@@ -762,6 +764,20 @@ data class GoodPostUiState(
      */
     val tabLoading: Boolean
         get() = if (admin != null) adminChannelsLoading else channelsLoading
+
+    /**
+     * True only when the tab has nothing to show AND is waiting for it.
+     *
+     * Distinct from [tabLoading] on purpose, and it is what the screen asks. A
+     * list that is already on screen — restored from disk, or kept from the last
+     * time — is NOT loading as far as a reader is concerned: the rows are there,
+     * the tab is usable, and the refetch that is updating them belongs behind the
+     * list rather than in place of it. Asking the bare loading flag is what made
+     * the channels disappear and show a skeleton every time the tab was opened,
+     * offline or not.
+     */
+    val tabListIsWaiting: Boolean
+        get() = tabChannels.isEmpty() && tabLoading
 
     /** True while a selection is active in the channel list (§5). */
     val channelSelectionActive: Boolean get() = selectedChannelIds.isNotEmpty()
@@ -893,13 +909,22 @@ class GoodPostViewModel : ViewModel() {
             reportedViews.addAll(store.ids())
         }
 
-        val cached = repo.cachedChannels()
-        if (cached != null) showCachedChannels(cached)
+        // Restore the channel list from disk BEFORE any request goes out, so the
+        // tab is populated from the first frame — offline included. The reader's
+        // own list wins when there is one: it is the list this tab is about.
+        val cachedFollowed = repo.cachedFollowedChannels()
+        val cachedPublic = repo.cachedChannels()
+        val restored = cachedFollowed ?: cachedPublic
+        if (restored != null) showCachedChannels(restored)
 
         uiState = uiState.copy(
             configured = repo.isConfigured,
             categories = repo.cachedCategories(),
             admin = repo.adminSession(),
+            // The follow switches, restored from the last successful read so they
+            // do not flip from off to on while the network answers.
+            followedIds = cachedFollowed?.channels?.map { it.id }?.toSet()
+                ?: repo.cachedFollowedIds(),
             // Both of these are the DEVICE's, read before any request goes out:
             // a reader who asked for notifications keeps them across a cold start
             // even with no network, and their stars are visible in the same tab
@@ -1009,6 +1034,18 @@ class GoodPostViewModel : ViewModel() {
     }
 
     /**
+     * Is the saved channel list fresh enough to skip the refetch entirely?
+     *
+     * This is the whole of the "it fetches the channels every time I open the
+     * tab" fix: inside the window the tab renders from disk and makes no
+     * request, and outside it the refetch happens in the background exactly as
+     * it always did — so freshness is never traded away for speed, only the
+     * redundant request on a re-open is.
+     */
+    private fun channelsCacheIsFresh(repo: GoodPostRepository): Boolean =
+        repo.freshChannels() != null
+
+    /**
      * Refresh the home list, which is ONLY what this reader follows (§4).
      *
      * An answer of "no follows" is a real answer and it is shown as one: the tab
@@ -1022,8 +1059,17 @@ class GoodPostViewModel : ViewModel() {
      * There is no list of follows in that state and never will be, so an empty tab
      * would be permanent and would be describing a build, not a reader (§23).
      */
-    fun refreshChannels() {
+    fun refreshChannels(force: Boolean = false) {
         val repo = repository ?: return
+        // A reader re-opening the tab within the freshness window gets the saved
+        // list and no request at all. The pull-to-refresh and the overflow menu
+        // pass force = true, because a person who asks for a refresh means it.
+        if (!force && channelsCacheIsFresh(repo)) {
+            repo.cachedFollowedChannels()?.let { showCachedChannels(it) }
+                ?: repo.cachedChannels()?.let { showCachedChannels(it) }
+            uiState = uiState.copy(channelsLoading = false)
+            return
+        }
         uiState = uiState.copy(channelsLoading = true, channelsError = null)
 
         viewModelScope.launch {
@@ -1162,7 +1208,9 @@ class GoodPostViewModel : ViewModel() {
                     // that was acted on, so following from Explore does not
                     // re-fetch a channel nobody is looking at.
                     if (uiState.channel?.id == channelId) loadChannel(channelId)
-                    refreshChannels()
+                    // Forced: the follow set has just changed on this device, so
+                    // the saved list is stale by definition.
+                    refreshChannels(force = true)
                 }
 
                 is ApiResult.Failed -> uiState = uiState.copy(
@@ -2058,7 +2106,7 @@ class GoodPostViewModel : ViewModel() {
                 messageCode = firstFailure
             )
             if (uiState.admin != null) loadAdminChannels()
-            refreshChannels()
+            refreshChannels(force = true)
         }
     }
 
@@ -3284,7 +3332,7 @@ class GoodPostViewModel : ViewModel() {
         // The editor belonged to an account that is no longer signed in, and the
         // channel it was aimed at may not even be in the list the tab now shows.
         resetComposer()
-        refreshChannels()
+        refreshChannels(force = true)
     }
 
     fun loadAdminChannels() {
@@ -4278,7 +4326,7 @@ class GoodPostViewModel : ViewModel() {
                 loadAdminChannels()
                 // The public list is refetched too, so a channel an administrator
                 // has just created is visible in the same session (§20).
-                refreshChannels()
+                refreshChannels(force = true)
             }
         }
     }
