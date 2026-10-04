@@ -41,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,7 +95,14 @@ internal fun FilterSheet(
     // section is a single row showing what it's set to until it's tapped.
     var openSection by remember { mutableStateOf<FilterSection?>(null) }
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    // Opens straight to the full menu. Without this the sheet rests at its
+    // "partially expanded" half-screen height, so half the filter sections sat
+    // below the fold until the user dragged it up themselves.
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

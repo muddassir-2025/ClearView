@@ -1151,19 +1151,18 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_ads">Advertisements</string>
 
     <!-- Global Brain Rot repository (admin review queue and rules) -->
-    <string name="goodpost_brainrot">Global protection</string>
+    <string name="goodpost_brainrot">Shared blocklist</string>
     <string name="goodpost_brainrot_dashboard">Dashboard</string>
     <string name="goodpost_channel_section_details">Channel details</string>
     <string name="goodpost_brainrot_rule_on">Enforced for everyone</string>
     <string name="goodpost_brainrot_rule_off">Switched off \u2014 not enforced</string>
     <string name="goodpost_brainrot_queue">Review queue</string>
-    <string name="goodpost_brainrot_total">Total submissions</string>
+    <string name="goodpost_brainrot_total">Total requests</string>
     <string name="goodpost_brainrot_under_review">Under review</string>
-    <string name="goodpost_brainrot_top_channels">MOST BLOCKED CHANNELS</string>
-    <string name="goodpost_brainrot_top_keywords">MOST BLOCKED KEYWORDS</string>
-    <string name="goodpost_brainrot_no_demand">No submissions yet.</string>
-    <string name="goodpost_brainrot_users_blocking">%1$d users blocking</string>
-    <string name="goodpost_brainrot_global_requests">%1$d global requests</string>
+    <string name="goodpost_brainrot_top_channels">MOST REQUESTED CHANNELS</string>
+    <string name="goodpost_brainrot_top_keywords">MOST REQUESTED KEYWORDS</string>
+    <string name="goodpost_brainrot_no_demand">No requests yet.</string>
+    <string name="goodpost_brainrot_global_requests">%1$d requests</string>
     <string name="goodpost_brainrot_source_youtube">From YouTube \u201cNot interested\u201d</string>
     <string name="goodpost_brainrot_source_app">Added in the app</string>
     <string name="goodpost_brainrot_source_unknown">Source not recorded</string>
@@ -1175,20 +1174,20 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_brainrot_rejected">Rejected</string>
     <string name="goodpost_brainrot_all">All</string>
     <string name="goodpost_brainrot_queue_empty_title">Nothing to review</string>
-    <string name="goodpost_brainrot_queue_empty_note">Suggestions from the community appear here, oldest first.</string>
+    <string name="goodpost_brainrot_queue_empty_note">Requests from the community appear here, oldest first.</string>
     <string name="goodpost_brainrot_approve">Approve</string>
     <string name="goodpost_brainrot_reject">Reject</string>
     <string name="goodpost_brainrot_approved_note">Approved</string>
     <string name="goodpost_brainrot_rejected_note">Rejected</string>
-    <string name="goodpost_brainrot_suggestion_note">Suggested by a device</string>
+    <string name="goodpost_brainrot_suggestion_note">Requested by a device</string>
     <string name="goodpost_brainrot_keyword">Keyword</string>
     <string name="goodpost_brainrot_channel">Channel</string>
-    <string name="goodpost_brainrot_rules_empty_title">No global rules</string>
+    <string name="goodpost_brainrot_rules_empty_title">No shared rules</string>
     <string name="goodpost_brainrot_rules_empty_note">Add a keyword or a channel to protect everyone.</string>
     <string name="goodpost_brainrot_add_keyword">Add a keyword</string>
     <string name="goodpost_brainrot_add_keyword_hint">e.g. brainrot</string>
     <string name="goodpost_brainrot_add_channel">Add a channel</string>
-    <string name="goodpost_brainrot_add_channel_hint">@channelhandle</string>
+    <string name="goodpost_brainrot_add_channel_hint">@examplechannel</string>
     <string name="goodpost_brainrot_add">Add</string>
     <string name="goodpost_brainrot_enabled">Enabled</string>
     <string name="goodpost_brainrot_disabled">Disabled</string>
@@ -1197,6 +1196,14 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_brainrot_section_keywords">KEYWORDS</string>
     <string name="goodpost_brainrot_section_channels">CHANNELS</string>
     <string name="goodpost_brainrot_reports">%1$d reports</string>
+    <string name="goodpost_brainrot_reports_tab">False reports</string>
+    <string name="goodpost_brainrot_reports_empty_title">Nothing reported</string>
+    <string name="goodpost_brainrot_reports_empty_note">When someone says a block was wrong, it appears here so you can keep the rule or remove it.</string>
+    <string name="goodpost_brainrot_report_has_rule">This term matches a global rule. Keeping it leaves the rule enforcing; stopping it switches the rule off for everyone.</string>
+    <string name="goodpost_brainrot_report_no_rule">No global rule matches this term — it came from someone\'s own keyword or a strict-mode match. Dismissing only clears the report.</string>
+    <string name="goodpost_brainrot_report_keep">Keep blocking</string>
+    <string name="goodpost_brainrot_report_remove">Stop blocking</string>
+    <string name="goodpost_brainrot_report_dismiss">Dismiss</string>
 
     <string name="goodpost_ad_new">New advertisement</string>
     <string name="goodpost_ad_edit">Edit advertisement</string>
@@ -1271,7 +1278,7 @@ This video cannot be played inside the app.</string>
     <string name="block_shorts_title">Block YouTube Shorts</string>
     <string name="block_shorts_summary">Prevent Shorts from being consumed through supported Chrome browsing.</string>
     <string name="block_brainrot_title">Brain Rot Protection</string>
-    <string name="block_brainrot_summary">Block unwanted content using keywords, channels and global protection rules.</string>
+    <string name="block_brainrot_summary">Block unwanted content with keywords, channels and the shared blocklist.</string>
     <string name="block_locked_hint">Protection is off — the switches below unlock once it is on.</string>
 
     <!-- Brain Rot dashboard -->
@@ -1285,7 +1292,7 @@ This video cannot be played inside the app.</string>
     <string name="block_activity_empty">Nothing blocked yet. Protection is watching.</string>
     <string name="block_today">Today</string>
     <string name="block_this_week">This week</string>
-    <string name="block_most_triggered">Most triggered</string>
+    <string name="block_most_triggered">Most blocked</string>
     <string name="block_top_channel">Top blocked channel</string>
     <string name="block_streak_days">%1$d days protected</string>
     <string name="block_streak_one_day">1 day protected</string>
@@ -1309,18 +1316,18 @@ This video cannot be played inside the app.</string>
 
     <!-- Privacy -->
     <string name="block_privacy_title">PRIVACY</string>
-    <string name="block_privacy_note">Built around anonymous protection. No signup is required.</string>
+    <string name="block_privacy_note">Nothing here is linked to who you are. No account or sign-up is needed.</string>
 
     <!-- Global (community) rules -->
-    <string name="block_global_title">Global protection</string>
-    <string name="block_global_summary">%1$d keywords · %2$d channels maintained for everyone</string>
-    <string name="block_global_note">These rules are maintained centrally and apply automatically, alongside your own.</string>
-    <string name="block_global_unavailable">This build has no server configured, so global rules are unavailable. Your own rules still apply.</string>
+    <string name="block_global_title">Shared blocklist</string>
+    <string name="block_global_summary">%1$d keywords · %2$d channels blocked for everyone</string>
+    <string name="block_global_note">ClearView keeps these, and they apply to everyone automatically — alongside your own rules.</string>
+    <string name="block_global_unavailable">This build has no server set up, so the shared blocklist is unavailable. Your own rules still apply.</string>
     <string name="block_global_sync">Check for updates</string>
     <string name="block_global_syncing">Checking…</string>
-    <string name="block_global_suggest">Suggest to everyone</string>
-    <string name="block_global_suggest_note">Suggestions are reviewed before they become a global rule. One suggestion never changes what everyone else blocks on its own.</string>
-    <string name="block_global_suggest_queued">Queued for review</string>
+    <string name="block_global_suggest">Ask to block it for everyone</string>
+    <string name="block_global_suggest_note">An administrator reviews each request before it applies to anyone. One request never changes what everyone else blocks on its own.</string>
+    <string name="block_global_suggest_queued">Sent for review</string>
     <string name="block_global_suggest_failed">Could not reach the server. Nothing changed.</string>
     <string name="block_global_reports">%1$d reports</string>
 
@@ -1342,19 +1349,19 @@ This video cannot be played inside the app.</string>
     <!-- Section structure -->
     <string name="block_youtube_section">YOUTUBE PROTECTION</string>
     <string name="block_my_items_section">MY BLOCKED ITEMS</string>
-    <string name="block_global_section">GLOBAL REPOSITORY</string>
+    <string name="block_global_section">SHARED BLOCKLIST</string>
     <string name="block_my_items_note">Your own keywords and websites. These apply across Chrome and every site you visit through it.</string>
     <string name="block_youtube_note">These rules apply to YouTube only \u2014 Shorts and long videos. Nothing here affects other websites.</string>
 
     <!-- My submissions to the global repository -->
     <string name="block_my_submissions_title">My requests</string>
     <string name="block_my_submissions_empty">You have not submitted anything for global review.</string>
-    <string name="block_my_submissions_note">Requests you sent for everyone. An administrator reviews them before they apply to anyone.</string>
+    <string name="block_my_submissions_note">Requests you sent to block something for everyone. An administrator reviews each one before it applies.</string>
     <string name="block_my_submission_pending">Pending review</string>
     <string name="block_my_submission_under_review">Under review</string>
-    <string name="block_my_submission_approved">Approved \u2014 now global</string>
+    <string name="block_my_submission_approved">Approved \u2014 blocked for everyone</string>
     <string name="block_my_submission_rejected">Rejected</string>
-    <string name="block_my_submission_submit">Submit to global</string>
+    <string name="block_my_submission_submit">Ask to block it for everyone</string>
 
     <!-- Channel directory (user-facing) -->
     <string name="channel_directory_title">Channel directory</string>
@@ -1382,7 +1389,19 @@ This video cannot be played inside the app.</string>
     <string name="goodpost_directory_delete">Delete</string>
     <string name="goodpost_directory_uncategorised">Uncategorised</string>
     <string name="goodpost_directory_empty">The directory is empty. Add a category, then add channels to it.</string>
+    <string name="goodpost_directory_empty_title">Nothing here yet</string>
+    <string name="goodpost_directory_summary">%1$d categories \u00b7 %2$d channels</string>
+    <string name="goodpost_directory_channel_count">%1$d channels</string>
+    <string name="goodpost_directory_edit_channel">Edit channel</string>
+    <string name="goodpost_directory_where_to_file">Where to file it</string>
+    <string name="goodpost_directory_fetch">Fetch name &amp; icon</string>
+    <string name="goodpost_directory_remove">Remove</string>
+    <string name="goodpost_directory_handle_preview">On %1$s this opens @%2$s</string>
+    <string name="goodpost_directory_uncategorised_note">Shown under All, with no category of its own</string>
     <string name="goodpost_directory_no_channels">No channels here yet.</string>
+    <string name="goodpost_directory_subcategories">Subcategories</string>
+    <string name="goodpost_directory_channels">Channels</string>
+    <string name="goodpost_directory_no_subcategories">No subcategories yet \u2014 add one to group its channels.</string>
     <string name="goodpost_directory_handle_label">Handle</string>
     <string name="goodpost_directory_handle_hint">nasa</string>
     <string name="goodpost_directory_platform_label">Platform</string>

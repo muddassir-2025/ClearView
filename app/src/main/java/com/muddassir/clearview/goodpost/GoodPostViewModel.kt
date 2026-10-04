@@ -21,6 +21,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostAdPlacement
 import com.muddassir.clearview.goodpost.data.GoodPostAttachment
 import com.muddassir.clearview.goodpost.data.GoodPostMedia
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotDashboard
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotReport
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotRule
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotSubmission
 import com.muddassir.clearview.goodpost.data.GoodPostCategory
@@ -542,7 +543,15 @@ data class GoodPostUiState(
     /** The global channel rules, enabled or not. */
     val brainRotChannels: List<GoodPostBrainRotRule> = emptyList(),
     val brainRotRulesLoading: Boolean = false,
-    /** Which half of the screen is showing: the queue or the rules. */
+    /**
+     * The false-positive queue: targets users reported as wrongly blocked.
+     *
+     * The counterpart to [brainRotSubmissions] — a submission asks for a rule, a
+     * report asks for one to stop applying.
+     */
+    val brainRotReports: List<GoodPostBrainRotReport> = emptyList(),
+    val brainRotReportsLoading: Boolean = false,
+    /** Which surface is showing: the dashboard, the queue, the rules or reports. */
     val brainRotTab: Int = 0,
     /** The dashboard's totals and most-requested lists. */
     val brainRotDashboard: GoodPostBrainRotDashboard = GoodPostBrainRotDashboard(),
@@ -3424,16 +3433,18 @@ class GoodPostViewModel : ViewModel() {
         loadBrainRotDashboard()
         loadBrainRotQueue()
         loadBrainRotRules()
+        loadBrainRotReports()
     }
 
-    /** Switch between the dashboard, the queue and the rules. */
+    /** Switch between the dashboard, the queue, the rules and the report queue. */
     fun selectBrainRotTab(tab: Int) {
         if (tab == uiState.brainRotTab) return
         uiState = uiState.copy(brainRotTab = tab)
         when (tab) {
             0 -> loadBrainRotDashboard()
             1 -> loadBrainRotQueue()
-            else -> loadBrainRotRules()
+            2 -> loadBrainRotRules()
+            else -> loadBrainRotReports()
         }
     }
 
@@ -3609,6 +3620,80 @@ class GoodPostViewModel : ViewModel() {
                 )
             }
             if (result is ApiResult.Ok) loadBrainRotRules()
+        }
+    }
+
+    /**
+     * The false-positive queue: reported targets, most-reported first.
+     *
+     * Read on its own rather than folded into the submissions queue: they are
+     * two different questions ("should this be blocked?" and "was this blocked by
+     * mistake?") and a single list would have an operator answering one while
+     * looking at the other.
+     */
+    fun loadBrainRotReports() {
+        val repo = repository ?: return
+        if (uiState.admin == null) return
+        uiState = uiState.copy(brainRotReportsLoading = true)
+        viewModelScope.launch {
+            val result = repo.adminBrainRotReports()
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(
+                    brainRotReports = result.value,
+                    brainRotReportsLoading = false
+                )
+                // Never silently empty: an empty queue would read as "nobody has
+                // reported anything", which is a statement about the platform
+                // rather than a failed request.
+                else -> uiState.copy(
+                    brainRotReportsLoading = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+        }
+    }
+
+    /**
+     * Answer every open report for one target — keeping the rule.
+     *
+     * "Keep" is the operator saying the reports were wrong: nothing changes about
+     * what users are blocked by, and the row leaves the queue so it is not
+     * answered twice.
+     */
+    fun keepBrainRotReport(report: GoodPostBrainRotReport) {
+        resolveBrainRotReport(report, "kept")
+    }
+
+    /**
+     * Answer every open report for one target — and switch the rule off.
+     *
+     * The rule is DISABLED, not deleted: the report was accepted, so the term
+     * stops being blocked for everyone immediately, while an operator who changes
+     * their mind can turn it back on from the Rules tab.
+     */
+    fun removeBrainRotReport(report: GoodPostBrainRotReport) {
+        resolveBrainRotReport(report, "removed")
+    }
+
+    private fun resolveBrainRotReport(report: GoodPostBrainRotReport, resolution: String) {
+        val repo = repository ?: return
+        if (uiState.brainRotBusy) return
+        uiState = uiState.copy(brainRotBusy = true)
+        viewModelScope.launch {
+            val result = repo.adminResolveBrainRotReport(report.kind, report.value, resolution)
+            uiState = when (result) {
+                is ApiResult.Ok -> uiState.copy(brainRotBusy = false)
+                else -> uiState.copy(
+                    brainRotBusy = false,
+                    messageCode = adminFailureCode(result)
+                )
+            }
+            if (result is ApiResult.Ok) {
+                // Re-read both: answering the queue can also have disabled a rule,
+                // and the Rules tab must not keep claiming it is enforcing.
+                loadBrainRotReports()
+                loadBrainRotRules()
+            }
         }
     }
 
@@ -3820,15 +3905,6 @@ class GoodPostViewModel : ViewModel() {
     fun onAdImageFitChange(fit: String) {
         uiState = uiState.copy(
             adFormImageFit = if (fit == "contain") "contain" else "cover",
-            messageCode = null
-        )
-    }
-
-    /** The crop's centre, from the editor's framing step (§12). */
-    fun onAdFocusChange(x: Float, y: Float) {
-        uiState = uiState.copy(
-            adFormFocusX = x.coerceIn(0f, 1f),
-            adFormFocusY = y.coerceIn(0f, 1f),
             messageCode = null
         )
     }

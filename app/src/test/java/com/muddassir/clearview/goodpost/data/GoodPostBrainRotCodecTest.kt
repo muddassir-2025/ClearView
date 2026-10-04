@@ -246,10 +246,10 @@ class GoodPostBrainRotCodecTest {
         assertEquals(3, dashboard.underReview)
         assertEquals(11, dashboard.total)
         assertEquals(1, dashboard.topChannels.size)
-        assertEquals(247, dashboard.topChannels.first().usersBlocking)
+        assertEquals(247, dashboard.topChannels.first().reports)
         assertEquals(182, dashboard.topChannels.first().globalRequests)
         assertTrue(dashboard.topChannels.first().isChannel)
-        assertEquals(531, dashboard.topKeywords.first().usersBlocking)
+        assertEquals(531, dashboard.topKeywords.first().reports)
         assertFalse(dashboard.topKeywords.first().isChannel)
     }
 
@@ -259,5 +259,64 @@ class GoodPostBrainRotCodecTest {
         assertEquals(0, dashboard.total)
         assertTrue(dashboard.topChannels.isEmpty())
         assertTrue(dashboard.topKeywords.isEmpty())
+    }
+
+    // ── The false-positive queue ─────────────────────────────────────────
+
+    private fun report(
+        kind: String = "keyword",
+        value: String = "brainrot",
+        ruleId: String? = "k1",
+        ruleEnabled: Boolean? = true
+    ): JSONObject {
+        val row = JSONObject()
+            .put("kind", kind)
+            .put("value", value)
+            .put("reports", 4)
+            .put("detail", "Blocked in error")
+            .put("latestAt", "2026-01-02T00:00:00.000Z")
+            .put("firstAt", "2026-01-01T00:00:00.000Z")
+        if (ruleId != null) row.put("ruleId", ruleId)
+        else row.put("ruleId", JSONObject.NULL)
+        if (ruleEnabled != null) row.put("ruleEnabled", ruleEnabled)
+        else row.put("ruleEnabled", JSONObject.NULL)
+        return row
+    }
+
+    @Test
+    fun `a reported target keeps its rule and its count`() {
+        val body = JSONObject().put("reports", JSONArray().put(report()))
+        val rows = GoodPostCodec.brainRotReports(body)
+        assertEquals(1, rows.size)
+        assertEquals(4, rows[0].reports)
+        assertEquals("Blocked in error", rows[0].detail)
+        assertEquals("k1", rows[0].ruleId)
+        assertEquals(true, rows[0].ruleEnabled)
+        assertTrue(rows[0].hasRule)
+    }
+
+    @Test
+    fun `a report with no matching rule is not a rule`() {
+        val body = JSONObject()
+            .put("reports", JSONArray().put(report(value = "mine", ruleId = null, ruleEnabled = null)))
+        val rows = GoodPostCodec.brainRotReports(body)
+        assertEquals(1, rows.size)
+        assertNull(rows[0].ruleId)
+        assertNull(rows[0].ruleEnabled)
+        assertFalse(rows[0].hasRule)
+    }
+
+    @Test
+    fun `a channel report reads as a channel`() {
+        val body = JSONObject()
+            .put("reports", JSONArray().put(report(kind = "channel", value = "@examplechannel")))
+        val rows = GoodPostCodec.brainRotReports(body)
+        assertTrue(rows[0].isChannel)
+        assertEquals("@examplechannel", rows[0].value)
+    }
+
+    @Test
+    fun `an absent reports body is an empty queue rather than a failure`() {
+        assertTrue(GoodPostCodec.brainRotReports(JSONObject()).isEmpty())
     }
 }

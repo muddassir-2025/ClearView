@@ -598,6 +598,18 @@ internal class GoodPostRepository(
     suspend fun adminBrainRotDashboard(): ApiResult<GoodPostBrainRotDashboard> =
         authorized { token -> api.adminBrainRotDashboard(token) }
 
+    /** The false-positive queue: targets users reported as wrongly blocked. */
+    suspend fun adminBrainRotReports(): ApiResult<List<GoodPostBrainRotReport>> =
+        authorized { token -> api.adminBrainRotReports(token) }
+
+    /** Answer every open report for one target: keep the rule, or remove it. */
+    suspend fun adminResolveBrainRotReport(
+        kind: String,
+        value: String,
+        resolution: String
+    ): ApiResult<Unit> =
+        authorized { token -> api.adminResolveBrainRotReport(token, kind, value, resolution) }
+
     suspend fun adminCreateChannel(body: JSONObject): ApiResult<GoodPostChannel> =
         authorized { token -> api.adminCreateChannel(token, body) }
 

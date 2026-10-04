@@ -15,8 +15,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Search
@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,6 +54,8 @@ internal fun ChannelDirectorySheet(
     onRemove: (SavedChannel) -> Unit,
     /** Mutes or un-mutes one channel's notifications, on any source. */
     onToggleNotifications: (SavedChannel) -> Unit,
+    /** Leaves this sheet and opens the add-channel dialog. */
+    onAddChannel: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val filtered = channels.filter { channel ->
@@ -62,8 +65,6 @@ internal fun ChannelDirectorySheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.FilterList, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.size(8.dp))
                 Text("All channels", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 IconButton(onClick = onDismiss) { Icon(Icons.Filled.Close, contentDescription = "Close") }
             }
@@ -87,6 +88,23 @@ internal fun ChannelDirectorySheet(
                 contentPadding = PaddingValues(bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // The way IN, at the top: adding is the first thing a user looks
+                // for when a channel is missing, and on an empty directory it is
+                // the only useful action on the screen.
+                item(key = "add-channel") {
+                    OutlinedButton(
+                        onClick = onAddChannel,
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.size(8.dp))
+                        Text("Add channel")
+                    }
+                }
                 items(filtered, key = { it.channelId }) { channel ->
                     Surface(
                         modifier = Modifier.fillMaxWidth(),

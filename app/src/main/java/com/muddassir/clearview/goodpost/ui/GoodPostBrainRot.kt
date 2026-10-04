@@ -48,6 +48,7 @@ import com.muddassir.clearview.R
 import com.muddassir.clearview.goodpost.GoodPostUiState
 import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotDemand
+import com.muddassir.clearview.goodpost.data.GoodPostBrainRotReport
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotRule
 import com.muddassir.clearview.goodpost.data.GoodPostBrainRotSubmission
 
@@ -107,17 +108,26 @@ internal fun BrainRotReviewScreen(state: GoodPostUiState, viewModel: GoodPostVie
                 selected = state.brainRotTab == 2,
                 onClick = { viewModel.selectBrainRotTab(2) }
             )
+            // The other queue. A submission asks for a rule; a REPORT asks for one
+            // to stop applying, and keeping them apart is what lets an operator
+            // answer one question at a time.
+            WaFilterPill(
+                label = stringResource(R.string.goodpost_brainrot_reports_tab),
+                selected = state.brainRotTab == 3,
+                onClick = { viewModel.selectBrainRotTab(3) }
+            )
         }
 
         Box(modifier = Modifier.fillMaxSize()) {
             when (state.brainRotTab) {
                 0 -> BrainRotDashboard(state = state, viewModel = viewModel)
                 1 -> BrainRotQueue(state = state, viewModel = viewModel)
-                else -> BrainRotRules(
+                2 -> BrainRotRules(
                     state = state,
                     viewModel = viewModel,
                     onDelete = { pendingDelete = it }
                 )
+                else -> BrainRotReports(state = state, viewModel = viewModel)
             }
         }
     }
@@ -263,10 +273,16 @@ private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifi
 /**
  * One target's demand, as a card row.
  *
- * "247 users blocking · 182 global requests" is the sentence an operator needs:
- * the first is how many devices independently reported it, the second is how
- * many asked for it to be blocked for everyone. They are not the same question,
- * so they are not the same number.
+ * "247 reports · 182 requests" is the sentence an operator needs: the first is
+ * how many devices independently reported the target, the second is how many
+ * asked for it to be blocked for everyone. They are not the same question, so
+ * they are not the same number — and neither of them is "how many people have
+ * blocked this", which is not something the server is told.
+ *
+ * The count is worded "reports" because that is what it counts. It used to read
+ * "users blocking", which named a different (and unavailable) number, so a card
+ * that had requests but no reports showed a confident, meaningless "0 users
+ * blocking".
  */
 @Composable
 private fun DemandRow(row: GoodPostBrainRotDemand) {
@@ -285,8 +301,8 @@ private fun DemandRow(row: GoodPostBrainRotDemand) {
                 trailing = {
                     WaStatusPill(
                         text = stringResource(
-                            R.string.goodpost_brainrot_users_blocking,
-                            row.usersBlocking
+                            R.string.goodpost_brainrot_reports,
+                            row.reports
                         ),
                         color = Wa.Accent
                     )
@@ -436,7 +452,7 @@ private fun SubmissionRow(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = stringResource(
-                        R.string.goodpost_brainrot_users_blocking,
+                        R.string.goodpost_brainrot_reports,
                         submission.reports
                     ) + "  ·  " + stringResource(
                         R.string.goodpost_brainrot_global_requests,
@@ -488,6 +504,139 @@ private fun SubmissionRow(
                     color = Wa.TextDim,
                     fontSize = 12.sp
                 )
+            }
+        }
+    }
+}
+
+// ── The false-positive queue ────────────────────────────────────────────
+
+/**
+ * Targets users reported as wrongly blocked.
+ *
+ * A load-bearing distinction: this is NOT the submission queue. A submission is
+ * somebody asking for something to be blocked; a report is somebody saying a
+ * block was wrong. The same term can appear in both, and the two answers (add a
+ * rule, stop a rule) are opposites — so they get a list each.
+ *
+ * Every row carries its reports and, when one exists, the global rule the term
+ * matches, so the decision can be made without leaving the screen to go and find
+ * the rule on another tab.
+ */
+@Composable
+private fun BrainRotReports(state: GoodPostUiState, viewModel: GoodPostViewModel) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 32.dp)
+        ) {
+            if (state.brainRotReports.isEmpty() && !state.brainRotReportsLoading) {
+                item(key = "empty") {
+                    WaEmptyState(
+                        title = stringResource(R.string.goodpost_brainrot_reports_empty_title),
+                        note = stringResource(R.string.goodpost_brainrot_reports_empty_note)
+                    )
+                }
+            }
+
+            items(
+                state.brainRotReports,
+                // Keyed on the target, which is what a row IS — two rows can
+                // share a value only by being the same target.
+                key = { it.kind + ":" + it.value }
+            ) { report ->
+                ReportRow(
+                    report = report,
+                    busy = state.brainRotBusy,
+                    onKeep = { viewModel.keepBrainRotReport(report) },
+                    onRemove = { viewModel.removeBrainRotReport(report) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One reported target, with the two answers an operator can give.
+ *
+ * "Keep blocking" and "Stop blocking" are spelled out rather than being an
+ * "Approve" / "Reject" pair: the words say what happens to the block, which is
+ * the only thing either button changes. A term no global rule matches has no
+ * block to stop, so it offers the single honest action — dismiss the report —
+ * instead of a button that would quietly do nothing.
+ */
+@Composable
+private fun ReportRow(
+    report: GoodPostBrainRotReport,
+    busy: Boolean,
+    onKeep: () -> Unit,
+    onRemove: () -> Unit
+) {
+    Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        WaCard {
+            WaCardHeader(
+                icon = if (report.isChannel) Icons.Outlined.PlayCircle else Icons.Outlined.Block,
+                title = report.displayName ?: report.value,
+                // The handle under a channel's name, so the identity is never
+                // hidden by the display name.
+                subtitle = if (report.isChannel && report.displayName != null) {
+                    report.value
+                } else {
+                    stringResource(R.string.goodpost_brainrot_keyword)
+                },
+                trailing = {
+                    WaStatusPill(
+                        text = stringResource(
+                            R.string.goodpost_brainrot_reports,
+                            report.reports
+                        ),
+                        color = Wa.Accent
+                    )
+                }
+            )
+
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = if (report.hasRule) {
+                    stringResource(R.string.goodpost_brainrot_report_has_rule)
+                } else {
+                    stringResource(R.string.goodpost_brainrot_report_no_rule)
+                },
+                color = Wa.TextDim,
+                fontSize = 12.sp,
+                lineHeight = 17.sp
+            )
+
+            // What the reporter said, when they said anything. It is free text, so
+            // it is quoted rather than presented as fact.
+            report.detail?.takeIf { it.isNotBlank() }?.let { note ->
+                Spacer(Modifier.height(4.dp))
+                Text(text = "\u201c$note\u201d", color = Wa.TextDim, fontSize = 12.sp)
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (report.hasRule) {
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_report_keep),
+                        enabled = !busy,
+                        onClick = onKeep
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_report_remove),
+                        enabled = !busy,
+                        onClick = onRemove,
+                        destructive = true
+                    )
+                } else {
+                    WaTextAction(
+                        text = stringResource(R.string.goodpost_brainrot_report_dismiss),
+                        enabled = !busy,
+                        onClick = onKeep
+                    )
+                }
             }
         }
     }

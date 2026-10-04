@@ -7,15 +7,12 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -64,11 +61,8 @@ import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -93,7 +87,6 @@ import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.formatAdDate
 import com.muddassir.clearview.goodpost.data.isoFromLocalStart
 import com.muddassir.clearview.goodpost.data.localStartToPickerMillis
-import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
 import kotlinx.coroutines.delay
 
 /**
@@ -240,11 +233,13 @@ internal fun AdCarousel(ads: List<GoodPostAd>, modifier: Modifier = Modifier) {
         HorizontalPager(
             state = pagerState,
             modifier = Modifier.fillMaxWidth(),
-            // ONE card on screen at a time, with the next one peeking past the
-            // right edge. The peek is what says there is more than one without
-            // making the cards share the width: the end padding is wider than the
-            // gap between pages, so the following card shows a strip of itself.
-            contentPadding = PaddingValues(start = 16.dp, end = 56.dp),
+            // ONE card on screen at a time — the whole card, and only that card.
+            // The right-hand padding is deliberately the SAME as the left, so the
+            // page is exactly as wide as the space a card should have and the
+            // next card sits fully off-screen (it slides in as you swipe). A
+            // narrower end padding used to leave a strip of the following card
+            // showing, which read as a second, broken card rather than as a cue.
+            contentPadding = PaddingValues(horizontal = 16.dp),
             pageSpacing = 12.dp
         ) { page ->
             AdCard(ad = ads[page], onClick = { openAdTarget(context, ads[page].targetUrl) })
@@ -285,8 +280,8 @@ private fun AdCard(ad: GoodPostAd, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(150.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .height(184.dp)
+            .clip(RoundedCornerShape(20.dp))
             .background(adBackgroundColor(ad.backgroundColor))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -530,14 +525,18 @@ private const val AD_PREVIEW_PX = 720
 @Composable
 internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     val creating = state.adFormId == null
-    val context = LocalContext.current
+
+    // Hold the picked picture so the CROP step can own it. Choosing a picture
+    // for a card is the same act as attaching one to a post, so it goes through
+    // the same crop: the picture is framed before it is uploaded, and what the
+    // administrator frames is what is stored.
+    var croppingUri by remember { mutableStateOf<String?>(null) }
 
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
-        val attachment = readGoodPostAttachment(context, uri)
-        if (attachment == null) viewModel.reportUnsupportedMedia() else viewModel.onAdImagePicked(attachment)
+        croppingUri = uri.toString()
     }
 
     val picked = state.adFormImage
@@ -551,27 +550,30 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
     // anchored to its row, not to the window.
     var showStartPicker by remember { mutableStateOf(false) }
     var showExpiryPicker by remember { mutableStateOf(false) }
-    var showCrop by remember { mutableStateOf(false) }
 
-    // The crop editor is a SCREEN over the form, not a box inside it.
+    // The picked picture is cropped FIRST, with the very screen the composer
+    // uses (§21) — the same crop box, the same return of a freshly written
+    // image. Only the cropped result is handed to the form.
     //
-    // WhatsApp crops a profile picture this way for the reason it has to: the
-    // picture has to be seen at the size it will be used at, with the frame
-    // around it, and a small preview inside a scrolling form cannot show a
-    // photograph's edges. Nothing else of the form is visible while it is open,
-    // and Done or Cancel returns to exactly the field that opened it.
-    if (showCrop) {
-        AdCropScreen(
-            localImage = preview,
-            remoteUrl = state.adFormExistingImageUrl,
-            fit = state.adFormImageFit,
-            focusX = state.adFormFocusX,
-            focusY = state.adFormFocusY,
-            onDone = { x, y ->
-                viewModel.onAdFocusChange(x, y)
-                showCrop = false
+    // (Like the composer, the crop editor is a SCREEN over the form, not a box
+    // inside it: the picture has to be seen at the size it will be used at,
+    // with the frame around it, and nothing else of the form is visible while
+    // it is open — Done or Cancel returns to the field that opened it.)
+    croppingUri?.let { uri ->
+        GoodPostCropScreen(
+            imageUri = uri,
+            onCropped = { attachment ->
+                croppingUri = null
+                viewModel.onAdImagePicked(attachment)
             },
-            onCancel = { showCrop = false }
+            onCancel = { croppingUri = null },
+            // A picture this app cannot decode is a picture it cannot put on a
+            // card, and that is the same refusal every other unsupported pick
+            // gets.
+            onFailed = {
+                croppingUri = null
+                viewModel.reportUnsupportedMedia()
+            }
         )
         return
     }
@@ -680,34 +682,10 @@ internal fun AdFormScreen(state: GoodPostUiState, viewModel: GoodPostViewModel) 
                         lineHeight = 17.sp
                     )
 
-                    // The crop step. It is offered whenever a picture is
-                    // attached — a freshly picked one OR the one the card
-                    // already has — because framing is about the picture, and a
-                    // card whose image came from a previous save needs it just as
-                    // much as a new one.
-                    if (preview != null || state.adFormExistingImageUrl != null) {
-                        Spacer(Modifier.height(14.dp))
-                        // A way IN rather than a draggable box: the crop has to be
-                        // chosen against the whole card, which only a full screen
-                        // can show. See [AdCropScreen].
-                        AdDateRow(
-                            label = stringResource(R.string.goodpost_ad_crop),
-                            value = stringResource(R.string.goodpost_ad_crop_open),
-                            enabled = !state.adminBusy,
-                            onClick = { showCrop = true }
-                        )
-                    } else {
-                        // No picture yet: say what to do rather than showing a
-                        // control that cannot open. A row that is there but does
-                        // nothing reads as broken.
-                        Spacer(Modifier.height(14.dp))
-                        Text(
-                            text = stringResource(R.string.goodpost_ad_crop_first),
-                            color = Wa.TextDim,
-                            fontSize = 12.sp,
-                            lineHeight = 17.sp
-                        )
-                    }
+                    // There is no separate framing step: the picture is already
+                    // cropped on the way in, with the same screen a post uses
+                    // (including its 16:9 "Wide" shape), so what the
+                    // administrator framed is what the card shows.
                     Spacer(Modifier.height(16.dp))
                 }
 
@@ -995,8 +973,8 @@ private fun AdFormPreview(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(150.dp)
-            .clip(RoundedCornerShape(14.dp))
+            .height(184.dp)
+            .clip(RoundedCornerShape(20.dp))
             .background(adBackgroundColor(state.adFormBackgroundColor)),
         contentAlignment = Alignment.Center
     ) {
@@ -1178,156 +1156,6 @@ private fun AdColorRow(
                     )
                     .clickable(enabled = enabled) { onSelect(hex) }
             )
-        }
-    }
-}
-
-/**
- * The crop step (§12).
- *
- * The card's own frame with the picture inside it, draggable: the point of the
- * picture the administrator leaves the drag on is the point a reader sees, and it
- * is stored on the CARD — so a photograph is uploaded once and can be reframed
- * later without touching the file.
- *
- * The drag is measured against the frame's own size, which is what makes the
- * stored value a fraction rather than a pixel count: the same card is drawn at
- * three different sizes in this app, and a focus that only worked at one of them
- * would be a crop that moved when the screen did.
- */
-@Composable
-private fun AdCropScreen(
-    localImage: Bitmap?,
-    remoteUrl: String?,
-    fit: String,
-    focusX: Float,
-    focusY: Float,
-    onDone: (Float, Float) -> Unit,
-    onCancel: () -> Unit
-) {
-    // The edits are held HERE until Done, so Cancel really cancels: writing each
-    // drag straight back into the form would make the back button a save.
-    var x by remember { mutableStateOf(focusX) }
-    var y by remember { mutableStateOf(focusY) }
-
-    var frameWidth by remember { mutableStateOf(1f) }
-    var frameHeight by remember { mutableStateOf(1f) }
-
-    // The frame is the card's own shape — 16:9, the same box a reader sees — and
-    // the picture is drawn at its NATURAL aspect inside it, then panned. That is
-    // the whole point of the screen: a wide photograph in a wide frame has almost
-    // no crop to choose, and the same photograph in this frame is where the choice
-    // actually exists.
-    val alignment = adAlignment(x, y)
-    val contentScale = if (fit == "contain") ContentScale.Fit else ContentScale.Crop
-
-    WaBackdrop {
-        Column(modifier = Modifier.fillMaxSize()) {
-            WaTopBar(
-                title = stringResource(R.string.goodpost_ad_crop),
-                navigation = {
-                    WaIconAction(
-                        icon = Icons.AutoMirrored.Filled.ArrowBack,
-                        description = stringResource(R.string.goodpost_back),
-                        onClick = onCancel
-                    )
-                }
-            )
-
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(20.dp)
-            ) {
-                Text(
-                    text = stringResource(R.string.goodpost_ad_crop_how),
-                    color = Wa.TextDim,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
-
-                Spacer(Modifier.height(16.dp))
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Wa.Pressed)
-                        .onSizeChanged { size ->
-                            frameWidth = size.width.toFloat().coerceAtLeast(1f)
-                            frameHeight = size.height.toFloat().coerceAtLeast(1f)
-                        }
-                        .pointerInput(fit) {
-                            if (fit == "contain") return@pointerInput
-                            detectDragGestures { change, drag ->
-                                change.consume()
-                                // The picture follows the finger: dragging right
-                                // moves the picture right, which shows more of its
-                                // left, so the crop centre moves the other way.
-                                x = (x - drag.x / frameWidth).coerceIn(0f, 1f)
-                                y = (y - drag.y / frameHeight).coerceIn(0f, 1f)
-                            }
-                        },
-                    contentAlignment = Alignment.Center
-                ) {
-                    when {
-                        localImage != null -> Image(
-                            bitmap = localImage.asImageBitmap(),
-                            contentDescription = null,
-                            contentScale = contentScale,
-                            alignment = alignment,
-                            modifier = Modifier.fillMaxSize()
-                        )
-
-                        remoteUrl != null -> AdRemoteImage(
-                            url = remoteUrl,
-                            contentScale = contentScale,
-                            alignment = alignment
-                        )
-                    }
-
-                    // The centre of the crop, so the drag has a visible state.
-                    if (fit != "contain") {
-                        val accentColor = Wa.Accent
-                        val onAccentColor = Wa.OnAccent
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val cx = x * size.width
-                            val cy = y * size.height
-                            drawCircle(accentColor, radius = 6.dp.toPx(), center = Offset(cx, cy))
-                            drawCircle(
-                                onAccentColor,
-                                radius = 6.dp.toPx(),
-                                center = Offset(cx, cy),
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx())
-                            )
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = stringResource(R.string.goodpost_ad_crop_hint),
-                    color = Wa.TextDim,
-                    fontSize = 12.sp
-                )
-
-                Spacer(Modifier.height(20.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    WaTextAction(
-                        text = stringResource(R.string.goodpost_cancel),
-                        onClick = onCancel
-                    )
-                    WaTextAction(
-                        text = stringResource(R.string.goodpost_ad_crop_done),
-                        onClick = { onDone(x, y) }
-                    )
-                }
-            }
         }
     }
 }

@@ -952,6 +952,46 @@ class GoodPostApi(
             parse = GoodPostCodec::brainRotDashboard
         )
 
+    /**
+     * The false-positive queue: targets users reported as wrongly blocked.
+     *
+     * The counterpart to the review queue — a submission asks for a rule, a
+     * report asks for one to stop applying.
+     */
+    suspend fun adminBrainRotReports(token: String): ApiResult<List<GoodPostBrainRotReport>> =
+        parsedCall(
+            method = "GET",
+            path = "$ADMIN_PATH/brainrot/reports",
+            body = null,
+            bearer = token,
+            parse = GoodPostCodec::brainRotReports
+        )
+
+    /**
+     * Answer every open report for one target.
+     *
+     * `resolution` is `kept` (the reports were wrong) or `removed` (the rule is
+     * switched off). The server does both writes in one transaction, so a rule
+     * can never end up off with its reports still queued.
+     */
+    suspend fun adminResolveBrainRotReport(
+        token: String,
+        kind: String,
+        value: String,
+        resolution: String
+    ): ApiResult<Unit> =
+        parsedCall(
+            method = "POST",
+            path = "$ADMIN_PATH/brainrot/reports/resolve",
+            body = JSONObject().apply {
+                put("kind", if (kind == "channel") "channel" else "keyword")
+                put("value", value)
+                put("resolution", resolution)
+            },
+            bearer = token,
+            parse = { }
+        )
+
     /** The URL segment for a rule kind, validated so a bad kind cannot build a path. */
     private fun brainRotKindPath(kind: String): String =
         if (kind == "channel") "channels" else "keywords"

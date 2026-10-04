@@ -12,7 +12,9 @@ import {
   getDashboard,
   listGlobalChannels,
   listGlobalKeywords,
+  listOpenReports,
   listSubmissions,
+  resolveReportGroup,
   reviewSubmission,
   setGlobalChannelEnabled,
   setGlobalKeywordEnabled,
@@ -72,6 +74,15 @@ const EnabledBodySchema = z.object({ enabled: z.boolean() }).strict();
 
 const ReviewBodySchema = z
   .object({ decision: z.enum(['approved', 'rejected', 'under_review']) })
+  .strict();
+
+const ResolveReportBodySchema = z
+  .object({
+    kind: z.enum(['keyword', 'channel']),
+    value: z.string().trim().min(1).max(120),
+    /** `kept` answered the reports, `removed` also switched the rule off. */
+    resolution: z.enum(['kept', 'removed']),
+  })
   .strict();
 
 const QueueQuerySchema = z.object({
@@ -162,6 +173,38 @@ export function buildBrainRotAdminRouter(database: Queryable): Router {
     const id = pathIdParam(req.params.submissionId, 'invalid_submission_id');
     const body = parseBody(ReviewBodySchema, req.body);
     const result = await reviewSubmission(database, id, body.decision, actorOf(req).adminId);
+    res.status(200).json(result);
+  });
+
+  // ── The false-positive queue ──────────────────────────────────────────
+
+  /**
+   * Targets users reported as wrongly blocked, most-reported first.
+   *
+   * These come from the block overlay's "Report false positive", so a row is a
+   * user saying the term should not have matched — the counterpart to a
+   * submission, which is a user saying something SHOULD be blocked. An operator
+   * either keeps the rule or switches it off, and either answer empties the row.
+   */
+  router.get('/reports', requireAdmin(database, 'brainrot.read'), async (_req, res) => {
+    res.status(200).json({ reports: await listOpenReports(database) });
+  });
+
+  /**
+   * Answer every open report for one target.
+   *
+   * `kept` leaves the rule alone; `removed` also disables it, and both are one
+   * transaction so a rule can never end up off with its reports still queued.
+   */
+  router.post('/reports/resolve', requireAdmin(database, 'brainrot.manage'), async (req, res) => {
+    const body = parseBody(ResolveReportBodySchema, req.body);
+    const result = await resolveReportGroup(
+      database,
+      actorOf(req).adminId,
+      body.kind,
+      body.value,
+      body.resolution
+    );
     res.status(200).json(result);
   });
 

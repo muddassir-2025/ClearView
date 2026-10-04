@@ -29,6 +29,15 @@ internal object BlockNotifications {
 
     const val CHANNEL_ID = "clearview_blocking"
 
+    /**
+     * Tells the app to open the Block dashboard, not whichever tab it restored.
+     *
+     * The notification is the receipt for a block that has already happened, so
+     * opening it has to land on the list that block is now part of — otherwise
+     * the user taps "X is now blocked" and arrives somewhere with no X on it.
+     */
+    const val EXTRA_OPEN_BLOCKING = "com.muddassir.clearview.extra.OPEN_BLOCKING"
+
     /** One id, so the newest block is the line shown rather than a stack. */
     private const val NOTIFICATION_ID = 0x810C
 
@@ -48,6 +57,8 @@ internal object BlockNotifications {
 
         val intent = Intent(context, LauncherActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            // Opens the Block dashboard — see [EXTRA_OPEN_BLOCKING].
+            putExtra(EXTRA_OPEN_BLOCKING, true)
         }
         val pending = PendingIntent.getActivity(
             context,

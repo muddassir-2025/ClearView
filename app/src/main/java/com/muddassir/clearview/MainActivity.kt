@@ -40,6 +40,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.muddassir.clearview.brainrot.BlockNotifications
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.playback.AudioPlaybackService
@@ -108,6 +109,12 @@ open class MainActivity : ComponentActivity() {
             intent.removeExtra(PhoneLimitCoordinator.EXTRA_OPEN_PHONE_LIMIT)
             phoneLimitRequestState.value = true
         }
+        // Block notification tap: the block it reports is a row on the Block
+        // dashboard, so that is where the tap has to land.
+        if (intent.getBooleanExtra(BlockNotifications.EXTRA_OPEN_BLOCKING, false)) {
+            intent.removeExtra(BlockNotifications.EXTRA_OPEN_BLOCKING)
+            blockingRequestState.value = true
+        }
         // Media card tap: reopen the player for what the audio service is
         // playing (the notification's content intent carries both fields).
         nowPlayingFrom(intent)?.let { request ->
@@ -148,6 +155,22 @@ open class MainActivity : ComponentActivity() {
     /** Clears the warm-start request after MainScreen has handled it. */
     fun consumePhoneLimitScreenRequest() {
         phoneLimitRequestState.value = false
+    }
+
+    // ── Block dashboard deep link (a block notification tap) ──
+
+    /**
+     * Warm-start request for the Block dashboard, set when a block
+     * notification is tapped while the app is already running — the same shape
+     * as [todoRequestState]. The cold-start path reads the extra straight off
+     * the launcher intent in MainScreen.
+     */
+    private val blockingRequestState = mutableStateOf(false)
+    val blockingScreenRequested: Boolean get() = blockingRequestState.value
+
+    /** Clears the warm-start request after MainScreen has handled it. */
+    fun consumeBlockingScreenRequest() {
+        blockingRequestState.value = false
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -370,6 +393,29 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             selectedTab = MainTab.MORE
             hub.selectTab(ContentTab.QURAN)
             hub.showPhoneLimitSheet = true
+        }
+    }
+
+    // A block notification tap opens the Block dashboard: the notification is
+    // the receipt for a block ClearView just made, and the block is a row on
+    // that dashboard — so it is the More tab's Protection page, not whatever tab
+    // the app happened to be on. Cold start: the launcher intent carries the
+    // flag; warm start: onNewIntent set blockingRequested.
+    LaunchedEffect(Unit) {
+        if (activity?.intent?.getBooleanExtra(BlockNotifications.EXTRA_OPEN_BLOCKING, false) == true) {
+            activity.intent.removeExtra(BlockNotifications.EXTRA_OPEN_BLOCKING)
+            selectedTab = MainTab.MORE
+            hub.selectTab(ContentTab.QURAN)
+            moreProtection = true
+        }
+    }
+    val blockingRequested = activity?.blockingScreenRequested == true
+    LaunchedEffect(blockingRequested) {
+        if (blockingRequested) {
+            activity?.consumeBlockingScreenRequest()
+            selectedTab = MainTab.MORE
+            hub.selectTab(ContentTab.QURAN)
+            moreProtection = true
         }
     }
 
@@ -601,9 +647,27 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         },
         bottomBar = {
             if (hub.playingVideo == null && hub.playingAudio == null && !isFullscreen) {
-                NavigationBar {
+                // Glass, not a slab: a translucent tint of the theme's own
+                // surface, so the page colour reads through the bar instead of
+                // the bar sitting on top of it as a black (or grey) band. The
+                // colour is taken from the theme rather than hard-coded black so
+                // it keeps working in both light and dark, and the items get
+                // explicit colours because NavigationBarItemDefaults follows the
+                // theme's on-surface roles, not this container tint.
+                val footerItemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
+                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                NavigationBar(
+                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                ) {
                     contentHubNavItems().forEach { item ->
                         NavigationBarItem(
+                            colors = footerItemColors,
                             selected = selectedTab == tabFor(item.tab),
                             onClick = {
                                 // selectTab (not a bare assignment) so the
@@ -634,6 +698,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         )
                     }
                     NavigationBarItem(
+                        colors = footerItemColors,
                         selected = selectedTab == MainTab.GOODPOST,
                         onClick = {
                             selectedTab = MainTab.GOODPOST
@@ -647,6 +712,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         label = { Text(stringResource(R.string.goodpost_tab)) }
                     )
                     NavigationBarItem(
+                        colors = footerItemColors,
                         selected = selectedTab == MainTab.MORE,
                         onClick = {
                             selectedTab = MainTab.MORE

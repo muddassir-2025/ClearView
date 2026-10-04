@@ -706,3 +706,166 @@ export async function reportTarget(
   );
   return { reports: Number(row?.total ?? 0) };
 }
+
+// ── The false-positive queue ─────────────────────────────────────────────
+
+/**
+ * One reported target, as the queue lists it.
+ *
+ * Grouped by target rather than by report. Two hundred devices reporting the
+ * same term is ONE decision for an operator, not two hundred rows to read — and
+ * the row carries the rule that term currently matches, so the decision can be
+ * made from the queue instead of by finding the rule on another tab first.
+ *
+ * `reports` is the same distinct-device count the rules list shows, taken from
+ * the same table, so a target that appears in both places can never read two
+ * different numbers.
+ */
+export interface BrainRotReportGroup {
+  readonly kind: BrainRotTargetKind;
+  readonly value: string;
+  readonly reports: number;
+  /** The most recent note a reporter left, when one did. */
+  readonly detail: string | null;
+  readonly latestAt: string;
+  readonly firstAt: string;
+  /** The global rule this target matches, when it is one. */
+  readonly ruleId: string | null;
+  /** Null when no rule exists for the target — a personal or strict-mode term. */
+  readonly ruleEnabled: boolean | null;
+  /** A name to show beside a handle, when the rule or a submission has one. */
+  readonly displayName: string | null;
+}
+
+/** What an operator decided about a reported target. */
+export type BrainRotReportResolution = 'kept' | 'removed';
+
+/**
+ * Everything still waiting for a decision, most-reported first.
+ *
+ * Only unresolved reports: a resolved one has been answered, and re-answering it
+ * would give the queue no bottom. The rule join is a LEFT JOIN on purpose — a
+ * report can name a term no global rule matches (a user's own keyword, or a
+ * strict-mode phrase), and that is signal an operator should still see rather
+ * than a row to drop.
+ */
+export async function listOpenReports(database: Queryable): Promise<BrainRotReportGroup[]> {
+  const rows = await database.query<{
+    kind: string;
+    value: string;
+    reports: number;
+    detail: string | null;
+    first_at: unknown;
+    latest_at: unknown;
+    keyword_id: string | null;
+    keyword_enabled: boolean | null;
+    channel_id: string | null;
+    channel_enabled: boolean | null;
+    display_name: string | null;
+  }>(
+    `SELECT r.kind::text AS kind,
+            r.value,
+            COUNT(DISTINCT r.anonymous_id)::int AS reports,
+            MIN(r.created_at) AS first_at,
+            MAX(r.created_at) AS latest_at,
+            (ARRAY_AGG(r.detail ORDER BY r.created_at DESC)
+               FILTER (WHERE r.detail IS NOT NULL))[1] AS detail,
+            k.id AS keyword_id,
+            k.enabled AS keyword_enabled,
+            c.id AS channel_id,
+            c.enabled AS channel_enabled,
+            COALESCE(c.display_name, s.display_name) AS display_name
+       FROM brainrot_reports r
+       LEFT JOIN brainrot_keywords k
+              ON r.kind = 'keyword'::brainrot_target_kind AND k.keyword = r.value
+       LEFT JOIN brainrot_channels c
+              ON r.kind = 'channel'::brainrot_target_kind AND c.handle = r.value
+       LEFT JOIN LATERAL (
+         SELECT sub.display_name
+           FROM brainrot_submissions sub
+          WHERE sub.kind = r.kind AND sub.value = r.value
+            AND sub.display_name IS NOT NULL
+          ORDER BY sub.created_at DESC
+          LIMIT 1
+       ) s ON true
+      WHERE r.resolution IS NULL
+      GROUP BY r.kind, r.value, k.id, k.enabled, c.id, c.enabled, c.display_name, s.display_name
+      ORDER BY reports DESC, MAX(r.created_at) DESC
+      LIMIT 100`
+  );
+
+  return rows.map((row) => {
+    const ruleId = row.kind === 'keyword' ? row.keyword_id : row.channel_id;
+    const ruleEnabled = row.kind === 'keyword' ? row.keyword_enabled : row.channel_enabled;
+    return {
+      kind: row.kind as BrainRotTargetKind,
+      value: row.value,
+      reports: Number(row.reports),
+      detail: row.detail,
+      firstAt: isoOrNull(row.first_at) ?? '',
+      latestAt: isoOrNull(row.latest_at) ?? '',
+      ruleId: ruleId ?? null,
+      ruleEnabled: ruleId === null ? null : (ruleEnabled ?? null),
+      displayName: row.display_name,
+    };
+  });
+}
+
+/**
+ * Answer every open report for one target, and, when the reports were right, stop
+ * the rule that caused them.
+ *
+ * `removed` DISABLES rather than deletes. Disabling is the reversible reading of
+ * "this block was wrong" — the rule stops applying to everyone the moment this
+ * returns, and an operator who disagrees later can switch it back on from the
+ * Rules tab. Deleting is asked for explicitly there, and is not something a
+ * button on a report should be able to do by accident.
+ *
+ * Both writes are one transaction so a rule can never be left switched off with
+ * the reports that justified it still sitting in the queue.
+ */
+export async function resolveReportGroup(
+  database: Queryable,
+  adminId: string,
+  kind: BrainRotTargetKind,
+  rawValue: string,
+  resolution: BrainRotReportResolution
+): Promise<{
+  readonly resolution: BrainRotReportResolution;
+  readonly resolved: number;
+  readonly ruleDisabled: boolean;
+}> {
+  const value = normalizeTarget(kind, rawValue);
+  return database.transaction(async (tx) => {
+    let ruleDisabled = false;
+    if (resolution === 'removed') {
+      const rule =
+        kind === 'keyword'
+          ? await tx.queryOne<{ id: string }>(
+              `UPDATE brainrot_keywords SET enabled = false
+                WHERE keyword = $1 AND enabled
+                RETURNING id`,
+              [value]
+            )
+          : await tx.queryOne<{ id: string }>(
+              `UPDATE brainrot_channels SET enabled = false
+                WHERE handle = $1 AND enabled
+                RETURNING id`,
+              [value]
+            );
+      ruleDisabled = rule !== null;
+    }
+
+    const updated = await tx.query<{ id: string }>(
+      `UPDATE brainrot_reports
+          SET resolution = $3,
+              resolved_at = now(),
+              resolved_by_admin_id = $4
+        WHERE kind = $1::brainrot_target_kind AND value = $2 AND resolution IS NULL
+        RETURNING id`,
+      [kind, value, resolution, adminId]
+    );
+
+    return { resolution, resolved: updated.length, ruleDisabled };
+  });
+}

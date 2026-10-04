@@ -132,7 +132,6 @@ import androidx.compose.ui.window.DialogProperties
 import com.muddassir.clearview.R
 import com.muddassir.clearview.media.data.MediaLibraryStore
 import com.muddassir.clearview.media.data.MediaRepository
-import com.muddassir.clearview.media.data.MediaSourceStatusStore
 import com.muddassir.clearview.media.data.UserPlaylistStore
 import com.muddassir.clearview.media.data.WatchProgressStore
 import com.muddassir.clearview.media.download.AudioDownloads
@@ -407,30 +406,16 @@ fun MediaTab(
     // The user opened the Media tab — its channel updates count as seen.
     LaunchedEffect(Unit) { onMediaOpened() }
 
-    // ── Per-source health (the header's status line) ───────────────
-    // The providers and the repository record why a source is not answering.
-    // Only the providers behind the channels IN VIEW can explain an empty feed
-    // here, so an X throttle is never blamed on a YouTube-only feed.
-    val sourceStatuses by MediaSourceStatusStore.statuses.collectAsState()
-    val sourceIssue: String? = remember(sourceStatuses, channels, filterChannelId, clockTick) {
-        val platforms = if (filterChannelId == null) {
-            channels.map { it.platform }.toSet()
-        } else {
-            channels.firstOrNull { it.channelId == filterChannelId }
-                ?.let { setOf(it.platform) }
-                .orEmpty()
-        }
-        val now = System.currentTimeMillis()
-        MediaSourceStatusStore.issues(now)
-            .firstOrNull { it.platform in platforms }
-            ?.let { MediaSourceStatusStore.describe(it, now) }
-    }
-
-    // Keep the "Updated Xm ago" hint and the status line's countdown fresh:
-    // every minute (while either is on screen) bump clockTick, which recomposes
-    // the header text.
-    LaunchedEffect(lastRefreshedAt, sourceIssue) {
-        while (lastRefreshedAt > 0L || sourceIssue != null) {
+    // Keep the "Updated Xm ago" hint fresh: once a minute, while it is on
+    // screen, bump clockTick, which recomposes the header text.
+    //
+    // Provider failures are deliberately NOT surfaced here any more. A line
+    // reading "Instagram isn't responding — pull to refresh to retry" described a
+    // retry the reader cannot influence, on a feed that was still working, and a
+    // red warning is the loudest thing on a screen whose whole job is to be calm.
+    // The store still records each source's health; nothing draws it.
+    LaunchedEffect(lastRefreshedAt) {
+        while (lastRefreshedAt > 0L) {
             delay(60_000L)
             clockTick++
         }
@@ -777,21 +762,29 @@ fun MediaTab(
         // Hidden inside a playlist — the playlist shows only its own videos
         // (leave it via the ✕ in the header instead of the channel strip) — and
         // foldable from the top bar when the feed needs the space.
+        //
+        // The strip keeps its name and its way through to the full list, but both
+        // live on ONE short line: the previous version was a title-sized heading
+        // plus a 48dp button, which is a whole band of the screen for two words.
         if (!inPlaylistContext && !channelStripHidden) {
-        // WhatsApp-Channels-style subscription header: the row is clearly a
-        // channel surface, while View all remains the single directory entry.
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
                 text = "Channels",
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
             )
-            TextButton(onClick = { showAllChannelsSheet = true }) {
-                Text("View all")
+            TextButton(
+                onClick = { showAllChannelsSheet = true },
+                contentPadding = PaddingValues(horizontal = 8.dp),
+                modifier = Modifier.height(30.dp)
+            ) {
+                Text("View all", style = MaterialTheme.typography.labelMedium)
             }
         }
         // Channel-strip order, by ACTIVITY: the channel that last posted
@@ -816,8 +809,8 @@ fun MediaTab(
             )
         }
         LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
         ) {
             item(key = "all") {
                 AllAvatar(
@@ -880,11 +873,9 @@ fun MediaTab(
 
         // ── All Feed header: filter button (highlighted when active) + summary ──
         // Shown whenever there is a feed at all — including when a filter hides
-        // every video (so it can always be reset), in playlist contexts, and
-        // whenever a provider issue has to be explained: an empty feed caused
-        // by a throttled source is exactly when this header is needed most.
+        // every video (so it can always be reset), and in playlist contexts.
         // Hidden only during the no-channels / loading states.
-        if (videos.isNotEmpty() || feedIsPlaylist || feedIsUserPlaylist || sourceIssue != null) {
+        if (videos.isNotEmpty() || feedIsPlaylist || feedIsUserPlaylist) {
             // "Updated Xm ago" comes from whichever source feeds the screen:
             // the channel feeds in normal mode, the playlist page otherwise.
             val sourceRefreshedAt = if (feedIsPlaylist) playlistRefreshedAt else lastRefreshedAt
@@ -946,9 +937,6 @@ fun MediaTab(
                 searchEnabled = !downloadsFilter,
                 // "Updated Xm ago" — recomputed whenever a refresh lands OR
                 // the minute ticker bumps (clockTick read forces recompose).
-                // Why a provider is not answering ("X is rate-limiting …"), so
-                // an empty feed is never a silent mystery.
-                sourceStatus = sourceIssue,
                 updatedAgo = if (sourceRefreshedAt > 0L && !sourceLoading && clockTick >= 0) {
                     val ago = DateUtils.getRelativeTimeSpanString(
                         sourceRefreshedAt,
@@ -1081,11 +1069,11 @@ fun MediaTab(
                 !inPlaylistContext && (videos.isNotEmpty() || channels.isNotEmpty()) &&
                     searchResults.isEmpty() && matchingChannels.isEmpty() && isSearching && !isLoading ->
                     ErrorCard("No videos or channels match your search.")
-                // A selected channel with nothing to show says exactly that,
-                // and points at the one thing that changes it. Whether the
-                // provider is throttling is answered by the header's own
-                // status line (see MediaSourceStatusStore), so this stays a
-                // plain, short message rather than a paragraph of diagnosis.
+                // A selected channel with nothing to show says exactly that, and
+                // points at the one thing that changes it. Why the source has
+                // nothing is NOT diagnosed on screen: a retry is already
+                // happening in the background, and naming the provider's mood
+                // never changed what the reader could do about it.
                 !inPlaylistContext && videos.isNotEmpty() && displayed.isEmpty() && !isLoading ->
                     ErrorCard(
                         when {
@@ -1380,6 +1368,12 @@ fun MediaTab(
                 if (muted) {
                     MediaNotifier.cancelChannelNotifications(context, channel.channelId)
                 }
+            },
+            // The sheet closes first, so the dialog it opens is not stacked on
+            // top of a sheet the reader would then have to dismiss twice.
+            onAddChannel = {
+                showAllChannelsSheet = false
+                showAddDialog = true
             },
             onDismiss = { showAllChannelsSheet = false }
         )
@@ -1819,39 +1813,72 @@ private fun SectionHeader(
     }
 }
 
+/**
+ * The channel strip's geometry, in one place.
+ *
+ * Compact on purpose: the avatar is the item's whole weight, and the name under
+ * it is a single small line. Nothing is drawn BEHIND the avatar — no cell, no
+ * panel, no rounded card — so the strip reads as a row of pictures rather than as
+ * a grid of boxes.
+ */
+private val StripItemWidth = 68.dp
+private val StripAvatarSize = 48.dp
+private val StripGlyphSize = 24.dp
+
+/**
+ * One item of the channel strip: an avatar and its name, and nothing else.
+ *
+ * There is deliberately no background: a selected channel is marked on the avatar
+ * itself (a thin primary ring) and by its name going bold and primary. A tinted
+ * cell behind it was tried and rejected — it turned a row of faces into a row of
+ * boxes, and it made every unselected item look like an empty slot.
+ */
+@Composable
+private fun StripItem(
+    onClick: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier
+            .width(StripItemWidth)
+            .clickable(onClick = onClick)
+            .padding(vertical = 5.dp)
+    ) {
+        content()
+    }
+}
+
 /** "All" avatar at the head of the strip — shows every channel's feed. */
 @Composable
 private fun AllAvatar(selected: Boolean, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
-        Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(CircleShape)
-                .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
-                .border(
-                    width = if (selected) 2.dp else 0.dp,
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = CircleShape
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = "All",
+    StripItem(onClick = onClick) {            Box(
+                modifier = Modifier
+                    .size(StripAvatarSize)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(
+                        width = if (selected) 2.dp else 0.dp,
+                        color = MaterialTheme.colorScheme.primary,
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "All",
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.Bold,
-                color = if (selected) MaterialTheme.colorScheme.onPrimary
+                color = if (selected) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = "All",
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -1870,19 +1897,20 @@ private fun ChannelAvatar(
     onClick: () -> Unit,
     onRemove: () -> Unit
 ) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
-        Box(modifier = Modifier.size(52.dp)) {
+    StripItem(onClick = onClick) {
+        Box(modifier = Modifier.size(StripAvatarSize)) {
             val isInstagram = channel.platform == MediaPlatform.INSTAGRAM
             val isX = channel.platform == MediaPlatform.X
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .clip(CircleShape)
+                    // Two meanings, one edge, and selection wins: a selected
+                    // channel wears the product's primary ring, and an
+                    // unselected one wears its platform's tint. Drawing both
+                    // would make the selected state the quieter of the two.
                     .border(
-                        width = if (selected) 2.dp else if (isInstagram || isX) 1.5.dp else 0.dp,
+                        width = if (selected || isInstagram || isX) 2.dp else 0.dp,
                         color = if (selected) MaterialTheme.colorScheme.primary
                                 else if (isInstagram) Color(0xFFE1306C)
                                 else if (isX) Color.Black
@@ -1953,13 +1981,14 @@ private fun ChannelAvatar(
                 }
             }
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = channel.displayName,
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2049,13 +2078,10 @@ private fun SearchChannelCard(
  */
 @Composable
 private fun PlaylistsAvatar(selected: Boolean, onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
+    StripItem(onClick = onClick) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(StripAvatarSize)
                 .clip(CircleShape)
                 .background(
                     Brush.linearGradient(
@@ -2064,7 +2090,7 @@ private fun PlaylistsAvatar(selected: Boolean, onClick: () -> Unit) {
                 )
                 .border(
                     width = if (selected) 2.dp else 0.dp,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    color = MaterialTheme.colorScheme.primary,
                     shape = CircleShape
                 ),
             contentAlignment = Alignment.Center
@@ -2073,15 +2099,16 @@ private fun PlaylistsAvatar(selected: Boolean, onClick: () -> Unit) {
                 Icons.AutoMirrored.Filled.PlaylistPlay,
                 contentDescription = "Playlists",
                 tint = Color.White,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(StripGlyphSize)
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = "Playlists",
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
             color = if (selected) MaterialTheme.colorScheme.primary
             else MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -2095,28 +2122,24 @@ private fun PlaylistsAvatar(selected: Boolean, onClick: () -> Unit) {
  */
 @Composable
 private fun HaramaynLiveAvatar(onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
+    StripItem(onClick = onClick) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(StripAvatarSize)
                 .clip(CircleShape)
                 .background(
                     Brush.linearGradient(listOf(Color(0xFF1B5E20), Color(0xFF43A047)))
-                )
-                .border(width = 2.dp, color = MaterialTheme.colorScheme.primary, shape = CircleShape),
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 Icons.Filled.LiveTv,
                 contentDescription = stringResource(R.string.haramayn_live),
                 tint = Color.White,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(StripGlyphSize)
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = stringResource(R.string.haramayn_live_short),
             style = MaterialTheme.typography.labelSmall,
@@ -2136,28 +2159,24 @@ private fun HaramaynLiveAvatar(onClick: () -> Unit) {
  */
 @Composable
 private fun ChannelDirectoryAvatar(onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
+    StripItem(onClick = onClick) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(StripAvatarSize)
                 .clip(CircleShape)
                 .background(
                     Brush.linearGradient(listOf(Color(0xFF0F4C81), Color(0xFF2196F3)))
-                )
-                .border(width = 2.dp, color = MaterialTheme.colorScheme.primary, shape = CircleShape),
+                ),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 Icons.Filled.Collections,
                 contentDescription = stringResource(R.string.channel_directory_title),
                 tint = Color.White,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(StripGlyphSize)
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = stringResource(R.string.channel_directory_short),
             style = MaterialTheme.typography.labelSmall,
@@ -2168,35 +2187,13 @@ private fun ChannelDirectoryAvatar(onClick: () -> Unit) {
     }
 }
 
-/** Opens the full saved-channel directory. */
-@Composable
-private fun ViewAllChannelsChip(onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(72.dp).clickable(onClick = onClick)
-    ) {
-        Box(
-            modifier = Modifier.size(52.dp).clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "View all channels", modifier = Modifier.size(24.dp))
-        }
-        Spacer(Modifier.height(4.dp))
-        Text("View all", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
 /** "+" entry at the end of the strip — opens the add-channel dialog. */
 @Composable
 private fun AddAvatar(onClick: () -> Unit) {
-    Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp).clickable(onClick = onClick)
-    ) {
+    StripItem(onClick = onClick) {
         Box(
             modifier = Modifier
-                .size(52.dp)
+                .size(StripAvatarSize)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center
@@ -2205,10 +2202,10 @@ private fun AddAvatar(onClick: () -> Unit) {
                 Icons.Filled.Add,
                 contentDescription = "Add channel",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(StripGlyphSize)
             )
         }
-        Spacer(Modifier.height(4.dp))
+        Spacer(Modifier.height(3.dp))
         Text(
             text = "Add",
             style = MaterialTheme.typography.labelSmall,
@@ -2248,8 +2245,8 @@ private fun ShortCard(
     val live = video.isLive
     Card(
         onClick = onClick,
-        modifier = Modifier.width(158.dp),
-        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.width(136.dp),
+        shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
         )
@@ -3198,12 +3195,6 @@ private fun FeedHeader(
     searchEnabled: Boolean = true,
     /** "Updated Xm ago" text shown under the title row (null = hide). */
     updatedAgo: String? = null,
-    /**
-     * Why a provider behind this feed is not answering (null = none), e.g.
-     * "X is rate-limiting this device — retrying in 8m". Shown under the
-     * summary so an empty feed always has an explanation.
-     */
-    sourceStatus: String? = null,
     /** When set, an ✕ appears that exits the current playlist context. */
     onClose: (() -> Unit)? = null,
     onSearchQueryChange: (String) -> Unit,
@@ -3247,7 +3238,9 @@ private fun FeedHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 2.dp)
+            // No end padding: the action icons are the last thing in this row and
+            // belong hard against the right edge, not 8dp in from it.
+            .padding(start = 16.dp, end = 0.dp, top = 4.dp, bottom = 2.dp)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -3261,14 +3254,41 @@ private fun FeedHeader(
                     .background(MaterialTheme.colorScheme.primary)
             )
             Spacer(Modifier.width(8.dp))
-            Text(
-                text = if (searchActive) "Search" else title,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
-            )
+            // Title + freshness share ONE weighted region that takes every
+            // pixel between the accent bar and the actions. A weighted child
+            // with `fill = false` hands back LESS than its weight slot, and a
+            // Row keeps that unused share as a gap at its END — which is what
+            // left the action icons floating ~40dp in from the right edge. The
+            // outer region here fills (`fill = true`), so it absorbs the slack
+            // and the icons land hard against the edge; the title keeps
+            // `fill = false` only so a long name ellipsizes instead of pushing
+            // the actions off-screen.
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (searchActive) "Search" else title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                // Freshness rides on the title line rather than under it. It is
+                // a word and a time, and a whole row for it was one of the four
+                // stacked bands this header had grown into.
+                if (updatedAgo != null && !searchActive && !(filterEnabled && filter.isActive)) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = updatedAgo,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
             // Edit playlist (user playlist context only).
             if (canEditPlaylist && onEditPlaylist != null) {
                 IconButton(
@@ -3457,34 +3477,6 @@ private fun FeedHeader(
                     Text("Reset", style = MaterialTheme.typography.labelMedium)
                 }
             }
-        } else if (updatedAgo != null && !searchActive) {
-            // "Updated Xm ago" — shown in place of the filter summary when no
-            // filter is active, so the feed's freshness is always visible.
-            Text(
-                text = updatedAgo,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
-            )
-        }
-        if (sourceStatus != null && !searchActive) {
-            Row(
-                modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Warning,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(12.dp)
-                )
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    text = sourceStatus,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
         }
     }
 }
@@ -3508,8 +3500,13 @@ private fun ContinueWatchingCard(
     var showMenu by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
-        modifier = Modifier.width(210.dp),
-        shape = RoundedCornerShape(14.dp),
+        // Wider than the compact pass made it: the 16:9 still plus the title and
+        // resume position read as cramped, and this row has the room.
+        modifier = Modifier.width(196.dp),
+        // Nearly square corners. A resume card is a still with a title under it,
+        // not a card in a feed of cards, and rounding it like one made a compact
+        // row read as a set of little panels.
+        shape = RoundedCornerShape(6.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
         )
@@ -3581,10 +3578,10 @@ private fun ContinueWatchingCard(
                     }
                 }
             }
-            Column(modifier = Modifier.padding(12.dp)) {
+            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
                 Text(
                     text = video.title,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis

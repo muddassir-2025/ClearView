@@ -444,6 +444,144 @@ describe('the admin dashboard', () => {
   });
 });
 
+describe('the false-positive queue', () => {
+  /** A global keyword, added by an administrator, that users then report. */
+  async function addRule(token: string, keyword: string): Promise<string> {
+    const res = await request(app)
+      .post('/admin/api/brainrot/keywords')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ keyword, reason: 'Seeded for the queue tests' });
+    expect(res.status).toBe(201);
+    return res.body.keyword.id as string;
+  }
+
+  async function report(kind: string, value: string, anonymousId: string): Promise<void> {
+    const res = await request(app)
+      .post('/api/v1/brainrot/reports')
+      .send({ kind, value, anonymousId, detail: 'Blocked in error' });
+    expect(res.status).toBe(200);
+  }
+
+  it('lists a reported target once, with the rule it matches', async () => {
+    const token = await adminToken();
+    const id = await addRule(token, 'queueword');
+    await report('keyword', 'queueword', deviceId());
+    await report('keyword', 'queueword', deviceId());
+
+    const res = await request(app)
+      .get('/admin/api/brainrot/reports')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+
+    // Two devices, one row: a report is a decision about a TARGET.
+    const rows = res.body.reports as Array<Record<string, unknown>>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe('keyword');
+    expect(rows[0].value).toBe('queueword');
+    expect(rows[0].reports).toBe(2);
+    expect(rows[0].detail).toBe('Blocked in error');
+    expect(rows[0].ruleId).toBe(id);
+    expect(rows[0].ruleEnabled).toBe(true);
+  });
+
+  it('lists a reported term that matches no global rule', async () => {
+    // A user's own keyword, or a strict-mode phrase: nothing global to remove,
+    // but the operator should still see that people are hitting it.
+    await report('keyword', 'notarule', deviceId());
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/reports')
+      .set('Authorization', `Bearer ${token}`);
+    const row = (res.body.reports as Array<Record<string, unknown>>).find(
+      (r) => r.value === 'notarule'
+    );
+    expect(row).toBeDefined();
+    expect(row?.ruleId).toBeNull();
+    expect(row?.ruleEnabled).toBeNull();
+  });
+
+  it('keeping a rule answers its reports and leaves it enforcing', async () => {
+    const token = await adminToken();
+    const id = await addRule(token, 'keptword');
+    await report('keyword', 'keptword', deviceId());
+
+    const resolved = await request(app)
+      .post('/admin/api/brainrot/reports/resolve')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ kind: 'keyword', value: 'keptword', resolution: 'kept' });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.resolved).toBe(1);
+    expect(resolved.body.ruleDisabled).toBe(false);
+
+    // The rule still applies to everyone…
+    expect(id).toBeTruthy();
+    const rules = await request(app).get('/api/v1/brainrot/rules');
+    expect(rules.body.keywords.map((k: { keyword: string }) => k.keyword)).toContain('keptword');
+
+    // …and the queue is empty, so the same report cannot be answered twice.
+    const queue = await request(app)
+      .get('/admin/api/brainrot/reports')
+      .set('Authorization', `Bearer ${token}`);
+    expect(
+      (queue.body.reports as Array<{ value: string }>).filter((r) => r.value === 'keptword')
+    ).toHaveLength(0);
+  });
+
+  it('removing a rule switches it off and empties the queue', async () => {
+    const token = await adminToken();
+    await addRule(token, 'badword');
+    await report('keyword', 'badword', deviceId());
+
+    const resolved = await request(app)
+      .post('/admin/api/brainrot/reports/resolve')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ kind: 'keyword', value: 'badword', resolution: 'removed' });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.ruleDisabled).toBe(true);
+
+    // Disabled, not deleted: it stops applying to everyone, but it is still a
+    // rule an operator can switch back on.
+    const rules = await request(app).get('/api/v1/brainrot/rules');
+    expect(rules.body.keywords.map((k: { keyword: string }) => k.keyword)).not.toContain('badword');
+    const managed = await request(app)
+      .get('/admin/api/brainrot/keywords')
+      .set('Authorization', `Bearer ${token}`);
+    const kept = (managed.body.keywords as Array<Record<string, unknown>>).find(
+      (k) => k.keyword === 'badword'
+    );
+    expect(kept).toBeDefined();
+    expect(kept?.enabled).toBe(false);
+  });
+
+  it('resolves a term with no global rule without disabling anything', async () => {
+    await report('keyword', 'no-rule-at-all', deviceId());
+    const token = await adminToken();
+
+    const resolved = await request(app)
+      .post('/admin/api/brainrot/reports/resolve')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ kind: 'keyword', value: 'no-rule-at-all', resolution: 'removed' });
+    expect(resolved.status).toBe(200);
+    expect(resolved.body.ruleDisabled).toBe(false);
+    expect(resolved.body.resolved).toBe(1);
+  });
+
+  it('refuses a bad resolution', async () => {
+    const token = await adminToken();
+    const res = await request(app)
+      .post('/admin/api/brainrot/reports/resolve')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ kind: 'keyword', value: 'anything', resolution: 'maybe' });
+    expect(res.status).toBe(400);
+  });
+
+  it('refuses the queue to an unauthenticated caller', async () => {
+    const res = await request(app).get('/admin/api/brainrot/reports');
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('managing the global rules directly', () => {
   it('adds and removes a keyword', async () => {
     const token = await adminToken();

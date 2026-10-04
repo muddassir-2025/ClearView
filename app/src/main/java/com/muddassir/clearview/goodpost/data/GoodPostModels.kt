@@ -327,18 +327,57 @@ data class GoodPostBrainRotSubmission(
 }
 
 /**
+ * One reported target in the false-positive queue.
+ *
+ * Raised from the block overlay's "Report false positive", so a row is a user
+ * saying that a block was wrong — the counterpart to [GoodPostBrainRotSubmission],
+ * which is a user saying something SHOULD be blocked. Grouped by target: many
+ * devices reporting the same term is one row, because it is one decision.
+ *
+ * [ruleId] is null when no global rule matches the term (a user's own keyword, or
+ * a strict-mode phrase), which is still worth seeing but cannot be switched off
+ * from here.
+ */
+data class GoodPostBrainRotReport(
+    /** `keyword` or `channel`. */
+    val kind: String,
+    val value: String,
+    /** A channel's display name, when the repository or a submission has one. */
+    val displayName: String?,
+    /** Distinct devices that reported it. */
+    val reports: Int,
+    /** The most recent note a reporter left, when one did. */
+    val detail: String?,
+    val latestAt: String?,
+    val firstAt: String?,
+    /** The global rule this term matches, or null when it matches none. */
+    val ruleId: String?,
+    /** Null when there is no rule to switch off. */
+    val ruleEnabled: Boolean?
+) {
+    val isChannel: Boolean get() = kind == "channel"
+
+    /** True when acting on this report can also stop a rule. */
+    val hasRule: Boolean get() = ruleId != null
+}
+
+/**
  * One target's demand, as the dashboard lists it.
  *
- * Two numbers, deliberately different: [usersBlocking] is how many devices
- * reported it, [globalRequests] is how many asked for it to be blocked for
+ * Two numbers, deliberately different: [reports] is how many devices reported
+ * the target, [globalRequests] is how many asked for it to be blocked for
  * everyone. An operator weighing a queue needs both, and collapsing them into
  * one "popularity" number would hide which question the count answers.
+ *
+ * [reports] is parsed from the wire's `usersBlocking` key, which is named for a
+ * number the server never receives: a device blocking something locally sends
+ * nothing. The JSON key is kept as-is so the deployed backend needs no change.
  */
 data class GoodPostBrainRotDemand(
     val kind: String,
     val value: String,
     val displayName: String?,
-    val usersBlocking: Int,
+    val reports: Int,
     val globalRequests: Int,
     val status: String?
 ) {
@@ -1077,6 +1116,33 @@ internal object GoodPostCodec {
         )
     }
 
+    /** Parse a `{ reports: [...] }` body. */
+    fun brainRotReports(body: JSONObject): List<GoodPostBrainRotReport> {
+        val items = body.optJSONArray("reports") ?: return emptyList()
+        val parsed = ArrayList<GoodPostBrainRotReport>(items.length())
+        for (i in 0 until items.length()) {
+            val row = items.optJSONObject(i) ?: continue
+            val value = row.nullableString("value") ?: continue
+            parsed.add(
+                GoodPostBrainRotReport(
+                    kind = if (row.optString("kind") == "channel") "channel" else "keyword",
+                    value = value,
+                    displayName = row.nullableString("displayName"),
+                    reports = row.optInt("reports", 0),
+                    detail = row.nullableString("detail"),
+                    latestAt = row.nullableString("latestAt"),
+                    firstAt = row.nullableString("firstAt"),
+                    // The wire distinguishes "no rule" (null) from a disabled
+                    // rule (ruleId set, ruleEnabled false), so an absent id is
+                    // read as null rather than defaulted to an empty string.
+                    ruleId = row.nullableString("ruleId"),
+                    ruleEnabled = if (row.isNull("ruleEnabled")) null else row.optBoolean("ruleEnabled")
+                )
+            )
+        }
+        return parsed
+    }
+
     private fun brainRotDemandList(items: JSONArray?): List<GoodPostBrainRotDemand> {
         if (items == null) return emptyList()
         val parsed = ArrayList<GoodPostBrainRotDemand>(items.length())
@@ -1088,7 +1154,7 @@ internal object GoodPostCodec {
                     kind = if (row.optString("kind") == "channel") "channel" else "keyword",
                     value = value,
                     displayName = row.nullableString("displayName"),
-                    usersBlocking = row.optInt("usersBlocking", 0),
+                    reports = row.optInt("usersBlocking", 0),
                     globalRequests = row.optInt("globalRequests", 0),
                     status = row.nullableString("status")
                 )

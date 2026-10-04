@@ -32,13 +32,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -53,6 +53,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -67,6 +69,12 @@ import com.muddassir.clearview.goodpost.GoodPostViewModel
 import com.muddassir.clearview.goodpost.data.GoodPostImages
 import com.muddassir.clearview.goodpost.data.GoodPostUploadState
 import com.muddassir.clearview.goodpost.data.readGoodPostAttachment
+
+/**
+ * Amatic SC — the typeface the Good Post artwork is lettered in, used for the
+ * wordmark under it so the mark and the word read as one lock-up.
+ */
+private val AmaticSc = FontFamily(Font(R.font.amatic_sc))
 
 /**
  * The administrator way in (§16).
@@ -205,21 +213,38 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
 
             Spacer(Modifier.height(22.dp))
 
-            // The Good Post artwork, at the top of the one screen in the product
-            // that is about the product rather than about a channel. `Fit`
-            // rather than `Crop` deliberately: the drawing is very nearly square,
-            // and cropping a near-square into a wide band is how a logo loses its
-            // edges on the one screen where it is the first thing anybody sees.
-            // Nothing here scales it up either — a fixed height and Fit mean it
-            // is drawn whole, or smaller.
-            Image(
-                painter = painterResource(id = R.drawable.goodpost),
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(190.dp)
-                    .clip(RoundedCornerShape(16.dp))
+            // The Good Post artwork, CENTRED and at a fixed size — a logo, not a
+            // banner. The frame used to be the full width with the drawing
+            // fitted inside it, so the mark floated in the middle of a band that
+            // was mostly empty and every control under it looked like it
+            // belonged to another screen. `Fit` rather than `Crop` deliberately:
+            // the drawing is very nearly square, and cropping a near-square into
+            // a wide band is how a logo loses its edges on the one screen where
+            // it is the first thing anybody sees.
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Image(
+                    painter = painterResource(id = R.drawable.goodpost),
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .size(160.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // The name under the mark, set in the artwork's own typeface — Amatic
+            // SC, the face the drawing is lettered in — so the two read as one
+            // lock-up rather than a picture with a caption.
+            Text(
+                text = "GOODPOST",
+                color = Wa.Text,
+                fontFamily = AmaticSc,
+                fontSize = 46.sp,
+                letterSpacing = 2.sp,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth()
             )
 
             Spacer(Modifier.height(22.dp))
@@ -249,20 +274,25 @@ internal fun AdminLoginScreen(state: GoodPostUiState, viewModel: GoodPostViewMod
                 Spacer(Modifier.height(18.dp))
             }
 
-            // The second way in, as a card that opens the form when it is tapped.
-            //
-            // Closed by default, and that is the whole design: a creator signs up
-            // with the card above and never sees a password field, while the super
-            // administrator and the channel administrators a deployment
-            // provisioned get to their own form without being told they are a
-            // different kind of account. See [GoodPostUiState.otherWaysOpen].
-            WaExpandableCard(
-                text = stringResource(R.string.goodpost_other_ways),
-                icon = Icons.Filled.Email,
-                expanded = state.otherWaysOpen,
+            // The second way in, as a LINE OF TEXT rather than a card (§16): it
+            // expands a form, it does not go anywhere, and a full-width card
+            // made it read as a second, equally weighted way to sign up. Closed
+            // by default, and that is the whole design: a creator signs up with
+            // the button above and never sees a password field, while a
+            // provisioned super administrator or channel administrator gets to
+            // their own form without being told they are a different kind of
+            // account. See [GoodPostUiState.otherWaysOpen].
+            TextButton(
+                onClick = viewModel::toggleOtherWays,
                 enabled = !state.adminBusy,
-                onClick = viewModel::toggleOtherWays
-            )
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = stringResource(R.string.goodpost_other_ways),
+                    color = Wa.TextDim,
+                    fontSize = 14.sp
+                )
+            }
 
             if (state.otherWaysOpen) {
                 Spacer(Modifier.height(16.dp))
