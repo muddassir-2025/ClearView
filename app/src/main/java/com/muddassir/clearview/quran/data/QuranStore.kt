@@ -123,6 +123,20 @@ class QuranStore(context: Context) {
         prefs.edit().putInt(KEY_REFRESH_INTERVAL_HOURS, hours).apply()
     }
 
+    /**
+     * The reader's scale factor for the Arabic Quran text (1.0 = the default
+     * size). It scales the scripture only — the surrounding ClearView chrome is
+     * untouched — and is read on every render, so changing it re-lays-out the
+     * text immediately.
+     */
+    fun getArabicTextScale(): Float =
+        prefs.getFloat(KEY_ARABIC_TEXT_SCALE, DEFAULT_ARABIC_TEXT_SCALE)
+
+    /** Persists the reader's chosen Arabic Quran text scale. */
+    fun setArabicTextScale(scale: Float) {
+        prefs.edit().putFloat(KEY_ARABIC_TEXT_SCALE, scale).apply()
+    }
+
     /** Whether the app posts an OS notification when a new verse is chosen. */
     fun getQuranNotificationsEnabled(): Boolean =
         prefs.getBoolean(KEY_QURAN_NOTIFICATIONS_ENABLED, DEFAULT_QURAN_NOTIFICATIONS_ENABLED)
@@ -292,6 +306,7 @@ class QuranStore(context: Context) {
         const val KEY_TOTAL_AYAHS = "current_verse_total_ayahs"
         const val KEY_LAST_UPDATED = "current_verse_updated_at"
         const val KEY_REFRESH_INTERVAL_HOURS = "refresh_interval_hours"
+        const val KEY_ARABIC_TEXT_SCALE = "arabic_text_scale"
         const val KEY_QURAN_NOTIFICATIONS_ENABLED = "quran_notifications_enabled"
         const val KEY_BOOKMARKS = "bookmarked_verses"
         const val KEY_SURAH_BOOKMARKS = "bookmarked_surahs"
@@ -300,6 +315,7 @@ class QuranStore(context: Context) {
         // disk when they stopped.
         const val KEY_READING_POSITIONS = "reading_positions"
         const val DEFAULT_REFRESH_INTERVAL_HOURS = 6
+        const val DEFAULT_ARABIC_TEXT_SCALE = 1.0f
         const val DEFAULT_QURAN_NOTIFICATIONS_ENABLED = true
     }
 }

@@ -56,7 +56,6 @@ import android.widget.Toast
 import com.muddassir.clearview.R
 import com.muddassir.clearview.quran.data.IslamicDateFormatter
 import com.muddassir.clearview.quran.model.QuranVerse
-import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import java.time.LocalDate
 import kotlinx.coroutines.delay
 
@@ -302,10 +301,12 @@ private fun VerseDisplay(
     if (v.arabicText.isNotBlank()) {
         Text(
             text = v.arabicText,
-            fontSize = 30.sp,
-            // Room for the marks above and below the letters — a line height that
-            // only fits the glyphs clips the outer harakat (§1).
-            lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
+            // Dynamic size: both the glyphs and the line height scale from the
+            // reader's choice (quranFontSize/quranLineHeight), so raising or
+            // lowering the size keeps every harakat positioned and unclipped and
+            // lets the verse reflow on its own.
+            fontSize = quranFontSize(30f),
+            lineHeight = quranLineHeight(30f),
             // Quran face so every harakat in the authoritative text renders (§1).
             // NO synthetic bold: on a dense Quran text it merges the marks into
             // the letters, which is what made them look wrong/missing.
@@ -441,6 +442,13 @@ private fun VerseDisplay(
                 }
             }
         }
+        // Seek bar under the Listen controls: the reader can see how far into
+        // the ayah they are and drag to the part they want. Draws itself only
+        // once the file is prepared (see VerseAudioProgressBar).
+        VerseAudioProgressBar(
+            player = audio,
+            modifier = Modifier.padding(top = 12.dp)
+        )
         if (audio.status == VerseAudioStatus.LOADING) {
             Spacer(Modifier.height(8.dp))
             Text(

@@ -625,6 +625,32 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    /** Suggest a blocked channel globally and record the queued state. */
+    fun submitChannelToGlobal(handle: String, name: String?, onResult: (Boolean) -> Unit) {
+        val scope = viewModelScopeRef
+        val store = globalRulesStore
+        if (scope == null || store == null) { onResult(false); return }
+        scope.launch {
+            val ok = runCatching {
+                store.suggestChannel(handle, name, source = "app")
+            }.getOrDefault(false)
+            if (ok) {
+                val label = name?.takeIf { it.isNotBlank() } ?: handle
+                notificationStore?.add(
+                    id = "submitted:channel:$handle",
+                    kind = NotificationStore.Kind.GLOBAL_SUBMITTED,
+                    value = handle,
+                    displayName = name,
+                    message = "\"$label\" was submitted to the global repository and is " +
+                        "pending admin review."
+                )
+                refreshNotifications()
+                refreshMySubmissions(notifyOnChange = false)
+            }
+            onResult(ok)
+        }
+    }
+
     // ── Why an item is blocked ─────────────────────────────────────
 
     /** The recorded reason for a blocked item, or null when none was recorded. */

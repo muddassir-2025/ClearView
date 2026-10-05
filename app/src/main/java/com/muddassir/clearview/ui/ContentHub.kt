@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -66,6 +67,7 @@ import com.muddassir.clearview.quran.data.IslamicDateStore
 import com.muddassir.clearview.quran.data.QuranRepository
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.ui.DhikrCounterScreen
+import com.muddassir.clearview.quran.ui.LocalQuranTextScale
 import com.muddassir.clearview.quran.ui.QuranTab
 import com.muddassir.clearview.todo.data.TodoCodec
 import com.muddassir.clearview.todo.data.TodoScheduler
@@ -173,6 +175,10 @@ class ContentHubState(appContext: Context) {
     var verse by mutableStateOf<QuranVerse?>(null)
     var verseLoading by mutableStateOf(false)
     var refreshIntervalHours by mutableStateOf(DEFAULT_REFRESH_INTERVAL_HOURS)
+    // The reader's scale for the Arabic Quran text (1.0 = default). Provided to
+    // every Arabic surface through [LocalQuranTextScale], so one choice sizes the
+    // whole Quran without touching the rest of the UI.
+    var arabicTextScale by mutableStateOf(1f)
     var isBookmarked by mutableStateOf(false)
 
     // ── The Quran reader: search, surahs and bookmarks (§1–§3) ──────
@@ -309,6 +315,7 @@ class ContentHubState(appContext: Context) {
         // stored value from an older build (2/4/8 hr) is coerced to 6 hr and
         // persisted so the scheduler and the UI never disagree.
         val stored = quranRepository.getRefreshIntervalHours()
+        arabicTextScale = quranRepository.getArabicTextScale()
         refreshIntervalHours = if (stored in VERSE_INTERVAL_OPTIONS) stored else {
             quranRepository.setRefreshIntervalHours(DEFAULT_REFRESH_INTERVAL_HOURS)
             // The periodic verse work was scheduled at the old interval (KEEP
@@ -973,6 +980,12 @@ class ContentHubState(appContext: Context) {
         ).show()
     }
 
+    /** Sets + persists the Arabic Quran text scale; every Arabic surface follows. */
+    fun changeArabicTextScale(scale: Float) {
+        arabicTextScale = scale
+        quranRepository.setArabicTextScale(scale)
+    }
+
     fun changeInterval(context: Context, hours: Int) {
         refreshIntervalHours = hours
         quranRepository.setRefreshIntervalHours(hours)
@@ -1212,19 +1225,26 @@ fun ContentHubTabContent(
                 onExit = { state.showChannelDirectory = false }
             )
 
-            state.selectedTab == ContentTab.QURAN -> QuranTab(
-                verse = state.verse,
-                isLoading = state.verseLoading,
-                onNewVerse = { state.pickNewVerse() },
-                onCopyVerse = { state.copyVerse(context) },
-                canGoPrevious = state.canGoPrevious,
-                canGoNext = state.canGoNext,
-                onPrevious = { state.goToAdjacentVerse(-1) },
-                onNext = { state.goToAdjacentVerse(+1) },
-                islamicDateAdjustment = state.islamicDateAdjustment,
-                onAdjustDate = { state.showIslamicDateSheet = true },
-                listenVisible = state.showVerseListen
-            )
+            // The Arabic scripture sizes to the reader's chosen scale; providing
+            // it here (rather than threading a parameter through the tab) keeps
+            // every Arabic Text on the page in agreement.
+            state.selectedTab == ContentTab.QURAN -> CompositionLocalProvider(
+                LocalQuranTextScale provides state.arabicTextScale
+            ) {
+                QuranTab(
+                    verse = state.verse,
+                    isLoading = state.verseLoading,
+                    onNewVerse = { state.pickNewVerse() },
+                    onCopyVerse = { state.copyVerse(context) },
+                    canGoPrevious = state.canGoPrevious,
+                    canGoNext = state.canGoNext,
+                    onPrevious = { state.goToAdjacentVerse(-1) },
+                    onNext = { state.goToAdjacentVerse(+1) },
+                    islamicDateAdjustment = state.islamicDateAdjustment,
+                    onAdjustDate = { state.showIslamicDateSheet = true },
+                    listenVisible = state.showVerseListen
+                )
+            }
 
             state.selectedTab == ContentTab.MEDIA -> MediaTab(
                 hubState = state,
@@ -1442,7 +1462,11 @@ fun ContentHubOverlays(state: ContentHubState) {
     // Sheets opened from the Quran tab top bar: search, settings, notifications
     // and the bookmarks manager (the latter is opened from the settings sheet).
     if (state.showSearchSheet) {
-        QuranSearchScreen(state = state, onDismiss = { state.showSearchSheet = false })
+        // The surah reader and the bookmark previews are Arabic scripture too,
+        // so they follow the reader's chosen text scale like the home page.
+        CompositionLocalProvider(LocalQuranTextScale provides state.arabicTextScale) {
+            QuranSearchScreen(state = state, onDismiss = { state.showSearchSheet = false })
+        }
     }
     if (state.showSettingsSheet) {
         QuranSettingsSheet(state = state, onDismiss = { state.showSettingsSheet = false })

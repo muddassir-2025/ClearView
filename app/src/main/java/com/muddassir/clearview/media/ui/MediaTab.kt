@@ -4498,10 +4498,11 @@ private fun PlaylistsSheet(
                     )
                 }
                 items(importedPlaylists, key = { it.playlistId }) { p ->
+                    val cached = repository.getCachedPlaylistVideos(p.playlistId)?.first
                     ImportedPlaylistRow(
                         playlist = p,
-                        videoCount = repository.getCachedPlaylistVideos(p.playlistId)
-                            ?.first?.size ?: 0,
+                        videoCount = cached?.size ?: 0,
+                        thumbnailUrl = cached?.firstOrNull()?.thumbnailUrl,
                         onOpen = { onOpenImported(p) },
                         onRemove = { onRemoveImported(p) }
                     )
@@ -4539,56 +4540,99 @@ private fun PlaylistsSheet(
     }
 }
 
-/** One imported YouTube playlist row: title + count, tap to open, ✕ to remove. */
+/**
+ * One imported YouTube playlist row: a thumbnail, the title and its video
+ * count, tap to open, ✕ to remove.
+ *
+ * Built the same way as [UserPlaylistRow] — a 44dp rounded thumbnail, a
+ * two-line title block and a sibling ✕ — so the two kinds read as the same
+ * object in the manager. The earlier version was a bare 20dp glyph with a
+ * labelMedium title, which looked like a settings row rather than a playlist
+ * next to the user-created ones. It is deliberately NOT `Card(onClick = …)`:
+ * that swallowed the ✕, the same trap the user-playlist row documents.
+ */
 @Composable
 private fun ImportedPlaylistRow(
     playlist: SavedPlaylist,
     videoCount: Int,
+    thumbnailUrl: String?,
     onOpen: () -> Unit,
     onRemove: () -> Unit
 ) {
     Card(
-        onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            modifier = Modifier.padding(start = 12.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.PlaylistPlay,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp)
-            )
-            Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = playlist.title,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = if (videoCount > 0) "$videoCount videos" else "Loading…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClickLabel = "Open playlist") { onOpen() },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                ) {
+                    if (thumbnailUrl != null) {
+                        RemoteImage(url = thumbnailUrl, modifier = Modifier.fillMaxSize())
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.PlaylistPlay,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = playlist.title,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        // The cached count only — the videos are fetched when
+                        // the playlist is opened. "YouTube playlist" is the
+                        // honest label before that, rather than a "Loading…"
+                        // that would sit there forever for an empty playlist.
+                        text = if (videoCount > 0) {
+                            "$videoCount video${if (videoCount == 1) "" else "s"}"
+                        } else {
+                            "YouTube playlist"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
+                }
             }
             IconButton(
                 onClick = onRemove,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(40.dp)
             ) {
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "Remove ${playlist.title}",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }

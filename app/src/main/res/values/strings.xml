@@ -680,6 +680,11 @@
 
     <!-- Quran settings sheet (the gear in the top bar) section headers -->
     <string name="quran_settings_section_quran">Quran / New Verse</string>
+    <!-- Arabic Quran text size (the only typography control; scales the Quran
+         Arabic text and its harakat together). -->
+    <string name="quran_settings_arabic_size">Arabic text size</string>
+    <string name="quran_settings_arabic_size_note">Sizes the verse, surah reader and basmala together. Quranic marks scale with the letters.</string>
+    <string name="quran_text_size_percent">%1$d%%</string>
 
     <!-- In-app media player (YouTube IFrame API) -->
     <string name="media_player_error_not_found">This video is unavailable or was removed.</string>

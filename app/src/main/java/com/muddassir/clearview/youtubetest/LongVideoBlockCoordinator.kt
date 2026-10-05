@@ -14,6 +14,7 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -1234,12 +1235,26 @@ class LongVideoBlockCoordinator(
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    // Cover the WHOLE physical screen, not just the app's
+                    // content area. Without LAYOUT_IN_SCREEN the accessibility
+                    // overlay window is inset below the status bar, so the
+                    // clock, battery and signal icons stayed visible above a
+                    // "full-screen" block. The overlay window type sits above
+                    // the status and navigation bars, so spanning the screen
+                    // hides them completely. LAYOUT_NO_LIMITS additionally
+                    // lets it extend into the display cutout/notch region.
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = Gravity.TOP or Gravity.START
                 width = WindowManager.LayoutParams.MATCH_PARENT
                 height = WindowManager.LayoutParams.MATCH_PARENT
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                }
             }
             val wm = service.getSystemService(WindowManager::class.java)
             wm.addView(view, params)

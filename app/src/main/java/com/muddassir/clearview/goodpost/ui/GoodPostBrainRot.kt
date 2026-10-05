@@ -23,8 +23,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material3.HorizontalDivider
@@ -148,6 +146,11 @@ internal fun BrainRotReviewScreen(state: GoodPostUiState, viewModel: GoodPostVie
 @Composable
 private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewModel) {
     val dashboard = state.brainRotDashboard
+    // Which demand card the operator tapped: "channel", "keyword", or null.
+    // Tapping a card opens a screen of its own (see DemandListDialog) rather
+    // than expanding inline — the full list deserves the whole screen, and the
+    // dashboard stays the one-glance summary it exists to be.
+    var openDemandKind by remember { mutableStateOf<String?>(null) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -211,7 +214,8 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
                     icon = Icons.Outlined.PlayCircle,
                     title = stringResource(R.string.goodpost_brainrot_top_channels),
                     emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
-                    rows = dashboard.topChannels
+                    rows = dashboard.topChannels,
+                    onOpen = { openDemandKind = "channel" }
                 )
             }
 
@@ -220,7 +224,8 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
                     icon = Icons.Outlined.Block,
                     title = stringResource(R.string.goodpost_brainrot_top_keywords),
                     emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
-                    rows = dashboard.topKeywords
+                    rows = dashboard.topKeywords,
+                    onOpen = { openDemandKind = "keyword" }
                 )
             }
 
@@ -229,6 +234,22 @@ private fun BrainRotDashboard(state: GoodPostUiState, viewModel: GoodPostViewMod
         if (state.brainRotDashboardLoading && dashboard.total == 0) {
             CenteredProgress()
         }
+    }
+
+    // The full list behind whichever card was tapped.
+    when (openDemandKind) {
+        "channel" -> DemandListDialog(
+            title = stringResource(R.string.goodpost_brainrot_top_channels),
+            emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
+            rows = dashboard.topChannels,
+            onDismiss = { openDemandKind = null }
+        )
+        "keyword" -> DemandListDialog(
+            title = stringResource(R.string.goodpost_brainrot_top_keywords),
+            emptyNote = stringResource(R.string.goodpost_brainrot_no_demand),
+            rows = dashboard.topKeywords,
+            onDismiss = { openDemandKind = null }
+        )
     }
 }
 
@@ -258,23 +279,22 @@ private fun DashboardStat(label: String, value: Int, modifier: Modifier = Modifi
 
 /**
  * One demand category — "Most requested channels" / "Most requested keywords" —
- * as a single collapsed card.
+ * as a single card.
  *
- * The two lists used to sit open under a heading, so the dashboard opened on a
- * wall of rows and the totals it exists to show were pushed off the first
- * screen. Collapsed, each category is one line — its name and how many targets
- * are in it — and opening it is a deliberate "I want to look at these", which
- * is the moment the per-target counts are worth reading.
+ * The card is deliberately one line: the category and how many targets are in
+ * it. Tapping it opens [DemandListDialog], a screen with every target and its
+ * counts — the full list deserves the whole screen rather than being squeezed
+ * under a header, and the dashboard keeps the one-glance summary it exists to
+ * be. The right arrow says "this opens a screen".
  */
 @Composable
 private fun DemandSectionCard(
     icon: ImageVector,
     title: String,
     emptyNote: String,
-    rows: List<GoodPostBrainRotDemand>
+    rows: List<GoodPostBrainRotDemand>,
+    onOpen: () -> Unit
 ) {
-    var open by remember { mutableStateOf(false) }
-
     Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
         WaCard {
             WaCardHeader(
@@ -285,30 +305,64 @@ private fun DemandSectionCard(
                 } else {
                     stringResource(R.string.goodpost_brainrot_demand_count, rows.size)
                 },
-                onClick = { open = !open },
-                trailing = {
-                    Icon(
-                        imageVector = if (open) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        tint = Wa.TextDim,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
+                onClick = onOpen,
+                trailing = { WaManageArrow() }
             )
+        }
+    }
+}
 
-            if (!open) return@WaCard
-
-            Spacer(Modifier.height(10.dp))
-            if (rows.isEmpty()) {
-                Text(
-                    text = emptyNote,
-                    color = Wa.TextDim,
-                    fontSize = 13.sp
+/**
+ * The full list behind one demand card, opened as a screen of its own.
+ *
+ * A modal screen rather than an inline expansion: the per-target counts are
+ * what an operator acts on, and a list of up to fifty targets inside a card
+ * pushed the dashboard's totals off the first screen. Its own top bar gives it
+ * a title, a back arrow and a way out, and the body is the same [DemandRow]
+ * the rest of the dashboard uses.
+ */
+@Composable
+private fun DemandListDialog(
+    title: String,
+    emptyNote: String,
+    rows: List<GoodPostBrainRotDemand>,
+    onDismiss: () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        androidx.compose.material3.Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Wa.Canvas
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                WaTopBar(
+                    title = title,
+                    navigation = {
+                        WaIconAction(
+                            icon = Icons.AutoMirrored.Filled.ArrowBack,
+                            description = stringResource(R.string.goodpost_back),
+                            onClick = onDismiss
+                        )
+                    }
                 )
-            } else {
-                rows.forEachIndexed { index, row ->
-                    if (index > 0) Spacer(Modifier.height(8.dp))
-                    DemandRow(row, nested = true)
+                if (rows.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        WaEmptyState(title = title, note = emptyNote)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(top = 8.dp, bottom = 32.dp)
+                    ) {
+                        items(rows, key = { it.kind + ":" + it.value }) { row ->
+                            DemandRow(row)
+                        }
+                    }
                 }
             }
         }
@@ -330,14 +384,9 @@ private fun DemandSectionCard(
  * blocking".
  */
 @Composable
-private fun DemandRow(row: GoodPostBrainRotDemand, nested: Boolean = false) {
+private fun DemandRow(row: GoodPostBrainRotDemand) {
     Box(
-        modifier = Modifier.padding(
-            start = if (nested) 0.dp else 16.dp,
-            end = if (nested) 0.dp else 16.dp,
-            top = 4.dp,
-            bottom = if (nested) 0.dp else 4.dp
-        )
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
     ) {
         WaCard {
             WaCardHeader(

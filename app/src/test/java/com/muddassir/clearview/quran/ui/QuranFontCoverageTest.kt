@@ -30,21 +30,22 @@ class QuranFontCoverageTest {
     )
 
     /**
-     * The bundled face is a Compose [Font] resource, so the glyph table is not
-     * readable from a JVM unit test. What IS assertable here is the wiring: the
-     * family is built from exactly one bundled face, at the BOLD weight, and it
-     * is the Scheherazade face that was measured to cover every mark above.
-     * The glyph-level check lives in the font choice itself (documented on
-     * [QuranFontFamily]) and was verified against the whole corpus with
-     * fontTools.
+     * The bundled faces are Compose [Font] resources, so the glyph tables are
+     * not readable from a JVM unit test. What IS assertable here is the wiring:
+     * the family is the two-face chain that was measured against the whole
+     * corpus — the DigitalKhatt IndoPak Mushaf face first, Scheherazade New as
+     * the total-coverage fallback. The glyph-level checks live on the font
+     * choices themselves (documented on [QuranFontFamily]) and were verified
+     * against all 6236 verses with fontTools.
      */
     @Test
-    fun `the Quran family is the measured full-coverage face`() {
-        // Measured over all 6236 verses: every "official IndoPak" font (Amiri,
-        // QuranWBW, PDMS Saleem) is missing 12-15 marks against THIS app's text,
-        // because the app's text is a different IndoPak corpus. Scheherazade New
-        // covers all of it.
-        assertEquals(R.font.scheherazade_new, QURAN_FONT_RES)
+    fun `the Quran family is the IndoPak Mushaf face with a full-coverage fallback`() {
+        // Primary: the OFL DigitalKhatt IndoPak Mushaf face (the closest
+        // legally-bundlable equivalent of the face the reference app ships).
+        assertEquals(R.font.digitalkhatt_indopak, QURAN_FONT_RES)
+        // Fallback: Scheherazade New, the only measured face that covers every
+        // mark the corpus uses. Neither face alone is total; together they are.
+        assertEquals(R.font.scheherazade_new, QURAN_FALLBACK_FONT_RES)
     }
 
     @Test

@@ -198,6 +198,12 @@ class QuranRepository(context: Context) {
     /** Sets + persists the interval (hours) between automatic new-verse refreshes. */
     fun setRefreshIntervalHours(hours: Int) = store.setRefreshIntervalHours(hours)
 
+    /** The reader's scale factor for the Arabic Quran text (1.0 = default). */
+    fun getArabicTextScale(): Float = store.getArabicTextScale()
+
+    /** Sets + persists the Arabic Quran text scale. */
+    fun setArabicTextScale(scale: Float) = store.setArabicTextScale(scale)
+
     /** Whether the app posts an OS notification when a new verse is chosen. */
     fun getQuranNotificationsEnabled(): Boolean = store.getQuranNotificationsEnabled()
 

@@ -1412,11 +1412,27 @@ private fun BrainRotChannelsCard(viewModel: MainViewModel) {
                         icon = Icons.Outlined.PlayCircle,
                         onRemove = { viewModel.removeBrainRotChannel(channel.handle) },
                         removeLabel = "Unblock ${channel.handle}",
-                        // No Send. A channel you blocked yourself is your own
-                        // rule; offering to make it global would be offering to
-                        // decide for everyone else. Only YouTube protection items
-                        // are sendable.
-                        onSend = null,
+                        // A channel you block yourself can be sent for the
+                        // shared blocklist just like a keyword. The Send action
+                        // disappears once this value is queued or approved, so
+                        // the same request cannot be sent twice.
+                        onSend = if (
+                            viewModel.globalRulesAvailable &&
+                            viewModel.submissionStatusFor("channel", channel.handle) == null
+                        ) {
+                            {
+                                viewModel.submitChannelToGlobal(channel.handle, channel.name) { ok ->
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(
+                                            if (ok) R.string.block_global_suggest_queued
+                                            else R.string.block_global_suggest_failed
+                                        ),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        } else null,
                         subtitle = when {
                             viewModel.isQueuedForReview("channel", channel.handle) -> "Queued for review"
                             viewModel.isApprovedGlobally("channel", channel.handle) -> "Approved globally"

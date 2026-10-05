@@ -130,9 +130,11 @@ import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
-import com.muddassir.clearview.quran.ui.QURAN_LINE_HEIGHT_RATIO
 import com.muddassir.clearview.quran.ui.QuranFontFamily
+import com.muddassir.clearview.quran.ui.quranFontSize
+import com.muddassir.clearview.quran.ui.quranLineHeight
 import com.muddassir.clearview.quran.ui.VerseAudioPlayer
+import com.muddassir.clearview.quran.ui.VerseAudioProgressBar
 import com.muddassir.clearview.quran.ui.VerseAudioStatus
 import com.muddassir.clearview.quran.ui.verseAudioUrl
 import com.muddassir.clearview.quran.data.verseReference
@@ -149,6 +151,12 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * The Arabic text-size presets offered in Settings. Moderately spaced so each
+ * step is visibly different without any of them making a verse hard to read.
+ */
+private val QURAN_TEXT_SCALE_OPTIONS = listOf(0.8f, 1.0f, 1.25f, 1.5f)
 
 /**
  * Settings bottom sheet (opened from the Quran tab's gear icon): the verse
@@ -252,6 +260,44 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Text(
                 text = pluralStringResource(R.plurals.quran_verse_refresh_note_hours, interval, interval),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(Modifier.height(16.dp))
+            // ── Arabic text size ──
+            // The one typography control: it scales the Quran Arabic text — verse,
+            // surah reader and basmala — together, so the marks grow with the
+            // letters instead of a reader having to trade clarity for size. The
+            // ClearView chrome around it is unchanged.
+            Text(
+                text = stringResource(R.string.quran_settings_arabic_size),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                QURAN_TEXT_SCALE_OPTIONS.forEach { scale ->
+                    FilterChip(
+                        selected = kotlin.math.abs(state.arabicTextScale - scale) < 0.001f,
+                        onClick = { state.changeArabicTextScale(scale) },
+                        label = {
+                            Text(
+                                stringResource(
+                                    R.string.quran_text_size_percent,
+                                    (scale * 100).toInt()
+                                )
+                            )
+                        }
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = stringResource(R.string.quran_settings_arabic_size_note),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1535,6 +1581,17 @@ private fun SurahReader(
                                     }
                                 }
                             }
+                            // Seek bar under the Listen controls: the reader can
+                            // see how far into the ayah they are and drag to the
+                            // part they want. Draws itself only once the file is
+                            // prepared (see VerseAudioProgressBar).
+                            if (listening) {
+                                Spacer(Modifier.height(6.dp))
+                                VerseAudioProgressBar(
+                                    player = verseAudio,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                         }
                     }
                 }
@@ -1700,8 +1757,8 @@ private fun SurahHead(surahNumber: Int, mode: QuranReadMode, basmala: String) {
 
     Text(
         text = basmala,
-        fontSize = 24.sp,
-        lineHeight = (24 * QURAN_LINE_HEIGHT_RATIO).sp,
+        fontSize = quranFontSize(24f),
+        lineHeight = quranLineHeight(24f),
         // Arabic scripture (opens every surah but At-Tawba): the Quran face, so
         // the basmala's harakat render exactly as the verses' do. No synthetic
         // bold — it merges dense marks into the letters.
@@ -1754,8 +1811,8 @@ private fun ArabicVerse(
 
     Text(
         text = text,
-        fontSize = 30.sp,
-        lineHeight = (30 * QURAN_LINE_HEIGHT_RATIO).sp,
+        fontSize = quranFontSize(30f),
+        lineHeight = quranLineHeight(30f),
         // Quran face so every harakat in the authoritative text renders (§1).
         // No synthetic bold: it merges dense marks into the letters.
         fontFamily = QuranFontFamily,
@@ -2255,10 +2312,11 @@ private fun VerseSearchRow(
                 Spacer(Modifier.height(6.dp))
                 Text(
                     text = verse.arabicText,
-                    fontSize = 18.sp,
-                    lineHeight = (18 * QURAN_LINE_HEIGHT_RATIO).sp,
+                    fontSize = quranFontSize(18f),
+                    lineHeight = quranLineHeight(18f),
                     // Arabic verse preview: the Quran face, so harakat survive
-                    // even at this small size.
+                    // even at this small size. It follows the reader's text size
+                    // too, so a preview and the verse it opens agree.
                     fontFamily = QuranFontFamily,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
