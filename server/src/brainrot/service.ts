@@ -452,7 +452,28 @@ export async function listDeviceSubmissions(
   }));
 }
 
-/** The review queue. Oldest first, which is the order an operator works through it. */
+/**
+ * The review queue: one row per TARGET, oldest first, which is the order an
+ * operator works through it.
+ *
+ * Five devices asking for the same channel is ONE decision for an operator, so
+ * the queue groups by `kind` + `value` exactly as the false-positive queue does
+ * and the row carries how many distinct devices asked. A card per REQUEST would
+ * put the same channel on screen twice, each showing "1 request" and each a
+ * place to make the same decision — and approving one of them would leave the
+ * other looking untouched even though the rule it asked for now exists
+ * everywhere.
+ *
+ * The row that STANDS FOR a group is the oldest request that is still open, so
+ * `id` is always a row the decision can be applied to. When nothing about the
+ * target is open any more, the oldest request is used and the group reads as
+ * decided. [reviewSubmission] then decides every open request for that target at
+ * once, which is what keeps one target from becoming a second card later.
+ *
+ * The group's status comes from the same ordering: `pending` while any request
+ * is untouched, then `under_review`, then whatever was decided — so a target
+ * appears under exactly one pill rather than in two lists at once.
+ */
 export async function listSubmissions(
   database: Queryable,
   status: BrainRotSubmissionStatus | 'all' = 'pending'
@@ -467,10 +488,25 @@ export async function listSubmissions(
     status: BrainRotSubmissionStatus;
     created_at: unknown;
   }>(
-    `SELECT id, kind, value, display_name, note, source, status, created_at
-       FROM brainrot_submissions
-      ${status === 'all' ? '' : 'WHERE status = $1'}
-      ORDER BY created_at ASC
+    `WITH ranked AS (
+       SELECT id, kind, value, display_name, note, source, status, created_at,
+              ROW_NUMBER() OVER (
+                PARTITION BY kind, value
+                ORDER BY CASE status
+                           WHEN 'pending' THEN 0
+                           WHEN 'under_review' THEN 1
+                           ELSE 2
+                         END,
+                         created_at ASC,
+                         id
+              ) AS standing
+         FROM brainrot_submissions
+     )
+     SELECT id, kind, value, display_name, note, source, status, created_at
+       FROM ranked
+      WHERE standing = 1
+        ${status === 'all' ? '' : 'AND status = $1'}
+      ORDER BY created_at ASC, id
       LIMIT 500`,
     status === 'all' ? [] : [status]
   );
@@ -492,11 +528,19 @@ export async function listSubmissions(
 }
 
 /**
- * Approve or reject a submission.
+ * Approve or reject a suggestion, and with it every open request for the same
+ * target.
  *
  * Approving is the ONLY path from a user's suggestion to a global rule, and it
  * happens in one transaction with the rule it creates, so an approval can never
  * leave a submission marked approved whose rule was not written.
+ *
+ * Every open request for the same `kind` + `value` is decided together, because
+ * the queue shows them as ONE row: deciding only the row the operator tapped
+ * would put the same target straight back in the queue as a pending request for
+ * a rule that already exists. `under_review` is the exception in the other
+ * direction — it picks up the pending requests and leaves the ones already being
+ * looked at alone, since it decides nothing.
  */
 export async function reviewSubmission(
   database: Queryable,
@@ -550,15 +594,30 @@ export async function reviewSubmission(
       }
     }
 
+    // Every open request for this target is decided with it, so the card the
+    // operator acted on is the only card the target leaves behind. Decided rows
+    // are untouched: their outcome is history, not a state to overwrite.
     await tx.query(
       `UPDATE brainrot_submissions
-          SET status = $2,
+          SET status = $1,
               reviewed_at = now(),
-              reviewed_by_admin_id = $3,
-              approved_keyword_id = CASE WHEN $4 = 'keyword' THEN $5::uuid ELSE approved_keyword_id END,
-              approved_channel_id = CASE WHEN $4 = 'channel' THEN $5::uuid ELSE approved_channel_id END
-        WHERE id = $1`,
-      [submissionId, decision, adminId, row.kind, ruleId]
+              reviewed_by_admin_id = $2,
+              approved_keyword_id = CASE WHEN $3 = 'keyword' THEN $4::uuid ELSE approved_keyword_id END,
+              approved_channel_id = CASE WHEN $3 = 'channel' THEN $4::uuid ELSE approved_channel_id END
+        WHERE kind = $5::brainrot_target_kind
+          AND value = $6
+          AND status = ANY($7::text[])`,
+      [
+        decision,
+        adminId,
+        row.kind,
+        ruleId,
+        row.kind,
+        row.value,
+        // "Under review" picks up the pending requests; it decides nothing, so a
+        // request already being looked at is left where it is.
+        decision === 'under_review' ? ['pending'] : ['pending', 'under_review'],
+      ]
     );
 
     return {
@@ -617,8 +676,22 @@ export async function getDashboard(database: Queryable): Promise<{
   readonly topChannels: BrainRotDemandRow[];
   readonly topKeywords: BrainRotDemandRow[];
 }> {
+  // Counted per TARGET, using the same status ordering the queue itself groups
+  // by. Counting requests instead would put "Pending 2" above a queue that shows
+  // one card for that channel, and a total that disagrees with the list beside
+  // it is worse than no total at all.
   const statusRows = await database.query<{ status: string; total: number }>(
-    `SELECT status, COUNT(*)::int AS total FROM brainrot_submissions GROUP BY status`
+    `WITH target_status AS (
+       SELECT (ARRAY_AGG(status ORDER BY CASE status
+                                           WHEN 'pending' THEN 0
+                                           WHEN 'under_review' THEN 1
+                                           ELSE 2
+                                         END,
+                                         created_at))[1] AS status
+         FROM brainrot_submissions
+        GROUP BY kind, value
+     )
+     SELECT status, COUNT(*)::int AS total FROM target_status GROUP BY status`
   );
   const byStatus = new Map(statusRows.map((r) => [r.status, Number(r.total)]));
 

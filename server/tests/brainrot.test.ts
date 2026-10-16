@@ -307,6 +307,139 @@ describe('the review queue', () => {
     const matching = res.body.submissions.filter((s: { value: string }) => s.value === 'once');
     expect(matching).toHaveLength(1);
   });
+
+  it('lists one target once, however many devices asked for it', async () => {
+    // The case the queue exists for: two people block the same channel, so the
+    // channel is ONE decision — not two cards saying "1 request" each.
+    for (let i = 0; i < 2; i += 1) {
+      const res = await request(app).post('/api/v1/brainrot/suggestions').send({
+        kind: 'channel',
+        value: '@justkass',
+        displayName: 'Just Kass',
+        anonymousId: deviceId(),
+      });
+      expect(res.status).toBe(202);
+    }
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+
+    const matching = (res.body.submissions as Array<Record<string, unknown>>).filter(
+      (s) => s.value === '@justkass'
+    );
+    expect(matching).toHaveLength(1);
+    const [card] = matching;
+    expect(card?.requesters).toBe(2);
+    expect(card?.displayName).toBe('Just Kass');
+  });
+
+  it('decides every open request for a target in one approval', async () => {
+    for (let i = 0; i < 2; i += 1) {
+      await request(app)
+        .post('/api/v1/brainrot/suggestions')
+        .send({ kind: 'channel', value: '@askedtwice', anonymousId: deviceId() });
+    }
+
+    const token = await adminToken();
+    const queue = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    const card = (queue.body.submissions as Array<{ id: string; value: string }>).find(
+      (s) => s.value === '@askedtwice'
+    );
+    expect(card).toBeDefined();
+
+    const review = await request(app)
+      .post(`/admin/api/brainrot/submissions/${card?.id}/review`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ decision: 'approved' });
+    expect(review.status).toBe(200);
+
+    // Both requests were decided, not just the one the operator tapped —
+    // otherwise the untouched one would come straight back as a pending card.
+    const rows = await pglite.query<{ status: string }>(
+      `SELECT status FROM brainrot_submissions WHERE value = '@askedtwice'`
+    );
+    expect(rows.rows.map((r) => r.status)).toEqual(['approved', 'approved']);
+
+    const after = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    expect(
+      (after.body.submissions as Array<{ value: string }>).filter(
+        (s) => s.value === '@askedtwice'
+      )
+    ).toHaveLength(0);
+
+    // The history shows the decided target once, too: the second request is
+    // part of the same decision rather than a row left looking unanswered.
+    const history = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .query({ status: 'all' })
+      .set('Authorization', `Bearer ${token}`);
+    const decided = (history.body.submissions as Array<Record<string, unknown>>).filter(
+      (s) => s.value === '@askedtwice'
+    );
+    expect(decided).toHaveLength(1);
+    const [row] = decided;
+    expect(row?.status).toBe('approved');
+
+    // …and the rule it asked for exists exactly once.
+    const rules = await request(app).get('/api/v1/brainrot/rules');
+    expect(
+      (rules.body.channels as Array<{ handle: string }>).filter(
+        (c) => c.handle === '@askedtwice'
+      )
+    ).toHaveLength(1);
+  });
+
+  it('marks every pending request for a target under review together', async () => {
+    for (let i = 0; i < 2; i += 1) {
+      await request(app)
+        .post('/api/v1/brainrot/suggestions')
+        .send({ kind: 'keyword', value: 'consideredtogether', anonymousId: deviceId() });
+    }
+
+    const token = await adminToken();
+    const queue = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    const card = (queue.body.submissions as Array<{ id: string; value: string }>).find(
+      (s) => s.value === 'consideredtogether'
+    );
+
+    const review = await request(app)
+      .post(`/admin/api/brainrot/submissions/${card?.id}/review`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ decision: 'under_review' });
+    expect(review.status).toBe(200);
+
+    const rows = await pglite.query<{ status: string }>(
+      `SELECT status FROM brainrot_submissions WHERE value = 'consideredtogether'`
+    );
+    expect(rows.rows.map((r) => r.status)).toEqual(['under_review', 'under_review']);
+
+    // The target moved pills rather than appearing under two at once.
+    const pending = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .set('Authorization', `Bearer ${token}`);
+    expect(
+      (pending.body.submissions as Array<{ value: string }>).filter(
+        (s) => s.value === 'consideredtogether'
+      )
+    ).toHaveLength(0);
+    const underReview = await request(app)
+      .get('/admin/api/brainrot/submissions')
+      .query({ status: 'under_review' })
+      .set('Authorization', `Bearer ${token}`);
+    expect(
+      (underReview.body.submissions as Array<{ value: string }>).filter(
+        (s) => s.value === 'consideredtogether'
+      )
+    ).toHaveLength(1);
+  });
 });
 
 describe('where a submission came from, and where it is', () => {
@@ -415,6 +548,23 @@ describe('the admin dashboard', () => {
     expect(res.body.totals.all).toBe(2);
   });
 
+  it('counts one target once, however many devices asked', async () => {
+    // The same grouping the queue uses: two requests for one channel are one
+    // card, so counting requests would put "Pending 2" above a one-card list.
+    for (let i = 0; i < 2; i += 1) {
+      await request(app)
+        .post('/api/v1/brainrot/suggestions')
+        .send({ kind: 'channel', value: '@dashsame', anonymousId: deviceId() });
+    }
+
+    const token = await adminToken();
+    const res = await request(app)
+      .get('/admin/api/brainrot/dashboard')
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.body.totals.pending).toBe(1);
+    expect(res.body.totals.all).toBe(1);
+  });
+
   it('reports how many devices blocked and how many requested a target', async () => {
     // Two devices request it globally; one of them also reports it.
     const a = deviceId();
@@ -476,12 +626,13 @@ describe('the false-positive queue', () => {
     // Two devices, one row: a report is a decision about a TARGET.
     const rows = res.body.reports as Array<Record<string, unknown>>;
     expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe('keyword');
-    expect(rows[0].value).toBe('queueword');
-    expect(rows[0].reports).toBe(2);
-    expect(rows[0].detail).toBe('Blocked in error');
-    expect(rows[0].ruleId).toBe(id);
-    expect(rows[0].ruleEnabled).toBe(true);
+    const [row] = rows;
+    expect(row?.kind).toBe('keyword');
+    expect(row?.value).toBe('queueword');
+    expect(row?.reports).toBe(2);
+    expect(row?.detail).toBe('Blocked in error');
+    expect(row?.ruleId).toBe(id);
+    expect(row?.ruleEnabled).toBe(true);
   });
 
   it('lists a reported term that matches no global rule', async () => {
