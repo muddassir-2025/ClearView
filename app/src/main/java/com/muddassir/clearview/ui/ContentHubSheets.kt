@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -50,6 +51,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -79,6 +81,7 @@ import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -96,6 +99,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -130,6 +134,7 @@ import com.muddassir.clearview.goodpost.data.GoodPostNotifications
 import com.muddassir.clearview.goodpost.data.GoodPostUpdateScheduler
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.QuranJsonParser
+import com.muddassir.clearview.quran.data.QuranStore
 import com.muddassir.clearview.quran.ui.QuranFontFamily
 import com.muddassir.clearview.quran.ui.quranFontSize
 import com.muddassir.clearview.quran.ui.quranLineHeight
@@ -151,12 +156,130 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
- * The Arabic text-size presets offered in Settings. Moderately spaced so each
- * step is visibly different without any of them making a verse hard to read.
+ * The notch the Arabic text size snaps to: 5%, so the percentage on screen lands
+ * on a round number while every size in the range stays reachable.
+ *
+ * Deliberately NOT a short list of presets: "bigger" is not four discrete
+ * answers, and a reader who wants 115% should be able to have 115%.
  */
-private val QURAN_TEXT_SCALE_OPTIONS = listOf(0.8f, 1.0f, 1.25f, 1.5f)
+private const val QURAN_TEXT_SCALE_STEP = 0.05f
+
+/**
+ * The Arabic text controls: one setting, in one block.
+ *
+ * One composable for both places it appears — the surah reader (§2) and the
+ * settings sheet — because a reader who set a size in one place and finds a
+ * different number in the other has been told the app does not know its own
+ * state.
+ *
+ * [onDone] is null where the surrounding screen already has a way out (the
+ * settings sheet); the reader passes one so the panel can be closed without
+ * hunting for the icon again.
+ */
+@Composable
+private fun ArabicTextControls(
+    state: ContentHubState,
+    onDone: (() -> Unit)? = null
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = stringResource(R.string.quran_settings_arabic_size),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f)
+                )
+                // The number is the whole feedback for a control with no stops to
+                // count: without it a reader cannot tell 115% from 120%.
+                Text(
+                    text = stringResource(
+                        R.string.quran_text_size_percent,
+                        (state.arabicTextScale * 100).roundToInt()
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                if (onDone != null) {
+                    Spacer(Modifier.width(4.dp))
+                    TextButton(onClick = onDone) {
+                        Text(stringResource(R.string.quran_done))
+                    }
+                }
+            }
+            SleekSlider(
+                value = state.arabicTextScale,
+                valueRange = QuranStore.ARABIC_TEXT_SCALE_MIN..QuranStore.ARABIC_TEXT_SCALE_MAX,
+                step = QURAN_TEXT_SCALE_STEP,
+                onValueChange = { state.changeArabicTextScale(it) }
+            )
+        }
+    }
+}
+
+/**
+ * A slider drawn as a hairline, with a small dot for a thumb.
+ *
+ * The default Material slider is furniture: a 16dp track and a 20dp thumb, sized
+ * for a settings page. This one sits in a reader's top bar over scripture, where
+ * the point is the value, not the control — so the track is 3dp and the thumb
+ * 12dp. The TOUCH target is still the slider's own 48dp, which is what keeps it
+ * usable with a thumb; only the drawing is slim.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SleekSlider(
+    value: Float,
+    valueRange: ClosedFloatingPointRange<Float>,
+    step: Float,
+    onValueChange: (Float) -> Unit
+) {
+    val fraction = ((value - valueRange.start) /
+        (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
+    Slider(
+        value = value.coerceIn(valueRange.start, valueRange.endInclusive),
+        onValueChange = onValueChange,
+        valueRange = valueRange,
+        // Whole notches above the start, so the values a reader passes through
+        // are the same round percentages the label shows.
+        steps = (((valueRange.endInclusive - valueRange.start) / step).roundToInt() - 1)
+            .coerceAtLeast(0),
+        thumb = {
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        },
+        track = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(fraction)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.primary)
+                )
+            }
+        }
+    )
+}
 
 /**
  * Settings bottom sheet (opened from the Quran tab's gear icon): the verse
@@ -266,36 +389,10 @@ fun QuranSettingsSheet(state: ContentHubState, onDismiss: () -> Unit) {
 
             Spacer(Modifier.height(16.dp))
             // ── Arabic text size ──
-            // The one typography control: it scales the Quran Arabic text — verse,
-            // surah reader and basmala — together, so the marks grow with the
-            // letters instead of a reader having to trade clarity for size. The
-            // ClearView chrome around it is unchanged.
-            Text(
-                text = stringResource(R.string.quran_settings_arabic_size),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(8.dp))
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                QURAN_TEXT_SCALE_OPTIONS.forEach { scale ->
-                    FilterChip(
-                        selected = kotlin.math.abs(state.arabicTextScale - scale) < 0.001f,
-                        onClick = { state.changeArabicTextScale(scale) },
-                        label = {
-                            Text(
-                                stringResource(
-                                    R.string.quran_text_size_percent,
-                                    (scale * 100).toInt()
-                                )
-                            )
-                        }
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
+            // The same block the surah reader shows (§2). One composable, so the
+            // two places cannot drift apart.
+            ArabicTextControls(state = state)
+            Spacer(Modifier.height(6.dp))
             Text(
                 text = stringResource(R.string.quran_settings_arabic_size_note),
                 style = MaterialTheme.typography.labelSmall,
@@ -537,6 +634,10 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
     // state, or the check mark and the page can disagree.
     var readerSpeed by remember { mutableStateOf(QuranScrollSpeed.OFF) }
     var readerSpeedMenu by remember { mutableStateOf(false) }
+    // §2: the Arabic text-size menu in the reader's chrome, beside the search
+    // icon. Owned here for the same reason the speed menu is: one owner for a
+    // control and its state.
+    var readerTextPanel by remember { mutableStateOf(false) }
     // §2: the surah's identity block and the Arabic|English switch are PINNED
     // above the text, so they spend their height on every screenful of a read
     // that may be a hundred of them. This folds them away. The surah's name stays
@@ -595,6 +696,7 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
         // LAST surah would move text they have not read a word of yet.
         readerSpeed = QuranScrollSpeed.OFF
         readerSpeedMenu = false
+        readerTextPanel = false
         // And it starts expanded: opening a surah you have not opened before with
         // its name and translation already folded away is being dropped into the
         // middle of something.
@@ -736,6 +838,27 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                             )
                         }
 
+                        // §2: the Arabic text size and spacing, immediately beside
+                        // the search icon — the other things a reader reaches for
+                        // while inside a surah. A panel of sliders, not a list of
+                        // steps: "bigger" and "more space" are continuous
+                        // quantities, and a slider shows where the reader is and
+                        // how much room is left in one glance, which a menu of
+                        // Larger / Smaller entries never does. It costs the row one
+                        // icon, next to the name, the fold, search and speed.
+                        IconButton(onClick = { readerTextPanel = !readerTextPanel }) {
+                            Icon(
+                                Icons.Filled.FormatSize,
+                                contentDescription = stringResource(
+                                    R.string.quran_arabic_text_appearance
+                                ),
+                                // Accent-tinted while the controls are showing, like
+                                // the speed icon: the row says what is open.
+                                tint = if (readerTextPanel) MaterialTheme.colorScheme.primary
+                                else LocalContentColor.current
+                            )
+                        }
+
                         // §1: hands-free reading. Beside the search icon, in the
                         // same row the reader is already looking at, and tinted
                         // while it is running — a page that drifts on its own with
@@ -839,6 +962,20 @@ fun QuranSearchScreen(state: ContentHubState, onDismiss: () -> Unit) {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() })
                     )
+                }
+
+                // §2: the Arabic text controls, in the page rather than over it —
+                // the same place the search field appears, and for the same
+                // reason: a control that opens over the scripture is a control
+                // that hides the thing it is changing, and a floating panel also
+                // reads as something the app forgot to close. Opening these pushes
+                // the surah down, so the reader sees each change on the verse.
+                if (openSurah != null && readerTextPanel) {
+                    ArabicTextControls(
+                        state = state,
+                        onDone = { readerTextPanel = false }
+                    )
+                    Spacer(Modifier.height(4.dp))
                 }
 
                 Spacer(Modifier.height(4.dp))
@@ -1803,7 +1940,12 @@ private fun ArabicVerse(
                 )
                 append("  ")
             }
-            withStyle(SpanStyle(color = ornament, fontWeight = FontWeight.SemiBold)) {
+            // Colour only, NO synthetic bold. The Quran face ships Regular
+            // only, so SemiBold here is a FAKE weight: it thickens the ornament
+            // and its Arabic-Indic digits past the verse's own strokes and smears
+            // their curves — the "text looks too bold" report. Colour plus alpha
+            // already set the number apart from the verse, so nothing is lost.
+            withStyle(SpanStyle(color = ornament)) {
                 append("۝" + arabicDigits(verse.ayahNumber))
             }
         }

@@ -307,7 +307,8 @@ private fun VerseDisplay(
             // lets the verse reflow on its own.
             fontSize = quranFontSize(30f),
             lineHeight = quranLineHeight(30f),
-            // Quran face so every harakat in the authoritative text renders (§1).
+            // The Quran face the reader picked (§1), read from the local rather
+            // than named here, so a change in Settings reaches this verse.
             // NO synthetic bold: on a dense Quran text it merges the marks into
             // the letters, which is what made them look wrong/missing.
             fontFamily = QuranFontFamily,

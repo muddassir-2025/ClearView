@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SmartDisplay
 import androidx.compose.material.icons.filled.Settings
@@ -47,6 +48,8 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.muddassir.clearview.R
+import com.muddassir.clearview.browser.BrowserSession
+import com.muddassir.clearview.browser.ui.BrowserTab
 import com.muddassir.clearview.directory.ui.ChannelDirectoryScreen
 import com.muddassir.clearview.media.data.MediaBadge
 import com.muddassir.clearview.media.data.MediaRepository
@@ -65,6 +68,7 @@ import com.muddassir.clearview.media.worker.MediaNotifier
 import com.muddassir.clearview.media.worker.MediaWorkScheduler
 import com.muddassir.clearview.quran.data.IslamicDateStore
 import com.muddassir.clearview.quran.data.QuranRepository
+import com.muddassir.clearview.quran.data.QuranStore
 import com.muddassir.clearview.quran.model.QuranVerse
 import com.muddassir.clearview.quran.ui.DhikrCounterScreen
 import com.muddassir.clearview.quran.ui.LocalQuranTextScale
@@ -98,7 +102,7 @@ import java.time.format.FormatStyle
  * verse state (verse, bookmark, refresh interval) plus the actions the top
  * bar can trigger (share / bookmark / copy / new verse / interval).
  */
-enum class ContentTab { QURAN, MEDIA }
+enum class ContentTab { QURAN, MEDIA, BROWSER }
 
 /**
  * Which player a tap on the media card should reopen.
@@ -178,7 +182,7 @@ class ContentHubState(appContext: Context) {
     // The reader's scale for the Arabic Quran text (1.0 = default). Provided to
     // every Arabic surface through [LocalQuranTextScale], so one choice sizes the
     // whole Quran without touching the rest of the UI.
-    var arabicTextScale by mutableStateOf(1f)
+    var arabicTextScale by mutableStateOf(QuranStore.DEFAULT_ARABIC_TEXT_SCALE)
     var isBookmarked by mutableStateOf(false)
 
     // ── The Quran reader: search, surahs and bookmarks (§1–§3) ──────
@@ -982,8 +986,13 @@ class ContentHubState(appContext: Context) {
 
     /** Sets + persists the Arabic Quran text scale; every Arabic surface follows. */
     fun changeArabicTextScale(scale: Float) {
-        arabicTextScale = scale
-        quranRepository.setArabicTextScale(scale)
+        // The store clamps and rejects non-finite values; mirror that here so the
+        // on-screen state and what is persisted cannot diverge.
+        val clamped = scale.takeIf { it.isFinite() }
+            ?.coerceIn(QuranStore.ARABIC_TEXT_SCALE_MIN, QuranStore.ARABIC_TEXT_SCALE_MAX)
+            ?: return
+        arabicTextScale = clamped
+        quranRepository.setArabicTextScale(clamped)
     }
 
     fun changeInterval(context: Context, hours: Int) {
@@ -1165,6 +1174,12 @@ fun isLandscape(): Boolean =
 fun ContentHubTabContent(
     state: ContentHubState,
     isLandscape: Boolean,
+    /** Owned by MainScreen so the page survives switching tabs; the widget
+     *  surface passes null because it only ever opens the Quran tab. */
+    browserSession: BrowserSession? = null,
+    /** Opens the app's password-protected Protection dashboard from the
+     *  Browser tab's settings. Null on surfaces that have no More tab. */
+    onOpenAppProtection: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -1243,6 +1258,14 @@ fun ContentHubTabContent(
                     islamicDateAdjustment = state.islamicDateAdjustment,
                     onAdjustDate = { state.showIslamicDateSheet = true },
                     listenVisible = state.showVerseListen
+                )
+            }
+
+            state.selectedTab == ContentTab.BROWSER -> browserSession?.let { session ->
+                BrowserTab(
+                    session = session,
+                    modifier = Modifier.fillMaxSize(),
+                    onOpenAppProtection = onOpenAppProtection
                 )
             }
 
@@ -1409,9 +1432,20 @@ fun ContentHubTopBar(
             }
         )
 
-        // The Media tab, and only the Media tab: `ContentTab` has two members,
-        // and Quran is handled above. The third branch that used to sit here was
-        // the Clear Feed tab's, and it is gone with the tab itself.
+        // Browser gets a plain bar; its address bar and navigation controls
+        // live inside the tab, directly under this title.
+        state.selectedTab == ContentTab.BROWSER -> TopAppBar(
+            title = { Text(stringResource(R.string.browser_tab)) },
+            navigationIcon = {
+                if (onBack != null) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
+            }
+        )
+
+        // Media. Quran is handled above; Browser has its own branch now.
         else -> TopAppBar(
             title = { Text(stringResource(R.string.media_tab)) },
             navigationIcon = {
@@ -1513,7 +1547,7 @@ data class ContentHubNavItem(
     val label: String
 )
 
-/** Standard hub navigation items (Quran, Media, Live) with resource labels. */
+/** Standard hub navigation items (Quran, Media, Browser) with resource labels. */
 @Composable
 fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
     ContentHubNavItem(
@@ -1532,6 +1566,13 @@ fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
         // play glyph means everywhere else in this app.
         { Icon(Icons.Filled.SmartDisplay, contentDescription = null) },
         stringResource(R.string.media_tab)
+    ),
+    ContentHubNavItem(
+        ContentTab.BROWSER,
+        // A globe: the one mark in the row that means "the web", not content
+        // ClearView already curates.
+        { Icon(Icons.Filled.Public, contentDescription = null) },
+        stringResource(R.string.browser_tab)
     )
 )
 

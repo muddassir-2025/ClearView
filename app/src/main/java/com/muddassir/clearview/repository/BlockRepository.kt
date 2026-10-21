@@ -29,14 +29,15 @@ class BlockRepository(context: Context) {
 
     /**
      * Whether YouTube Shorts are blocked while browsing (Block tab toggle).
-     * Default OFF. When enabled, any YouTube /shorts URL (in Chrome, the
-     * Google app's in-app browser, ...) and the Shorts signal inside the
-     * YouTube app are blocked — so users don't have to add "shorts" as a
-     * keyword (which would over-block innocent words like "shortsleeves"
-     * or "shortstop").
+     *
+     * Default ON: the Browser tab ships with Shorts hidden, and the same
+     * control protects Chrome / the Google app's in-app browser. When enabled,
+     * any YouTube /shorts URL and the Shorts signal inside the YouTube app are
+     * blocked — so users don't have to add "shorts" as a keyword (which would
+     * over-block innocent words like "shortsleeves" or "shortstop").
      */
     var blockShorts: Boolean
-        get() = prefs.getBoolean(KEY_BLOCK_SHORTS, false)
+        get() = prefs.getBoolean(KEY_BLOCK_SHORTS, true)
         set(value) = prefs.edit().putBoolean(KEY_BLOCK_SHORTS, value).apply()
 
     /**

@@ -1,0 +1,1128 @@
+package com.muddassir.clearview.browser
+
+import android.annotation.SuppressLint
+import android.app.Dialog
+import android.content.Context
+import android.graphics.Color
+import android.net.http.SslError
+import android.os.Build
+import android.view.View
+import android.view.ViewGroup
+import android.view.WindowManager
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.PermissionRequest
+import android.webkit.SslErrorHandler
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.muddassir.clearview.BuildConfig
+import com.muddassir.clearview.R
+import org.json.JSONObject
+import java.io.ByteArrayInputStream
+
+/** A short browser-chrome message shown instead of a full-screen overlay. */
+data class BrowserNotice(
+    val message: String,
+    val atMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * State + WebView owner for the Browser tab.
+ *
+ * The session lives as long as MainScreen does, so switching to the Quran or
+ * Media tab and back keeps the page and its history. The WebView itself is
+ * created lazily (the first time the Browser tab is shown) and is destroyed
+ * with the screen.
+ *
+ * All protection decisions are delegated to [BrowserRules], which in turn uses
+ * the existing matcher and channel repositories. This class only:
+ *  - owns the custom start page state (the WebView is hidden, not destroyed),
+ *  - filters navigations (safe schemes, blocked URLs, Shorts/Reels/search),
+ *  - injects the page script (assets/browser/clearview_browser.js),
+ *  - refuses YouTube ad requests when the ad switch is on,
+ *  - exposes a deliberately tiny, host-gated JavaScript bridge,
+ *  - tracks the address bar / progress / notice/overlay state.
+ *
+ * The extension's behaviour is the reference for searches and feeds: a blocked
+ * Google/YouTube search does not replace the page with an overlay — it is
+ * stopped before it runs and the reader stays where they are. Overlays remain
+ * for content that has already been opened (a blocked watch page) because
+ * there is nothing else to leave visible.
+ */
+class BrowserSession(private val context: Context) {
+
+    companion object {
+        /** YouTube's home page — where blocked video/search actions land. */
+        const val YOUTUBE_HOME = "https://www.youtube.com/"
+
+        /** Google's home page — where a blocked Google search stays. */
+        const val GOOGLE_HOME = "https://www.google.com/"
+
+        /** Instagram's home page — where a blocked Reels link stays. */
+        const val INSTAGRAM_HOME = "https://www.instagram.com/"
+
+        /**
+         * Name of the JS object. Every method is gated on the CURRENT page
+         * being a protected host (YouTube, Google or Instagram), so a website
+         * that somehow retains the object after a navigation cannot call it.
+         */
+        private const val BRIDGE_NAME = "ClearViewBridge"
+
+        private const val SCRIPT_ASSET = "browser/clearview_browser.js"
+        private const val MAX_PAYLOAD_CHARS = 20_000
+        private const val NOTICE_DEBOUNCE_MS = 1_500L
+
+        /** Ad networks the ClearView extension refuses for YouTube requests. */
+        private val AD_HOSTS = listOf(
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googleadservices.com",
+            "googletagservices.com",
+            "2mdn.net",
+            "adservice.google.com"
+        )
+
+        /** Paths that serve an ad even from a host that also serves content. */
+        private val AD_PATH_MARKERS = listOf(
+            "/pagead/",
+            "/api/stats/ads",
+            "/get_midroll_info",
+            "/ptracking",
+            "/pcs/activeview",
+            "/pagead/id"
+        )
+    }
+
+    /**
+     * Per-session secret embedded only in the injected script. A cross-origin
+     * iframe on YouTube can see the bridge object but not this token, so it
+     * cannot ask the bridge to evaluate content or dismiss an overlay.
+     */
+    private val bridgeToken = java.util.UUID.randomUUID().toString()
+
+    /** The start page and its protection toggles. */
+    val settings = BrowserSettings(context)
+
+    private val rules = BrowserRules(context, settings)
+
+    // ── Observable UI state ────────────────────────────────────────
+
+    /** True while the ClearView start page is showing instead of a website. */
+    var showHome by mutableStateOf(true)
+        private set
+
+    /**
+     * Whether the app's bottom navigation is showing over the browser.
+     *
+     * The Browser tab is the one surface that gives its whole height to the
+     * page; the footer is revealed by tapping the page (or by the system Back
+     * while it is up) so switching tabs never costs permanent screen space.
+     */
+    var footerVisible by mutableStateOf(false)
+        private set
+
+    /** Current page URL, kept in sync by the WebView callbacks. Empty on Home. */
+    var url by mutableStateOf("")
+        private set
+
+    /** The page is loading (drives the stop button and progress bar). */
+    var isLoading by mutableStateOf(false)
+        private set
+
+    /** 0..100 page progress, for the thin loading bar. */
+    var progress by mutableIntStateOf(0)
+        private set
+
+    var canGoBack by mutableStateOf(false)
+        private set
+
+    var canGoForward by mutableStateOf(false)
+        private set
+
+    /** Non-null while ClearView is covering the page with its overlay. */
+    var block by mutableStateOf<BrowserBlock?>(null)
+        private set
+
+    /** A transient message shown in browser chrome (blocked search/Reels). */
+    var notice by mutableStateOf<BrowserNotice?>(null)
+        private set
+
+    /** Main-frame load failure, shown as a small retry banner. */
+    var loadError by mutableStateOf<String?>(null)
+        private set
+
+    // ── Internal ───────────────────────────────────────────────────
+
+    /** The current host, read off the UI thread by the JS bridge. */
+    @Volatile private var currentUrl: String? = null
+
+    /** True while the page is one the in-page script may run on. */
+    @Volatile private var protectedPage = false
+
+    private var scriptCache: String? = null
+    private var hasLoadedPage = false
+    private var startRequested = false
+    private var destroyed = false
+
+    /** HTML5 fullscreen video: WebView hands us the player view. */
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+    private var customViewDialog: Dialog? = null
+
+    private val webViewLazy = lazy { createWebView() }
+
+    /** The WebView; creating it on first access keeps the tab cheap when unused. */
+    val webView: WebView
+        get() = webViewLazy.value
+
+    // ── Navigation API ────────────────────────────────────────────
+
+    /** Load whatever the reader typed (URL or search). */
+    fun navigate(input: String) {
+        val target = BrowserAddress.toUrl(input) ?: return
+        navigateTo(target)
+    }
+
+    /** Load [target] unless the existing rules block it. */
+    fun navigateTo(target: String) {
+        if (destroyed) return
+        val blocked = rules.blockForUrl(target)
+        if (blocked != null) {
+            when (blocked.type) {
+                BrowserBlock.Type.SEARCH -> {
+                    handleBlockedSearch(target)
+                    return
+                }
+                // A Short/Reel is a vertical feed, not a page. It loads and the
+                // page script covers the blocked item; stopping or redirecting
+                // here would break swiping to the next one.
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                else -> {
+                    showBlock(blocked)
+                    return
+                }
+            }
+        }
+        block = null
+        loadError = null
+        notice = null
+        showHome = false
+        hideFooter()
+        val safeTarget = BrowserAddress.withSafeSearch(target) ?: target
+        if (webViewLazy.isInitialized()) {
+            webView.visibility = View.VISIBLE
+            webView.onResume()
+        }
+        webView.loadUrl(safeTarget)
+    }
+
+    /**
+     * Show the ClearView start page.
+     *
+     * The WebView is not destroyed or reset: it is paused and visually hidden,
+     * so returning to a page (Back from Home) keeps its state. The address bar
+     * is emptied because there is no page address to show.
+     */
+    fun goHome() {
+        if (destroyed) return
+        showHome = true
+        hideFooter()
+        block = null
+        loadError = null
+        notice = null
+        url = ""
+        currentUrl = null
+        protectedPage = false
+        isLoading = false
+        progress = 0
+        if (webViewLazy.isInitialized()) {
+            pausePlayback()
+            webView.stopLoading()
+            // Do NOT pause or hide the view here. A WebView that is paused or
+            // hidden before its first layout initialises Chromium with a
+            // 0-height viewport: `100vh` resolves to 0, every `(min-height: …)`
+            // / `orientation` media query answers as if the screen had no
+            // height, and pages that size themselves against the viewport (the
+            // YouTube player, Instagram's sign-in) collapse or paint blank.
+            // The start page is drawn over the WebView, so it stays invisible
+            // to the reader anyway.
+        }
+    }
+
+    fun reload() {
+        if (destroyed || showHome) return
+        val safe = BrowserAddress.withSafeSearch(currentUrl)
+        if (safe != null && safe != currentUrl) {
+            webView.loadUrl(safe)
+            return
+        }
+        val blocked = rules.blockForUrl(currentUrl)
+        if (blocked != null) {
+            when (blocked.type) {
+                BrowserBlock.Type.SEARCH -> {
+                    handleBlockedSearch(currentUrl.orEmpty())
+                    return
+                }
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                else -> {
+                    showBlock(blocked)
+                    return
+                }
+            }
+        }
+        block = null
+        loadError = null
+        webView.reload()
+    }
+
+    fun goBack() {
+        if (!webView.canGoBack()) return
+        // Walking history leaves the blocked page, so the overlay goes too.
+        block = null
+        showHome = false
+        webView.visibility = View.VISIBLE
+        webView.onResume()
+        webView.goBack()
+    }
+
+    fun goForward() {
+        if (!webView.canGoForward()) return
+        block = null
+        showHome = false
+        webView.visibility = View.VISIBLE
+        webView.onResume()
+        webView.goForward()
+    }
+
+    /**
+     * System back inside the Browser tab.
+     *
+     * A visible overlay is dismissed FIRST (and, for a blocked video, sends the
+     * reader home rather than revealing the video). Otherwise normal WebView
+     * history is used. Returns false when there is nothing left to consume, so
+     * the caller can let Android leave the app.
+     */
+    fun handleBack(): Boolean {
+        if (block != null) {
+            dismissBlock()
+            return true
+        }
+        if (webView.canGoBack()) {
+            block = null
+            showHome = false
+            webView.onResume()
+            webView.goBack()
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Leave a blocked page. A content block returns to YouTube Home (never
+     * revealing the blocked video); a URL block was cancelled before it loaded,
+     * so the previous page (or Home) can be shown again.
+     */
+    fun dismissBlock() {
+        val current = block ?: return
+        block = null
+        if (current.isContent) {
+            navigateTo(YOUTUBE_HOME)
+        } else if (!hasLoadedPage) {
+            goHome()
+        }
+    }
+
+    fun dismissNotice() {
+        notice = null
+    }
+
+    /** Reveal or hide the app's bottom navigation over the browser. */
+    fun toggleFooter() {
+        footerVisible = !footerVisible
+    }
+
+    fun hideFooter() {
+        if (footerVisible) footerVisible = false
+    }
+
+    /** Called once when the tab is first composed. */
+    fun ensureStarted() {
+        if (startRequested || destroyed) return
+        startRequested = true
+        goHome()
+    }
+
+    /**
+     * A switch in the browser's Protection Settings changed. Re-read the policy
+     * in the page and, where the new value makes the current page invalid,
+     * leave it immediately.
+     */
+    fun onProtectionSettingsChanged() {
+        if (destroyed) return
+        // Nothing navigates here any more: the page applies the new policy to
+        // the item the reader is on. Turning "Block Shorts" on covers the
+        // current Short (and the next swipe's Short) instead of throwing the
+        // reader back to the YouTube home feed.
+        if (webViewLazy.isInitialized()) {
+            webView.evaluateJavascript(
+                "window.__clearviewRefresh && window.__clearviewRefresh();",
+                null
+            )
+        }
+    }
+
+    /** Remove the WebView from any previous Compose host before re-attaching. */
+    fun detachFromParent() {
+        if (!webViewLazy.isInitialized()) return
+        (webView.parent as? ViewGroup)?.removeView(webView)
+    }
+
+    /** The tab (or the app) is going away for now: stop media and rendering. */
+    fun onHidden() {
+        hideFooter()
+        if (!webViewLazy.isInitialized()) return
+        // Nothing has been laid out yet: pausing here would poison the
+        // viewport before Chromium has measured it (see goHome).
+        if (!hasLoadedPage) return
+        pausePlayback()
+        webView.onPause()
+        // The last rendered frame must not become the app's background / recent
+        // apps thumbnail.
+        webView.visibility = View.INVISIBLE
+    }
+
+    /** The tab (or the app) is visible again. */
+    fun onShown() {
+        if (!webViewLazy.isInitialized()) return
+        if (!showHome) {
+            webView.visibility = View.VISIBLE
+            webView.onResume()
+        }
+    }
+
+    fun destroy() {
+        if (destroyed) return
+        destroyed = true
+        if (webViewLazy.isInitialized()) {
+            val view = webView
+            try {
+                exitCustomView(notify = true)
+                view.removeJavascriptInterface(BRIDGE_NAME)
+                view.stopLoading()
+                view.loadUrl("about:blank")
+                view.clearHistory()
+                view.removeAllViews()
+                view.destroy()
+            } catch (_: Exception) {
+                // A destroyed WebView must never take the app down.
+            }
+        }
+    }
+
+    // ── WebView construction ──────────────────────────────────────
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun createWebView(): WebView {
+        val view = WebView(context)
+        view.setBackgroundColor(Color.BLACK)
+        view.isVerticalScrollBarEnabled = true
+        view.overScrollMode = View.OVER_SCROLL_NEVER
+        view.isScrollbarFadingEnabled = true
+
+        with(view.settings) {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            // Instagram/Meta pages and many modern sites branch on the `wv`
+            // marker and serve their WebView-incompatible shell (a blank white
+            // screen) instead of the real page. Presenting the same modern
+            // Chrome UA the installed WebView actually is avoids that without
+            // pretending to be a desktop browser.
+            val defaultUa = userAgentString
+            if (!defaultUa.isNullOrBlank()) {
+                userAgentString = defaultUa
+                    .replace(Regex(";\\s*wv\\)"), ")")
+                    .replace("Version/4.0 ", "")
+            }
+            // Modern Instagram keeps a chunk of its session in third-party
+            // cookies; refusing them leaves an authenticated page blank.
+            CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)
+            // Normal websites (including YouTube) work with these defaults;
+            // user gesture is disabled so inline playback can start when the
+            // page itself allows it.
+            mediaPlaybackRequiresUserGesture = false
+            loadsImagesAutomatically = true
+            // Never upgrade/downgrade silently: mixed content is refused.
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            allowFileAccess = false
+            allowContentAccess = false
+            javaScriptCanOpenWindowsAutomatically = false
+            setSupportMultipleWindows(false)
+            builtInZoomControls = true
+            displayZoomControls = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            setGeolocationEnabled(false)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                safeBrowsingEnabled = true
+            }
+        }
+
+        CookieManager.getInstance().setAcceptCookie(true)
+
+        // The bridge is tiny and every method validates that the loaded page is
+        // a protected host. No Context, file access or arbitrary method
+        // dispatch is exposed to page JavaScript.
+        view.addJavascriptInterface(Bridge(), BRIDGE_NAME)
+
+        view.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean {
+                val original = request.url.toString()
+                // SafeSearch is a browser policy: rewrite a search URL before
+                // it is loaded, so a link tapped inside Google/Bing gets the
+                // same strict flag as one typed into the address bar.
+                val safe = BrowserAddress.withSafeSearch(original) ?: original
+                if (safe != original) {
+                    if (handleNavigation(safe)) return true
+                    view.loadUrl(safe)
+                    return true
+                }
+                return handleNavigation(original)
+            }
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                isLoading = true
+                progress = 5
+                showHome = false
+                if (webViewLazy.isInitialized()) {
+                    webView.visibility = View.VISIBLE
+                    webView.onResume()
+                }
+                updateLocation(url)
+                // Early injection hides Shorts/Reels/category tabs as soon as
+                // the new document exists; onPageFinished injects again for
+                // SPA pages and anything the early pass missed. A null URL means
+                // the new document's identity is not known yet — never inject on
+                // a stale host flag in that case.
+                if (!url.isNullOrBlank()) {
+                    if (protectedPage) injectScript() else injectTapScript()
+                }
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                isLoading = false
+                progress = 100
+                updateLocation(url)
+                refreshHistory()
+                if (!url.isNullOrBlank()) {
+                    if (protectedPage) injectScript() else injectTapScript()
+                }
+            }
+
+            override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                // SPA/history navigations can bypass shouldOverrideUrlLoading.
+                // Enforce SafeSearch here too, before the page is treated as
+                // the current, unprotected search.
+                val safe = BrowserAddress.withSafeSearch(url)
+                if (safe != null && safe != url) {
+                    view.loadUrl(safe)
+                    return
+                }
+                updateLocation(url)
+                refreshHistory()
+                // SPA navigations (YouTube/Google/Instagram pushState) do not
+                // necessarily go through shouldOverrideUrlLoading. Check the new
+                // URL here too; the extension handles these before the new
+                // surface is acted on.
+                val blocked = rules.blockForUrl(url) ?: return
+                when (blocked.type) {
+                    BrowserBlock.Type.SEARCH -> {
+                        showNotice(context.getString(R.string.browser_search_blocked))
+                        redirectToSafeHome(
+                            when {
+                                BrowserAddress.isGoogleSearchUrl(url) -> GOOGLE_HOME
+                                BrowserAddress.isYouTubeSearchUrl(url) -> YOUTUBE_HOME
+                                else -> null
+                            }
+                        )
+                    }
+                    // Handled inside the page so the vertical feed keeps
+                    // working. The native layer must not redirect or draw a
+                    // full-screen overlay over a Short/Reel.
+                    BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                    else -> showBlock(blocked)
+                }
+            }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError
+            ) {
+                if (!request.isForMainFrame) return
+                isLoading = false
+                // ERROR_UNKNOWN is also reported for cancelled loads; only show
+                // a retry banner for a real failure.
+                if (error.errorCode != WebViewClient.ERROR_UNKNOWN) {
+                    loadError = error.description?.toString()
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "This page could not be loaded."
+                }
+            }
+
+            override fun onReceivedSslError(
+                view: WebView,
+                handler: SslErrorHandler,
+                error: SslError
+            ) {
+                // Never proceed past an invalid certificate.
+                handler.cancel()
+            }
+
+            /**
+             * YouTube ads: the same network layer the extension gets from
+             * declarativeNetRequest. Only subresources on a YouTube page are
+             * refused, so the same ad network is untouched on other sites.
+             */
+            override fun shouldInterceptRequest(
+                view: WebView,
+                request: WebResourceRequest
+            ): WebResourceResponse? {
+                if (isBlockedAdRequest(request)) {
+                    return WebResourceResponse(
+                        "text/plain",
+                        "utf-8",
+                        204,
+                        "No Content",
+                        emptyMap(),
+                        ByteArrayInputStream(ByteArray(0))
+                    )
+                }
+                return super.shouldInterceptRequest(view, request)
+            }
+        }
+
+        view.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                progress = newProgress.coerceIn(0, 100)
+                if (newProgress >= 100) isLoading = false
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest) {
+                // Websites may not reach the camera/microphone through the tab.
+                request.deny()
+            }
+
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: android.webkit.GeolocationPermissions.Callback
+            ) {
+                callback.invoke(origin, false, false)
+            }
+
+            /**
+             * HTML5 fullscreen video. YouTube and most video sites call this
+             * when the reader taps the fullscreen control; without it the
+             * request is simply ignored. The player view is hosted in a
+             * fullscreen dialog, and back/dismiss exits the same way the site's
+             * own control does.
+             */
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                val dialog = Dialog(
+                    context,
+                    android.R.style.Theme_Black_NoTitleBar_Fullscreen
+                )
+                val container = FrameLayout(context).apply {
+                    setBackgroundColor(Color.BLACK)
+                    addView(
+                        view,
+                        FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                    )
+                }
+                dialog.setContentView(container)
+                dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                dialog.setOnDismissListener { exitCustomView(notify = true) }
+                customView = view
+                customViewCallback = callback
+                customViewDialog = dialog
+                dialog.show()
+            }
+
+            override fun onHideCustomView() {
+                exitCustomView(notify = true)
+            }
+        }
+
+        if (BuildConfig.DEBUG) {
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+        return view
+    }
+
+    // ── Navigation filtering ──────────────────────────────────────
+
+    /**
+     * True when the navigation is consumed (blocked or unsupported). Only
+     * http(s) is ever loaded: intent://, market://, file:// and friends are
+     * refused rather than handed to other apps, which keeps web content from
+     * launching arbitrary intents.
+     */
+    private fun handleNavigation(target: String): Boolean {
+        if (!BrowserAddress.isWebUrl(target)) return true
+        val blocked = rules.blockForUrl(target)
+        if (blocked != null) {
+            when (blocked.type) {
+                BrowserBlock.Type.SEARCH -> handleBlockedSearch(target)
+                // Load it: the in-page cover is what blocks a Short/Reel.
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> return false
+                else -> showBlock(blocked)
+            }
+            return true
+        }
+        return false
+    }
+
+    /**
+     * A blocked search never loads. Where the reader searched decides where
+     * they end up: already on Google/YouTube, they stay exactly there (the
+     * extension's behaviour); anywhere else, they are taken to that engine's
+     * home page rather than being shown a full-page block screen.
+     */
+    private fun handleBlockedSearch(target: String) {
+        showNotice(context.getString(R.string.browser_search_blocked))
+        if (showHome) return
+
+        val home = when {
+            BrowserAddress.isGoogleSearchUrl(target) -> GOOGLE_HOME
+            BrowserAddress.isYouTubeSearchUrl(target) -> YOUTUBE_HOME
+            else -> null
+        } ?: return
+        val onTargetSite = if (home == GOOGLE_HOME) {
+            BrowserRules.isGoogleSurface(currentUrl)
+        } else {
+            BrowserRules.isYouTubeSurface(currentUrl)
+        }
+        if (!onTargetSite) {
+            if (rules.blockForUrl(home) == null) {
+                showHome = false
+                webView.onResume()
+                webView.loadUrl(home)
+            }
+        }
+    }
+
+    private fun updateLocation(newUrl: String?) {
+        if (newUrl.isNullOrBlank()) return
+        if (!BrowserAddress.isWebUrl(newUrl)) return
+        currentUrl = newUrl
+        url = newUrl
+        hasLoadedPage = true
+        protectedPage = BrowserRules.isProtectedSurface(newUrl)
+    }
+
+    private fun refreshHistory() {
+        canGoBack = webView.canGoBack()
+        canGoForward = webView.canGoForward()
+    }
+
+    private fun showBlock(newBlock: BrowserBlock) {
+        if (block == newBlock) return
+        block = newBlock
+        pausePlayback()
+    }
+
+    private fun showNotice(message: String) {
+        val current = notice
+        if (current != null && current.message == message &&
+            System.currentTimeMillis() - current.atMs < NOTICE_DEBOUNCE_MS
+        ) {
+            return
+        }
+        notice = BrowserNotice(message)
+    }
+
+    /**
+     * Leave a blocked SPA destination without drawing an overlay. The injected
+     * script normally performs the same redirect; this is the native backstop
+     * for a page whose script did not run.
+     */
+    private fun redirectToSafeHome(home: String?) {
+        if (home == null || destroyed) return
+        if (rules.blockForUrl(home) != null) return
+        if (!webViewLazy.isInitialized()) return
+        if (BrowserRules.isProtectedSurface(currentUrl)) {
+            webView.evaluateJavascript(
+                "window.location.replace(" + JSONObject.quote(home) + ");",
+                null
+            )
+        } else {
+            webView.post { if (!destroyed) webView.loadUrl(home) }
+        }
+    }
+
+    /**
+     * Remove the fullscreen player and tell the page it has exited. Idempotent:
+     * the dialog's dismiss listener and the page's own exit can both arrive.
+     */
+    private fun exitCustomView(notify: Boolean) {
+        val view = customView ?: return
+        val callback = customViewCallback
+        val dialog = customViewDialog
+        customView = null
+        customViewCallback = null
+        customViewDialog = null
+        (view.parent as? ViewGroup)?.removeView(view)
+        dialog?.setOnDismissListener(null)
+        try { dialog?.dismiss() } catch (_: Exception) { /* already gone */ }
+        if (notify) {
+            try { callback?.onCustomViewHidden() } catch (_: Exception) { /* ignore */ }
+        }
+    }
+
+    /** Pause/mute any playing video before the overlay covers it. */
+    private fun pausePlayback() {
+        if (!webViewLazy.isInitialized()) return
+        webView.evaluateJavascript(
+            "window.__clearviewPause && window.__clearviewPause();",
+            null
+        )
+    }
+
+    private fun injectScript() {
+        if (!webViewLazy.isInitialized()) return
+        val script = scriptCache ?: try {
+            context.assets.open(SCRIPT_ASSET)
+                .bufferedReader()
+                .use { it.readText() }
+                .also { scriptCache = it }
+        } catch (_: Exception) {
+            return
+        }
+        // The token prefix is injected with the script, so only the main-frame
+        // page script holds it.
+        webView.evaluateJavascript(
+            "window.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" + script,
+            null
+        )
+    }
+
+    /**
+     * The tap-to-reveal footer listener for ordinary websites.
+     *
+     * The full page script is deliberately limited to YouTube, Google and
+     * Instagram. The footer is not: it is the only way back to the app's tabs
+     * while the Browser tab hides it by default, so every page needs the same
+     * tap listener. This is the smallest script that provides it, with no DOM
+     * scanning or observers of its own.
+     */
+    private fun injectTapScript() {
+        if (!webViewLazy.isInitialized()) return
+        val source = "window.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" +
+            "(function(){if(window.__clearviewTapLoaded)return;" +
+            "window.__clearviewTapLoaded=true;" +
+            "var token=window.__clearviewToken||'';" +
+            "var sx=0,sy=0,at=0,started=false;" +
+            "function interactive(el){return !!(el&&el.closest&&el.closest(" +
+            "'a,button,input,textarea,select,[role=\"button\"],[role=\"link\"]," +
+            "[role=\"menuitem\"],[role=\"tab\"],[contenteditable=\"true\"],[contenteditable=\"\"]'));}" +
+            "function tap(){try{ClearViewBridge.onTap(token);}catch(e){}}" +
+            "document.addEventListener('touchstart',function(e){" +
+            "if(!e.touches||e.touches.length!==1){started=false;return;}" +
+            "started=true;sx=e.touches[0].clientX;sy=e.touches[0].clientY;at=Date.now();" +
+            "},true);" +
+            "document.addEventListener('touchend',function(e){" +
+            "if(!started)return;started=false;if(Date.now()-at>450)return;" +
+            "var t=e.changedTouches&&e.changedTouches[0];" +
+            "var dx=t?t.clientX-sx:0,dy=t?t.clientY-sy:0;" +
+            "if(Math.sqrt(dx*dx+dy*dy)>12)return;" +
+            "if(interactive(e.target))return;tap();" +
+            "},true);" +
+            "if(!('ontouchstart' in window)){document.addEventListener('click'," +
+            "function(e){if(!interactive(e.target))tap();},true);}" +
+            "})();"
+        webView.evaluateJavascript(source, null)
+    }
+
+    // ── Ads ───────────────────────────────────────────────────────
+
+    /**
+     * True for a YouTube ad subresource. The host list and path markers mirror
+     * the extension's declarativeNetRequest ruleset; the page script removes
+     * the slots that still render and chases a video ad that still starts.
+     */
+    private fun isBlockedAdRequest(request: WebResourceRequest): Boolean {
+        if (request.isForMainFrame) return false
+        if (!settings.blockYouTubeAds) return false
+        if (!BrowserRules.isYouTubeSurface(currentUrl)) return false
+        val requestUrl = request.url
+        val host = requestUrl.host?.lowercase() ?: return false
+        if (AD_HOSTS.any { host == it || host.endsWith(".$it") }) return true
+        val full = requestUrl.toString().lowercase()
+        return AD_PATH_MARKERS.any { full.contains(it) }
+    }
+
+    // ── JavaScript bridge ─────────────────────────────────────────
+
+    /**
+     * The only surface exposed to page JavaScript.
+     *
+     *  - every call re-checks that the CURRENT page is a protected host;
+     *  - the content-specific methods additionally require YouTube;
+     *  - inputs are plain strings, outputs are JSON or Unit;
+     *  - nothing here exposes a Context, a file, a URL loader or reflection.
+     *
+     * Calls arrive on a WebView worker thread, so UI state is updated through
+     * [WebView.post].
+     */
+    private inner class Bridge {
+
+        private fun authorized(token: String?): Boolean =
+            token == bridgeToken && protectedPage && !destroyed
+
+        private fun onYouTube(): Boolean = BrowserRules.isYouTubeSurface(currentUrl)
+
+        @JavascriptInterface
+        fun policy(token: String?): String {
+            if (!authorized(token)) return "{}"
+            return JSONObject().apply {
+                put("hideShorts", settings.blockShorts)
+                put("hideReels", settings.hideInstagramReels)
+                put("hideGoogleCategories", settings.hideGoogleCategories)
+                put("removeBlocked", settings.removeBlockedFromFeed)
+                put("blockAds", settings.blockYouTubeAds)
+                put("youtube", onYouTube())
+                put("google", BrowserRules.isGoogleSurface(currentUrl))
+                put("instagram", BrowserRules.isInstagramSurface(currentUrl))
+            }.toString()
+        }
+
+        @JavascriptInterface
+        fun evaluateVideo(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            val json = JSONObject(payload.orEmpty())
+            val verdict = rules.blockForVideo(
+                title = json.optString("title").takeIf { it.isNotBlank() },
+                description = json.optString("description").takeIf { it.isNotBlank() },
+                channelId = json.optString("channelId").takeIf { it.isNotBlank() },
+                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() },
+                channelName = json.optString("channelName").takeIf { it.isNotBlank() }
+            )
+            verdict?.toJson() ?: "{\"blocked\":false}"
+        }
+
+        @JavascriptInterface
+        fun evaluateCard(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            val json = JSONObject(payload.orEmpty())
+            val verdict = rules.blockForCard(
+                title = json.optString("title").takeIf { it.isNotBlank() },
+                thumbnailDescription = json.optString("thumbnailDescription")
+                    .takeIf { it.isNotBlank() },
+                channelName = json.optString("channelName").takeIf { it.isNotBlank() },
+                channelId = json.optString("channelId").takeIf { it.isNotBlank() },
+                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() }
+            )
+            verdict?.toJson() ?: "{\"blocked\":false}"
+        }
+
+        /**
+         * One Instagram post/reel. Gated on the Instagram host and delegated to
+         * the same content policy YouTube uses (channels, then keywords), so a
+         * Brain Rot rule applies identically on both surfaces.
+         */
+        @JavascriptInterface
+        fun evaluateInstagram(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !BrowserRules.isInstagramSurface(currentUrl)) {
+                return@safe "{\"blocked\":false}"
+            }
+            val json = JSONObject(payload.orEmpty())
+            val verdict = rules.blockForInstagram(
+                caption = json.optString("caption").takeIf { it.isNotBlank() },
+                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() },
+                channelName = json.optString("channelName").takeIf { it.isNotBlank() }
+            )
+            verdict?.toJson() ?: "{\"blocked\":false}"
+        }
+
+        /**
+         * A tap on page whitespace. It toggles the app footer, the same way a
+         * tap reveals browser chrome on mobile — without a full-screen
+         * transparent overlay that would swallow the page's own gestures.
+         */
+        @JavascriptInterface
+        fun onTap(token: String?) {
+            // Deliberately not limited to protected hosts: the footer must be
+            // reachable on every page (see injectTapScript).
+            if (token != bridgeToken || destroyed) return
+            webView.post { toggleFooter() }
+        }
+
+        /**
+         * The reader chose "Not interested" (or the ClearView action) on a
+         * YouTube card/Short. Native side stores the channel block, then the
+         * page removes the card and re-evaluates the current video.
+         */
+        @JavascriptInterface
+        fun blockChannel(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            val json = JSONObject(payload.orEmpty())
+            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
+            val name = json.optString("channelName").takeIf { it.isNotBlank() }
+            val added = rules.blockChannel(handle, name)
+            if (!added) return@safe "{\"blocked\":false}"
+            webView.post { showNotice(context.getString(R.string.browser_channel_blocked, handle ?: name.orEmpty())) }
+            JSONObject().apply {
+                put("blocked", true)
+                put("item", handle ?: name.orEmpty())
+            }.toString()
+        }
+
+        /** Whether the injected menu should offer Block or Unblock. */
+        @JavascriptInterface
+        fun channelState(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            val json = JSONObject(payload.orEmpty())
+            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
+            val id = json.optString("channelId").takeIf { it.isNotBlank() }
+            JSONObject().apply {
+                put("blocked", rules.channelBlocked(handle, id))
+                if (handle != null) put("item", handle)
+            }.toString()
+        }
+
+        /** The reader chose "Unblock channel with ClearView" in the page menu. */
+        @JavascriptInterface
+        fun unblockChannel(token: String?, payload: String?): String = safe {
+            if (!authorized(token) || !onYouTube()) return@safe "{\"unblocked\":false}"
+            val json = JSONObject(payload.orEmpty())
+            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
+            val id = json.optString("channelId").takeIf { it.isNotBlank() }
+            val removed = rules.unblockChannel(handle, id)
+            if (!removed) return@safe "{\"unblocked\":false}"
+            webView.post {
+                showNotice(context.getString(R.string.browser_channel_unblocked, handle.orEmpty()))
+            }
+            JSONObject().apply {
+                put("unblocked", true)
+                put("item", handle.orEmpty())
+            }.toString()
+        }
+
+        @JavascriptInterface
+        fun evaluateSearch(token: String?, query: String?): String = safe {
+            if (!authorized(token)) return@safe "{\"blocked\":false}"
+            val safeQuery = query.orEmpty().take(MAX_PAYLOAD_CHARS)
+            val verdict = when {
+                BrowserRules.isGoogleSurface(currentUrl) ->
+                    rules.blockForGoogleSearch(safeQuery)
+                BrowserRules.isYouTubeSurface(currentUrl) ->
+                    rules.blockForYouTubeSearch(safeQuery)
+                else -> null
+            }
+            verdict?.toJson() ?: "{\"blocked\":false}"
+        }
+
+        /**
+         * The page reports an SPA navigation. Returns whether the URL is
+         * blocked and, for a search/Shorts/Reels block, where the page should
+         * go instead of showing the blocked surface.
+         */
+        @JavascriptInterface
+        fun onNavigated(token: String?, target: String?): String = safe {
+            if (!authorized(token)) return@safe "{\"blocked\":false}"
+            val safeUrl = target.orEmpty().take(MAX_PAYLOAD_CHARS)
+            if (!BrowserAddress.isWebUrl(safeUrl)) return@safe "{\"blocked\":false}"
+            webView.post { updateLocation(safeUrl) }
+            val verdict = rules.blockForUrl(safeUrl)
+            if (verdict == null) {
+                webView.post {
+                    // A new unblocked page means an old CONTENT overlay is stale.
+                    if (block?.isContent == true) block = null
+                }
+                return@safe "{\"blocked\":false}"
+            }
+
+            val redirectTo: String? = when (verdict.type) {
+                BrowserBlock.Type.SEARCH -> {
+                    webView.post { showNotice(context.getString(R.string.browser_search_blocked)) }
+                    when {
+                        BrowserAddress.isGoogleSearchUrl(safeUrl) -> GOOGLE_HOME
+                        BrowserAddress.isYouTubeSearchUrl(safeUrl) -> YOUTUBE_HOME
+                        else -> null
+                    }
+                }
+                // No redirect: the page paints the cover over the current
+                // item and the reader swipes on.
+                BrowserBlock.Type.SHORTS -> null
+                BrowserBlock.Type.REELS -> null
+                else -> {
+                    webView.post { showBlock(verdict) }
+                    null
+                }
+            }
+            return JSONObject().apply {
+                put("blocked", true)
+                put("item", verdict.item)
+                put("type", verdict.type.name)
+                if (verdict.type == BrowserBlock.Type.SHORTS ||
+                    verdict.type == BrowserBlock.Type.REELS
+                ) {
+                    put("inline", true)
+                }
+                if (redirectTo != null) put("redirectTo", redirectTo)
+            }.toString()
+        }
+
+        /** The page found blocked content (video/channel/keyword). */
+        @JavascriptInterface
+        fun onBlocked(token: String?, payload: String?) {
+            if (!authorized(token) || !onYouTube()) return
+            val json = safeParse(payload) ?: return
+            val item = json.optString("item").takeIf { it.isNotBlank() } ?: "Blocked content"
+            val type = runCatching {
+                BrowserBlock.Type.valueOf(json.optString("type"))
+            }.getOrDefault(BrowserBlock.Type.KEYWORD)
+            webView.post { showBlock(BrowserBlock(item, type, isContent = true)) }
+        }
+
+        /** The page is now on allowed content; drop a stale content overlay. */
+        @JavascriptInterface
+        fun onContentAllowed(token: String?) {
+            if (!authorized(token)) return
+            webView.post {
+                if (block?.isContent == true) block = null
+            }
+        }
+
+        private inline fun safe(block: () -> String): String = try {
+            block()
+        } catch (_: Exception) {
+            "{\"blocked\":false}"
+        }
+
+        private fun safeParse(payload: String?): JSONObject? = try {
+            JSONObject(payload.orEmpty())
+        } catch (_: Exception) {
+            null
+        }
+    }
+}

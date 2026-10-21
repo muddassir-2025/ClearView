@@ -204,6 +204,7 @@ class QuranRepository(context: Context) {
     /** Sets + persists the Arabic Quran text scale. */
     fun setArabicTextScale(scale: Float) = store.setArabicTextScale(scale)
 
+
     /** Whether the app posts an OS notification when a new verse is chosen. */
     fun getQuranNotificationsEnabled(): Boolean = store.getQuranNotificationsEnabled()
 
@@ -352,11 +353,18 @@ class QuranRepository(context: Context) {
         } else {
             v.arabicText
         }
+        // Re-spell the marks in the encoding the bundled face was drawn for, so
+        // the face draws its own harakat instead of a fallback face drawing them
+        // at anchors meant for other letters. Applied here — once, at the single
+        // point where the Arabic text is attached — rather than at each render
+        // site, so the reader, the lists, the widget and the clipboard cannot
+        // disagree. See [quranDisplayText].
+        val display = quranDisplayText(arabic)
         val total = if (v.totalAyahs > 0) v.totalAyahs else surahCounts()?.get(v.surahNumber) ?: 0
-        return if (arabic == v.arabicText && total == v.totalAyahs) {
+        return if (display == v.arabicText && total == v.totalAyahs) {
             v
         } else {
-            v.copy(arabicText = arabic, totalAyahs = total)
+            v.copy(arabicText = display, totalAyahs = total)
         }
     }
 

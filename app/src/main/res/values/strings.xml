@@ -220,9 +220,11 @@
     <string name="quran_bookmarks_remove_confirm_text">This verse will be removed from your bookmarks.</string>
     <string name="quran_bookmarks_remove_confirm">Remove</string>
     <string name="quran_cancel">Cancel</string>
+    <!-- The verse tab of the same two: "bookmarked" would be said twice, since
+         the screen the tabs sit on is already bookmarks. -->
     <plurals name="quran_bookmarks_count">
-        <item quantity="one">%1$d bookmarked verse</item>
-        <item quantity="other">%1$d bookmarked verses</item>
+        <item quantity="one">%1$d verse</item>
+        <item quantity="other">%1$d verses</item>
     </plurals>
 
     <!-- Islamic date (Quran tab, below the verse) — Umm al-Qura / Saudi Arabia -->
@@ -685,6 +687,8 @@
     <string name="quran_settings_arabic_size">Arabic text size</string>
     <string name="quran_settings_arabic_size_note">Sizes the verse, surah reader and basmala together. Quranic marks scale with the letters.</string>
     <string name="quran_text_size_percent">%1$d%%</string>
+    <string name="quran_arabic_text_appearance">Arabic text size</string>
+    <string name="quran_done">Done</string>
 
     <!-- In-app media player (YouTube IFrame API) -->
     <string name="media_player_error_not_found">This video is unavailable or was removed.</string>
@@ -1441,4 +1445,71 @@ This video cannot be played inside the app.</string>
     <string name="block_reason_title">Why was this blocked?</string>
     <string name="block_reason_channel">Channel %1$s is blocked</string>
     <string name="block_reason_not_interested">Blocked from YouTube \u201cNot interested\u201d action\nChannel: %1$s</string>
+
+    <!-- Browser tab: an embedded WebView that applies the existing ClearView rules -->
+    <string name="browser_tab">Browser</string>
+    <string name="browser_address_hint">Search or enter a website</string>
+    <string name="browser_go">Go</string>
+    <string name="browser_stop">Stop loading</string>
+    <string name="browser_back">Back</string>
+    <string name="browser_forward">Forward</string>
+    <string name="browser_reload">Reload</string>
+    <string name="browser_home">Home</string>
+    <string name="browser_retry">Retry</string>
+    <string name="browser_notice_dismiss">Dismiss</string>
+    <string name="browser_search_blocked">ClearView blocked this search</string>
+    <string name="browser_shorts_blocked">YouTube Shorts are blocked</string>
+    <string name="browser_reels_blocked">Instagram Reels are blocked</string>
+    <string name="browser_channel_blocked">Blocked %1$s</string>
+    <string name="browser_channel_unblocked">Unblocked %1$s</string>
+    <string name="browser_more">More options</string>
+
+    <!-- Browser tab: custom start page -->
+    <string name="browser_home_brand">ClearView</string>
+    <string name="browser_home_tagline">A calmer way to browse</string>
+    <string name="browser_home_search_hint">Search the web</string>
+    <string name="browser_home_protection_active">Protection active</string>
+    <string name="browser_home_shortcuts">Shortcuts</string>
+    <string name="browser_home_add_shortcut">Add shortcut</string>
+    <string name="browser_home_footer">ClearView checks pages and searches on this device.</string>
+    <string name="browser_shortcut_google">Google</string>
+    <string name="browser_shortcut_youtube">YouTube</string>
+    <string name="browser_shortcut_instagram">Instagram</string>
+    <string name="browser_cancel">Cancel</string>
+    <string name="browser_shortcut_invalid">Enter a website address such as example.com</string>
+    <string name="browser_shortcut_full">You can add up to 12 shortcuts.</string>
+    <string name="browser_shortcut_help">Give the shortcut a name and a website address.</string>
+    <string name="browser_shortcut_name">Name</string>
+    <string name="browser_shortcut_url">Website</string>
+    <string name="browser_shortcut_add">Add</string>
+    <string name="browser_shortcut_remove_title">Remove shortcut?</string>
+    <string name="browser_shortcut_remove_body">Remove “%1$s” from your start page?</string>
+    <string name="browser_shortcut_remove_action">Remove</string>
+
+    <!-- Browser tab: protection settings -->
+    <string name="browser_settings_open">Protection settings</string>
+    <string name="browser_settings_title">Protection settings</string>
+    <string name="browser_settings_subtitle">What ClearView hides inside this browser</string>
+    <string name="browser_settings_filtering">Filtering</string>
+    <string name="browser_settings_feeds">Feeds &amp; search</string>
+    <string name="browser_settings_youtube">YouTube</string>
+    <string name="browser_toggle_strict_title">Strict Mode</string>
+    <string name="browser_toggle_strict_summary">Also blocks discovery words like bikini and lingerie.</string>
+    <string name="browser_toggle_shorts_title">Hide YouTube Shorts</string>
+    <string name="browser_toggle_shorts_summary">Blocks Shorts entry points, shelves and direct links.</string>
+    <string name="browser_toggle_reels_title">Hide Instagram Reels</string>
+    <string name="browser_toggle_reels_summary">Removes Reels entry points and keeps Reels links from opening.</string>
+    <string name="browser_toggle_google_tabs_title">Hide Google search categories</string>
+    <string name="browser_toggle_google_tabs_summary">Keeps only the All tab; Images, Videos, News and the rest are hidden.</string>
+    <string name="browser_toggle_remove_feed_title">Remove blocked videos from feed</string>
+    <string name="browser_toggle_remove_feed_summary">Blocked cards leave the feed instead of only being covered.</string>
+    <string name="browser_toggle_ads_title">Block YouTube ads</string>
+    <string name="browser_toggle_ads_summary">Refuses ad requests, removes ad slots and skips video ads.</string>
+    <string name="browser_settings_note">Changes apply to this browser immediately. Some hidden feed items return when you turn a switch off. Tap page whitespace to show or hide the navigation bar.</string>
+    <string name="browser_settings_open_full">Open full ClearView protection</string>
+    <string name="browser_block_fear_god">FEAR GOD</string>
+    <string name="browser_block_status">BLOCKED</string>
+    <string name="browser_block_go_home">Go to YouTube Home</string>
+    <string name="browser_block_back">Back to safety</string>
+    <string name="browser_block_note">ClearView blocked this page</string>
 </resources>

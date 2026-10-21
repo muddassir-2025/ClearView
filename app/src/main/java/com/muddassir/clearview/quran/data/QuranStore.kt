@@ -128,14 +128,27 @@ class QuranStore(context: Context) {
      * size). It scales the scripture only — the surrounding ClearView chrome is
      * untouched — and is read on every render, so changing it re-lays-out the
      * text immediately.
+     *
+     * Coerced on the way out as well as in: a value written by a build with a
+     * different range must not come back as a size that clips the text.
      */
     fun getArabicTextScale(): Float =
         prefs.getFloat(KEY_ARABIC_TEXT_SCALE, DEFAULT_ARABIC_TEXT_SCALE)
+            .takeIf { it.isFinite() }
+            ?.coerceIn(ARABIC_TEXT_SCALE_MIN, ARABIC_TEXT_SCALE_MAX)
+            ?: DEFAULT_ARABIC_TEXT_SCALE
 
     /** Persists the reader's chosen Arabic Quran text scale. */
     fun setArabicTextScale(scale: Float) {
-        prefs.edit().putFloat(KEY_ARABIC_TEXT_SCALE, scale).apply()
+        if (!scale.isFinite()) return
+        prefs.edit()
+            .putFloat(
+                KEY_ARABIC_TEXT_SCALE,
+                scale.coerceIn(ARABIC_TEXT_SCALE_MIN, ARABIC_TEXT_SCALE_MAX)
+            )
+            .apply()
     }
+
 
     /** Whether the app posts an OS notification when a new verse is chosen. */
     fun getQuranNotificationsEnabled(): Boolean =
@@ -154,7 +167,10 @@ class QuranStore(context: Context) {
             .putString(KEY_SURAH_NAME, verse.surahName)
             .putString(KEY_SURAH_TRANSLATION, verse.surahTranslation)
             .putString(KEY_VERSE_TEXT, verse.text)
-            .putString(KEY_ARABIC_TEXT, verse.arabicText)
+            // Stored already re-spelled for the bundled face, so what a widget or
+            // a later build reads back is what the reader saw. See
+            // [quranDisplayText].
+            .putString(KEY_ARABIC_TEXT, quranDisplayText(verse.arabicText))
             .putInt(KEY_TOTAL_AYAHS, verse.totalAyahs)
             .putLong(KEY_LAST_UPDATED, System.currentTimeMillis())
             .apply()
@@ -172,7 +188,12 @@ class QuranStore(context: Context) {
             surahName = prefs.getString(KEY_SURAH_NAME, "") ?: "",
             surahTranslation = prefs.getString(KEY_SURAH_TRANSLATION, "") ?: "",
             text = text,
-            arabicText = prefs.getString(KEY_ARABIC_TEXT, "") ?: "",
+            // Re-spelled on the way out as well as in: this path is READ directly
+            // by the Quran tab and the widget, without going through
+            // QuranRepository.enrich, and a value written by an older build is
+            // still in the corpus encoding. Normalising here is what repairs it
+            // without waiting for the next verse.
+            arabicText = quranDisplayText(prefs.getString(KEY_ARABIC_TEXT, "") ?: ""),
             // 0 on verses persisted by a build that predates the surah counts;
             // the repository backfills it from the cached edition.
             totalAyahs = prefs.getInt(KEY_TOTAL_AYAHS, 0)
@@ -276,7 +297,12 @@ class QuranStore(context: Context) {
         prefs.edit().putStringSet(KEY_READING_POSITIONS, updated).apply()
     }
 
-    private companion object {
+    /**
+     * Visible so the UI can offer exactly the range the store will accept: a
+     * slider whose ends disagree with the clamping here would let a reader pick a
+     * size that silently snaps back.
+     */
+    companion object {
         const val PREFS_NAME = "quran_reminder_prefs"
         // The Clear Quran (Mustafa Khattab) English translation.
         const val CACHE_FILE_NAME = "quran_en_clear.json"
@@ -315,7 +341,14 @@ class QuranStore(context: Context) {
         // disk when they stopped.
         const val KEY_READING_POSITIONS = "reading_positions"
         const val DEFAULT_REFRESH_INTERVAL_HOURS = 6
+        // A continuous range rather than a handful of presets: the reader picks
+        // the size that suits them and the verse/reader/basmala all follow.
+        // 0.8 is still comfortably readable and 2.0 still fits a phone line.
+        const val ARABIC_TEXT_SCALE_MIN = 0.8f
+        const val ARABIC_TEXT_SCALE_MAX = 2.0f
         const val DEFAULT_ARABIC_TEXT_SCALE = 1.0f
+
+
         const val DEFAULT_QURAN_NOTIFICATIONS_ENABLED = true
     }
 }

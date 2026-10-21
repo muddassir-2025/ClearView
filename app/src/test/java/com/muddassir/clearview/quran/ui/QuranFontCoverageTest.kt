@@ -49,19 +49,20 @@ class QuranFontCoverageTest {
     }
 
     @Test
-    fun `the line height leaves room for the tallest mark`() {
-        // Measured in Scheherazade New Regular: ascent 1.343 em, descent 0.697 em,
-        // tallest mark 1.279 em above the baseline — inside the font's own
-        // ascent, so no clipping. A mark's room above the baseline is
-        // (lineHeight + ascent - descent) / 2, so the ratio must satisfy
-        // ratio >= 2*tallest - ascent + descent = 2*1.279 - 1.343 + 0.697 = 1.912.
-        val ascent = 1.343f
-        val descent = 0.697f
-        val tallestMark = 1.279f
-        val required = 2f * tallestMark - ascent + descent
+    fun `the line height keeps a line's marks off the line above`() {
+        // The line height, not the font's ascent/descent, is what separates two
+        // lines: measured over all 6236 verses in the bundled chain, a line's ink
+        // reaches up to 1.752 em above the baseline and 0.942 em below it, so the
+        // requirement for consecutive baselines is "above of one + below of the
+        // next". That sum's p99.9 is 2.143 em, and the fraction of adjacent line
+        // pairs whose ink actually collides at each ratio was measured as 0.90% at
+        // 2.0, 0.04% at 2.2 and 0.01% at 2.3 — 2.0 was the reported "it feels a
+        // bit overlapping". The ratio must clear the p99.9 requirement.
+        val adjacentLineRequirementP999 = 2.143f
         assertTrue(
-            "line-height ratio $QURAN_LINE_HEIGHT_RATIO clips the tallest mark (needs $required)",
-            QURAN_LINE_HEIGHT_RATIO >= required
+            "line-height ratio $QURAN_LINE_HEIGHT_RATIO lets one line's marks reach the line " +
+                "above (needs >= $adjacentLineRequirementP999)",
+            QURAN_LINE_HEIGHT_RATIO >= adjacentLineRequirementP999
         )
     }
 

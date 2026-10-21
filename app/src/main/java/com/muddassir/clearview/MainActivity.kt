@@ -41,6 +41,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.muddassir.clearview.brainrot.BlockNotifications
+import com.muddassir.clearview.browser.BrowserSession
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.playback.AudioPlaybackService
@@ -251,7 +252,7 @@ open class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class MainTab { QURAN, MEDIA, GOODPOST, MORE }
+private enum class MainTab { QURAN, MEDIA, BROWSER, GOODPOST, MORE }
 
 /**
  * The channel slug carried by a `clearview://goodpost/channel/<slug>` link, or
@@ -338,6 +339,18 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
      */
     var pendingChannelSlug by remember { mutableStateOf<String?>(null) }
     val hub = rememberContentHubState()
+    // One WebView session for the whole screen: switching to Quran or Media and
+    // back keeps the page, its history and any in-page video. Created lazily on
+    // the WebView itself, so a reader who never opens the tab pays nothing.
+    val browserSession = remember { BrowserSession(context) }
+    DisposableEffect(Unit) {
+        onDispose { browserSession.destroy() }
+    }
+    // Browser is the immersive surface: its footer is hidden by default, and
+    // leaving the tab must not leave the footer up for the next visit.
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != MainTab.BROWSER) browserSession.hideFooter()
+    }
     // The app-wide colour scheme (appearance setting). Held here because the
     // More tab sets it and every tab is composed below MainScreen, so changing
     // it recomposes all of them in one pass.
@@ -546,7 +559,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             MaterialTheme.colorScheme.background
         },
         topBar = {
-            if (!isFullscreen) {
+            // The Browser tab draws its own compact toolbar; the app-wide
+            // "Browser" title bar would only steal height from the page.
+            if (!isFullscreen && selectedTab != MainTab.BROWSER) {
                 if (selectedTab == MainTab.MORE) {
                     TopAppBar(
                         title = {
@@ -646,7 +661,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             }
         },
         bottomBar = {
-            if (hub.playingVideo == null && hub.playingAudio == null && !isFullscreen) {
+            if (hub.playingVideo == null && hub.playingAudio == null && !isFullscreen &&
+                (selectedTab != MainTab.BROWSER || browserSession.footerVisible)
+            ) {
                 // Glass, not a slab: a translucent tint of the theme's own
                 // surface, so the page colour reads through the bar instead of
                 // the bar sitting on top of it as a black (or grey) band. The
@@ -804,7 +821,20 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                     openChannelSlug = pendingChannelSlug,
                     onOpenChannelHandled = { pendingChannelSlug = null }
                 )
-                else -> ContentHubTabContent(state = hub, isLandscape = landscape)
+                else -> ContentHubTabContent(
+                    state = hub,
+                    isLandscape = landscape,
+                    browserSession = browserSession,
+                    onOpenAppProtection = {
+                        // The browser's Protection Settings says "Open full
+                        // ClearView protection": that is the More tab's
+                        // password-protected Protection page, not a second
+                        // settings surface.
+                        selectedTab = MainTab.MORE
+                        hub.selectTab(ContentTab.QURAN)
+                        moreProtection = true
+                    }
+                )
             }
         }
     }
@@ -813,6 +843,7 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
 private fun tabFor(tab: ContentTab): MainTab = when (tab) {
     ContentTab.QURAN -> MainTab.QURAN
     ContentTab.MEDIA -> MainTab.MEDIA
+    ContentTab.BROWSER -> MainTab.BROWSER
 }
 
 @Composable

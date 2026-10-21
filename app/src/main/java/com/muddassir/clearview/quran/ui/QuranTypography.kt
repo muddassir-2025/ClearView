@@ -39,7 +39,24 @@ import com.muddassir.clearview.R
  * because the app's text comes from the fawazahmed0 API (ara-quranindopak),
  * which is a DIFFERENT IndoPak corpus than the one those fonts were built for.
  *
- * HOW THIS APP SOLVES IT — A TWO-FACE FALLBACK CHAIN
+ * HOW THIS APP SOLVES IT — MATCH THE TEXT TO THE FACE, WITH A NET BENEATH IT
+ *
+ * Two things have to happen, and only the first one fixes the marks:
+ *
+ *  1. The corpus is RE-SPELLED into the encoding this face was built for
+ *     ([com.muddassir.clearview.quran.data.quranDisplayText]). The corpus spells
+ *     the sukun `U+06E1` — 62,381 times — which this face has no glyph for, so
+ *     every one of those marks was being drawn by the NET below, at anchors
+ *     computed for different letters. That is what "the zer and zabr collide with
+ *     the letters" was. One mark re-spelling removes ~95% of it and lets the face
+ *     draw its own sukun (`U+0652`); measured, the face's own marks produce zero
+ *     overlapping ink over every verse tested.
+ *  2. [R.font.scheherazade_new] stays behind the Mushaf face as the net for the
+ *     marks that are genuinely absent AND have no equivalent spelling: U+0658
+ *     (3,027 instances), U+06E0 (25) and U+08D4/U+08DA/U+08E0/U+08E1 (9 between
+ *     them). It draws those with its own anchors. The alternative was to
+ *     substitute a similar-looking sign, which would change what a verse says in
+ *     order to change how it looks.
  *
  * Both faces are SIL OFL (so they may be bundled freely):
  *
@@ -48,13 +65,8 @@ import com.muddassir.clearview.R
  *     13-line Quraan Al Majeed. It gives the letters and the common harakat the
  *     Mushaf look the reader expects (the closest legally-bundlable equivalent
  *     of the face Dawat-e-Islami / Sirat-ul-Jinan ship).
- *  2. [R.font.scheherazade_new] — kept as the fallback for the handful of
- *     codepoints the Mushaf face does not carry. This is what makes the chain
- *     total: the corpus uses a NEWER IndoPak encoding than the Mushaf face was
- *     built for, and no single redistributable face covers both. Measured over
- *     all 6236 verses, Scheherazade New covers every mark in the corpus; the
- *     Mushaf face misses exactly seven (U+0658, U+06E0, U+06E1, U+08D4, U+08DA,
- *     U+08E0, U+08E1).
+ *  2. [R.font.scheherazade_new] — the net described above. Measured over all
+ *     6236 verses it covers every mark in the corpus, so the chain is total.
  *
  * Compose resolves a [FontFamily] with several faces as a fallback chain for the
  * same weight/style, so a codepoint missing from the first face is drawn by the
@@ -69,7 +81,17 @@ import com.muddassir.clearview.R
  * rather than resolved at runtime so a verse renders identically on every
  * device, online or offline.
  *
- * The text itself is authoritative and untouched — this only selects the face.
+ * OTHER FACES WERE TRIED AND DROPPED. Noto Naskh Arabic, Lateef and Harmattan
+ * all cover this corpus, but a Naskh set renders the harakat small and light
+ * next to the Mushaf face's, and on a phone that reads to a reader as marks
+ * going faint or missing — the exact complaint this work started from. The
+ * Mushaf face is the one that keeps them legible at reading size.
+ *
+ * The words are authoritative and untouched: the only thing this changes in the
+ * text is which of the two Unicode spellings of the sukun a verse carries — see
+ * [com.muddassir.clearview.quran.data.quranDisplayText]. Selecting a face and
+ * re-spelling a mark are both presentation; neither adds, removes or reorders a
+ * single letter or vowel.
  */
 val QuranFontFamily: FontFamily = FontFamily(
     Font(R.font.digitalkhatt_indopak),
@@ -85,19 +107,31 @@ internal val QURAN_FALLBACK_FONT_RES = R.font.scheherazade_new
 /**
  * The extra vertical room a Quran line needs, as a multiple of the font size.
  *
- * Combining marks are drawn above and below the base letters, and a line box
- * only gives a mark `(lineHeight + ascent − descent) / 2` of room above the
- * baseline. Measured in this face: ascent 1.343 em, descent 0.697 em, and the
- * tallest mark in the corpus reaches 1.279 em above the baseline — comfortably
- * inside the font's own ascent, so this face needs no extra leading to avoid
- * clipping (the previous Bold face did: its tallest mark reached 1.408 em,
- * past its 1.343 em ascent).
+ * Combining marks are drawn above and below the base letters and are NOT kept
+ * inside a line by the font's own ascent/descent, so the leading has to do it.
+ * Measured over all 6236 verses in this chain: a line's ink reaches 1.147 em
+ * above the baseline on average and 0.493 em below, up to 1.752 / 0.942 on the
+ * densest verses. Two consecutive baselines therefore have to be at least
+ * "above of one line + below of the next" apart, and the fraction of adjacent
+ * line pairs whose ink actually collides was measured as:
  *
- * 2.0 gives the marks room and keeps the text at the traditional proportion.
+ * | ratio | colliding line pairs |
+ * |-------|----------------------|
+ * | 2.0   | 0.90%                |
+ * | 2.1   | 0.19%                |
+ * | 2.2   | 0.04%                |
+ * | 2.3   | 0.01%                |
+ *
  * It is a ratio rather than a fixed dp so the reader (30sp) and the compact
- * surah list (18sp) both stay clear without either hand-tuning its own number.
+ * surah list (18sp) both stay clear without either hand-tuning its own number:
+ * a fixed line height that fits 30sp would let a 45sp verse's marks collide
+ * again.
+ *
+ * Fixed, not adjustable: it is a property of this face, and the measurement
+ * picks the value — a reader who has to tune the leading as well as the size has
+ * been handed a typesetting job.
  */
-const val QURAN_LINE_HEIGHT_RATIO = 2.0f
+const val QURAN_LINE_HEIGHT_RATIO = 2.3f
 
 /**
  * The reader's scale factor for the Quran Arabic text, provided once at the
