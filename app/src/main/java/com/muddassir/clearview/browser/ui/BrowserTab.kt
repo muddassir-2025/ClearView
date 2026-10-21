@@ -64,6 +64,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.muddassir.clearview.R
+import com.muddassir.clearview.browser.BrowserAddress
 import com.muddassir.clearview.browser.BrowserNotice
 import com.muddassir.clearview.browser.BrowserSession
 import kotlinx.coroutines.delay
@@ -202,6 +203,17 @@ fun BrowserTab(
                         .fillMaxWidth()
                         .height(2.dp)
                 )
+            }
+        }
+
+        if (!session.showHome && !showSettings && BrowserAddress.isInstagramAuthUrl(session.url)) {
+            Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Text(stringResource(R.string.browser_auth_help), style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { session.openInstagramAuthentication() }) {
+                        Text(stringResource(R.string.browser_auth_open))
+                    }
+                }
             }
         }
 

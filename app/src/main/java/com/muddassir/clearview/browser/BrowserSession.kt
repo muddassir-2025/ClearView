@@ -2,8 +2,10 @@ package com.muddassir.clearview.browser
 
 import android.annotation.SuppressLint
 import android.app.Dialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.graphics.Color
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.view.View
@@ -21,6 +23,10 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.browser.customtabs.CustomTabsIntent
+import androidx.webkit.ScriptHandler
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -96,7 +102,6 @@ class BrowserSession(private val context: Context) {
         private val AD_PATH_MARKERS = listOf(
             "/pagead/",
             "/api/stats/ads",
-            "/get_midroll_info",
             "/ptracking",
             "/pcs/activeview",
             "/pagead/id"
@@ -170,6 +175,7 @@ class BrowserSession(private val context: Context) {
     @Volatile private var protectedPage = false
 
     private var scriptCache: String? = null
+    private var earlyScriptHandler: ScriptHandler? = null
     private var hasLoadedPage = false
     private var startRequested = false
     private var destroyed = false
@@ -203,10 +209,12 @@ class BrowserSession(private val context: Context) {
                     handleBlockedSearch(target)
                     return
                 }
-                // A Short/Reel is a vertical feed, not a page. It loads and the
-                // page script covers the blocked item; stopping or redirecting
-                // here would break swiping to the next one.
-                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                BrowserBlock.Type.SHORTS -> {
+                    showNotice(context.getString(R.string.browser_shorts_blocked))
+                    navigateTo(YOUTUBE_HOME)
+                    return
+                }
+                BrowserBlock.Type.REELS -> Unit
                 else -> {
                     showBlock(blocked)
                     return
@@ -273,7 +281,11 @@ class BrowserSession(private val context: Context) {
                     handleBlockedSearch(currentUrl.orEmpty())
                     return
                 }
-                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                BrowserBlock.Type.SHORTS -> {
+                    navigateTo(YOUTUBE_HOME)
+                    return
+                }
+                BrowserBlock.Type.REELS -> Unit
                 else -> {
                     showBlock(blocked)
                     return
@@ -369,11 +381,9 @@ class BrowserSession(private val context: Context) {
      */
     fun onProtectionSettingsChanged() {
         if (destroyed) return
-        // Nothing navigates here any more: the page applies the new policy to
-        // the item the reader is on. Turning "Block Shorts" on covers the
-        // current Short (and the next swipe's Short) instead of throwing the
-        // reader back to the YouTube home feed.
+        // Refresh the document-start policy for future documents as well.
         if (webViewLazy.isInitialized()) {
+            installEarlyScript(webView)
             webView.evaluateJavascript(
                 "window.__clearviewRefresh && window.__clearviewRefresh();",
                 null
@@ -407,6 +417,8 @@ class BrowserSession(private val context: Context) {
         if (!showHome) {
             webView.visibility = View.VISIBLE
             webView.onResume()
+            installEarlyScript(webView)
+            webView.evaluateJavascript("window.__clearviewRefresh && window.__clearviewRefresh();", null)
         }
     }
 
@@ -417,6 +429,8 @@ class BrowserSession(private val context: Context) {
             val view = webView
             try {
                 exitCustomView(notify = true)
+                earlyScriptHandler?.remove()
+                earlyScriptHandler = null
                 view.removeJavascriptInterface(BRIDGE_NAME)
                 view.stopLoading()
                 view.loadUrl("about:blank")
@@ -483,6 +497,7 @@ class BrowserSession(private val context: Context) {
         // a protected host. No Context, file access or arbitrary method
         // dispatch is exposed to page JavaScript.
         view.addJavascriptInterface(Bridge(), BRIDGE_NAME)
+        installEarlyScript(view)
 
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -490,6 +505,7 @@ class BrowserSession(private val context: Context) {
                 request: WebResourceRequest
             ): Boolean {
                 val original = request.url.toString()
+                if (!request.isForMainFrame) return false
                 // SafeSearch is a browser policy: rewrite a search URL before
                 // it is loaded, so a link tapped inside Google/Bing gets the
                 // same strict flag as one typed into the address bar.
@@ -558,10 +574,12 @@ class BrowserSession(private val context: Context) {
                             }
                         )
                     }
-                    // Handled inside the page so the vertical feed keeps
-                    // working. The native layer must not redirect or draw a
-                    // full-screen overlay over a Short/Reel.
-                    BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> Unit
+                    BrowserBlock.Type.SHORTS -> {
+                        pausePlayback()
+                        showNotice(context.getString(R.string.browser_shorts_blocked))
+                        redirectToSafeHome(YOUTUBE_HOME)
+                    }
+                    BrowserBlock.Type.REELS -> Unit
                     else -> showBlock(blocked)
                 }
             }
@@ -692,8 +710,11 @@ class BrowserSession(private val context: Context) {
         if (blocked != null) {
             when (blocked.type) {
                 BrowserBlock.Type.SEARCH -> handleBlockedSearch(target)
-                // Load it: the in-page cover is what blocks a Short/Reel.
-                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> return false
+                BrowserBlock.Type.SHORTS -> {
+                    showNotice(context.getString(R.string.browser_shorts_blocked))
+                    navigateTo(YOUTUBE_HOME)
+                }
+                BrowserBlock.Type.REELS -> return false
                 else -> showBlock(blocked)
             }
             return true
@@ -737,6 +758,9 @@ class BrowserSession(private val context: Context) {
         url = newUrl
         hasLoadedPage = true
         protectedPage = BrowserRules.isProtectedSurface(newUrl)
+        // Authentication must not inherit a native content overlay from the
+        // previous document (the auth script intentionally never evaluates it).
+        if (BrowserAddress.isInstagramAuthUrl(newUrl)) block = null
     }
 
     private fun refreshHistory() {
@@ -807,6 +831,33 @@ class BrowserSession(private val context: Context) {
         )
     }
 
+    /** Install CSS before YouTube creates its first shelf. No bridge call here. */
+    private fun earlyScriptSource(): String = runCatching {
+        "window.__clearviewEarlyPolicy=" + JSONObject().apply {
+            put("hideShorts", settings.blockShorts)
+        }.toString() + ";\n" + context.assets.open("browser/clearview_early.js")
+            .bufferedReader().use { it.readText() }
+    }.getOrDefault("")
+
+    private fun installEarlyScript(view: WebView) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
+        earlyScriptHandler?.remove()
+        earlyScriptHandler = WebViewCompat.addDocumentStartJavaScript(
+            view, earlyScriptSource(), setOf("https://*.youtube.com", "https://youtube.com")
+        )
+    }
+
+    /** Browser-owned authentication fallback; browser cookies stay there. */
+    fun openInstagramAuthentication() {
+        val target = currentUrl?.takeIf { BrowserAddress.isInstagramAuthUrl(it) } ?: return
+        if (rules.blockForUrl(target) != null) return
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(target))
+        } catch (_: ActivityNotFoundException) {
+            showNotice(context.getString(R.string.browser_auth_no_browser))
+        }
+    }
+
     private fun injectScript() {
         if (!webViewLazy.isInitialized()) return
         val script = scriptCache ?: try {
@@ -817,10 +868,9 @@ class BrowserSession(private val context: Context) {
         } catch (_: Exception) {
             return
         }
-        // The token prefix is injected with the script, so only the main-frame
-        // page script holds it.
+        // The early CSS also runs here on providers without document-start support.
         webView.evaluateJavascript(
-            "window.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" + script,
+            earlyScriptSource() + "\nwindow.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" + script,
             null
         )
     }
@@ -876,8 +926,9 @@ class BrowserSession(private val context: Context) {
         val requestUrl = request.url
         val host = requestUrl.host?.lowercase() ?: return false
         if (AD_HOSTS.any { host == it || host.endsWith(".$it") }) return true
-        val full = requestUrl.toString().lowercase()
-        return AD_PATH_MARKERS.any { full.contains(it) }
+        if (host != "youtube.com" && !host.endsWith(".youtube.com")) return false
+        val path = requestUrl.path.orEmpty().lowercase()
+        return AD_PATH_MARKERS.any { path.startsWith(it) }
     }
 
     // ── JavaScript bridge ─────────────────────────────────────────
@@ -987,7 +1038,8 @@ class BrowserSession(private val context: Context) {
             val json = JSONObject(payload.orEmpty())
             val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
             val name = json.optString("channelName").takeIf { it.isNotBlank() }
-            val added = rules.blockChannel(handle, name)
+            val id = json.optString("channelId").takeIf { it.isNotBlank() }
+            val added = rules.blockChannel(handle, name, id)
             if (!added) return@safe "{\"blocked\":false}"
             webView.post { showNotice(context.getString(R.string.browser_channel_blocked, handle ?: name.orEmpty())) }
             JSONObject().apply {
@@ -1070,9 +1122,10 @@ class BrowserSession(private val context: Context) {
                         else -> null
                     }
                 }
-                // No redirect: the page paints the cover over the current
-                // item and the reader swipes on.
-                BrowserBlock.Type.SHORTS -> null
+                BrowserBlock.Type.SHORTS -> {
+                    webView.post { showNotice(context.getString(R.string.browser_shorts_blocked)) }
+                    YOUTUBE_HOME
+                }
                 BrowserBlock.Type.REELS -> null
                 else -> {
                     webView.post { showBlock(verdict) }
@@ -1083,9 +1136,7 @@ class BrowserSession(private val context: Context) {
                 put("blocked", true)
                 put("item", verdict.item)
                 put("type", verdict.type.name)
-                if (verdict.type == BrowserBlock.Type.SHORTS ||
-                    verdict.type == BrowserBlock.Type.REELS
-                ) {
+                if (verdict.type == BrowserBlock.Type.REELS) {
                     put("inline", true)
                 }
                 if (redirectTo != null) put("redirectTo", redirectTo)

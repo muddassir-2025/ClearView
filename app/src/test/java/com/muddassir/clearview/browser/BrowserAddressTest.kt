@@ -10,6 +10,16 @@ import org.junit.Test
 class BrowserAddressTest {
 
     @Test
+    fun instagramAuthenticationFallbackIsRestrictedToAccountPages() {
+        assertTrue(BrowserAddress.isInstagramAuthUrl("https://www.instagram.com/accounts/login/?next=%2F"))
+        assertTrue(BrowserAddress.isInstagramAuthUrl("https://www.instagram.com/accounts/emailsignup/"))
+        assertFalse(BrowserAddress.isInstagramAuthUrl("https://instagram.com.attacker.example/accounts/login/"))
+        assertFalse(BrowserAddress.isInstagramAuthUrl("https://www.instagram.com/reels/example/"))
+        assertFalse(BrowserAddress.isInstagramAuthUrl("https://www.instagram.com/accounts-other/"))
+        assertFalse(BrowserAddress.isInstagramAuthUrl(null))
+    }
+
+    @Test
     fun blankInputLoadsNothing() {
         assertNull(BrowserAddress.toUrl(null))
         assertNull(BrowserAddress.toUrl("   "))

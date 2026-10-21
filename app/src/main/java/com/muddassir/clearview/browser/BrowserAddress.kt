@@ -161,6 +161,13 @@ object BrowserAddress {
         return path.contains("/results") || path.contains("/search")
     }
 
+    /** Account flows get an explicit browser fallback, never injected UI. */
+    fun isInstagramAuthUrl(url: String?): Boolean {
+        if (!isInstagram(url)) return false
+        val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+        return path == "/accounts" || path.startsWith("/accounts/")
+    }
+
     /**
      * An Instagram Reels URL. Both `/reels/<id>/` (the shared link) and
      * `/reel/<id>/` (the in-feed permalink) are reels; the bare `/reels/`

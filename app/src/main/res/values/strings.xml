@@ -1512,4 +1512,8 @@ This video cannot be played inside the app.</string>
     <string name="browser_block_go_home">Go to YouTube Home</string>
     <string name="browser_block_back">Back to safety</string>
     <string name="browser_block_note">ClearView blocked this page</string>
+    <string name="browser_auth_help">If Instagram sign-in does not load, continue in your browser. Sign-in stays in that browser; ClearView’s in-page filters do not apply there.</string>
+    <string name="browser_auth_open">Continue in browser</string>
+    <string name="browser_auth_no_browser">No browser is available to open Instagram sign-in.</string>
+    <string name="browser_shorts_blocked">YouTube Shorts are blocked</string>
 </resources>
