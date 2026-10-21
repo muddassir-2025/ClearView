@@ -23,6 +23,7 @@
 (function () {
   'use strict';
 
+  if (window.top !== window) return;
   var bridge = window.ClearViewBridge;
   if (!bridge) return;
   if (window.__clearviewBrowserLoaded) return;
@@ -114,6 +115,7 @@
 
   function refreshPolicy() {
     try { policy = parse(bridge.policy(token)); } catch (e) { /* keep last */ }
+    if (window.__clearviewApplyEarlyPolicy) window.__clearviewApplyEarlyPolicy(policy);
   }
 
   /**
@@ -165,7 +167,6 @@
     for (var i = 0; i < vids.length; i++) {
       try {
         vids[i].pause();
-        vids[i].muted = true;
       } catch (e) { /* detached player */ }
     }
   }
@@ -174,11 +175,15 @@
   // Even if YouTube starts playback again, blocked content stays silent while
   // the overlay is up.
   document.addEventListener('play', function (event) {
+    if (hostIsYouTube() && policy.hideShorts &&
+        (isShortsPage() || shortIds.has(videoIdFromUrl()) || playerIsShort())) {
+      leaveShorts();
+      return;
+    }
     if (!contentBlocked || !event.target || event.target.tagName !== 'VIDEO') return;
     if (blockedVideoUrl && blockedVideoUrl !== location.href) return;
     try {
       event.target.pause();
-      event.target.muted = true;
     } catch (e) { /* ignore */ }
   }, true);
 
@@ -210,7 +215,7 @@
   }
 
   function isShortsPage() {
-    return location.pathname.startsWith('/shorts/');
+    return /^\/shorts(?:\/|$)/.test(location.pathname);
   }
 
   function isVideoPage() {
@@ -222,6 +227,178 @@
     if (v) return v;
     var m = location.pathname.match(/^\/shorts\/([\w-]{6,20})/);
     return m ? m[1] : null;
+  }
+
+  var shortIds = window.__clearviewShortIds || new Set();
+
+  function rememberShort(href) {
+    var match = String(href || '').match(/\/shorts\/([\w-]{6,20})/);
+    if (match) shortIds.add(match[1]);
+  }
+
+  function rendererData(node) {
+    var data = node && (node.data || (node.__data && node.__data.data));
+    if (!data && node && node.querySelector) {
+      var inner = node.querySelector(CARD_SELECTORS.join(','));
+      data = inner && (inner.data || (inner.__data && inner.__data.data));
+    }
+    data = data || {};
+    for (var i = 0; i < 4; i++) {
+      var next = data.richItemRenderer || data.content || data.videoWithContextRenderer ||
+        data.playlistVideoRenderer || data.videoRenderer || data.lockupViewModel;
+      if (!next) break;
+      data = next;
+    }
+    return data;
+  }
+
+  function cardIsShort(card) {
+    var link = card.querySelector('a[href*="/shorts/"]');
+    if (link) { rememberShort(link.getAttribute('href')); return true; }
+    if (shortIds.has(videoIdFromCard(card))) return true;
+    var data = rendererData(card);
+    data = data.videoWithContextRenderer || data.playlistVideoRenderer ||
+      data.videoRenderer || data.lockupViewModel || data;
+    if (data.isShort === true || data.isShorts === true ||
+        (data.navigationEndpoint && data.navigationEndpoint.reelWatchEndpoint)) return true;
+    var overlays = data.thumbnailOverlays || [];
+    if (overlays.some(function (entry) {
+      return entry.thumbnailOverlayTimeStatusRenderer &&
+        entry.thumbnailOverlayTimeStatusRenderer.style === 'SHORTS';
+    })) return true;
+    return !!card.querySelector('[aria-label="Shorts"], .ytm-shorts-icon, ' +
+      'ytm-shorts-lockup-view-model, ytm-shorts-lockup-view-model-v2');
+  }
+
+  function playerIsShort() {
+    var current = videoIdFromUrl();
+    var playlist = document.querySelectorAll('ytm-playlist-video-renderer, ytd-playlist-video-renderer');
+    for (var i = 0; i < playlist.length; i++) {
+      if (videoIdFromCard(playlist[i]) === current && cardIsShort(playlist[i])) {
+        shortIds.add(current); return true;
+      }
+    }
+    var response = window.ytInitialPlayerResponse;
+    return !!(response && response.videoDetails &&
+      response.videoDetails.videoId === videoIdFromUrl() &&
+      (response.videoDetails.isShort === true || response.videoDetails.isShorts === true));
+  }
+
+  function leaveShorts() {
+    contentBlocked = true;
+    blockedVideoUrl = ''; // Applies to every video, including playlist autoplay.
+    pauseAll();
+    clearVideoCover();
+    window.location.replace('/');
+  }
+
+  // Read only owner/byline metadata, never an arbitrary recommendation's data.
+  function channelFromData(data, info) {
+    data = data.videoWithContextRenderer || data.playlistVideoRenderer ||
+      data.videoRenderer || data.channelRenderer || data;
+    var byline = data.ownerText || data.shortBylineText || data.longBylineText;
+    var runs = byline && byline.runs || [];
+    for (var i = 0; i < runs.length; i++) {
+      var endpoint = runs[i].navigationEndpoint || {};
+      var browse = endpoint.browseEndpoint || {};
+      if (!info.channelId && /^UC[\w-]{10,}$/.test(browse.browseId || '')) info.channelId = browse.browseId;
+      var url = browse.canonicalBaseUrl || (endpoint.commandMetadata &&
+        endpoint.commandMetadata.webCommandMetadata && endpoint.commandMetadata.webCommandMetadata.url);
+      var handle = String(url || '').match(/\/@([^/?#]+)/);
+      if (!info.channelHandle && handle) info.channelHandle = '@' + decodeURIComponent(handle[1]);
+      if (!info.channelName && runs[i].text) info.channelName = runs[i].text;
+    }
+    return info;
+  }
+
+  function channelPageInfo() {
+    var match = location.pathname.match(/^\/@([^/?#]+)/);
+    var id = location.pathname.match(/^\/channel\/(UC[\w-]{10,})/);
+    if (!match && !id) return null;
+    var info = { card: null, channelHandle: match ? '@' + decodeURIComponent(match[1]) : null,
+      channelId: id ? id[1] : null, channelName: null };
+    var header = document.querySelector('ytm-c4-tabbed-header-renderer, ' +
+      'yt-page-header-renderer, ytd-c4-tabbed-header-renderer, ytm-page-header-renderer');
+    if (header) { readChannelLinks(header, info); info.channelName = (header.textContent || '').trim().slice(0, 100); }
+    return info;
+  }
+
+  // Parse one bootstrap object without executing page HTML or assuming brace
+  // depth (titles/descriptions may contain escaped quotes and braces).
+  function bootstrapObject(html, property) {
+    var marker = html.indexOf('"' + property + '"');
+    if (marker < 0) return {};
+    var start = html.indexOf('{', marker);
+    var depth = 0, quoted = false, escaped = false;
+    for (var i = start; i >= 0 && i < html.length; i++) {
+      var ch = html[i];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') quoted = false;
+      } else if (ch === '"') quoted = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) return parse(html.slice(start, i + 1));
+    }
+    return {};
+  }
+
+  var channelLookups = new Map();
+  function resolveMenuChannel(info) {
+    var path = info.channelId ? '/channel/' + encodeURIComponent(info.channelId) :
+      info.videoId ? '/watch?v=' + encodeURIComponent(info.videoId) : null;
+    if (!path) return Promise.resolve(info);
+    if (!channelLookups.has(path)) {
+      // Resolve on explicit user action only; no per-card network fan-out.
+      var controller = new AbortController();
+      var timeout = setTimeout(function () { controller.abort(); }, 8000);
+      var lookup = fetch(path, { credentials: 'same-origin', signal: controller.signal })
+        .then(function (response) { if (!response.ok) throw new Error('lookup'); return response.text(); })
+        .then(function (html) {
+          var doc = new DOMParser().parseFromString(html, 'text/html');
+          var owner = doc.querySelector('[itemprop="author"] [itemprop="url"]');
+          var url = owner && (owner.getAttribute('content') || owner.getAttribute('href'));
+          // YouTube publishes a channel's vanity URL in its metadata. Do not
+          // guess from a display name or take a recommended channel link.
+          var metadata = bootstrapObject(html, 'channelMetadataRenderer');
+          var details = bootstrapObject(html, 'videoDetails');
+          var authorId = String(url || '').match(/\/channel\/(UC[\w-]{10,})/);
+          var metadataMatches = !!info.channelId && metadata.externalId === info.channelId;
+          var detailsMatch = !!info.videoId && details.videoId === info.videoId;
+          var handle = String(url || (metadataMatches && metadata.vanityChannelUrl) || '').match(/\/@([^/?#]+)/);
+          return { channelHandle: handle ? '@' + decodeURIComponent(handle[1]) : null,
+            channelId: authorId ? authorId[1] : metadataMatches ? metadata.externalId :
+              detailsMatch ? details.channelId : null };
+        }).catch(function () { channelLookups.delete(path); return {}; })
+        .finally(function () { clearTimeout(timeout); });
+      channelLookups.set(path, lookup);
+    }
+    return channelLookups.get(path).then(function (resolved) {
+      var identified = Object.assign({}, info, { channelHandle: resolved.channelHandle || info.channelHandle,
+        channelId: info.channelId || resolved.channelId });
+      if (!identified.channelHandle && !info.channelId && identified.channelId) {
+        return resolveMenuChannel(identified);
+      }
+      return identified;
+    });
+  }
+
+  function ensureWatchAction() {
+    var old = document.getElementById('clearview-watch-action');
+    if (!isWatchPage()) { if (old) old.remove(); return; }
+    var owner = document.querySelector('ytm-slim-owner-renderer, #owner, ytm-watch-metadata-renderer');
+    if (!owner || old) return;
+    var button = document.createElement('button');
+    button.id = 'clearview-watch-action';
+    button.type = 'button';
+    button.textContent = 'Block channel with ClearView';
+    button.style.cssText = 'display:block;margin:8px 0;padding:10px 14px;border:1px solid currentColor;' +
+      'border-radius:20px;background:transparent;color:inherit;font:inherit;cursor:pointer;';
+    button.addEventListener('click', function (event) {
+      event.preventDefault(); event.stopPropagation();
+      toggleBlockFromMenu(Object.assign(collectVideo(), { action: 'block' }));
+    });
+    owner.appendChild(button);
   }
 
   // ── Shorts hiding (existing Block Shorts toggle) ────────────────
@@ -244,6 +421,9 @@
     'ytm-video-with-context-renderer',
     'ytm-compact-video-renderer',
     'ytm-shorts-lockup-view-model',
+    'ytm-shorts-lockup-view-model-v2',
+    'yt-shorts-lockup-view-model',
+    'ytm-playlist-video-renderer',
     'ytm-reel-item-renderer',
     'ytm-reel-shelf-renderer',
     'ytm-rich-item-renderer',
@@ -266,10 +446,9 @@
     for (var i = 0; i < links.length; i++) {
       var node = links[i];
       var target = node;
-      for (var c = 0; c < SHORTS_CONTAINERS.length; c++) {
-        var candidate = node.closest ? node.closest(SHORTS_CONTAINERS[c]) : null;
-        if (candidate) { target = candidate; break; }
-      }
+      var candidate = node.closest && node.closest(SHORTS_CONTAINERS.join(','));
+      if (candidate) target = candidate;
+      rememberShort(node.getAttribute('href'));
       hideNode(target, 'shorts');
     }
 
@@ -365,62 +544,76 @@
     }
   }
 
-  function restoreAdVideo(video) {
-    if (!video) return;
-    try {
-      if (video.__cvAdMuted) {
-        video.muted = !!video.__cvAdWasMuted;
-        delete video.__cvAdMuted;
-        delete video.__cvAdWasMuted;
-      }
-      if (video.__cvAdRateSaved) {
-        video.playbackRate = video.__cvAdRate || 1;
-        delete video.__cvAdRateSaved;
-        delete video.__cvAdRate;
-      }
-    } catch (e) { /* ignore */ }
+  var adSession = null;
+  var adTransitionPlayer = null;
+
+  function finishAdSession(resume) {
+    var state = adSession;
+    if (!state) return;
+    adSession = null;
+    state.video.removeEventListener('ended', state.onEnded);
+    state.video.removeEventListener('pause', state.onPause);
+    // Only restore values we actually changed. Never reset/load the player.
+    if (state.mutedByUs) state.video.muted = state.wasMuted;
+    if (resume && state.finished && state.wasPlaying && !state.userPaused &&
+        !contentBlocked && !document.hidden && state.url === location.href && state.video.paused) {
+      try {
+        var pending = state.video.play();
+        if (pending && pending.catch) pending.catch(function () {});
+      } catch (e) { /* autoplay policy is owned by the player */ }
+    }
   }
 
   function chaseAds() {
-    if (!policy.blockAds || !hostIsYouTube()) return;
+    if (!hostIsYouTube()) return;
     var player = document.querySelector('#movie_player');
-    if (!player) return;
-    var adShowing = false;
-    try { adShowing = player.classList.contains('ad-showing'); } catch (e) { /* ignore */ }
-    var video = player.querySelector('video');
-    if (!adShowing) {
-      restoreAdVideo(video);
+    var video = player && player.querySelector('video');
+    var showing = player && player.classList.contains('ad-showing');
+    if (!policy.blockAds || !showing || !video || contentBlocked) {
+      finishAdSession(!!policy.blockAds && !showing);
+      adTransitionPlayer = null;
       return;
     }
-
-    var skip = document.querySelector(
-      '.ytp-ad-skip-button, .ytp-skip-ad-button, ' +
-      '.ytp-ad-skip-button-modern, button.ytp-ad-skip-button-container, ' +
-      '.ytp-ad-skip-button-slot button'
-    );
-    if (skip) {
-      try { skip.click(); } catch (e) { /* ignore */ }
+    if (adTransitionPlayer === player) return;
+    var source = video.currentSrc || video.src;
+    if (adSession && (adSession.video !== video || adSession.source !== source ||
+        adSession.url !== location.href)) {
+      // YouTube can replace the source BEFORE removing ad-showing. Do not
+      // seek or accelerate the new source on that stale CSS signal.
+      finishAdSession(false);
+      adTransitionPlayer = player;
+      return;
     }
-
-    if (!video) return;
-    try {
-      if (!video.__cvAdMuted) {
-        video.__cvAdWasMuted = video.muted;
-        video.__cvAdMuted = true;
-      }
+    var skip = player.querySelector(
+      '.ytp-ad-skip-button, .ytp-skip-ad-button, .ytp-ad-skip-button-modern, ' +
+      'button.ytp-ad-skip-button-container, .ytp-ad-skip-button-slot button'
+    );
+    if (skip && !skip.disabled && skip.getBoundingClientRect().height > 0) {
+      skip.click();
+      return; // The click may already have installed the content video.
+    }
+    if (!adSession) {
+      var state = {
+        video: video, source: source, url: location.href, wasMuted: video.muted,
+        wasPlaying: !video.paused, userPaused: false, finished: false, sought: false
+      };
+      state.onEnded = function () { state.finished = true; };
+      state.onPause = function () {
+        if (!video.ended && !state.finished) state.userPaused = true;
+      };
+      video.addEventListener('ended', state.onEnded);
+      video.addEventListener('pause', state.onPause);
+      adSession = state;
+    }
+    // A single seek to a confirmed, loaded ad's end lets the player perform its
+    // normal ended transition. Repeated duration-.1 seeks never reach ended.
+    if (!adSession.sought && video.readyState >= 2 &&
+        isFinite(video.duration) && video.duration > 0 && !video.paused) {
+      adSession.sought = true;
+      adSession.mutedByUs = true;
       video.muted = true;
-      if (!video.__cvAdRateSaved) {
-        video.__cvAdRate = video.playbackRate;
-        video.__cvAdRateSaved = true;
-      }
-      // The extension's approach: an unskippable ad is run out at 16x
-      // rather than waited through. Everything is restored when it ends.
-      video.playbackRate = 16;
-      if (isFinite(video.duration) && video.duration > 0.5 &&
-          video.currentTime < video.duration - 0.4) {
-        video.currentTime = Math.max(0, video.duration - 0.1);
-      }
-    } catch (e) { /* ignore */ }
+      try { video.currentTime = video.duration; } catch (e) { /* non-seekable ad */ }
+    }
   }
 
   // ── Watch page: title / description / channel ──────────────────
@@ -457,14 +650,6 @@
       // Keep looking while only an id was found: a later, owner-scoped header
       // may spell the handle that a bare /channel/UC link cannot provide.
       if (info.channelHandle) break;
-    }
-    if (!info.channelHandle) {
-      // A bare channel id is not enough: the page action needs an @handle.
-      // Shorts often has no owner anchor at all, only a Subscribe button whose
-      // aria-label is "Subscribe to @name." — so scan the document text before
-      // giving up, then fall back to the first channel link.
-      info.channelHandle = handleFromScope(document.body);
-      if (!info.channelHandle) readChannelLinks(document, info);
     }
     if (!info.channelName) {
       info.channelName = textOf('#owner #channel-name') ||
@@ -566,7 +751,7 @@
     try {
       var player = window.ytInitialPlayerResponse;
       var details = player && player.videoDetails;
-      if (details) {
+      if (details && details.videoId === videoIdFromUrl()) {
         if (!info.channelId && details.channelId) info.channelId = details.channelId;
         if (!info.channelName && details.author) info.channelName = details.author;
       }
@@ -594,6 +779,10 @@
 
   function evaluateVideo() {
     if (!hostIsYouTube() || !isVideoPage()) return;
+    if (policy.hideShorts && (isShortsPage() || shortIds.has(videoIdFromUrl()) || playerIsShort())) {
+      leaveShorts();
+      return;
+    }
     var info = collectVideo();
     if (!info.videoId && !info.title) return;
     var key = [info.videoId, info.title, info.channelId, info.channelHandle].join('|');
@@ -648,8 +837,12 @@
     'ytm-video-with-context-renderer',
     'ytm-compact-video-renderer',
     'ytm-shorts-lockup-view-model',
+    'ytm-shorts-lockup-view-model-v2',
+    'yt-shorts-lockup-view-model',
+    'ytm-playlist-video-renderer',
     'ytm-reel-item-renderer',
-    'ytm-rich-item-renderer'
+    'ytm-rich-item-renderer',
+    'ytm-video-renderer'
   ];
 
   var THUMBNAIL_SELECTORS = [
@@ -657,6 +850,11 @@
     'ytd-thumbnail a',
     'ytd-playlist-thumbnail a',
     'yt-thumbnail-view-model',
+    'ytm-thumbnail-cover',
+    'ytm-thumbnail-overlay',
+    '.video-thumbnail-container-compact',
+    '.video-thumbnail-container-large',
+    '.video-thumbnail-container',
     'a.media-item-thumbnail',
     '.media-item-thumbnail-container',
     'ytd-thumbnail',
@@ -664,17 +862,10 @@
   ];
 
   function allCards() {
-    var seen = new Set();
-    var cards = [];
-    for (var s = 0; s < CARD_SELECTORS.length; s++) {
-      var found = document.querySelectorAll(CARD_SELECTORS[s]);
-      for (var i = 0; i < found.length; i++) {
-        if (seen.has(found[i])) continue;
-        seen.add(found[i]);
-        cards.push(found[i]);
-      }
-    }
-    return cards;
+    // One owner per card: nested mobile rich items must not get two covers.
+    return Array.prototype.filter.call(document.querySelectorAll(CARD_SELECTORS.join(',')), function (card) {
+      return !card.parentElement || !card.parentElement.closest(CARD_SELECTORS.join(','));
+    });
   }
 
   function videoIdFromCard(card) {
@@ -736,6 +927,11 @@
       var fromCard = handleFromScope(card);
       if (fromCard) info.channelHandle = fromCard;
     }
+    channelFromData(rendererData(card), info);
+    if (!info.channelHandle && !info.channelId) {
+      var page = channelPageInfo();
+      if (page) Object.assign(info, page);
+    }
     return info;
   }
 
@@ -758,7 +954,7 @@
       var el = card.querySelector(THUMBNAIL_SELECTORS[s]);
       if (el) return el;
     }
-    return card;
+    return null;
   }
 
   function suppressCardPreview(card) {
@@ -800,13 +996,17 @@
   }
 
   function coverCard(card, label) {
-    if (card.getAttribute('data-cv-covered') === label) return;
+    if (card.getAttribute('data-cv-covered') === label &&
+        card.__cvCoverTarget && card.contains(card.__cvCoverTarget) &&
+        card.__cvCoverTarget.querySelector('.clearview-thumb-overlay')) return;
     uncoverCard(card);
-    card.setAttribute('data-cv-covered', label || 'Blocked by ClearView');
-
     var target = thumbnailTarget(card);
+    if (!target) { removeCard(card); return; }
+    card.setAttribute('data-cv-covered', label || 'Blocked by ClearView');
+    card.__cvCoverTarget = target;
+    card.__cvCoverStyle = { position: target.style.position, display: target.style.display };
     try {
-      target.style.position = 'relative';
+      if (window.getComputedStyle(target).position === 'static') target.style.position = 'relative';
       // An inline anchor cannot size an absolutely-positioned cover reliably.
       if (window.getComputedStyle && window.getComputedStyle(target).display === 'inline') {
         target.style.display = 'block';
@@ -817,7 +1017,7 @@
     cover.className = 'clearview-thumb-overlay';
     cover.setAttribute('aria-label', label || 'Blocked by ClearView');
     cover.style.cssText =
-      'position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;' +
+      'position:absolute;inset:0;z-index:1;box-sizing:border-box;display:flex;flex-direction:column;' +
       'align-items:center;justify-content:center;gap:6px;' +
       'background:#000;color:#fff;text-align:center;' +
       'padding:10px;border-radius:10px;pointer-events:auto;' +
@@ -849,6 +1049,7 @@
 
     // A blocked card must not navigate on tap, click, middle-click or Enter.
     var blockNav = function (event) {
+      if (event.target.closest && event.target.closest(MENU_BUTTON_SELECTOR)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       suppressCardPreview(card);
@@ -870,6 +1071,12 @@
     card.removeAttribute('data-cv-covered');
     var cover = card.querySelector('.clearview-thumb-overlay');
     if (cover) cover.remove();
+    if (card.__cvCoverTarget && card.__cvCoverStyle) {
+      card.__cvCoverTarget.style.position = card.__cvCoverStyle.position;
+      card.__cvCoverTarget.style.display = card.__cvCoverStyle.display;
+    }
+    delete card.__cvCoverTarget;
+    delete card.__cvCoverStyle;
     if (card.__cvBlockNav) {
       card.removeEventListener('click', card.__cvBlockNav, true);
       card.removeEventListener('auxclick', card.__cvBlockNav, true);
@@ -922,7 +1129,7 @@
       (document.body || document.documentElement).appendChild(cover);
     }
     cover.style.cssText =
-      'position:fixed;z-index:2147483600;display:flex;flex-direction:column;' +
+      'position:fixed;z-index:10;display:flex;flex-direction:column;' +
       'align-items:center;justify-content:center;gap:10px;background:#000;' +
       'color:#fff;text-align:center;padding:20px;box-sizing:border-box;' +
       'font:600 14px/1.4 Roboto,Arial,sans-serif;pointer-events:' +
@@ -956,13 +1163,25 @@
     var cover = document.getElementById(ITEM_COVER_ID);
     if (!cover || !coverTarget || !coverTarget.getBoundingClientRect) return;
     var rect = coverTarget.getBoundingClientRect();
-    if (!rect || rect.width < 10 || rect.height < 10) return;
+    if (!coverTarget.isConnected || !rect || rect.width < 10 || rect.height < 10) {
+      cover.style.display = 'none'; return;
+    }
     var width = window.innerWidth || 360;
     var height = window.innerHeight || 800;
-    cover.style.left = Math.max(0, rect.left) + 'px';
-    cover.style.top = Math.max(0, rect.top) + 'px';
-    cover.style.width = Math.min(rect.width, width) + 'px';
-    cover.style.height = Math.min(rect.height, height) + 'px';
+    var left = Math.max(0, rect.left);
+    var top = Math.max(0, rect.top);
+    var right = Math.min(width, rect.right);
+    var bottom = Math.min(height, rect.bottom);
+    var navigation = document.querySelector('ytm-pivot-bar-renderer, ytm-pivot-bar-view-model');
+    if (navigation) {
+      var nav = navigation.getBoundingClientRect();
+      if (nav.height > 0 && nav.top >= top) bottom = Math.min(bottom, nav.top);
+    }
+    cover.style.display = right > left && bottom > top ? 'flex' : 'none';
+    cover.style.left = left + 'px';
+    cover.style.top = top + 'px';
+    cover.style.width = Math.max(0, right - left) + 'px';
+    cover.style.height = Math.max(0, bottom - top) + 'px';
   }
 
   function showVideoCover(message) {
@@ -989,7 +1208,7 @@
       positionCover();
     });
   }
-  window.addEventListener('scroll', scheduleCoverPosition, { passive: true });
+  document.addEventListener('scroll', scheduleCoverPosition, { passive: true, capture: true });
   window.addEventListener('resize', scheduleCoverPosition);
 
   function scanCards() {
@@ -999,15 +1218,27 @@
     // beside a watch page) is a list of ordinary cards and is scanned.
     if (isShortsPage()) return;
     var cards = allCards();
-    var checked = 0;
-    for (var i = 0; i < cards.length && checked < 60; i++) {
+    for (var i = 0; i < cards.length; i++) {
       var card = cards[i];
+      var rect = card.getBoundingClientRect();
+      if (!card.hasAttribute('data-cv-hidden-card') &&
+          (rect.bottom < -260 || rect.top > (window.innerHeight || 800) + 260)) continue;
       var id = videoIdFromCard(card);
+      if (policy.hideShorts && cardIsShort(card)) {
+        if (id) shortIds.add(id);
+        card.setAttribute('data-cv-short', '');
+        hideNode(card, 'shorts');
+        continue;
+      }
+      card.removeAttribute('data-cv-short');
+      if (card.getAttribute('data-cv-hidden') === 'shorts') {
+        card.removeAttribute('data-cv-hidden');
+        card.style.removeProperty('display');
+      }
       var title = cardTitle(card);
       var channel = cardChannel(card);
       var description = cardThumbnailDescription(card);
       if (!id && !title && !channel.channelId && !channel.channelHandle) continue;
-      checked++;
 
       // YouTube recycles card elements while scrolling, so the cached key
       // includes the title/channel actually shown now. A hidden card that was
@@ -1016,19 +1247,18 @@
       // Only cards at or near the viewport are judged. A home feed can hold
       // hundreds of recycled nodes; walking all of them on every mutation was
       // the main source of scroll jank. The scroll listener catches the rest.
-      var rect = card.getBoundingClientRect();
-      if (rect.bottom < -260 || rect.top > (window.innerHeight || 800) + 260) continue;
-
       var key = [id, title, channel.channelId, channel.channelHandle, description].join('|');
       if (card.getAttribute('data-cv-hidden-card') && card.__cvKey !== key) {
         restoreCard(card);
       }
       if (card.getAttribute('data-cv-hidden-card')) continue;
-      if (card.__cvKey === key && card.hasAttribute('data-cv-covered')) continue;
+      if (card.__cvKey === key && card.hasAttribute('data-cv-covered') &&
+          card.querySelector('.clearview-thumb-overlay')) continue;
       // An allowed card is not re-sent over the JNI bridge on every scan. The
       // key changes only when YouTube recycles the element or the metadata
       // changes, which is exactly when it has to be judged again.
       if (card.__cvAllowedKey === key) continue;
+      if (card.__cvKey !== key) uncoverCard(card);
       card.__cvKey = key;
 
       var verdict = call(bridge.evaluateCard, {
@@ -1668,6 +1898,7 @@
     var caption = instagramCaption(scope);
     var key = [location.pathname, author.handle, caption.slice(0, 140)].join('|');
     if (key === lastReelKey) {
+      if (coverTarget && coverTarget !== video) coverTarget = video;
       positionCover();
       return;
     }
@@ -1716,6 +1947,7 @@
   // opened supplies the identity, and the native side stores the block in the
   // same Brain Rot list. YouTube's own action is left to run as well.
   var MENU_BUTTON_SELECTOR =
+    'ytm-menu-renderer button, ytm-menu-renderer [role="button"], ' +
     'button[aria-label*="More" i], button[aria-label*="Action" i], ' +
     'yt-icon-button[aria-label*="More" i], ytd-menu-renderer button, ' +
     '[role="button"][aria-label*="More" i], [role="button"][aria-label*="Action" i], ' +
@@ -1735,6 +1967,7 @@
     if (!target || !target.closest) return false;
     var button = target.closest(MENU_BUTTON_SELECTOR);
     if (!button) return false;
+    resetMenuIdentity();
 
     var inPlayer = !!(button.closest && button.closest(
       '#movie_player, #player, .html5-video-player, #player-container-id, ytm-player'
@@ -1754,6 +1987,8 @@
         title: cardTitle(card),
         videoId: videoIdFromCard(card)
       };
+    } else if (channelPageInfo()) {
+      info = channelPageInfo();
     } else if (inPlayer || isVideoPage()) {
       info = collectVideo();
       info.card = null;
@@ -1786,6 +2021,7 @@
       };
     }
     if (fresh && lastMenuVideo) return lastMenuVideo;
+    if (channelPageInfo()) return channelPageInfo();
     if (!isVideoPage()) return null;
     var info = collectVideo();
     info.card = null;
@@ -1797,6 +2033,9 @@
     lastMenuVideo = null;
     menuTargetInfo = null;
     lastMenuAt = 0;
+    menuOpenedAt = 0;
+    var items = document.querySelectorAll('[data-cv-menu-item]');
+    for (var i = 0; i < items.length; i++) items[i].remove();
   }
 
   /** Re-open every card that was hidden/tinted so changed rules apply. */
@@ -1813,30 +2052,29 @@
     }
     clearContentBlock();
     lastVideoKey = '';
-    setTimeout(function () {
-      evaluateVideo();
-      scanCards();
-    }, 150);
+    evaluateVideo();
+    scanCards();
   }
 
   // ── Injected "Block / Unblock" menu action ──────────────────────
   // YouTube's own "Not interested" is a recommendation nudge, not a block, so
-  // the browser adds an explicit action to the same menu. The item is cloned
-  // from a real YouTube menu row, which keeps its height, ripple, typography
-  // and dark/light theme without shipping a second stylesheet.
+  // the browser adds a plain action to the same menu. Cloning YouTube custom
+  // elements can attach their original Save/Share handlers to the new row.
   var MENU_CONTAINER_SELECTORS = [
+    'ytm-menu-popup-renderer .menu-content',
+    'ytm-menu-popup-renderer',
+    'ytm-bottom-sheet-renderer',
     'ytm-sheet-renderer',
     'ytm-sheet-view-model',
     'yt-sheet-view-model',
     'ytm-bottom-sheet-view-model',
     'yt-bottom-sheet-view-model',
-    'ytm-menu-popup-renderer',
     'bottom-sheet-container',
     'ytd-menu-popup-renderer',
     'tp-yt-iron-dropdown'
   ];
   var MENU_ITEM_SELECTOR =
-    'ytm-menu-service-item-renderer, ytd-menu-service-item-renderer, ' +
+    'ytm-menu-navigation-item-renderer, ytm-menu-service-item-renderer, ytd-menu-service-item-renderer, ' +
     'tp-yt-paper-item, yt-list-item-view-model, ytm-list-item-view-model, ' +
     'yt-sheet-view-model yt-list-item-view-model, [role="menuitem"]';
 
@@ -1912,9 +2150,9 @@
         if (!item || !item.parentNode) continue;
 
         var info = currentMenuInfo();
-        if (!info || (!info.channelHandle && !info.channelId)) continue;
+        if (!info || (!info.channelHandle && !info.channelId && !info.videoId)) continue;
         var blocked = false;
-        if (info && info.channelHandle) {
+        if (info && (info.channelHandle || info.channelId)) {
           var state = call(bridge.channelState, {
             channelHandle: info.channelHandle,
             channelId: info.channelId
@@ -1925,32 +2163,51 @@
           ? 'Unblock channel with ClearView'
           : 'Block channel with ClearView';
 
-        var clone = item.cloneNode(true);
-        clone.removeAttribute('id');
-        var ids = clone.querySelectorAll('[id]');
-        for (var d = 0; d < ids.length; d++) ids[d].removeAttribute('id');
+        // Plain button avoids cloning YouTube custom-element lifecycle handlers.
+        var clone = document.createElement('button');
+        clone.type = 'button';
+        clone.style.cssText = 'display:block;width:100%;padding:14px 20px;border:0;' +
+          'background:transparent;color:inherit;text-align:start;font:inherit;cursor:pointer;';
         clone.setAttribute('data-cv-menu-item', '1');
         clone.setAttribute('role', 'menuitem');
         setMenuLabel(clone, label);
-        clone.addEventListener('click', function (event) {
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          toggleBlockFromMenu();
-        }, true);
+        (function (targetInfo, row) {
+          row.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (row.disabled) return;
+            row.disabled = true;
+            Promise.resolve(toggleBlockFromMenu(targetInfo)).finally(function () { row.disabled = false; });
+          }, true);
+        })(Object.assign({}, info, { action: blocked ? 'unblock' : 'block' }), clone);
         item.parentNode.insertBefore(clone, item);
       }
     }
   }
 
-  function toggleBlockFromMenu() {
-    var info = currentMenuInfo();
-    if (!info || (!info.channelHandle && !info.channelId)) {
+  var channelActionPending = false;
+  async function toggleBlockFromMenu(targetInfo) {
+    if (channelActionPending) return;
+    channelActionPending = true;
+    try { await performChannelAction(targetInfo); }
+    finally { channelActionPending = false; }
+  }
+
+  async function performChannelAction(targetInfo) {
+    var info = targetInfo || currentMenuInfo();
+    if (!info || (!info.channelHandle && !info.channelId && !info.videoId)) {
       showPageNotice('ClearView could not identify this channel');
       return;
     }
     if (!info.channelHandle) {
-      showPageNotice('ClearView could not identify this channel');
-      return;
+      var atUrl = location.href;
+      showPageNotice('Identifying channel…');
+      info = await resolveMenuChannel(info);
+      if (location.href !== atUrl) return;
+      if (!info || !info.channelHandle) {
+        showPageNotice('ClearView could not identify this channel. Open its channel page and try again.');
+        return;
+      }
     }
 
     var payload = {
@@ -1960,9 +2217,13 @@
     };
     var state = call(bridge.channelState, payload);
     var wasBlocked = !!(state && state.blocked);
-
-    if (wasBlocked && !info.channelHandle) {
-      showPageNotice('This channel is blocked by a rule you cannot remove here');
+    if (info.action === 'block' && wasBlocked) {
+      showPageNotice('This channel is already blocked by ClearView');
+      rejudgeCards();
+      return;
+    }
+    if (info.action === 'unblock' && !wasBlocked) {
+      showPageNotice('This channel is already unblocked');
       return;
     }
 
@@ -1984,16 +2245,9 @@
       return;
     }
     showPageNotice('Channel blocked by ClearView');
-    if (info.card) removeCard(info.card);
     resetMenuIdentity();
-    clearContentBlock();
-    lastVideoKey = '';
-    var cards = allCards();
-    for (var i = 0; i < cards.length; i++) delete cards[i].__cvKey;
-    setTimeout(function () {
-      evaluateVideo();
-      scanCards();
-    }, 150);
+    rejudgeCards();
+    if (info.card) removeCard(info.card);
   }
 
   function bindMenuActions() {
@@ -2007,8 +2261,7 @@
       // "Block channel with ClearView" item is the only thing that blocks.
       // YouTube paints the popup after the click handler returns; injecting on
       // the next frame catches that first paint. The observer covers the rest.
-      setTimeout(injectMenuAction, 60);
-      setTimeout(injectMenuAction, 300);
+      schedule('menu', injectMenuAction);
     }, true);
   }
 
@@ -2066,6 +2319,7 @@
       hideShorts();
       hideAds();
       hideAppPromos();
+      ensureWatchAction();
       bindYouTubeSearch();
       scanCards();
     } else if (hostIsGoogle()) {
@@ -2089,6 +2343,12 @@
     // wanted, and an overlay over a redirect-in-progress is how a blank white
     // page happens.
     if (hostIsInstagram() && instagramAuthPage()) {
+      navBlocked = false;
+      contentBlocked = false;
+      blockedVideoUrl = '';
+      lastBlockedKey = '';
+      restoreHidden();
+      clearContentBlock();
       uncoverAllPosts();
       clearVideoCover();
       return;
@@ -2101,6 +2361,7 @@
       clearVideoCover();
     }
     refreshPolicy();
+    if (hostIsYouTube() && policy.hideShorts && isShortsPage()) { leaveShorts(); return; }
     // A vertical feed paints the cover per item. Clear the old item's cover as
     // soon as the URL changes so a blocked Short cannot leave its black panel
     // over the next, allowed one; evaluateVideo/scanInstagram re-cover if the
@@ -2122,15 +2383,19 @@
     lastVideoKey = '';
     lastReelKey = '';
     // A menu on the page we just left cannot describe the next page's card.
-    lastMenuCard = null;
-    lastMenuVideo = null;
-    lastMenuAt = 0;
+    resetMenuIdentity();
+    var existingCards = allCards();
+    for (var c = 0; c < existingCards.length; c++) {
+      delete existingCards[c].__cvKey;
+      delete existingCards[c].__cvAllowedKey;
+    }
 
     var verdict = {};
     try { verdict = parse(bridge.onNavigated(token, location.href)); } catch (e) { /* ignore */ }
 
     if (verdict && verdict.blocked) {
-      if (verdict.type === 'SHORTS' || verdict.type === 'REELS') {
+      if (verdict.type === 'SHORTS') { leaveShorts(); return; }
+      if (verdict.type === 'REELS') {
         // A vertical feed: cover the item instead of leaving it. The reader
         // can keep swiping up/down; each new item is judged on its own.
         contentBlocked = true;
@@ -2162,6 +2427,7 @@
     bindGoogleSearch();
     bindReelsGuard();
     applySurface();
+    evaluateVideo();
     chaseAds();
 
     if (hostIsYouTube()) {
@@ -2220,6 +2486,8 @@
   window.__clearviewRefresh = function () {
     restoreHidden();
     refreshPolicy();
+    var shortNodes = document.querySelectorAll('[data-cv-short]');
+    for (var n = 0; n < shortNodes.length; n++) shortNodes[n].removeAttribute('data-cv-short');
     var cards = allCards();
     for (var i = 0; i < cards.length; i++) {
       delete cards[i].__cvKey;
@@ -2243,6 +2511,12 @@
     chaseAds();
   };
 
+  var scheduledFrames = {};
+  function schedule(name, fn) {
+    if (scheduledFrames[name]) return;
+    scheduledFrames[name] = requestAnimationFrame(function () { delete scheduledFrames[name]; fn(); });
+  }
+
   // ── Init ────────────────────────────────────────────────────────
   function init() {
     ensureYouTubeSizing();
@@ -2256,19 +2530,28 @@
     onNavigate();
     setInterval(chaseAds, 1000);
     try {
-      var observer = new MutationObserver(function () {
-        debounce('surface', applySurface, 400);
-        debounce('cards', scanCards, 600);
-        debounce('ads', chaseAds, 300);
-        debounce('promos', hideAppPromos, 500);
-        debounce('insta', scanInstagram, 500);
+      var observer = new MutationObserver(function (records) {
+        var relevant = records.some(function (record) {
+          var node = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          return !node || !node.closest('[id^="clearview-"], [class^="clearview-"], [data-cv-menu-item]');
+        });
+        if (!relevant) return;
+        var contentChanged = records.some(function (record) {
+          return record.type !== 'attributes' || record.attributeName !== 'class';
+        });
+        if (contentChanged) {
+          schedule('surface', applySurface);
+          schedule('video', evaluateVideo);
+        }
+        if (hostIsYouTube()) schedule('ads', chaseAds);
         // The menu scan only runs inside the short window after a three-dot
         // click; a page-wide menu lookup on every mutation was pure overhead.
         if (Date.now() - menuOpenedAt < 4000) {
-          debounce('menu', injectMenuAction, 250);
+          schedule('menu', injectMenuAction);
         }
       });
-      observer.observe(document.documentElement, { childList: true, subtree: true });
+      observer.observe(document.documentElement, { childList: true, subtree: true,
+        attributes: true, attributeFilter: ['href', 'src', 'aria-label', 'class'], characterData: true });
     } catch (e) { /* unsupported: static scan still ran */ }
   }
 

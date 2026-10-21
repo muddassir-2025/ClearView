@@ -117,6 +117,11 @@ class BrowserRules(
             isYouTubeSurface(url) || isGoogleSurface(url) || isInstagramSurface(url)
     }
 
+    // Identity aliases only: all block decisions still use the shared lists.
+    private val identityPrefs = context.applicationContext.getSharedPreferences(
+        "clearview_browser_channel_identity", Context.MODE_PRIVATE
+    )
+
     private val repository = BlockRepository(context.applicationContext)
     private val matcher = KeywordMatcher(repository)
     private val blockAction = BlockAction(context.applicationContext)
@@ -319,7 +324,7 @@ class BrowserRules(
      * the app's identity model is a handle, and inventing one from a name is
      * how a block silently matches nothing.
      */
-    fun blockChannel(handle: String?, name: String?): Boolean {
+    fun blockChannel(handle: String?, name: String?, channelId: String? = null): Boolean {
         val normalized = BrainRotRepository.normalizeHandle(handle) ?: return false
         val added = blockAction.blockChannel(
             handle = normalized,
@@ -329,7 +334,12 @@ class BrowserRules(
             notificationMessage = "Blocked $normalized from the YouTube browser menu.",
             notificationId = "browser-ni:$normalized"
         )
-        if (added) cachedChannels = null
+        if (added) {
+            if (channelId != null && Regex("UC[\\w-]{10,}").matches(channelId)) {
+                identityPrefs.edit().putString(channelId, normalized).apply()
+            }
+            cachedChannels = null
+        }
         return added
     }
 
@@ -393,6 +403,11 @@ class BrowserRules(
             BrainRotRepository.normalizeHandle(channel.handle)?.let(handles::add)
         }
         val ids = LinkedHashSet<String>()
+        for ((id, value) in identityPrefs.all) {
+            if (value is String && (value in handles || BrainRotRepository.isGlobalChannelBlocked(value))) {
+                ids.add(id)
+            }
+        }
         for (channel in channels.blockedChannels) {
             BrainRotRepository.normalizeHandle(channel.channelHandle)?.let(handles::add)
             channel.channelId?.takeIf { it.isNotBlank() }?.let(ids::add)

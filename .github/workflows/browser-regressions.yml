@@ -1,0 +1,28 @@
+name: Browser regressions
+on:
+  pull_request:
+    paths:
+      - 'app/src/main/assets/browser/**'
+      - 'app/src/main/java/com/muddassir/clearview/browser/**'
+      - 'scripts/browser-tests/**'
+      - '.github/workflows/browser-regressions.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  chromium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: scripts/browser-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: scripts/browser-tests/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm test

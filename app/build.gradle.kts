@@ -227,6 +227,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
+    implementation("androidx.webkit:webkit:1.17.1")
+    implementation("androidx.browser:browser:1.9.0")
     // Pin androidx.fragment to a current version (transitively present); see the
     // catalog comment. Play flags an outdated fragment as a technical-quality
     // issue, and an explicit declaration is how a transitive version is raised.
