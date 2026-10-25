@@ -2248,12 +2248,20 @@ private fun ShortCard(
     // by an older build that misclassified it as a bounded video.
     val watched = !video.isLive && (fraction ?: 0f) >= 0.9f
     val live = video.isLive
+    val cardInteraction = rememberCvInteraction()
     Card(
         onClick = onClick,
-        modifier = Modifier.width(136.dp),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.width(136.dp).cvPressScale(cardInteraction),
+        interactionSource = cardInteraction,
+        shape = RoundedCornerShape(CvTokens.Radius.md),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                .copy(alpha = CvTokens.Alpha.card)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        border = BorderStroke(
+            0.8.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = CvTokens.Alpha.hairline)
         )
     ) {
         Box(
@@ -2658,12 +2666,24 @@ private fun LongVideoCard(
     val watched = !video.isLive && (fraction ?: 0f) >= 0.9f
     val live = video.isLive
 
+    // The app's card language rather than a one-off fill: the shared radius, a
+    // translucent raised container, a hairline edge and the press response. The
+    // feed is the screen the reader spends the most time scrolling, so this is
+    // where "every card belongs to one family" matters most.
+    val cardInteraction = rememberCvInteraction()
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp),
+        modifier = Modifier.fillMaxWidth().cvPressScale(cardInteraction),
+        interactionSource = cardInteraction,
+        shape = RoundedCornerShape(CvTokens.Radius.lg),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                .copy(alpha = CvTokens.Alpha.card)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        border = BorderStroke(
+            0.8.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = CvTokens.Alpha.hairline)
         )
     ) {
         Row {
