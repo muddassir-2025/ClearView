@@ -63,6 +63,8 @@ import com.muddassir.clearview.ui.MoreTab
 import com.muddassir.clearview.ui.ThemePickerDialog
 import com.muddassir.clearview.ui.ContentHubTabContent
 import com.muddassir.clearview.ui.ContentHubTopBar
+import com.muddassir.clearview.ui.CvFooterBar
+import com.muddassir.clearview.ui.CvFooterDestination
 import com.muddassir.clearview.ui.ContentTab
 import com.muddassir.clearview.ui.ApplyImmersiveIfNeeded
 import com.muddassir.clearview.ui.contentHubNavItems
@@ -570,6 +572,16 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         } else {
             Color.Transparent
         },
+        // A transparent container has NO derivable content colour:
+        // `contentColorFor(Transparent)` is Unspecified, and an unspecified
+        // LocalContentColor falls back to black — which painted every inheriting
+        // icon and label black, i.e. invisible on the dark scheme. The content
+        // colour is therefore stated explicitly for both branches.
+        contentColor = if (selectedTab == MainTab.GOODPOST) {
+            Wa.Text
+        } else {
+            MaterialTheme.colorScheme.onBackground
+        },
         topBar = {
             // The Browser tab draws its own compact toolbar; the app-wide
             // "Browser" title bar would only steal height from the page.
@@ -655,9 +667,15 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                             }
                         },
                         // Transparent, so the page's backdrop runs behind the
-                        // title instead of stopping at a coloured band.
+                        // title instead of stopping at a coloured band. The
+                        // content colours are explicit for the same reason the
+                        // Scaffold's are: a transparent container derives none,
+                        // and the fallback is black.
                         colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent
+                            containerColor = Color.Transparent,
+                            titleContentColor = MaterialTheme.colorScheme.onSurface,
+                            actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     )
                 } else if (selectedTab == MainTab.GOODPOST) {
@@ -679,105 +697,76 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 hub.playingVideoAudio == null && !isFullscreen &&
                 (selectedTab != MainTab.BROWSER || browserSession.footerVisible)
             ) {
-                // Glass, not a slab: a translucent tint of the theme's own
-                // surface, so the page colour reads through the bar instead of
-                // the bar sitting on top of it as a black (or grey) band. The
-                // colour is taken from the theme rather than hard-coded black so
-                // it keeps working in both light and dark, and the items get
-                // explicit colours because NavigationBarItemDefaults follows the
-                // theme's on-surface roles, not this container tint.
-                //
-                // The bar also FLOATS now: inset from the screen edges, rounded
-                // and lifted, so it reads as a control over the page rather than
-                // as the page's last band. The slot keeps the inset in its own
-                // height, so content still ends above the bar (nothing is
-                // hidden behind it) and the insets below keep the gesture area
-                // clear.
-                val footerItemColors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.primary,
-                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                NavigationBar(
-                    modifier = Modifier
-                        .padding(horizontal = CvTokens.Space.md)
-                        .padding(bottom = CvTokens.Space.sm)
-                        .cvGlassSurface(
-                            shape = RoundedCornerShape(CvTokens.Radius.bar),
-                            alpha = CvTokens.Alpha.bar,
-                            elevation = 14.dp
-                        ),
-                    containerColor = Color.Transparent,
-                    contentColor = MaterialTheme.colorScheme.onSurface,
-                    tonalElevation = 0.dp
-                ) {
+                // One floating glass card holding every destination, each item
+                // centred in its slot (see [CvFooterBar] for why the Material
+                // bar could not be made to look like this). The destinations are
+                // built here, from the same sources the old bar read, so the tab
+                // identity, badges and click behaviour are unchanged.
+                val destinations = buildList {
                     contentHubNavItems().forEach { item ->
-                        NavigationBarItem(
-                            colors = footerItemColors,
-                            selected = selectedTab == tabFor(item.tab),
-                            onClick = {
-                                // selectTab (not a bare assignment) so the
-                                // Haramayn overlay is dismissed when the user
-                                // moves to another section — including tapping
-                                // the tab they are already on.
-                                hub.selectTab(item.tab)
-                                selectedTab = tabFor(item.tab)
-                            },
-                            icon = {
-                                // Channel-update badge: shows the number of
-                                // unseen updates; clears once Media is opened.
-                                if (item.tab == ContentTab.MEDIA && hub.unreadMediaUpdates > 0) {
-                                    BadgedBox(
-                                        badge = {
-                                            Badge {
-                                                Text(hub.unreadMediaUpdates.coerceAtMost(99).toString())
-                                            }
-                                        }
-                                    ) {
-                                        item.icon()
-                                    }
+                        add(
+                            CvFooterDestination(
+                                label = item.label,
+                                icon = item.icon,
+                                selectedIcon = item.selectedIcon,
+                                selected = selectedTab == tabFor(item.tab),
+                                // Channel-update badge: the number of unseen
+                                // updates, cleared once Media is opened.
+                                badge = if (item.tab == ContentTab.MEDIA) {
+                                    hub.unreadMediaUpdates
                                 } else {
-                                    item.icon()
+                                    0
+                                },
+                                onClick = {
+                                    // selectTab (not a bare assignment) so the
+                                    // Haramayn overlay is dismissed when the user
+                                    // moves to another section — including tapping
+                                    // the tab they are already on.
+                                    hub.selectTab(item.tab)
+                                    selectedTab = tabFor(item.tab)
                                 }
-                            },
-                            label = { Text(item.label) }
+                            )
                         )
                     }
-                    NavigationBarItem(
-                        colors = footerItemColors,
-                        selected = selectedTab == MainTab.GOODPOST,
-                        onClick = {
-                            selectedTab = MainTab.GOODPOST
-                            // Like the Block tab, Good Post replaces the hub
-                            // content entirely — a stale Haramayn or directory
-                            // overlay must not reappear on the next content tab.
-                            hub.showHaramaynLive = false
-                            hub.showChannelDirectory = false
-                        },
-                        icon = { Icon(Icons.Filled.Campaign, contentDescription = null) },
-                        label = { Text(stringResource(R.string.goodpost_tab)) }
+                    add(
+                        CvFooterDestination(
+                            label = stringResource(R.string.goodpost_tab),
+                            icon = Icons.Outlined.Campaign,
+                            selectedIcon = Icons.Filled.Campaign,
+                            selected = selectedTab == MainTab.GOODPOST,
+                            onClick = {
+                                selectedTab = MainTab.GOODPOST
+                                // Like the Block tab, Good Post replaces the hub
+                                // content entirely — a stale Haramayn or directory
+                                // overlay must not reappear on the next content
+                                // tab.
+                                hub.showHaramaynLive = false
+                                hub.showChannelDirectory = false
+                            }
+                        )
                     )
-                    NavigationBarItem(
-                        colors = footerItemColors,
-                        selected = selectedTab == MainTab.MORE,
-                        onClick = {
-                            selectedTab = MainTab.MORE
-                            // Tapping the tab you are already on returns to its
-                            // list — the usual way back out of a page that a
-                            // bottom bar opened.
-                            moreProtection = false
-                            // The More tab replaces the hub content entirely —
-                            // a stale Haramayn or directory overlay must not
-                            // reappear when the user comes back to a content tab.
-                            hub.showHaramaynLive = false
-                            hub.showChannelDirectory = false
-                        },
-                        icon = { Icon(Icons.Filled.MoreHoriz, contentDescription = null) },
-                        label = { Text(stringResource(R.string.more_tab)) }
+                    add(
+                        CvFooterDestination(
+                            label = stringResource(R.string.more_tab),
+                            icon = Icons.Filled.MoreHoriz,
+                            selected = selectedTab == MainTab.MORE,
+                            onClick = {
+                                selectedTab = MainTab.MORE
+                                // Tapping the tab you are already on returns to
+                                // its list — the usual way back out of a page
+                                // that a bottom bar opened.
+                                moreProtection = false
+                                // The More tab replaces the hub content entirely
+                                // — a stale Haramayn or directory overlay must not
+                                // reappear when the user comes back to a content
+                                // tab.
+                                hub.showHaramaynLive = false
+                                hub.showChannelDirectory = false
+                            }
+                        )
                     )
                 }
+                CvFooterBar(destinations = destinations)
             }
         }
     ) { padding ->

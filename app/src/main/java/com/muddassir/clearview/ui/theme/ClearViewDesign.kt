@@ -101,9 +101,9 @@ object CvTokens {
      * and has to stay legible while things move beneath it.
      */
     object Alpha {
-        const val bar = 0.74f
-        const val barStrong = 0.88f
-        const val card = 0.66f
+        const val bar = 0.86f
+        const val barStrong = 0.94f
+        const val card = 0.72f
         const val hairline = 0.30f
     }
 }
@@ -118,10 +118,15 @@ object CvTokens {
 @Composable
 fun cvPageBrush(): Brush {
     val scheme = MaterialTheme.colorScheme
-    val accent = lerp(scheme.background, scheme.primaryContainer, 0.14f)
+    // One accent wash, wide enough to see and narrow enough not to tint the
+    // reading text: a 22% mix of the scheme's own primary container, brightest
+    // a third of the way down (under the top bar, where a page's eye lands
+    // first) and gone by the bottom of a long scroll.
+    val wash = lerp(scheme.background, scheme.primaryContainer, 0.22f)
+    val deep = lerp(scheme.background, scheme.surfaceContainerLow, 0.55f)
     return Brush.verticalGradient(
-        0f to scheme.background,
-        0.42f to accent,
+        0f to wash,
+        0.34f to deep,
         1f to scheme.background
     )
 }
@@ -139,17 +144,21 @@ fun CvBackdrop(
  * A translucent, hairline-edged surface: the glass look used by the navigation
  * bar, floating controls and selected rows.
  *
- * The border is what does most of the work — a 0.8dp light line catches the eye
- * the way a highlight does on the reference app, and it keeps the surface's edge
- * visible over a page whose colour it shares.
+ * Two details are what make it read as glass rather than as a faint rectangle,
+ * and both matter most in the dark scheme, where the page is nearly black:
+ *
+ *  - the fill is the scheme's RAISED container, not its `surface` (a surface
+ *    tinted at 74% over a page of the same colour is invisible), and
+ *  - the border is slightly brighter than the surface, so the edge catches the
+ *    light the way a highlight does on the reference app.
  */
 @Composable
 fun Modifier.cvGlassSurface(
     shape: Shape = RoundedCornerShape(CvTokens.Radius.lg),
-    tint: Color = MaterialTheme.colorScheme.surface,
+    tint: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     alpha: Float = CvTokens.Alpha.bar,
     elevation: Dp = 10.dp,
-    borderAlpha: Float = CvTokens.Alpha.hairline
+    borderAlpha: Float = 0.55f
 ): Modifier = this
     .shadow(
         elevation = elevation,
@@ -164,6 +173,15 @@ fun Modifier.cvGlassSurface(
         BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = borderAlpha)),
         shape
     )
+    // A one-stop highlight down the top edge, the way light catches a real pane
+    // of glass. Drawn as a gradient that fades within the first few pixels, so
+    // it reads as a sheen rather than as a second border.
+    .background(
+        Brush.verticalGradient(
+            0f to MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f),
+            0.18f to Color.Transparent
+        )
+    )
 
 /**
  * A card: the same translucent fill as the glass, at card weight.
@@ -174,7 +192,7 @@ fun Modifier.cvGlassSurface(
 @Composable
 fun Modifier.cvCardSurface(
     shape: Shape = RoundedCornerShape(CvTokens.Radius.lg),
-    container: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    container: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     alpha: Float = CvTokens.Alpha.card,
     elevation: Dp = 1.dp
 ): Modifier = this
@@ -228,7 +246,7 @@ fun Modifier.cvPressScale(
 @Composable
 fun CvCard(
     modifier: Modifier = Modifier,
-    container: Color = MaterialTheme.colorScheme.surfaceContainerLow,
+    container: Color = MaterialTheme.colorScheme.surfaceContainerHigh,
     shape: Shape = RoundedCornerShape(CvTokens.Radius.lg),
     onClick: (() -> Unit)? = null,
     contentPadding: Dp = CvTokens.Space.lg,

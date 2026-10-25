@@ -58,6 +58,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -335,11 +336,12 @@ private fun builtInShortcutLabel(name: String): String = when (name) {
  */
 @Composable
 private fun rememberShortcutLogo(url: String): ImageBitmap? {
+    val context = LocalContext.current.applicationContext
     val host = remember(url) { BrowserAddress.host(url)?.removePrefix("www.") }
-    var logo by remember(host) { mutableStateOf(ShortcutLogos.remembered(host)) }
+    var logo by remember(host) { mutableStateOf(ShortcutLogos.remembered(context, host)) }
     LaunchedEffect(host) {
-        if (host.isNullOrBlank() || ShortcutLogos.isCached(host)) return@LaunchedEffect
-        logo = ShortcutLogos.load(host)
+        if (host.isNullOrBlank() || ShortcutLogos.isCached(context, host)) return@LaunchedEffect
+        logo = ShortcutLogos.load(context, host)
     }
     return logo
 }
@@ -553,25 +555,127 @@ private object ShortcutLogos {
     private const val MAX_IMAGE_BYTES = 512 * 1024
     private const val MAX_PAGE_CHARS = 256 * 1024
 
+    /**
+     * How long a downloaded logo is trusted before it is fetched again.
+     *
+     * Sites change their mark rarely; a month is long enough that the tiles open
+     * instantly every time, and short enough that a rebrand eventually lands.
+     */
+    private const val LOGO_TTL_MS = 30L * 24 * 60 * 60 * 1000
+
+    /**
+     * How long the "this site has no icon" answer is trusted.
+     *
+     * Shorter than a hit: a site that had no icon when it was added is exactly
+     * the one likely to gain one, and the miss costs one request, not a broken
+     * tile.
+     */
+    private const val MISS_TTL_MS = 7L * 24 * 60 * 60 * 1000
+
+    /** Decoded logos for this process — the first (instant) tier. */
     private val memory = HashMap<String, ImageBitmap?>()
 
-    fun remembered(host: String?): ImageBitmap? =
-        if (host.isNullOrBlank()) null else memory[host]
+    /**
+     * The logo for [host] if this process already has it.
+     *
+     * Reads the in-memory tier only: it runs during composition, so it must not
+     * touch the disk. A missing in-memory entry is what sends the caller to
+     * [load], which reads the on-disk tier before the network.
+     */
+    fun remembered(context: android.content.Context, host: String?): ImageBitmap? {
+        if (host.isNullOrBlank()) return null
+        return memory[host] ?: readFromDisk(context, host)?.also { memory[host] = it }
+    }
 
-    /** True once a load has finished, including the "site has no icon" case. */
-    fun isCached(host: String): Boolean = memory.containsKey(host)
+    /**
+     * True once an answer exists — in memory, or on disk and still fresh.
+     *
+     * This is what stops the start page from re-downloading a logo on every
+     * visit: the disk cache survives the tab being recreated and the app being
+     * killed, which the memory map alone did not.
+     */
+    fun isCached(context: android.content.Context, host: String): Boolean {
+        if (memory.containsKey(host)) return true
+        return readFromDisk(context, host) != null || isFreshMiss(context, host)
+    }
 
-    suspend fun load(host: String): ImageBitmap? = withContext(Dispatchers.IO) {
-        if (memory.containsKey(host)) return@withContext memory[host]
-        val page = fetchText("https://$host/")
-        var ready: ImageBitmap? = null
-        for (icon in ShortcutIconLinks.candidates(page, host)) {
-            val bitmap = fetchImage(icon) ?: continue
-            ready = bitmap.asImageBitmap()
-            break
+    suspend fun load(context: android.content.Context, host: String): ImageBitmap? =
+        withContext(Dispatchers.IO) {
+            if (memory.containsKey(host)) return@withContext memory[host]
+            // Disk before network: a logo fetched on an earlier visit is already
+            // on this device, so the tile paints with no request at all.
+            readFromDisk(context, host)?.let { cached ->
+                memory[host] = cached
+                return@withContext cached
+            }
+            if (isFreshMiss(context, host)) {
+                memory[host] = null
+                return@withContext null
+            }
+            val page = fetchText("https://$host/")
+            var ready: ImageBitmap? = null
+            var bytes: ByteArray? = null
+            for (icon in ShortcutIconLinks.candidates(page, host)) {
+                val raw = fetchImageBytes(icon) ?: continue
+                val bitmap = runCatching {
+                    android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                }.getOrNull() ?: continue
+                ready = bitmap.asImageBitmap()
+                bytes = raw
+                break
+            }
+            memory[host] = ready
+            writeToDisk(context, host, bytes)
+            ready
         }
-        memory[host] = ready
-        ready
+
+    // ── The on-disk tier ──────────────────────────────────────────────
+
+    private fun directory(context: android.content.Context): java.io.File =
+        java.io.File(context.cacheDir, "shortcut-logos").apply { mkdirs() }
+
+    /** A host is not a filename: `example.com` is fine, a port or `..` is not. */
+    private fun keyFor(host: String): String =
+        host.lowercase().replace(Regex("[^a-z0-9._-]"), "_")
+
+    private fun logoFile(context: android.content.Context, host: String): java.io.File =
+        java.io.File(directory(context), keyFor(host) + ".png")
+
+    private fun missFile(context: android.content.Context, host: String): java.io.File =
+        java.io.File(directory(context), keyFor(host) + ".none")
+
+    private fun isFresh(file: java.io.File, ttlMs: Long): Boolean =
+        file.isFile && System.currentTimeMillis() - file.lastModified() < ttlMs
+
+    private fun isFreshMiss(context: android.content.Context, host: String): Boolean =
+        isFresh(missFile(context, host), MISS_TTL_MS)
+
+    private fun readFromDisk(context: android.content.Context, host: String): ImageBitmap? {
+        val file = logoFile(context, host)
+        if (!isFresh(file, LOGO_TTL_MS)) return null
+        return runCatching {
+            android.graphics.BitmapFactory.decodeFile(file.absolutePath)?.asImageBitmap()
+        }.getOrNull()
+    }
+
+    /**
+     * Stores the answer for [host]: the image, or an empty marker that says
+     * "this site has no icon", so the next visit does not ask again.
+     */
+    private fun writeToDisk(
+        context: android.content.Context,
+        host: String,
+        png: ByteArray?
+    ) {
+        runCatching {
+            if (png == null) {
+                missFile(context, host).writeText("")
+                logoFile(context, host).delete()
+            } else {
+                logoFile(context, host).writeBytes(png)
+                missFile(context, host).delete()
+            }
+        }
     }
 
     private fun fetchText(address: String): String? {
@@ -611,7 +715,14 @@ private object ShortcutLogos {
             setRequestProperty("Accept", accept)
         }
 
-    private fun fetchImage(address: String): Bitmap? {
+    /**
+     * The icon's own bytes, not a decoded bitmap.
+     *
+     * The bytes are what the disk cache stores, so the next visit decodes from a
+     * local file instead of asking the site again — decoding twice is cheap,
+     * re-downloading on every open was the problem.
+     */
+    private fun fetchImageBytes(address: String): ByteArray? {
         var connection: HttpURLConnection? = null
         return try {
             connection = open(address, "image/*")
@@ -626,8 +737,7 @@ private object ShortcutLogos {
                 }
                 buffer.toByteArray()
             }
-            if (bytes.isEmpty()) return null
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            bytes.takeIf { it.isNotEmpty() }
         } catch (_: Exception) {
             // A shortcut with no icon is normal, not an error worth surfacing.
             null

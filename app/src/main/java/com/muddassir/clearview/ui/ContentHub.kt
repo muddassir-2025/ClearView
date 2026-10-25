@@ -11,6 +11,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoStories
+import androidx.compose.material.icons.outlined.AutoStories
+import androidx.compose.material.icons.outlined.Public
+import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Headphones
@@ -33,6 +36,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -1367,9 +1371,16 @@ fun ContentHubTopBar(
     // Every bar in this hub is transparent, so the shell's page backdrop runs
     // behind the title instead of stopping at a coloured band. The bars still
     // scroll-mute to a translucent fill, which is the platform behaviour.
+    // A transparent container has NO derivable content colour —
+    // `contentColorFor(Transparent)` is Unspecified, and an unspecified
+    // LocalContentColor falls back to BLACK, which is invisible on the dark
+    // scheme. So the title and the icon colours are stated rather than derived.
     val barColors = TopAppBarDefaults.topAppBarColors(
         containerColor = Color.Transparent,
-        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.86f)
+        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.86f),
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        actionIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        navigationIconContentColor = MaterialTheme.colorScheme.onSurfaceVariant
     )
     when {
         // While a video plays, the back arrow ALWAYS returns to the Media tab
@@ -1618,11 +1629,20 @@ fun ContentHubOverlays(state: ContentHubState) {
 val VERSE_INTERVAL_OPTIONS = listOf(1, 3, 6, 12, 24)
 private const val DEFAULT_REFRESH_INTERVAL_HOURS = 6
 
-/** Icon + label pair used by the shared bottom navigation. */
+/**
+ * Icon + label pair used by the shared footer navigation.
+ *
+ * The icon is a vector rather than a composable lambda because the footer draws
+ * its own selected/unselected treatment (tint, scale, accent pill) around the
+ * glyph; handing it a finished composable would put that styling back inside
+ * the item, which is how five tabs end up looking like five different bars.
+ */
 data class ContentHubNavItem(
     val tab: ContentTab,
-    val icon: @Composable () -> Unit,
-    val label: String
+    val icon: ImageVector,
+    val label: String,
+    /** Filled counterpart, drawn while this tab is the current one. */
+    val selectedIcon: ImageVector = icon
 )
 
 /** Standard hub navigation items (Quran, Media, Browser) with resource labels. */
@@ -1634,23 +1654,26 @@ fun contentHubNavItems(): List<ContentHubNavItem> = listOf(
         // tabs below are already a megaphone and an ellipsis, and the row reads as
         // one set of marks only if each has the same weight and the same rounded
         // Material silhouette (§1).
-        { Icon(Icons.Filled.AutoStories, contentDescription = null) },
-        stringResource(R.string.quran_tab)
+        Icons.Outlined.AutoStories,
+        stringResource(R.string.quran_tab),
+        selectedIcon = Icons.Filled.AutoStories
     ),
     ContentHubNavItem(
         ContentTab.MEDIA,
         // A rounded screen with a play triangle, rather than a bare `PlayCircle`:
         // the circle read as an action button the size of a tab, which is what a
         // play glyph means everywhere else in this app.
-        { Icon(Icons.Filled.SmartDisplay, contentDescription = null) },
-        stringResource(R.string.media_tab)
+        Icons.Outlined.SmartDisplay,
+        stringResource(R.string.media_tab),
+        selectedIcon = Icons.Filled.SmartDisplay
     ),
     ContentHubNavItem(
         ContentTab.BROWSER,
         // A globe: the one mark in the row that means "the web", not content
         // ClearView already curates.
-        { Icon(Icons.Filled.Public, contentDescription = null) },
-        stringResource(R.string.browser_tab)
+        Icons.Outlined.Public,
+        stringResource(R.string.browser_tab),
+        selectedIcon = Icons.Filled.Public
     )
 )
 

@@ -198,6 +198,7 @@ fun UrlblockerTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = ClearViewShapes,
         content = content
     )
 }

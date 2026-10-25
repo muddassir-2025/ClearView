@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -79,6 +80,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -241,9 +243,24 @@ internal fun GoodPostFeed(
     // into. It is applied to the whole feed rather than to the bar alone so the
     // post list shrinks with it and the last post stays reachable by scrolling.
     Box(modifier = Modifier.fillMaxSize().background(Wa.Canvas).imePadding()) {
-        // WhatsApp dark doodle chat wallpaper background (Screenshot 1 & Screenshot 4)
+        // The chat wallpaper: the dark doodle sheet in the dark scheme, and its
+        // inverted twin in the light one.
+        //
+        // The dark sheet is nearly black, so drawing it unchanged in the light
+        // scheme put a black rectangle behind a channel's posts and its editor —
+        // the one screen that ignored the theme. `goodpost_chat_bg_light.jpg` is
+        // that same sheet inverted (and eased off pure white so the doodles stay
+        // subtle), generated from the original rather than redrawn, so the two
+        // keep the same pattern by construction.
+        val lightScheme = MaterialTheme.colorScheme.background.luminance() >= 0.5f
         Image(
-            painter = painterResource(id = R.drawable.goodpost_chat_bg),
+            painter = painterResource(
+                id = if (lightScheme) {
+                    R.drawable.goodpost_chat_bg_light
+                } else {
+                    R.drawable.goodpost_chat_bg
+                }
+            ),
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop,

@@ -3060,11 +3060,23 @@ private fun PostView(
                 contentAlignment = Alignment.Center
             ) {
                 if (video.thumbnailUrl.isNotBlank()) {
-                    RemoteImage(
-                        url = video.thumbnailUrl,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = if (fitMedia) ContentScale.Fit else ContentScale.Crop
-                    )
+                    if (fitMedia) {
+                        // In the READER, the picture is the subject: pinch to
+                        // enlarge, drag while enlarged, double-tap to toggle.
+                        // The grid tile stays a plain crop — a zoomable tile
+                        // would fight the grid's own scrolling.
+                        ZoomableImage(
+                            url = video.thumbnailUrl,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        RemoteImage(
+                            url = video.thumbnailUrl,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    }
                 } else {
                     StillFallback(video, Modifier.fillMaxSize())
                 }

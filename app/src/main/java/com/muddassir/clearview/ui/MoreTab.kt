@@ -224,7 +224,7 @@ private fun MoreCard(
     val container = if (highlight) {
         MaterialTheme.colorScheme.primaryContainer
     } else {
-        MaterialTheme.colorScheme.surfaceContainerLow
+        MaterialTheme.colorScheme.surfaceContainerHigh
     }
     val ink = if (highlight) {
         MaterialTheme.colorScheme.onPrimaryContainer
