@@ -18,11 +18,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RemoveCircleOutline
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -161,6 +164,48 @@ fun BrowserProtectionSettings(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                     )
                     ToggleRow(
+                        icon = Icons.Outlined.Search,
+                        title = stringResource(R.string.browser_toggle_insta_search_title),
+                        summary = stringResource(R.string.browser_toggle_insta_search_summary),
+                        checked = settings.hideInstagramSearch,
+                        onCheckedChange = {
+                            settings.applyHideInstagramSearch(it)
+                            onChanged()
+                        }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 52.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    ToggleRow(
+                        icon = Icons.Outlined.Home,
+                        title = stringResource(R.string.browser_toggle_insta_home_title),
+                        summary = stringResource(R.string.browser_toggle_insta_home_summary),
+                        checked = settings.hideInstagramHome,
+                        onCheckedChange = {
+                            settings.applyHideInstagramHome(it)
+                            onChanged()
+                        }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 52.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    ToggleRow(
+                        icon = Icons.Filled.CameraAlt,
+                        title = stringResource(R.string.browser_toggle_insta_suggested_title),
+                        summary = stringResource(R.string.browser_toggle_insta_suggested_summary),
+                        checked = settings.hideInstagramSuggestions,
+                        onCheckedChange = {
+                            settings.applyHideInstagramSuggestions(it)
+                            onChanged()
+                        }
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(start = 52.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                    )
+                    ToggleRow(
                         icon = Icons.Filled.Search,
                         title = stringResource(R.string.browser_toggle_google_tabs_title),
                         summary = stringResource(R.string.browser_toggle_google_tabs_summary),
@@ -196,6 +241,21 @@ fun BrowserProtectionSettings(
                         checked = settings.blockYouTubeAds,
                         onCheckedChange = {
                             settings.applyBlockYouTubeAds(it)
+                            onChanged()
+                        }
+                    )
+                }
+            }
+
+            item {
+                SettingsSection(title = stringResource(R.string.browser_settings_reading)) {
+                    ToggleRow(
+                        icon = Icons.Filled.DarkMode,
+                        title = stringResource(R.string.browser_toggle_dark_pages_title),
+                        summary = stringResource(R.string.browser_toggle_dark_pages_summary),
+                        checked = settings.darkPages,
+                        onCheckedChange = {
+                            settings.applyDarkPages(it)
                             onChanged()
                         }
                     )

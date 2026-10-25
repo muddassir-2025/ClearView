@@ -119,8 +119,11 @@ class AudioPlaybackService : Service() {
         const val MIN_SPEED = 0.5f
         const val MAX_SPEED = 2f
 
-        /** Starts background playback of the downloaded audio [item]. */
-        fun play(context: Context, item: DownloadItem) {
+        /**
+         * Starts background playback of the downloaded audio [item], from
+         * [startAtMs] (a handover from the video player keeps its position).
+         */
+        fun play(context: Context, item: DownloadItem, startAtMs: Long = 0L) {
             val file = AudioDownloads.audioFile(context, item)
             if (!file.exists()) return
             start(
@@ -129,7 +132,8 @@ class AudioPlaybackService : Service() {
                     videoId = item.videoId,
                     title = item.title,
                     channel = item.channelName.ifBlank { "YouTube" },
-                    filePath = file.absolutePath
+                    filePath = file.absolutePath,
+                    startAtMs = startAtMs.coerceAtLeast(0L)
                 )
             )
         }
@@ -378,6 +382,14 @@ class AudioPlaybackService : Service() {
         retriedForUrl = false
         lastPositionMs = 0L
         clearSleepTimerState()
+        // And the previous track's CLOCK does not belong to it either. Until the
+        // new player reports its own duration, every screen (and the media
+        // notification) would otherwise draw the old video's timeline under the
+        // new title — with isPlaying still true, so the transport looked frozen
+        // on a track that was audibly already playing.
+        AudioPlayback.positionMs.longValue = 0L
+        AudioPlayback.durationMs.longValue = 0L
+        AudioPlayback.isPlaying.value = false
 
         openSource(
             source = source,

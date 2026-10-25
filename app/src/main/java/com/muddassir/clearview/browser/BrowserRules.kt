@@ -14,6 +14,7 @@ import com.muddassir.clearview.matching.MatchResult
 import com.muddassir.clearview.repository.BlockRepository
 import com.muddassir.clearview.youtubetest.YoutubeTestKeywordRepository
 import org.json.JSONObject
+import java.util.Locale
 
 /**
  * A block decision for the Browser tab.
@@ -44,7 +45,10 @@ data class BrowserBlock(
         REELS,
 
         /** A blocked search query (Google or YouTube). */
-        SEARCH
+        SEARCH,
+
+        /** A tab the reader has hidden (Instagram Explore/Search, Home). */
+        SURFACE
     }
 
     /** One-line reason shown under the overlay heading. */
@@ -54,6 +58,7 @@ data class BrowserBlock(
         Type.SHORTS -> "YouTube Shorts are blocked"
         Type.REELS -> "Instagram Reels are blocked"
         Type.SEARCH -> "This search is blocked"
+        Type.SURFACE -> "This tab is hidden by ClearView"
         Type.KEYWORD -> "This content contains blocked keywords"
     }
 
@@ -102,6 +107,35 @@ class BrowserRules(
          */
         private const val WEB_SURFACE = "com.android.chrome"
 
+        /**
+         * The part of a handle a channel's DISPLAY NAME usually equals.
+         *
+         * YouTube derives a handle from the channel name with a trailing
+         * number when the plain one is taken: channel "Beluga" gets
+         * `@Beluga1`. A mobile feed card frequently renders only that display
+         * name (no `/@` link, no handle anywhere in its markup), so the reader's
+         * own block of `@Beluga1` could not recognise its own card — the watch
+         * page blocked it, the Home card did not.
+         *
+         * Only handles that actually carry trailing digits produce a stem, so
+         * a plain handle never gains a looser spelling. Returns null when there
+         * is nothing to strip or the remainder is too short to be an identity.
+         */
+        fun handleStem(handle: String?): String? {
+            val normalized = BrainRotRepository.normalizeHandle(handle) ?: return null
+            val bare = normalized.removePrefix("@")
+            val stem = bare.replace(Regex("[0-9]+$"), "").trimEnd('.', '_', '-')
+            if (stem == bare || stem.length < MIN_STEM_LENGTH) return null
+            return stem
+        }
+
+        /** Shortest handle stem trusted as a display name ("Ted" is enough). */
+        private const val MIN_STEM_LENGTH = 3
+
+        /** The page surface a browser block was made on. */
+        const val SURFACE_YOUTUBE = "youtube"
+        const val SURFACE_INSTAGRAM = "instagram"
+
         /** True when a URL belongs to a YouTube surface the page script handles. */
         fun isYouTubeSurface(url: String?): Boolean =
             ContentExtractor.isYouTubeDomain(url)
@@ -116,11 +150,6 @@ class BrowserRules(
         fun isProtectedSurface(url: String?): Boolean =
             isYouTubeSurface(url) || isGoogleSurface(url) || isInstagramSurface(url)
     }
-
-    // Identity aliases only: all block decisions still use the shared lists.
-    private val identityPrefs = context.applicationContext.getSharedPreferences(
-        "clearview_browser_channel_identity", Context.MODE_PRIVATE
-    )
 
     private val repository = BlockRepository(context.applicationContext)
     private val matcher = KeywordMatcher(repository)
@@ -199,7 +228,7 @@ class BrowserRules(
         channelHandle: String?,
         channelName: String?
     ): BrowserBlock? {
-        channelBlock(channelId, channelHandle, channelName)?.let { return it }
+        channelBlock(channelId, channelHandle, channelName, allowName = true)?.let { return it }
         if (title.isNullOrBlank() && description.isNullOrBlank()) return null
         return blockFor(
             matcher.checkLongVideoContent(
@@ -224,7 +253,14 @@ class BrowserRules(
         channelId: String?,
         channelHandle: String?
     ): BrowserBlock? {
-        channelBlock(channelId, channelHandle, channelName)?.let { return it }
+        // A feed card often shows the channel's display name only: the handle
+        // lives in a link the mobile layout may not render (or renders in an
+        // avatar whose label the DOM scan could not reach). The watch page for
+        // the same video identifies the channel from its owner link, which is
+        // why a blocked channel was caught after opening a video but not on the
+        // Home feed. Name-only matching against the reader's own block list is
+        // the fallback for exactly that card shape.
+        channelBlock(channelId, channelHandle, channelName, allowName = true)?.let { return it }
         if (title.isNullOrBlank() && thumbnailDescription.isNullOrBlank()) return null
         val snapshot = ContentSnapshot(
             packageName = WEB_SURFACE,
@@ -324,22 +360,29 @@ class BrowserRules(
      * the app's identity model is a handle, and inventing one from a name is
      * how a block silently matches nothing.
      */
-    fun blockChannel(handle: String?, name: String?, channelId: String? = null): Boolean {
+    fun blockChannel(
+        handle: String?,
+        name: String?,
+        surface: String = SURFACE_YOUTUBE
+    ): Boolean {
         val normalized = BrainRotRepository.normalizeHandle(handle) ?: return false
+        val instagram = surface == SURFACE_INSTAGRAM
+        val where = if (instagram) "the Instagram browser menu" else "the YouTube browser menu"
         val added = blockAction.blockChannel(
             handle = normalized,
-            name = name?.takeIf { it.isNotBlank() },
-            reason = "Blocked from the YouTube browser menu",
-            source = BlockedItemMeta.Source.YOUTUBE_NOT_INTERESTED,
-            notificationMessage = "Blocked $normalized from the YouTube browser menu.",
+            name = BrainRotRepository.cleanName(name),
+            reason = "Blocked from $where",
+            // Provenance is what the blocking list groups by: a block made on
+            // Instagram has to say so, instead of presenting itself as YouTube.
+            source = if (instagram) {
+                BlockedItemMeta.Source.INSTAGRAM
+            } else {
+                BlockedItemMeta.Source.YOUTUBE_NOT_INTERESTED
+            },
+            notificationMessage = "Blocked $normalized from $where.",
             notificationId = "browser-ni:$normalized"
         )
-        if (added) {
-            if (channelId != null && Regex("UC[\\w-]{10,}").matches(channelId)) {
-                identityPrefs.edit().putString(channelId, normalized).apply()
-            }
-            cachedChannels = null
-        }
+        if (added) cachedChannels = null
         return added
     }
 
@@ -374,20 +417,50 @@ class BrowserRules(
      * The global handle set is a process-wide immutable set and is read
      * directly.
      */
-    fun isChannelBlocked(channelId: String?, handle: String?): Boolean {
+    fun isChannelBlocked(
+        channelId: String?,
+        handle: String?,
+        name: String? = null,
+        allowName: Boolean = false
+    ): Boolean {
         val normalized = BrainRotRepository.normalizeHandle(handle)
         if (normalized != null && BrainRotRepository.isGlobalChannelBlocked(normalized)) {
             return true
         }
         val snapshot = channelSnapshot()
         if (normalized != null && normalized in snapshot.handles) return true
-        return channelId != null && channelId in snapshot.ids
+        if (channelId != null && channelId in snapshot.ids) return true
+        // Display-name fallback: only when the page gave no id/handle at all,
+        // and only for surfaces that asked for it. A name is a weaker identity,
+        // so an exact (normalised) match against the reader's OWN blocked list
+        // is required — never a substring and never the global keyword rules.
+        if (!allowName || normalized != null || channelId != null) return false
+        val wanted = normalizeChannelName(name) ?: return false
+        // Either the display name the reader's block recorded, or the stem of
+        // a blocked handle ("Beluga" for `@Beluga1`). Both are exact, whole
+        // name matches — never a substring.
+        return wanted in snapshot.names || wanted in snapshot.stems
     }
+
+    /**
+     * Normalised display name used only by the name-only fallback above.
+     *
+     * The bridge used to store the literal string "null" for a card that
+     * reported no name, so that spelling is treated as "no name" here too.
+     */
+    private fun normalizeChannelName(name: String?): String? =
+        BrainRotRepository.cleanName(name)
+            ?.lowercase(Locale.ROOT)
+            ?.replace(Regex("\\s+"), " ")
+            ?.takeIf { it.isNotEmpty() }
 
     private data class ChannelSnapshot(
         val atMs: Long,
         val handles: Set<String>,
-        val ids: Set<String>
+        val ids: Set<String>,
+        val names: Set<String>,
+        /** Normalised stems of the READER's blocked handles that end in digits. */
+        val stems: Set<String>
     )
 
     @Volatile
@@ -399,20 +472,23 @@ class BrowserRules(
             if (now - cached.atMs < CHANNEL_CACHE_MS) return cached
         }
         val handles = LinkedHashSet<String>()
+        val names = LinkedHashSet<String>()
+        val stems = LinkedHashSet<String>()
         for (channel in brainRot.getBlockedChannels()) {
-            BrainRotRepository.normalizeHandle(channel.handle)?.let(handles::add)
+            val handle = BrainRotRepository.normalizeHandle(channel.handle)
+            handle?.let(handles::add)
+            handleStem(handle)?.let(stems::add)
+            normalizeChannelName(channel.name)?.let(names::add)
         }
+        // A stem is a weaker spelling, so it is taken from the reader's OWN
+        // list only: a global/backend handle block stays keyed on its handle.
         val ids = LinkedHashSet<String>()
-        for ((id, value) in identityPrefs.all) {
-            if (value is String && (value in handles || BrainRotRepository.isGlobalChannelBlocked(value))) {
-                ids.add(id)
-            }
-        }
         for (channel in channels.blockedChannels) {
             BrainRotRepository.normalizeHandle(channel.channelHandle)?.let(handles::add)
             channel.channelId?.takeIf { it.isNotBlank() }?.let(ids::add)
+            normalizeChannelName(channel.channelName)?.let(names::add)
         }
-        val snapshot = ChannelSnapshot(now, handles, ids)
+        val snapshot = ChannelSnapshot(now, handles, ids, names, stems)
         cachedChannels = snapshot
         return snapshot
     }
@@ -420,9 +496,10 @@ class BrowserRules(
     private fun channelBlock(
         channelId: String?,
         handle: String?,
-        name: String?
+        name: String?,
+        allowName: Boolean = false
     ): BrowserBlock? {
-        if (!isChannelBlocked(channelId, handle)) return null
+        if (!isChannelBlocked(channelId, handle, name, allowName)) return null
         val label = handle?.takeIf { it.isNotBlank() }
             ?: channelId?.takeIf { it.isNotBlank() }
             ?: name?.takeIf { it.isNotBlank() }

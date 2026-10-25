@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewParent
+import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -34,6 +35,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 
@@ -227,9 +230,16 @@ fun YoutubePlayer(
                     // Tear down a showing fullscreen custom view so the video
                     // returns to the iframe before the window fades (a custom
                     // view left across a pause is a common "blank on return"
-                    // cause). Orientation is left untouched — onResume restores
-                    // it through the hub's immersive logic.
-                    hideFullscreenCustomView(controller, hostActivity, resetOrientation = false)
+                    // cause). The landscape lock and the hidden system bars go
+                    // with it: leaving the app locked sideways, with the bars
+                    // gone and no fullscreen surface, is a state the reader can
+                    // only escape by leaving the player.
+                    hideFullscreenCustomView(
+                        controller,
+                        hostActivity,
+                        resetOrientation = true,
+                        revealSystemBars = true
+                    )
                     controller.webView?.let {
                         it.onPause()
                         Log.i(TAG, "LIFECYCLE ON_PAUSE -> webView.onPause")
@@ -465,15 +475,20 @@ fun YoutubePlayer(
                         return true
                     }
 
-                    // The player's built-in fullscreen button. The WebView
-                    // hands us the ACTUAL fullscreen video surface; if we
-                    // don't host it (old behavior: only rotate), the surface
-                    // is orphaned and the screen goes blank while audio keeps
-                    // playing. Host the view in a fullscreen overlay added to
-                    // the activity's window and rotate to landscape so the
-                    // hub's immersive logic hides the system bars. The overlay
-                    // covers the Compose UI entirely, so nothing else can
-                    // obscure the video.
+                    // The player's built-in fullscreen button (the control at
+                    // the BOTTOM of the video). The WebView hands us the ACTUAL
+                    // fullscreen video surface; if we don't host it (old
+                    // behavior: only rotate), the surface is orphaned and the
+                    // screen goes blank while audio keeps playing. Host the view
+                    // in a fullscreen overlay added to the activity's window so
+                    // it covers the Compose UI entirely.
+                    //
+                    // HORIZONTAL fullscreen (distinct from the app's own
+                    // top-right button, which is the vertical/Shorts-style
+                    // viewer): this control fills the screen in LANDSCAPE, like
+                    // YouTube's own landscape player. The orientation the reader
+                    // had is remembered so exiting restores it instead of
+                    // guessing portrait.
                     override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                         val activity = ctx as? Activity ?: return
                         controller.customViewCallback = callback
@@ -491,22 +506,35 @@ fun YoutubePlayer(
                         container.visibility = View.VISIBLE
                         Log.i(
                             TAG,
-                            "FULLSCREEN_SHOW customView=${view?.javaClass?.simpleName ?: "null"}"
+                            "FULLSCREEN_SHOW landscape=true " +
+                                "customView=${view?.javaClass?.simpleName ?: "null"}"
                         )
-                        // USER, not LANDSCAPE: the fullscreen player follows
-                        // the user's rotation (respecting their rotation lock,
-                        // and the sensor when it is unlocked) instead of
-                        // forcing landscape. A forced orientation is an
-                        // orientation restriction — it prevents a large screen
-                        // from using its own layout — which is exactly what
-                        // Play asks apps to remove.
+                        if (!controller.landscapeFullscreen) {
+                            controller.orientationBeforeFullscreen =
+                                activity.requestedOrientation
+                            controller.landscapeFullscreen = true
+                        }
+                        // SENSOR_LANDSCAPE (not plain LANDSCAPE) so the player
+                        // follows the sensor in either landscape direction — the
+                        // classic "rotate the phone the other way and the video
+                        // is upside down" complaint. The request is temporary:
+                        // it is reverted when the reader leaves fullscreen.
                         activity.requestedOrientation =
-                            ActivityInfo.SCREEN_ORIENTATION_USER
+                            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                        // The fullscreen surface owns the whole screen: hide the
+                        // status/navigation bars for as long as it is up. The
+                        // hub re-applies its own immersive state on exit.
+                        applyFullscreenSystemBars(activity, hide = true)
                     }
 
                     override fun onHideCustomView() {
                         Log.i(TAG, "FULLSCREEN_HIDE")
-                        hideFullscreenCustomView(controller, ctx as? Activity, resetOrientation = true)
+                        hideFullscreenCustomView(
+                            controller,
+                            ctx as? Activity,
+                            resetOrientation = true,
+                            revealSystemBars = true
+                        )
                     }
                 }
 
@@ -586,7 +614,12 @@ fun YoutubePlayer(
             // orientation (the user left the player). When no custom view was
             // showing (e.g. the user auto-rotated to landscape), orientation
             // is left exactly as it was.
-            hideFullscreenCustomView(controller, hostActivity, resetOrientation = true)
+            hideFullscreenCustomView(
+                controller,
+                hostActivity,
+                resetOrientation = true,
+                revealSystemBars = true
+            )
             controller.fullscreenContainer?.let { container ->
                 (container.parent as? ViewGroup)?.removeView(container)
             }
@@ -645,7 +678,8 @@ private fun ensureFullscreenContainer(
 private fun hideFullscreenCustomView(
     controller: PlayerController,
     activity: Activity?,
-    resetOrientation: Boolean
+    resetOrientation: Boolean,
+    revealSystemBars: Boolean = false
 ) {
     val hadCustomView = controller.customViewCallback != null
     val callback = controller.customViewCallback
@@ -658,7 +692,43 @@ private fun hideFullscreenCustomView(
     // Only restore the orientation when a fullscreen view was actually
     // dismissed — never yank the activity out of a user-initiated landscape.
     if (resetOrientation && hadCustomView) {
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        // Back to the orientation the reader had before the player's own
+        // fullscreen control took over landscape (usually the unlocked
+        // default), not a hardcoded portrait.
+        activity?.requestedOrientation = controller.orientationBeforeFullscreen
+        controller.landscapeFullscreen = false
+    }
+    if (revealSystemBars) activity?.let { applyFullscreenSystemBars(it, hide = false) }
+}
+
+/**
+ * Hides/reveals the status and navigation bars for the player's landscape
+ * fullscreen surface.
+ *
+ * The bars are hidden with the modern insets controller (the pre-API-30
+ * systemUiVisibility flags are a no-op for some of these types on newer
+ * Android). Layout is deliberately NOT switched to edge-to-edge here: the
+ * Compose screen behind the overlay keeps its normal insets, and only the
+ * fullscreen surface goes edge-to-edge — so exiting fullscreen cannot leave the
+ * rest of the app under the status bar.
+ */
+private fun applyFullscreenSystemBars(activity: Activity, hide: Boolean) {
+    try {
+        val window = activity.window
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (hide) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    } catch (e: Exception) {
+        // A window without a decor (rare, and never worth a crash): the video
+        // still fills the screen, only the bars stay visible.
+        Log.w(TAG, "SYSTEM_BARS_FAILED hide=$hide ${e.message}")
     }
 }
 
@@ -745,6 +815,14 @@ private class PlayerController {
     /** Fullscreen custom-view hosting (the player's built-in fullscreen button). */
     @Volatile var customViewCallback: WebChromeClient.CustomViewCallback? = null
     @Volatile var fullscreenContainer: FrameLayout? = null
+    /**
+     * The activity's orientation before the player's OWN fullscreen control
+     * forced landscape, so exiting fullscreen returns to what the reader had
+     * (not a hardcoded portrait).
+     */
+    var orientationBeforeFullscreen: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    /** True while the player's own fullscreen control holds the landscape view. */
+    @Volatile var landscapeFullscreen: Boolean = false
 }
 
 /**

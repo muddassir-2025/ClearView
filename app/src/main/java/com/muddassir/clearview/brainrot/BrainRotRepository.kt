@@ -64,6 +64,20 @@ class BrainRotRepository(context: Context) {
          * lowercase. Returns null for anything that is not a plausible handle,
          * so "@", "@-" and a full URL never enter the list.
          */
+        /**
+         * A display name, or null when there is none.
+         *
+         * The browser bridge used to store the literal string "null" for a
+         * card that reported no channel name (`JSONObject.optString` on a JSON
+         * null). That filled the list's name index with "null" and left the
+         * real name empty, so a name-only feed card could never match the
+         * reader's own block. Entries already written that way read as absent.
+         */
+        fun cleanName(input: String?): String? = input
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) &&
+                !it.equals("undefined", ignoreCase = true) }
+
         fun normalizeHandle(input: String?): String? {
             val trimmed = input?.trim() ?: return null
             if (trimmed.isEmpty()) return null
@@ -157,7 +171,7 @@ class BrainRotRepository(context: Context) {
                 if (handle.isBlank()) return@mapNotNull null
                 BlockedChannel(
                     handle = handle,
-                    name = o.optString("n").takeIf { it.isNotBlank() },
+                    name = cleanName(o.optString("n")),
                     reason = o.optString("r").takeIf { it.isNotBlank() },
                     addedAtMs = o.optLong("t", 0L)
                 )
@@ -179,7 +193,7 @@ class BrainRotRepository(context: Context) {
         val existing = current.indexOfFirst { it.handle == normalized }
         val entry = BlockedChannel(
             handle = normalized,
-            name = name?.trim()?.takeIf { it.isNotBlank() },
+            name = cleanName(name),
             reason = reason?.trim()?.takeIf { it.isNotBlank() },
             addedAtMs = if (existing >= 0) current[existing].addedAtMs else System.currentTimeMillis()
         )

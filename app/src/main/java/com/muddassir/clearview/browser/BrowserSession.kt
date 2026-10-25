@@ -24,9 +24,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.browser.customtabs.CustomTabsIntent
-import androidx.webkit.ScriptHandler
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -102,6 +99,7 @@ class BrowserSession(private val context: Context) {
         private val AD_PATH_MARKERS = listOf(
             "/pagead/",
             "/api/stats/ads",
+            "/get_midroll_info",
             "/ptracking",
             "/pcs/activeview",
             "/pagead/id"
@@ -166,6 +164,17 @@ class BrowserSession(private val context: Context) {
     var loadError by mutableStateOf<String?>(null)
         private set
 
+    /**
+     * Incremented when the page reports a zero-height layout viewport.
+     *
+     * The tab watches this and gives the WebView a one-pixel resize, which is
+     * the one operation that makes Chromium rebuild the CSS viewport (and with
+     * it `100vh` and every height media query) for a document that was created
+     * before the view had its final size.
+     */
+    var viewportRepairTick by mutableIntStateOf(0)
+        private set
+
     // ── Internal ───────────────────────────────────────────────────
 
     /** The current host, read off the UI thread by the JS bridge. */
@@ -175,10 +184,17 @@ class BrowserSession(private val context: Context) {
     @Volatile private var protectedPage = false
 
     private var scriptCache: String? = null
-    private var earlyScriptHandler: ScriptHandler? = null
     private var hasLoadedPage = false
+    private var viewportRepairs = 0
     private var startRequested = false
     private var destroyed = false
+
+    /**
+     * True while [closePages] is tearing the current page down. The WebView
+     * callbacks for that internal `about:blank` navigation must not be mistaken
+     * for the reader opening a page (which would un-show the start page).
+     */
+    @Volatile private var closingPage = false
 
     /** HTML5 fullscreen video: WebView hands us the player view. */
     private var customView: View? = null
@@ -186,6 +202,33 @@ class BrowserSession(private val context: Context) {
     private var customViewDialog: Dialog? = null
 
     private val webViewLazy = lazy { createWebView() }
+
+    /**
+     * Starts the system file picker for a page that asked for a file.
+     *
+     * The WebView cannot open a picker itself: `onShowFileChooser` has to be
+     * answered by an Activity for result. The UI installs this launcher, and the
+     * pending callback is held here so the result lands on the same request.
+     */
+    var fileChooserLauncher: ((android.content.Intent) -> Unit)? = null
+    private var pendingFileCallback: android.webkit.ValueCallback<Array<android.net.Uri>>? = null
+
+    /** Give the page its file (or the cancellation) and release the request. */
+    fun onFileChooserResult(resultCode: Int, data: android.content.Intent?) {
+        val callback = pendingFileCallback ?: return
+        pendingFileCallback = null
+        val uris = runCatching {
+            WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+        }.getOrNull()
+        callback.onReceiveValue(uris)
+    }
+
+    /** Answer an outstanding request when the tab goes away. */
+    private fun cancelFileChooser() {
+        val callback = pendingFileCallback ?: return
+        pendingFileCallback = null
+        callback.onReceiveValue(null)
+    }
 
     /** The WebView; creating it on first access keeps the tab cheap when unused. */
     val webView: WebView
@@ -202,6 +245,24 @@ class BrowserSession(private val context: Context) {
     /** Load [target] unless the existing rules block it. */
     fun navigateTo(target: String) {
         if (destroyed) return
+        // A hidden tab must not be reachable by typing its address either. This
+        // is checked before the content rules because it is about the SURFACE
+        // (a discovery feed), not about one item in it.
+        val hiddenTab = hiddenTabBlock(target)
+        if (hiddenTab != null) {
+            showBlock(hiddenTab)
+            return
+        }
+        val blockedProfile = blockedProfileBlock(target)
+        if (blockedProfile != null) {
+            showBlock(blockedProfile)
+            return
+        }
+        val hiddenSurface = hiddenSurfaceRedirect(target)
+        if (hiddenSurface != null) {
+            redirectBlockedFeed(target)
+            return
+        }
         val blocked = rules.blockForUrl(target)
         if (blocked != null) {
             when (blocked.type) {
@@ -209,12 +270,14 @@ class BrowserSession(private val context: Context) {
                     handleBlockedSearch(target)
                     return
                 }
-                BrowserBlock.Type.SHORTS -> {
-                    showNotice(context.getString(R.string.browser_shorts_blocked))
-                    navigateTo(YOUTUBE_HOME)
+                // A Short/Reel is a surface, not a single video: covering one
+                // item of an endless queue is not blocking it (the reader can
+                // swipe to the next). The URL is never loaded; the reader is
+                // left on the feed home instead.
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> {
+                    redirectBlockedFeed(target)
                     return
                 }
-                BrowserBlock.Type.REELS -> Unit
                 else -> {
                     showBlock(blocked)
                     return
@@ -225,6 +288,9 @@ class BrowserSession(private val context: Context) {
         loadError = null
         notice = null
         showHome = false
+        // A real navigation always ends any page-teardown state, even if the
+        // blank document's onPageFinished never arrived.
+        closingPage = false
         hideFooter()
         val safeTarget = BrowserAddress.withSafeSearch(target) ?: target
         if (webViewLazy.isInitialized()) {
@@ -235,11 +301,19 @@ class BrowserSession(private val context: Context) {
     }
 
     /**
-     * Show the ClearView start page.
+     * Show the ClearView start page and CLOSE every open webpage.
      *
-     * The WebView is not destroyed or reset: it is paused and visually hidden,
-     * so returning to a page (Back from Home) keeps its state. The address bar
-     * is emptied because there is no page address to show.
+     * Home is a clean slate, not a page kept warm behind it: the loaded
+     * document is replaced with `about:blank`, its timers and any playing media
+     * are stopped, its fullscreen surface is removed and its history is
+     * cleared. So nothing that was open is still running behind the start page,
+     * and Back cannot resurrect it. Shortcuts and protection settings are
+     * preferences and are untouched.
+     *
+     * The WebView OBJECT is kept (it is attached to the tab's layout, and was
+     * laid out before this call, so pausing it is safe): only the page it was
+     * showing is disposed. It is paused here so a closed page cannot keep
+     * running scripts, and [navigateTo] resumes it for the next page.
      */
     fun goHome() {
         if (destroyed) return
@@ -253,17 +327,46 @@ class BrowserSession(private val context: Context) {
         protectedPage = false
         isLoading = false
         progress = 0
-        if (webViewLazy.isInitialized()) {
+        closePages()
+    }
+
+    /**
+     * Disposes the CURRENT page: no document, no history, no media, no
+     * fullscreen surface. Idempotent, and safe before the WebView exists.
+     *
+     * Deliberately does not clear cookies, localStorage or the download cache:
+     * closing a page is not "reset the browser", and signing the reader out of
+     * the sites they use would be a side effect nobody asked for.
+     */
+    private fun closePages() {
+        if (!webViewLazy.isInitialized()) return
+        val view = webView
+        closingPage = true
+        hasLoadedPage = false
+        viewportRepairs = 0
+        cancelFileChooser()
+        block = null
+        loadError = null
+        notice = null
+        url = ""
+        currentUrl = null
+        protectedPage = false
+        canGoBack = false
+        canGoForward = false
+        isLoading = false
+        progress = 0
+        runCatching {
+            // A fullscreen video is a separate surface (and window): it has no
+            // page to be closed with, so it is dismissed first.
+            exitCustomView(notify = true)
             pausePlayback()
-            webView.stopLoading()
-            // Do NOT pause or hide the view here. A WebView that is paused or
-            // hidden before its first layout initialises Chromium with a
-            // 0-height viewport: `100vh` resolves to 0, every `(min-height: …)`
-            // / `orientation` media query answers as if the screen had no
-            // height, and pages that size themselves against the viewport (the
-            // YouTube player, Instagram's sign-in) collapse or paint blank.
-            // The start page is drawn over the WebView, so it stays invisible
-            // to the reader anyway.
+            view.stopLoading()
+            // Replace the document: this is what actually ends the page's
+            // scripts, timers, audio and video. `about:blank` is a blank
+            // document with no web URL, and [updateLocation] ignores it, so the
+            // address bar and protection state stay cleared.
+            view.loadUrl(BrowserAddress.ABOUT_BLANK)
+            view.clearHistory()
         }
     }
 
@@ -281,11 +384,10 @@ class BrowserSession(private val context: Context) {
                     handleBlockedSearch(currentUrl.orEmpty())
                     return
                 }
-                BrowserBlock.Type.SHORTS -> {
-                    navigateTo(YOUTUBE_HOME)
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> {
+                    redirectBlockedFeed(currentUrl.orEmpty())
                     return
                 }
-                BrowserBlock.Type.REELS -> Unit
                 else -> {
                     showBlock(blocked)
                     return
@@ -381,14 +483,49 @@ class BrowserSession(private val context: Context) {
      */
     fun onProtectionSettingsChanged() {
         if (destroyed) return
-        // Refresh the document-start policy for future documents as well.
+        // Nothing navigates here any more: the page applies the new policy to
+        // the item the reader is on. Turning "Block Shorts" on covers the
+        // current Short (and the next swipe's Short) instead of throwing the
+        // reader back to the YouTube home feed.
         if (webViewLazy.isInitialized()) {
-            installEarlyScript(webView)
+            applyDarkPages(webView.settings, reload = true)
             webView.evaluateJavascript(
                 "window.__clearviewRefresh && window.__clearviewRefresh();",
                 null
             )
         }
+    }
+
+    /** The last value of [BrowserSettings.darkPages] pushed into the WebView. */
+    private var appliedDarkPages: Boolean? = null
+
+    /**
+     * Ask the WebView to render pages that ship no dark theme in dark colours.
+     *
+     * Android 13+ calls the switch "algorithmic darkening": the page still
+     * decides, so a site with a real `prefers-color-scheme: dark` design keeps
+     * it instead of being inverted into something unreadable. Android 10-12
+     * has the same feature under its first name, force-dark. Below Android 10
+     * the WebView has no such switch, and those devices keep each site's own
+     * colours rather than getting a half-inverted page.
+     *
+     * The flag is read when a document is created, so flipping the switch
+     * reloads the page the reader is on: that is the visible proof it did
+     * something. [reload] is false on construction, where there is no page yet.
+     */
+    @Suppress("DEPRECATION")
+    private fun applyDarkPages(webSettings: android.webkit.WebSettings, reload: Boolean) {
+        val enabled = settings.darkPages
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            webSettings.isAlgorithmicDarkeningAllowed = enabled
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            webSettings.forceDark =
+                if (enabled) android.webkit.WebSettings.FORCE_DARK_ON
+                else android.webkit.WebSettings.FORCE_DARK_OFF
+        }
+        val changed = appliedDarkPages != null && appliedDarkPages != enabled
+        appliedDarkPages = enabled
+        if (changed && reload && !showHome && !currentUrl.isNullOrBlank()) webView.reload()
     }
 
     /** Remove the WebView from any previous Compose host before re-attaching. */
@@ -417,20 +554,17 @@ class BrowserSession(private val context: Context) {
         if (!showHome) {
             webView.visibility = View.VISIBLE
             webView.onResume()
-            installEarlyScript(webView)
-            webView.evaluateJavascript("window.__clearviewRefresh && window.__clearviewRefresh();", null)
         }
     }
 
     fun destroy() {
         if (destroyed) return
         destroyed = true
+        cancelFileChooser()
         if (webViewLazy.isInitialized()) {
             val view = webView
             try {
                 exitCustomView(notify = true)
-                earlyScriptHandler?.remove()
-                earlyScriptHandler = null
                 view.removeJavascriptInterface(BRIDGE_NAME)
                 view.stopLoading()
                 view.loadUrl("about:blank")
@@ -485,11 +619,18 @@ class BrowserSession(private val context: Context) {
             displayZoomControls = false
             useWideViewPort = true
             loadWithOverviewMode = true
+            // Instagram and other modern web apps keep part of their session
+            // in IndexedDB; leaving database storage off makes a signed-in
+            // page look empty even though its HTML loaded.
+            databaseEnabled = true
             setGeolocationEnabled(false)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 safeBrowsingEnabled = true
             }
         }
+        // Dark pages from the very first document: the reader should never see
+        // a flash of white before the preference is applied.
+        applyDarkPages(view.settings, reload = false)
 
         CookieManager.getInstance().setAcceptCookie(true)
 
@@ -497,7 +638,6 @@ class BrowserSession(private val context: Context) {
         // a protected host. No Context, file access or arbitrary method
         // dispatch is exposed to page JavaScript.
         view.addJavascriptInterface(Bridge(), BRIDGE_NAME)
-        installEarlyScript(view)
 
         view.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -505,7 +645,6 @@ class BrowserSession(private val context: Context) {
                 request: WebResourceRequest
             ): Boolean {
                 val original = request.url.toString()
-                if (!request.isForMainFrame) return false
                 // SafeSearch is a browser policy: rewrite a search URL before
                 // it is loaded, so a link tapped inside Google/Bing gets the
                 // same strict flag as one typed into the address bar.
@@ -519,6 +658,10 @@ class BrowserSession(private val context: Context) {
             }
 
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                // The internal teardown navigation (goHome -> about:blank) is
+                // not the reader opening a page: the start page stays up and the
+                // scratch document paints behind it.
+                if (closingPage) return
                 isLoading = true
                 progress = 5
                 showHome = false
@@ -538,6 +681,21 @@ class BrowserSession(private val context: Context) {
             }
 
             override fun onPageFinished(view: WebView, url: String?) {
+                if (closingPage) {
+                    // The blank document has replaced the closed page: finish
+                    // the teardown (the history still held the old entries when
+                    // goHome asked), stop the view's timers, and drop the flag.
+                    closingPage = false
+                    runCatching {
+                        view.clearHistory()
+                        view.onPause()
+                    }
+                    canGoBack = false
+                    canGoForward = false
+                    isLoading = false
+                    progress = 0
+                    return
+                }
                 isLoading = false
                 progress = 100
                 updateLocation(url)
@@ -574,12 +732,10 @@ class BrowserSession(private val context: Context) {
                             }
                         )
                     }
-                    BrowserBlock.Type.SHORTS -> {
-                        pausePlayback()
-                        showNotice(context.getString(R.string.browser_shorts_blocked))
-                        redirectToSafeHome(YOUTUBE_HOME)
-                    }
-                    BrowserBlock.Type.REELS -> Unit
+                    // SPA navigation into a Short/Reel. There is no page to
+                    // cover any more: leave the feed instead.
+                    BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS ->
+                        redirectToSafeHome(feedHomeFor(url))
                     else -> showBlock(blocked)
                 }
             }
@@ -641,6 +797,38 @@ class BrowserSession(private val context: Context) {
             override fun onPermissionRequest(request: PermissionRequest) {
                 // Websites may not reach the camera/microphone through the tab.
                 request.deny()
+            }
+
+            /**
+             * `<input type="file">`: Instagram's "+" (create post, add to
+             * story) and YouTube's upload/avatar buttons all open one. Without
+             * this override the tap was swallowed and nothing happened at all —
+             * the site asked, the WebView had no answer, and no picker appeared.
+             */
+            override fun onShowFileChooser(
+                view: WebView,
+                callback: android.webkit.ValueCallback<Array<android.net.Uri>>,
+                params: FileChooserParams
+            ): Boolean {
+                val launcher = fileChooserLauncher
+                if (launcher == null) {
+                    callback.onReceiveValue(null)
+                    return false
+                }
+                cancelFileChooser()
+                pendingFileCallback = callback
+                val intent = runCatching { params.createIntent() }.getOrNull()
+                    ?: android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                        type = params.acceptTypes?.firstOrNull { it.contains('/') } ?: "*/*"
+                    }
+                val started = runCatching { launcher(intent) }.isSuccess
+                if (!started) {
+                    // No picker on this device: release the page instead of
+                    // leaving it waiting on a request that will never answer.
+                    onFileChooserResult(android.app.Activity.RESULT_CANCELED, null)
+                }
+                return true
             }
 
             override fun onGeolocationPermissionsShowPrompt(
@@ -706,20 +894,123 @@ class BrowserSession(private val context: Context) {
      */
     private fun handleNavigation(target: String): Boolean {
         if (!BrowserAddress.isWebUrl(target)) return true
+        val hiddenTab = hiddenTabBlock(target)
+        if (hiddenTab != null) {
+            showBlock(hiddenTab)
+            return true
+        }
+        val blockedProfile = blockedProfileBlock(target)
+        if (blockedProfile != null) {
+            showBlock(blockedProfile)
+            return true
+        }
+        if (hiddenSurfaceRedirect(target) != null) {
+            webView.post { if (!destroyed) redirectBlockedFeed(target) }
+            return true
+        }
         val blocked = rules.blockForUrl(target)
         if (blocked != null) {
             when (blocked.type) {
                 BrowserBlock.Type.SEARCH -> handleBlockedSearch(target)
-                BrowserBlock.Type.SHORTS -> {
-                    showNotice(context.getString(R.string.browser_shorts_blocked))
-                    navigateTo(YOUTUBE_HOME)
+                // Never load a blocked vertical feed. The load is posted
+                // because a WebView must not be asked to load from inside
+                // shouldOverrideUrlLoading.
+                BrowserBlock.Type.SHORTS, BrowserBlock.Type.REELS -> {
+                    webView.post { if (!destroyed) redirectBlockedFeed(target) }
                 }
-                BrowserBlock.Type.REELS -> return false
                 else -> showBlock(blocked)
             }
             return true
         }
         return false
+    }
+
+    /**
+     * A hidden tab, entered directly by URL.
+     *
+     * Hiding a tab in the nav bar only removes the door, not the room: the
+     * address bar, a pasted link and the back stack all still reached it. A tab
+     * whose toggle is on is refused here, before the page is loaded, so there is
+     * nothing to filter once it opens.
+     */
+    private fun hiddenTabBlock(target: String): BrowserBlock? {
+        if (!BrowserAddress.isInstagram(target)) return null
+        if (settings.hideInstagramSearch && BrowserAddress.isInstagramExploreUrl(target)) {
+            return BrowserBlock("Instagram Search", BrowserBlock.Type.SURFACE)
+        }
+        if (settings.hideInstagramHome && BrowserAddress.isInstagramHomeUrl(target)) {
+            return BrowserBlock("Instagram Home", BrowserBlock.Type.SURFACE)
+        }
+        return null
+    }
+
+    /**
+     * A profile or channel page whose owner the reader blocked.
+     *
+     * Blocked posts and cards already leave the feed, but the channel page was a
+     * separate door: typing `instagram.com/<handle>/` showed the whole grid.
+     */
+    private fun blockedProfileBlock(target: String): BrowserBlock? {
+        val instagramHandle = BrowserAddress.instagramProfileHandle(target)
+        if (instagramHandle != null && rules.isChannelBlocked(null, instagramHandle)) {
+            return BrowserBlock(instagramHandle, BrowserBlock.Type.CHANNEL)
+        }
+        val youtubeHandle = BrowserAddress.youtubeChannelHandle(target)
+        if (youtubeHandle != null && rules.isChannelBlocked(null, youtubeHandle)) {
+            return BrowserBlock(youtubeHandle, BrowserBlock.Type.CHANNEL)
+        }
+        return null
+    }
+
+    /**
+     * A discovery feed the reader did not ask for, entered directly by URL.
+     *
+     * Returns the feed home the reader is sent to, or null when this URL is a
+     * normal page.
+     */
+    private fun hiddenSurfaceRedirect(target: String): String? {
+        val path = runCatching {
+            java.net.URI(target).path.orEmpty()
+        }.getOrDefault("")
+        // YouTube's own discovery feeds are the same class of surface as
+        // Shorts: an endless list the reader never asked for.
+        return when {
+            BrowserRules.isYouTubeSurface(target) &&
+                (path.startsWith("/feed/explore") || path.startsWith("/feed/trending")) ->
+                YOUTUBE_HOME
+            else -> null
+        }
+    }
+
+    /** The feed home a blocked Short/Reel URL belongs to. */
+    private fun feedHomeFor(url: String?): String? = when {
+        BrowserRules.isYouTubeSurface(url) -> YOUTUBE_HOME
+        BrowserAddress.isInstagram(url) -> INSTAGRAM_HOME
+        else -> null
+    }
+
+    /**
+     * Leave a blocked Shorts/Reels URL without loading it.
+     *
+     * The page script performs the same redirect for SPA navigations; this is
+     * the native path for a typed URL, a link tap and a history entry. The home
+     * page is only used when the rules do not block it too, so a blocklist can
+     * never create a redirect loop.
+     */
+    private fun redirectBlockedFeed(target: String) {
+        if (destroyed || !webViewLazy.isInitialized()) return
+        val home = feedHomeFor(target) ?: return
+        if (rules.blockForUrl(home) != null) return
+        // A Short tapped on the feed home would otherwise reload the page the
+        // reader is already on.
+        if (currentUrl?.trimEnd('/') == home.trimEnd('/')) return
+        block = null
+        loadError = null
+        showHome = false
+        hideFooter()
+        webView.visibility = View.VISIBLE
+        webView.onResume()
+        webView.loadUrl(home)
     }
 
     /**
@@ -758,9 +1049,6 @@ class BrowserSession(private val context: Context) {
         url = newUrl
         hasLoadedPage = true
         protectedPage = BrowserRules.isProtectedSurface(newUrl)
-        // Authentication must not inherit a native content overlay from the
-        // previous document (the auth script intentionally never evaluates it).
-        if (BrowserAddress.isInstagramAuthUrl(newUrl)) block = null
     }
 
     private fun refreshHistory() {
@@ -822,6 +1110,34 @@ class BrowserSession(private val context: Context) {
         }
     }
 
+    /**
+     * Rebuild the WebView's viewport metrics after the page reported that its
+     * layout viewport has no height.
+     *
+     * The repair is a metric rebuild plus a real one-pixel relayout (driven by
+     * [viewportRepairTick]) — NEVER a reload.
+     *
+     * This used to reload the current page on the second report, on the theory
+     * that the new document would be laid out against the repaired metrics. It
+     * did — but a 2.5 s viewport probe deciding to reload the reader's page is
+     * an unexpected reload in the middle of normal browsing: on YouTube the
+     * second report landed a few seconds after opening, right after the reader
+     * started scrolling, and it happened again on every visit. Reloading also
+     * cannot fix a viewport that is broken for the WebView itself. The page
+     * script's own height shim ([clearview_browser.js]) is what actually makes
+     * a zero-height layout viewport usable, and the relayout re-applies it; so
+     * the relayout is the whole repair.
+     */
+    private fun repairViewport() {
+        if (destroyed || !webViewLazy.isInitialized()) return
+        viewportRepairs++
+        if (viewportRepairs > 2) return
+        webView.requestLayout()
+        // A tick the tab turns into an actual size change (a 1 dp nudge):
+        // Chromium only rebuilds the CSS viewport on a real resize.
+        viewportRepairTick = viewportRepairs
+    }
+
     /** Pause/mute any playing video before the overlay covers it. */
     private fun pausePlayback() {
         if (!webViewLazy.isInitialized()) return
@@ -829,33 +1145,6 @@ class BrowserSession(private val context: Context) {
             "window.__clearviewPause && window.__clearviewPause();",
             null
         )
-    }
-
-    /** Install CSS before YouTube creates its first shelf. No bridge call here. */
-    private fun earlyScriptSource(): String = runCatching {
-        "window.__clearviewEarlyPolicy=" + JSONObject().apply {
-            put("hideShorts", settings.blockShorts)
-        }.toString() + ";\n" + context.assets.open("browser/clearview_early.js")
-            .bufferedReader().use { it.readText() }
-    }.getOrDefault("")
-
-    private fun installEarlyScript(view: WebView) {
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return
-        earlyScriptHandler?.remove()
-        earlyScriptHandler = WebViewCompat.addDocumentStartJavaScript(
-            view, earlyScriptSource(), setOf("https://*.youtube.com", "https://youtube.com")
-        )
-    }
-
-    /** Browser-owned authentication fallback; browser cookies stay there. */
-    fun openInstagramAuthentication() {
-        val target = currentUrl?.takeIf { BrowserAddress.isInstagramAuthUrl(it) } ?: return
-        if (rules.blockForUrl(target) != null) return
-        try {
-            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(target))
-        } catch (_: ActivityNotFoundException) {
-            showNotice(context.getString(R.string.browser_auth_no_browser))
-        }
     }
 
     private fun injectScript() {
@@ -868,9 +1157,10 @@ class BrowserSession(private val context: Context) {
         } catch (_: Exception) {
             return
         }
-        // The early CSS also runs here on providers without document-start support.
+        // The token prefix is injected with the script, so only the main-frame
+        // page script holds it.
         webView.evaluateJavascript(
-            earlyScriptSource() + "\nwindow.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" + script,
+            "window.__clearviewToken=" + JSONObject.quote(bridgeToken) + ";\n" + script,
             null
         )
     }
@@ -912,6 +1202,24 @@ class BrowserSession(private val context: Context) {
         webView.evaluateJavascript(source, null)
     }
 
+    /**
+     * Browser-owned Instagram sign-in fallback.
+     *
+     * Instagram's sign-in screen sometimes refuses to render inside a WebView.
+     * The provider's own browser is offered instead, so the sign-in stays in an
+     * app that Instagram already trusts; ClearView's cookies are untouched and
+     * the in-page filters deliberately do not apply to that window.
+     */
+    fun openInstagramAuthentication() {
+        val target = currentUrl?.takeIf { BrowserAddress.isInstagramAuthUrl(it) } ?: return
+        if (rules.blockForUrl(target) != null) return
+        try {
+            CustomTabsIntent.Builder().build().launchUrl(context, Uri.parse(target))
+        } catch (_: ActivityNotFoundException) {
+            showNotice(context.getString(R.string.browser_auth_no_browser))
+        }
+    }
+
     // ── Ads ───────────────────────────────────────────────────────
 
     /**
@@ -926,9 +1234,8 @@ class BrowserSession(private val context: Context) {
         val requestUrl = request.url
         val host = requestUrl.host?.lowercase() ?: return false
         if (AD_HOSTS.any { host == it || host.endsWith(".$it") }) return true
-        if (host != "youtube.com" && !host.endsWith(".youtube.com")) return false
-        val path = requestUrl.path.orEmpty().lowercase()
-        return AD_PATH_MARKERS.any { path.startsWith(it) }
+        val full = requestUrl.toString().lowercase()
+        return AD_PATH_MARKERS.any { full.contains(it) }
     }
 
     // ── JavaScript bridge ─────────────────────────────────────────
@@ -951,12 +1258,41 @@ class BrowserSession(private val context: Context) {
 
         private fun onYouTube(): Boolean = BrowserRules.isYouTubeSurface(currentUrl)
 
+        /**
+         * A payload field, or null when it is MISSING or a JSON `null`.
+         *
+         * `JSONObject.optString` returns the literal string "null" for a JSON
+         * null (org.json stringifies JSONObject.NULL). The page sends
+         * `channelName: null` for every card that has no channel name, so the
+         * stored block carried the name "null": the reader's block of @Beluga1
+         * then had no real name to match, and the Home card that only shows
+         * "Beluga" stayed on the feed while the watch page blocked it.
+         */
+        private fun field(json: JSONObject, key: String): String? =
+            if (json.isNull(key)) null
+            else json.optString(key)
+                .takeIf { it.isNotBlank() && !it.equals("null", ignoreCase = true) }
+
+        /**
+         * The page measured `100vh` as 0 while `window.innerHeight` is fine:
+         * its layout viewport is broken, which collapses the YouTube player and
+         * blanks Instagram's sign-in screen. See [repairViewport].
+         */
+        @JavascriptInterface
+        fun onViewportBroken(token: String?) {
+            if (token != bridgeToken || destroyed) return
+            webView.post { repairViewport() }
+        }
+
         @JavascriptInterface
         fun policy(token: String?): String {
             if (!authorized(token)) return "{}"
             return JSONObject().apply {
                 put("hideShorts", settings.blockShorts)
                 put("hideReels", settings.hideInstagramReels)
+                put("hideInstagramSearch", settings.hideInstagramSearch)
+                put("hideInstagramSuggestions", settings.hideInstagramSuggestions)
+                put("hideHome", settings.hideInstagramHome)
                 put("hideGoogleCategories", settings.hideGoogleCategories)
                 put("removeBlocked", settings.removeBlockedFromFeed)
                 put("blockAds", settings.blockYouTubeAds)
@@ -971,11 +1307,11 @@ class BrowserSession(private val context: Context) {
             if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
             val json = JSONObject(payload.orEmpty())
             val verdict = rules.blockForVideo(
-                title = json.optString("title").takeIf { it.isNotBlank() },
-                description = json.optString("description").takeIf { it.isNotBlank() },
-                channelId = json.optString("channelId").takeIf { it.isNotBlank() },
-                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() },
-                channelName = json.optString("channelName").takeIf { it.isNotBlank() }
+                title = field(json, "title"),
+                description = field(json, "description"),
+                channelId = field(json, "channelId"),
+                channelHandle = field(json, "channelHandle"),
+                channelName = field(json, "channelName")
             )
             verdict?.toJson() ?: "{\"blocked\":false}"
         }
@@ -985,12 +1321,11 @@ class BrowserSession(private val context: Context) {
             if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
             val json = JSONObject(payload.orEmpty())
             val verdict = rules.blockForCard(
-                title = json.optString("title").takeIf { it.isNotBlank() },
-                thumbnailDescription = json.optString("thumbnailDescription")
-                    .takeIf { it.isNotBlank() },
-                channelName = json.optString("channelName").takeIf { it.isNotBlank() },
-                channelId = json.optString("channelId").takeIf { it.isNotBlank() },
-                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() }
+                title = field(json, "title"),
+                thumbnailDescription = field(json, "thumbnailDescription"),
+                channelName = field(json, "channelName"),
+                channelId = field(json, "channelId"),
+                channelHandle = field(json, "channelHandle")
             )
             verdict?.toJson() ?: "{\"blocked\":false}"
         }
@@ -1007,9 +1342,9 @@ class BrowserSession(private val context: Context) {
             }
             val json = JSONObject(payload.orEmpty())
             val verdict = rules.blockForInstagram(
-                caption = json.optString("caption").takeIf { it.isNotBlank() },
-                channelHandle = json.optString("channelHandle").takeIf { it.isNotBlank() },
-                channelName = json.optString("channelName").takeIf { it.isNotBlank() }
+                caption = field(json, "caption"),
+                channelHandle = field(json, "channelHandle"),
+                channelName = field(json, "channelName")
             )
             verdict?.toJson() ?: "{\"blocked\":false}"
         }
@@ -1028,18 +1363,34 @@ class BrowserSession(private val context: Context) {
         }
 
         /**
+         * The page surface the action came from, or null when the current page
+         * cannot host it. A request can only ever act on the surface it says it
+         * is on, so an Instagram page cannot block through the YouTube path.
+         */
+        private fun surfaceOf(json: JSONObject): String? {
+            val surface = field(json, "surface")
+            if (surface == BrowserRules.SURFACE_INSTAGRAM) {
+                return if (BrowserRules.isInstagramSurface(currentUrl)) {
+                    BrowserRules.SURFACE_INSTAGRAM
+                } else null
+            }
+            return if (onYouTube()) BrowserRules.SURFACE_YOUTUBE else null
+        }
+
+        /**
          * The reader chose "Not interested" (or the ClearView action) on a
-         * YouTube card/Short. Native side stores the channel block, then the
-         * page removes the card and re-evaluates the current video.
+         * YouTube card/Short, or blocked the author of an Instagram post/reel.
+         * Native side stores the channel block, then the page removes the card
+         * and re-evaluates the current video.
          */
         @JavascriptInterface
         fun blockChannel(token: String?, payload: String?): String = safe {
-            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            if (!authorized(token)) return@safe "{\"blocked\":false}"
             val json = JSONObject(payload.orEmpty())
-            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
-            val name = json.optString("channelName").takeIf { it.isNotBlank() }
-            val id = json.optString("channelId").takeIf { it.isNotBlank() }
-            val added = rules.blockChannel(handle, name, id)
+            val surface = surfaceOf(json) ?: return@safe "{\"blocked\":false}"
+            val handle = field(json, "channelHandle")
+            val name = field(json, "channelName")
+            val added = rules.blockChannel(handle, name, surface = surface)
             if (!added) return@safe "{\"blocked\":false}"
             webView.post { showNotice(context.getString(R.string.browser_channel_blocked, handle ?: name.orEmpty())) }
             JSONObject().apply {
@@ -1051,10 +1402,11 @@ class BrowserSession(private val context: Context) {
         /** Whether the injected menu should offer Block or Unblock. */
         @JavascriptInterface
         fun channelState(token: String?, payload: String?): String = safe {
-            if (!authorized(token) || !onYouTube()) return@safe "{\"blocked\":false}"
+            if (!authorized(token)) return@safe "{\"blocked\":false}"
             val json = JSONObject(payload.orEmpty())
-            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
-            val id = json.optString("channelId").takeIf { it.isNotBlank() }
+            if (surfaceOf(json) == null) return@safe "{\"blocked\":false}"
+            val handle = field(json, "channelHandle")
+            val id = field(json, "channelId")
             JSONObject().apply {
                 put("blocked", rules.channelBlocked(handle, id))
                 if (handle != null) put("item", handle)
@@ -1064,10 +1416,11 @@ class BrowserSession(private val context: Context) {
         /** The reader chose "Unblock channel with ClearView" in the page menu. */
         @JavascriptInterface
         fun unblockChannel(token: String?, payload: String?): String = safe {
-            if (!authorized(token) || !onYouTube()) return@safe "{\"unblocked\":false}"
+            if (!authorized(token)) return@safe "{\"unblocked\":false}"
             val json = JSONObject(payload.orEmpty())
-            val handle = json.optString("channelHandle").takeIf { it.isNotBlank() }
-            val id = json.optString("channelId").takeIf { it.isNotBlank() }
+            if (surfaceOf(json) == null) return@safe "{\"unblocked\":false}"
+            val handle = field(json, "channelHandle")
+            val id = field(json, "channelId")
             val removed = rules.unblockChannel(handle, id)
             if (!removed) return@safe "{\"unblocked\":false}"
             webView.post {
@@ -1122,11 +1475,10 @@ class BrowserSession(private val context: Context) {
                         else -> null
                     }
                 }
-                BrowserBlock.Type.SHORTS -> {
-                    webView.post { showNotice(context.getString(R.string.browser_shorts_blocked)) }
-                    YOUTUBE_HOME
-                }
-                BrowserBlock.Type.REELS -> null
+                // A vertical feed is left, not covered: the page script
+                // navigates to this URL on the next tick.
+                BrowserBlock.Type.SHORTS -> feedHomeFor(safeUrl)
+                BrowserBlock.Type.REELS -> feedHomeFor(safeUrl)
                 else -> {
                     webView.post { showBlock(verdict) }
                     null
@@ -1136,7 +1488,9 @@ class BrowserSession(private val context: Context) {
                 put("blocked", true)
                 put("item", verdict.item)
                 put("type", verdict.type.name)
-                if (verdict.type == BrowserBlock.Type.REELS) {
+                if (verdict.type == BrowserBlock.Type.SHORTS ||
+                    verdict.type == BrowserBlock.Type.REELS
+                ) {
                     put("inline", true)
                 }
                 if (redirectTo != null) put("redirectTo", redirectTo)

@@ -73,6 +73,17 @@ data class MediaVideo(
         get() = platform == MediaPlatform.INSTAGRAM || videoId.startsWith("ig_")
 
     /**
+     * A YouTube COMMUNITY post (the channel's Posts tab) rather than a video.
+     *
+     * YouTube's RSS feed — the only feed the app uses for uploads — carries no
+     * community posts at all, so they are fetched from the channel's community
+     * page and given a `ytc_` id prefix. Nothing with this id is playable: the
+     * post opens in the same post reader as an Instagram photo post.
+     */
+    val isCommunityPost: Boolean
+        get() = videoId.startsWith(COMMUNITY_ID_PREFIX)
+
+    /**
      * True for an Instagram item that carries moving pictures — a Reel or a
      * video post. These play in the native player exactly like a YouTube
      * video; only image/carousel posts are rendered as stills.
@@ -116,6 +127,7 @@ data class MediaVideo(
      */
     val isPost: Boolean
         get() = when {
+            isCommunityPost -> true
             isInstagramImage -> true
             platform == MediaPlatform.X -> !hasPlayableVideo
             else -> false
@@ -128,9 +140,15 @@ data class MediaVideo(
      * caches stored `isShort = true` for Reels, hence the platform guard.
      */
     val isShortsEntry: Boolean
-        get() = isShort && !isInstagram
+        get() = isShort && !isInstagram && !isCommunityPost
 
     companion object {
+        /**
+         * Id prefix of a YouTube community post (`ytc_<postId>`). Distinct from
+         * a video id on purpose: nothing may type one into the player, and the
+         * feed decides post-vs-video from the id alone.
+         */
+        const val COMMUNITY_ID_PREFIX = "ytc_"
         /**
          * Title-only Short signal: the #shorts hashtag that YouTube appends to
          * Shorts uploads. Word-bounded so titles like "#shortsy" or

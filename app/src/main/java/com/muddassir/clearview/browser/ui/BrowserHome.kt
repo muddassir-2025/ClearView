@@ -1,5 +1,7 @@
 package com.muddassir.clearview.browser.ui
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -16,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,9 +31,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -47,8 +51,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
@@ -61,10 +69,16 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 import androidx.compose.ui.unit.sp
+import com.muddassir.clearview.browser.BrowserAddress
 import com.muddassir.clearview.R
 import com.muddassir.clearview.browser.BrowserSettings
 import com.muddassir.clearview.browser.BrowserShortcutInput
+import com.muddassir.clearview.browser.ShortcutIconLinks
 
 /** The ClearView wordmark: the same Amatic SC lettering as the app's artwork. */
 private val BrandFont = FontFamily(Font(R.font.amatic_sc))
@@ -157,32 +171,7 @@ fun BrowserHome(
             }
         }
 
-        Spacer(Modifier.height(14.dp))
-
-        Surface(
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
-            contentColor = MaterialTheme.colorScheme.primary,
-            shape = RoundedCornerShape(50)
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Filled.Shield,
-                    contentDescription = null,
-                    modifier = Modifier.size(15.dp)
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = stringResource(R.string.browser_home_protection_active),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-        }
-
-        Spacer(Modifier.height(30.dp))
+        Spacer(Modifier.height(22.dp))
 
         OutlinedTextField(
             value = query,
@@ -221,31 +210,30 @@ fun BrowserHome(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             maxItemsInEachRow = 4
         ) {
-            ShortcutTile(
-                label = stringResource(R.string.browser_shortcut_google),
-                icon = null,
-                iconRes = R.drawable.ic_google_logo,
-                onClick = { open(BrowserSettings.BUILT_IN_SHORTCUTS[0].url) }
-            )
-            ShortcutTile(
-                label = stringResource(R.string.browser_shortcut_youtube),
-                icon = null,
-                iconRes = R.drawable.ic_youtube_logo,
-                onClick = { open(BrowserSettings.BUILT_IN_SHORTCUTS[1].url) }
-            )
-            ShortcutTile(
-                label = stringResource(R.string.browser_shortcut_instagram),
-                icon = null,
-                iconRes = R.drawable.ic_instagram_logo,
-                onClick = { open(BrowserSettings.BUILT_IN_SHORTCUTS[2].url) }
-            )
+            // ClearView's own shortcuts are removable like any other: the ✕
+            // hides the tile (persisted) and never touches the site, its
+            // cookies or the browsing history.
+            settings.visibleBuiltInShortcuts.forEach { shortcut ->
+                ShortcutTile(
+                    label = builtInShortcutLabel(shortcut.name),
+                    icon = null,
+                    iconRes = builtInShortcutIcon(shortcut.url),
+                    onClick = { open(shortcut.url) },
+                    onLongClick = { pendingDelete = shortcut.url },
+                    onRemove = { pendingDelete = shortcut.url }
+                )
+            }
             settings.shortcuts.forEach { shortcut ->
                 ShortcutTile(
                     label = shortcut.name,
                     icon = null,
+                    logo = rememberShortcutLogo(shortcut.url),
                     letter = shortcut.name.take(1).uppercase(),
                     onClick = { open(shortcut.url) },
-                    onLongClick = { pendingDelete = shortcut.url }
+                    onLongClick = { pendingDelete = shortcut.url },
+                    // The cross is the visible way out: a long press is not a
+                    // thing the reader can discover on a tile.
+                    onRemove = { pendingDelete = shortcut.url }
                 )
             }
             ShortcutTile(
@@ -275,8 +263,13 @@ fun BrowserHome(
     }
 
     pendingDelete?.let { url ->
+        // A removed tile can be one the reader added OR one ClearView ships
+        // (Google / YouTube / Instagram). Both are confirmed the same way; only
+        // the store that forgets them differs.
         val shortcut = settings.shortcuts.firstOrNull { it.url == url }
+            ?: BrowserSettings.BUILT_IN_SHORTCUTS.firstOrNull { it.url == url }
         if (shortcut != null) {
+            val isBuiltIn = settings.isBuiltInShortcut(shortcut)
             AlertDialog(
                 onDismissRequest = { pendingDelete = null },
                 title = { Text(stringResource(R.string.browser_shortcut_remove_title)) },
@@ -284,14 +277,16 @@ fun BrowserHome(
                     Text(
                         stringResource(
                             R.string.browser_shortcut_remove_body,
-                            shortcut.name
+                            if (isBuiltIn) builtInShortcutLabel(shortcut.name)
+                            else shortcut.name
                         )
                     )
                 },
                 confirmButton = {
                     TextButton(
                         onClick = {
-                            settings.removeShortcut(shortcut)
+                            if (isBuiltIn) settings.removeBuiltInShortcut(shortcut)
+                            else settings.removeShortcut(shortcut)
                             pendingDelete = null
                         }
                     ) {
@@ -308,6 +303,47 @@ fun BrowserHome(
     }
 }
 
+/**
+ * The shipped brand mark for a built-in shortcut, keyed by its address.
+ *
+ * Keyed by URL rather than by position: the list is data, and a reordered list
+ * must not silently paint Instagram's mark on Google's tile.
+ */
+private fun builtInShortcutIcon(url: String): Int? = when (url) {
+    "https://www.google.com/" -> R.drawable.ic_google_logo
+    "https://www.youtube.com/" -> R.drawable.ic_youtube_logo
+    "https://www.instagram.com/" -> R.drawable.ic_instagram_logo
+    else -> null
+}
+
+/** Localised name of a built-in shortcut (its stored name is the fallback). */
+@Composable
+private fun builtInShortcutLabel(name: String): String = when (name) {
+    "Google" -> stringResource(R.string.browser_shortcut_google)
+    "YouTube" -> stringResource(R.string.browser_shortcut_youtube)
+    "Instagram" -> stringResource(R.string.browser_shortcut_instagram)
+    else -> name
+}
+
+/**
+ * The site's own logo for a shortcut tile.
+ *
+ * Read once per host and kept in memory: the start page recomposes on every
+ * keystroke in the search box, and re-fetching an icon there would put network
+ * work on the UI path. A miss is remembered too, so a site without an icon does
+ * not retry on every recomposition — the tile falls back to its initial.
+ */
+@Composable
+private fun rememberShortcutLogo(url: String): ImageBitmap? {
+    val host = remember(url) { BrowserAddress.host(url)?.removePrefix("www.") }
+    var logo by remember(host) { mutableStateOf(ShortcutLogos.remembered(host)) }
+    LaunchedEffect(host) {
+        if (host.isNullOrBlank() || ShortcutLogos.isCached(host)) return@LaunchedEffect
+        logo = ShortcutLogos.load(host)
+    }
+    return logo
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ShortcutTile(
@@ -318,8 +354,10 @@ private fun ShortcutTile(
     letterColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     iconTint: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     iconRes: Int? = null,
+    logo: ImageBitmap? = null,
     isAdd: Boolean = false,
-    onLongClick: (() -> Unit)? = null
+    onLongClick: (() -> Unit)? = null,
+    onRemove: (() -> Unit)? = null
 ) {
     Column(
         modifier = Modifier
@@ -331,38 +369,71 @@ private fun ShortcutTile(
             .padding(vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Surface(
-            modifier = Modifier.size(56.dp),
-            shape = CircleShape,
-            color = when {
-                isAdd -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                // Real app marks keep their own colour on a white tile; on a
-                // dark surface the Google G's negative space would disappear.
-                iconRes != null -> Color.White
-                else -> MaterialTheme.colorScheme.surface
-            },
-            tonalElevation = if (isAdd) 0.dp else 2.dp
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                if (iconRes != null) {
-                    Image(
-                        painter = painterResource(iconRes),
-                        contentDescription = null,
-                        modifier = Modifier.size(30.dp)
-                    )
-                } else if (icon != null) {
+        Box(modifier = Modifier.size(56.dp)) {
+            Surface(
+                modifier = Modifier.size(56.dp),
+                shape = CircleShape,
+                color = when {
+                    isAdd -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    // Real app marks keep their own colour on a white tile; on a
+                    // dark surface the Google G's negative space would disappear.
+                    iconRes != null -> Color.White
+                    // A site's own logo needs the same white bed: most are drawn
+                    // for a light page and a transparent one would vanish here.
+                    logo != null -> Color.White
+                    else -> MaterialTheme.colorScheme.surface
+                },
+                tonalElevation = if (isAdd) 0.dp else 2.dp
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    if (iconRes != null) {
+                        Image(
+                            painter = painterResource(iconRes),
+                            contentDescription = null,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    } else if (logo != null) {
+                        Image(
+                            bitmap = logo,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .size(30.dp)
+                                .clip(CircleShape)
+                        )
+                    } else if (icon != null) {
+                        Icon(
+                            icon,
+                            contentDescription = null,
+                            tint = if (isAdd) MaterialTheme.colorScheme.primary else iconTint,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    } else {
+                        Text(
+                            text = letter.orEmpty(),
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = letterColor
+                        )
+                    }
+                }
+            }
+            if (onRemove != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(x = 6.dp, y = (-4).dp)
+                        .size(20.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                        .clickable(onClick = onRemove),
+                    contentAlignment = Alignment.Center
+                ) {
                     Icon(
-                        icon,
-                        contentDescription = null,
-                        tint = if (isAdd) MaterialTheme.colorScheme.primary else iconTint,
-                        modifier = Modifier.size(26.dp)
-                    )
-                } else {
-                    Text(
-                        text = letter.orEmpty(),
-                        fontSize = 22.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = letterColor
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.browser_shortcut_remove_action),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(13.dp)
                     )
                 }
             }
@@ -459,4 +530,109 @@ private fun AddShortcutDialog(
             }
         }
     )
+}
+
+/**
+ * Fetches and caches the logo a website uses on its own tab.
+ *
+ * The page's own `<link rel="icon">` is what a browser uses, and it is the
+ * only source that gives the real mark: `/favicon.ico` is an ICO file Android
+ * cannot decode, and the favicon service answers with a generic globe for the
+ * sites it does not know. So the home page is read first (a few KB of HTML),
+ * then every icon it declares is tried until one decodes; the plain favicon
+ * paths stay as the fallback for sites that declare nothing.
+ *
+ * Only the site's own home page is requested, with no cookies and no session,
+ * so adding a shortcut cannot leak the reader's history or logged-in state.
+ * Everything is best-effort: any failure returns null and the tile keeps its
+ * initial.
+ */
+private object ShortcutLogos {
+
+    private const val TIMEOUT_MS = 6_000
+    private const val MAX_IMAGE_BYTES = 512 * 1024
+    private const val MAX_PAGE_CHARS = 256 * 1024
+
+    private val memory = HashMap<String, ImageBitmap?>()
+
+    fun remembered(host: String?): ImageBitmap? =
+        if (host.isNullOrBlank()) null else memory[host]
+
+    /** True once a load has finished, including the "site has no icon" case. */
+    fun isCached(host: String): Boolean = memory.containsKey(host)
+
+    suspend fun load(host: String): ImageBitmap? = withContext(Dispatchers.IO) {
+        if (memory.containsKey(host)) return@withContext memory[host]
+        val page = fetchText("https://$host/")
+        var ready: ImageBitmap? = null
+        for (icon in ShortcutIconLinks.candidates(page, host)) {
+            val bitmap = fetchImage(icon) ?: continue
+            ready = bitmap.asImageBitmap()
+            break
+        }
+        memory[host] = ready
+        ready
+    }
+
+    private fun fetchText(address: String): String? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = open(address, "text/html,application/xhtml+xml")
+            if (connection.responseCode !in 200..299) return null
+            connection.inputStream.bufferedReader().use { reader ->
+                val buffer = CharArray(8 * 1024)
+                val html = StringBuilder()
+                while (html.length < MAX_PAGE_CHARS) {
+                    val read = reader.read(buffer)
+                    if (read <= 0) break
+                    html.append(buffer, 0, read)
+                }
+                html.toString()
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try { connection?.disconnect() } catch (_: Exception) { /* ignore */ }
+        }
+    }
+
+    private fun open(address: String, accept: String): HttpURLConnection =
+        (URL(address).openConnection() as HttpURLConnection).apply {
+            connectTimeout = TIMEOUT_MS
+            readTimeout = TIMEOUT_MS
+            instanceFollowRedirects = true
+            requestMethod = "GET"
+            // Some sites serve no icon to an unknown client at all.
+            setRequestProperty(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+            )
+            setRequestProperty("Accept", accept)
+        }
+
+    private fun fetchImage(address: String): Bitmap? {
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = open(address, "image/*")
+            if (connection.responseCode !in 200..299) return null
+            val bytes = connection.inputStream.use { stream ->
+                val buffer = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(8 * 1024)
+                while (buffer.size() < MAX_IMAGE_BYTES) {
+                    val read = stream.read(chunk)
+                    if (read <= 0) break
+                    buffer.write(chunk, 0, read)
+                }
+                buffer.toByteArray()
+            }
+            if (bytes.isEmpty()) return null
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (_: Exception) {
+            // A shortcut with no icon is normal, not an error worth surfacing.
+            null
+        } finally {
+            try { connection?.disconnect() } catch (_: Exception) { /* ignore */ }
+        }
+    }
 }

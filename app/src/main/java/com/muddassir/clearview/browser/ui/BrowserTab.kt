@@ -1,6 +1,9 @@
 package com.muddassir.clearview.browser.ui
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
@@ -63,10 +67,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.muddassir.clearview.LockScreen
 import com.muddassir.clearview.R
 import com.muddassir.clearview.browser.BrowserAddress
 import com.muddassir.clearview.browser.BrowserNotice
 import com.muddassir.clearview.browser.BrowserSession
+import com.muddassir.clearview.repository.BlockRepository
 import kotlinx.coroutines.delay
 
 /**
@@ -94,6 +100,15 @@ fun BrowserTab(
     var address by rememberSaveable { mutableStateOf(session.url) }
     var addressFocused by remember { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    // Protection Settings is a protected surface, like the Block tab: it opens
+    // only behind the app password, and the SAME password — one gate, one
+    // secret, no second "browser password" to forget. It re-locks on close, so
+    // a single unlock never leaves the switches open for the rest of the
+    // session.
+    val appContext = LocalContext.current.applicationContext
+    val passwordStore = remember(appContext) { BlockRepository(appContext) }
+    var settingsUnlocked by remember { mutableStateOf(false) }
+    var settingsNeedsPassword by remember { mutableStateOf(false) }
     // Compose measures a newly inserted child before the parent's size is
     // known. Creating WebView at that moment gives Chromium a zero-height
     // initial containing block, and it keeps reporting `100vh` = 0 (and every
@@ -101,8 +116,35 @@ fun BrowserTab(
     // means the tab already has its real size; the WebView is then measured
     // once, correctly, and pages size themselves normally.
     var webViewReady by remember { mutableStateOf(false) }
+    // A real one-pixel relayout is the operation that makes Chromium rebuild
+    // the CSS viewport it cached when the document was created
+    // (see BrowserSession.repairViewport). Keeping it brief means the reader
+    // never sees the size change.
+    var viewportNudge by remember { mutableStateOf(false) }
     val focusManager = LocalFocusManager.current
     val keyboard = LocalSoftwareKeyboardController.current
+
+    // Instagram's "+" (create post / add to story) and YouTube's upload buttons
+    // are `<input type="file">`. A WebView cannot open a picker by itself, so
+    // the page's request is routed through this launcher; without it the tap
+    // did nothing at all.
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        session.onFileChooserResult(result.resultCode, result.data)
+    }
+    DisposableEffect(session, filePicker) {
+        session.fileChooserLauncher = { intent ->
+            runCatching { filePicker.launch(intent) }.onFailure {
+                // No activity can answer the request on this device.
+                session.onFileChooserResult(Activity.RESULT_CANCELED, null)
+            }
+        }
+        onDispose {
+            session.fileChooserLauncher = null
+            session.onFileChooserResult(Activity.RESULT_CANCELED, null)
+        }
+    }
 
     fun submitAddress() {
         session.navigate(address)
@@ -111,12 +153,19 @@ fun BrowserTab(
         keyboard?.hide()
     }
 
+    fun closeSettings() {
+        showSettings = false
+        settingsUnlocked = false
+    }
+
     fun openSettings() {
         session.settings.refreshFromApp()
         session.hideFooter()
         addressFocused = false
         focusManager.clearFocus()
         keyboard?.hide()
+        settingsNeedsPassword = passwordStore.hasPassword()
+        settingsUnlocked = false
         showSettings = true
     }
 
@@ -133,6 +182,13 @@ fun BrowserTab(
         withFrameNanos { }
         withFrameNanos { }
         webViewReady = true
+    }
+    LaunchedEffect(session.viewportRepairTick) {
+        if (session.viewportRepairTick == 0) return@LaunchedEffect
+        viewportNudge = true
+        withFrameNanos { }
+        withFrameNanos { }
+        viewportNudge = false
     }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -176,7 +232,7 @@ fun BrowserTab(
             session.block != null || session.canGoBack
     ) {
         when {
-            showSettings -> showSettings = false
+            showSettings -> closeSettings()
             session.footerVisible -> session.hideFooter()
             else -> session.handleBack()
         }
@@ -227,7 +283,9 @@ fun BrowserTab(
             // height-dependent pages such as Instagram's sign-in.
             if (webViewReady) {
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(bottom = if (viewportNudge) 1.dp else 0.dp),
                     factory = { session.webView }
                 )
             }
@@ -242,17 +300,26 @@ fun BrowserTab(
             }
 
             if (showSettings) {
-                BrowserProtectionSettings(
-                    settings = session.settings,
-                    onBack = { showSettings = false },
-                    onChanged = { session.onProtectionSettingsChanged() },
-                    onOpenAppProtection = onOpenAppProtection?.let { open ->
-                        {
-                            showSettings = false
-                            open()
+                if (settingsUnlocked) {
+                    BrowserProtectionSettings(
+                        settings = session.settings,
+                        onBack = { closeSettings() },
+                        onChanged = { session.onProtectionSettingsChanged() },
+                        onOpenAppProtection = onOpenAppProtection?.let { open ->
+                            {
+                                closeSettings()
+                                open()
+                            }
                         }
-                    }
-                )
+                    )
+                } else {
+                    BrowserSettingsGate(
+                        hasPassword = settingsNeedsPassword,
+                        passwordStore = passwordStore,
+                        onUnlocked = { settingsUnlocked = true },
+                        onBack = { closeSettings() }
+                    )
+                }
             }
 
             if (!showSettings) {
@@ -502,6 +569,54 @@ private fun BrowserNoticeBanner(
                 )
             }
         }
+    }
+}
+
+/**
+ * The password gate in front of Protection Settings.
+ *
+ * It is [LockScreen] — the very screen the app lock and the Block tab use — so
+ * the browser asks for the password the reader already has rather than
+ * inventing a second one. When no password is set yet the same screen offers to
+ * create it, which then protects every surface, not just this page.
+ */
+@Composable
+private fun BrowserSettingsGate(
+    hasPassword: Boolean,
+    passwordStore: BlockRepository,
+    onUnlocked: () -> Unit,
+    onBack: () -> Unit
+) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        LockScreen(
+            hasPassword = hasPassword,
+            onUnlock = { attempt ->
+                passwordStore.verifyPassword(attempt).also { ok -> if (ok) onUnlocked() }
+            },
+            onSetupPassword = { password ->
+                passwordStore.setPassword(password)
+                onUnlocked()
+            }
+        )
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(6.dp)
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = stringResource(R.string.browser_back)
+            )
+        }
+        Text(
+            text = stringResource(R.string.browser_settings_locked),
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 20.dp, start = 56.dp, end = 56.dp)
+        )
     }
 }
 

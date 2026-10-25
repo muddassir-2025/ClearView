@@ -101,7 +101,11 @@ class MediaUpdateWorker(
                 // can never contribute the same video twice.
                 .distinctBy { it.videoId }
                 .filter { v ->
-                    v.channelId in notifiedChannelIds &&
+                    // Community posts share the channel's feed cache but have no
+                    // player, and the update notification's tap opens a video —
+                    // so they are not announced. Uploads keep their behavior.
+                    !v.isPost &&
+                        v.channelId in notifiedChannelIds &&
                         isNotificationEligible(
                             videoId = v.videoId,
                             publishedAtEpochMillis = v.publishedAtEpochMillis,

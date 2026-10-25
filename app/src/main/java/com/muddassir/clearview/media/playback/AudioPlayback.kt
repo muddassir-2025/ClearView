@@ -93,11 +93,11 @@ object AudioPlayback {
      * in the background after the player screen closes, re-opening the screen
      * must NOT restart the track — it simply shows the ongoing playback.
      */
-    fun play(context: Context, item: DownloadItem) {
+    fun play(context: Context, item: DownloadItem, startAtMs: Long = 0L) {
         appContext = context.applicationContext
         syncSpeed(context)
         if (playingVideoId.value == item.videoId) return
-        AudioPlaybackService.play(context, item)
+        AudioPlaybackService.play(context, item, startAtMs)
     }
 
     /**
@@ -131,7 +131,9 @@ object AudioPlayback {
         // it starts now. A download also has no expiry to run into.
         val downloaded = AudioDownloads.itemFor(video.videoId)
         if (downloaded != null && AudioDownloads.audioFile(context, downloaded).exists()) {
-            AudioPlaybackService.play(context, downloaded)
+            // A handover keeps its position here too: a downloaded file is a
+            // normal `startAtMs` source for the same service.
+            AudioPlaybackService.play(context, downloaded, startAtMs)
             return true
         }
 

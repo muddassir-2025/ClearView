@@ -563,17 +563,39 @@ class MediaRepository(context: Context) {
             // path skips enrichment so the dialog stays fast — the feed effect
             // enriches on its own refresh right after.
             val videos = if (enrich) enrichDurations(withKnown) else withKnown
+            // Community posts are NOT in the RSS feed (YouTube only publishes
+            // uploads there). Fetch the channel's Posts tab in the same refresh
+            // so both live in one cache and one merged feed — the Posts rail
+            // then behaves like any other part of the feed. A page that cannot
+            // be read keeps the cached posts: a transient failure must not
+            // empty a rail that was populated a minute ago.
             val cachedVideos = getCachedVideos(channelId)?.first.orEmpty()
-            val freshIds = videos.map { it.videoId }.toSet()
+            val cachedPosts = cachedVideos.filter { it.isCommunityPost }
+            val community = YouTubeCommunitySource.fetch(
+                channelId = channelId,
+                channelName = getSavedChannels()
+                    .firstOrNull { it.channelId == channelId }
+                    ?.displayName
+                    .orEmpty()
+            )
+            val posts = if (community.ok) community.posts else cachedPosts
+            val videosAndPosts = videos + posts
+            val freshIds = videosAndPosts.map { it.videoId }.toSet()
             // YouTube RSS exposes a rolling latest window. Keep older entries
             // already learned so repeated refreshes build a growing local
-            // channel history instead of throwing older uploads away.
-            val accumulated = (videos + cachedVideos.filter { it.videoId !in freshIds })
-                .sortedByDescending { it.publishedAtEpochMillis }
+            // channel history instead of throwing older uploads away. Cached
+            // posts are NOT re-added when the fetch succeeded: the live page is
+            // the whole truth about them (deleted posts must leave the rail).
+            val accumulated = (
+                videosAndPosts + cachedVideos.filter {
+                    it.videoId !in freshIds && !it.isCommunityPost
+                }
+                ).sortedByDescending { it.publishedAtEpochMillis }
             // Trace every feed item straight from the parsed RSS so we can
             // confirm the videoId handed to the embedded player belongs to
-            // this exact RSS entry (no stale/mixed/hardcoded ids).
-            accumulated.forEach { v ->
+            // this exact RSS entry (no stale/mixed/hardcoded ids). Posts are
+            // excluded: they are not playable entries and never reach a player.
+            videos.forEach { v ->
                 Log.d(
                     TAG,
                     "RSS_VIDEO channelId=$channelId videoId=${v.videoId} " +
@@ -688,7 +710,9 @@ class MediaRepository(context: Context) {
         top: Int = 10,
         concurrency: Int = 4
     ): List<MediaVideo> {
-        val missing = videos.filter { it.durationSeconds <= 0L }.take(top)
+        // Posts are not videos: they have no watch page, so asking for a
+        // duration would be a wasted request per post on every refresh.
+        val missing = videos.filter { it.durationSeconds <= 0L && !it.isPost }.take(top)
         if (missing.isEmpty()) return videos
         val byId = videos.associateBy { it.videoId }.toMutableMap()
         missing.chunked(concurrency).forEach { batch ->
@@ -785,6 +809,10 @@ class MediaRepository(context: Context) {
      */
     fun buildChannelUpdates(videos: List<MediaVideo>): List<MediaChannelUpdate> =
         videos
+            // "Latest update" points at something the app can OPEN — a video.
+            // A community post has no player, so it is not a candidate for the
+            // home feed's update row (it still appears in the Media tab).
+            .filterNot { it.isPost }
             .groupBy { it.channelId }
             .map { (channelId, vs) ->
                 val newest = vs.maxByOrNull { it.publishedAtEpochMillis }!!

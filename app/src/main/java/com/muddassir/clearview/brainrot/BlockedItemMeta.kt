@@ -37,8 +37,17 @@ class BlockedItemMeta(context: Context) {
         /** Added by hand in the Blocking tab. */
         USER("user"),
 
-        /** Added from YouTube's "Not interested" action. */
+        /** Added from YouTube's "Not interested" action or the YouTube browser menu. */
         YOUTUBE_NOT_INTERESTED("youtube_not_interested"),
+
+        /**
+         * Added from the Instagram action ClearView offers on a post or reel.
+         *
+         * Its own source rather than a shared "browser" tag: the reader asked
+         * to be able to see which of their blocks came from Instagram, and the
+         * blocking list groups YouTube and Instagram separately.
+         */
+        INSTAGRAM("instagram"),
 
         /** Added by a global rule an administrator approved. */
         GLOBAL("global"),

@@ -72,8 +72,8 @@ private fun HubScreen() {
         else hub.playingVideo = null
     }
 
-    // System back while the offline audio player is open closes it.
-    BackHandler(enabled = hub.playingAudio != null) {
+    // System back while the audio player is open closes it.
+    BackHandler(enabled = hub.playingAudio != null || hub.playingVideoAudio != null) {
         hub.exitAudio()
     }
 

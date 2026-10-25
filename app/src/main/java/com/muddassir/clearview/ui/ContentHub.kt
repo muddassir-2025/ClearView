@@ -59,6 +59,7 @@ import com.muddassir.clearview.media.model.MediaChannelUpdate
 import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.ui.AudioPlayerScreen
+import com.muddassir.clearview.media.ui.AudioPlayerSource
 import android.util.Log
 import com.muddassir.clearview.media.ui.LiveTab
 import com.muddassir.clearview.media.ui.MediaTab
@@ -148,8 +149,15 @@ class ContentHubState(appContext: Context) {
     var selectedTab by mutableStateOf(ContentTab.QURAN)
     var playingVideo by mutableStateOf<MediaVideo?>(null)
     // Offline audio playback (downloaded files). Only one of playingVideo /
-    // playingAudio is non-null at a time — playing audio closes the video player.
+    // playingAudio / playingVideoAudio is non-null at a time — playing audio
+    // closes the video player.
     var playingAudio by mutableStateOf<DownloadItem?>(null)
+    /**
+     * Audio Mode for a video: the SAME audio player screen, playing the video's
+     * audio stream instead of a downloaded file. Kept next to [playingAudio]
+     * rather than in a separate screen so the two never drift apart.
+     */
+    var playingVideoAudio by mutableStateOf<AudioPlayerSource.Video?>(null)
     // The playing audio's queue (a playlist, the Downloads list, or the whole
     // offline library) + the current index in it — drives Next / Previous.
     var audioQueue by mutableStateOf<List<DownloadItem>>(emptyList())
@@ -752,6 +760,27 @@ class ContentHubState(appContext: Context) {
     }
 
     /**
+     * Audio Mode: closes the in-screen video player and opens the SAME audio
+     * player screen on this video's audio stream, from [startAtMs] (the
+     * position the video had reached), so the mode switch never starts over.
+     *
+     * The video's WebView is disposed by leaving [playingVideo], which also
+     * silences it — the audio player is the only thing playing.
+     */
+    fun playVideoAudio(video: MediaVideo, startAtMs: Long = 0L) {
+        playingVideo = null
+        shortsQueue = emptyList()
+        shortsIndex = -1
+        playingAudio = null
+        audioQueue = emptyList()
+        audioIndex = -1
+        playingVideoAudio = AudioPlayerSource.Video(
+            video = video,
+            startAtMs = startAtMs.coerceAtLeast(0L)
+        )
+    }
+
+    /**
      * Plays [item] (its local audio file) immediately, inside [queue] when one
      * is given so the player's Next / Previous buttons walk the SAME context the
      * user started from (a playlist, the Downloads list, …). Without a queue the
@@ -763,6 +792,7 @@ class ContentHubState(appContext: Context) {
         queue: List<DownloadItem> = emptyList()
     ) {
         playingVideo = null
+        playingVideoAudio = null
         shortsQueue = emptyList()
         shortsIndex = -1
         val resolved = queue.ifEmpty { AudioDownloads.items.value }
@@ -790,12 +820,28 @@ class ContentHubState(appContext: Context) {
     val canGoNextAudio: Boolean
         get() = audioIndex >= 0 && audioIndex < audioQueue.size - 1
 
-    /** Closes the audio player screen. Playback deliberately CONTINUES in the
-     *  background (foreground service + media notification) — like any music
-     *  app, leaving the player must not stop the audio.
+    /**
+     * Closes the audio player screen.
+     *
+     * A downloaded track keeps playing in the background (foreground service +
+     * media notification) — like any music app, leaving the player must not
+     * stop the audio. A VIDEO heard in Audio Mode is the exception: back returns
+     * to that video's own player, the screen the reader came from, rather than
+     * dropping them into the feed with the video lost. The stream is stopped
+     * first, which files its position as watch progress — so the player reopens
+     * and resumes at the point the reader had listened to, and the two players
+     * never talk over each other.
      */
     fun exitAudio() {
+        val videoAudio = playingVideoAudio
         playingAudio = null
+        playingVideoAudio = null
+        if (videoAudio != null) {
+            AudioPlayback.stop()
+            shortsQueue = emptyList()
+            shortsIndex = -1
+            playingVideo = videoAudio.video
+        }
     }
 
     /**
@@ -836,14 +882,19 @@ class ContentHubState(appContext: Context) {
             }
 
             NowPlayingTarget.VIDEO -> {
-                // Listening and watching the same video are mutually exclusive
-                // (the same rule the player enforces in both directions), and
-                // two copies of one lecture a few hundred milliseconds apart is
-                // the one failure worse than either alone. The video resumes
-                // from the position the audio was at — the service files its
-                // progress under the same videoId.
-                AudioPlayback.stop()
-                playVideo(video!!)
+                // "Take me back to what I am listening to" — for a VIDEO's
+                // audio that is the audio player, not the video player: the
+                // reader left it in Audio Mode, and reopening the WebView
+                // would trade continuous listening for a video that has to
+                // buffer. The screen resumes from wherever the service is.
+                playVideoAudio(
+                    video = video!!,
+                    startAtMs = if (AudioPlayback.playingVideoId.value == video.videoId) {
+                        AudioPlayback.positionMs.longValue
+                    } else {
+                        0L
+                    }
+                )
                 true
             }
 
@@ -1211,17 +1262,29 @@ fun ContentHubTabContent(
                 onToggleFullscreen = { state.playerFullscreen = !state.playerFullscreen },
                 onExit = { state.playingVideo = null },
                 onPlayOffline = { state.playAudio(state.playingVideo!!) },
+                // Audio Mode (the headphones control): hand over to the audio
+                // player at the position the video has reached.
+                onAudioMode = { startAtMs ->
+                    state.playingVideo?.let { state.playVideoAudio(it, startAtMs) }
+                },
                 shortsQueue = state.shortsQueue,
                 shortsIndex = state.shortsIndex,
                 onNavigateShorts = { state.navigateShorts(it) }
             )
 
             state.playingAudio != null -> AudioPlayerScreen(
-                item = state.playingAudio!!,
+                source = AudioPlayerSource.Download(state.playingAudio!!),
                 hasPrevious = state.canGoPreviousAudio,
                 hasNext = state.canGoNextAudio,
                 onPrevious = { state.navigateAudio(-1) },
                 onNext = { state.navigateAudio(1) },
+                onExit = { state.exitAudio() }
+            )
+
+            // Audio Mode: the SAME player, playing a video's audio stream. No
+            // queue to walk — the reader chose one video to listen to.
+            state.playingVideoAudio != null -> AudioPlayerScreen(
+                source = state.playingVideoAudio!!,
                 onExit = { state.exitAudio() }
             )
 
@@ -1320,7 +1383,7 @@ fun ContentHubTopBar(
 
         // Offline audio: back arrow closes the podcast-style player; the bar
         // shows "Now Playing" (the player body itself shows the track title).
-        state.playingAudio != null -> TopAppBar(
+        state.playingAudio != null || state.playingVideoAudio != null -> TopAppBar(
             title = {
                 Text(
                     text = "Now Playing",

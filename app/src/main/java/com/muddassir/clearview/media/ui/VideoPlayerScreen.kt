@@ -16,16 +16,9 @@ import android.widget.Toast
 import androidx.activity.compose.LocalActivity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -94,7 +87,6 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -137,7 +129,6 @@ import com.muddassir.clearview.media.util.formatEtaRemaining
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -172,6 +163,11 @@ fun VideoPlayerScreen(
     onExit: () -> Unit = {},
     /** Plays the downloaded audio instead of the video (podcast-style). */
     onPlayOffline: () -> Unit = {},
+    /**
+     * Audio Mode: opens the full audio player on this video's audio stream,
+     * starting at the given milliseconds (the video's current position).
+     */
+    onAudioMode: (startAtMs: Long) -> Unit = {},
     /** Ordered Shorts list for the vertical viewer (empty for long videos). */
     shortsQueue: List<MediaVideo> = emptyList(),
     /** Index of [video] within [shortsQueue], or -1. */
@@ -471,63 +467,26 @@ fun VideoPlayerScreen(
         mutableStateOf(playerPrefs.getBoolean(KEY_MUTED, true))
     }
 
-    // ── Listen mode (background audio) ──────────────────────────────
-    // Whether the app's ONE background audio player is holding THIS video. The
-    // same question whether it is playing a downloaded file or a resolved audio
-    // stream: the reader asked to hear this video, and which of the two it
-    // turned out to be is not their business.
+    // ── Audio Mode (the same audio player, playing this video's audio) ──
+    // Whether the app's ONE background audio player is already holding THIS
+    // video. It is the same question whether the bytes came off a download or
+    // off a stream, and it only tints the headphones button: entering Audio
+    // Mode always opens the player screen.
     val isListening = AudioPlayback.playingVideoId.value == video.videoId
-    // True while a stream this device has never resolved is being looked up.
-    // That is a real network round trip, and a button that appears to do
-    // nothing for three seconds reads as broken.
-    var listenPreparing by remember(video.videoId) { mutableStateOf(false) }
-    val listenScope = rememberCoroutineScope()
-    // What the reader actually waits through is TWO phases, and only the first
-    // one is [listenPreparing]. Once the audio URL is resolved the service
-    // still has to bind, prepare a MediaPlayer and buffer the first bytes of
-    // the stream (AudioPlayback.buffering) — several seconds of silence during
-    // which the video id is ALREADY loaded, so the transport flips to "Stop
-    // listening" and, without this, the wait loses every sign that anything is
-    // still happening. Both phases count as "starting" for the UI: the
-    // headphones keep pulsing and the caption stays up until sound genuinely
-    // begins.
-    val listenStarting = listenPreparing ||
-        (isListening && AudioPlayback.buffering.value)
 
     /**
-     * Starts listening, or stops it when this video is already what is playing.
+     * Switches to Audio Mode: pauses the in-screen video player and hands this
+     * video to the audio player screen, starting from where the video is.
      *
-     * The in-screen player is paused FIRST, and that is the whole reason this is
-     * one function rather than a line at the button: listening and watching the
-     * same video are mutually exclusive, and two copies of the same audio a few
-     * hundred milliseconds apart is the one failure mode of this feature that is
-     * worse than not having it.
+     * The pause is deliberate and comes first — watching and listening to the
+     * same video are mutually exclusive, and two copies of one lecture a few
+     * hundred milliseconds apart is the one failure mode of this feature that
+     * is worse than not having it. The handover position means switching modes
+     * mid-lecture never starts the audio over.
      */
-    fun toggleListen() {
-        if (isListening) {
-            AudioPlayback.stop()
-            return
-        }
+    fun enterAudioMode() {
         sendCommand("pause")
-        listenPreparing = true
-        listenScope.launch {
-            val started = AudioPlayback.playVideo(
-                context = context.applicationContext,
-                video = video,
-                // Carry on from where the video is: handing over mid-lecture and
-                // starting again at zero throws away the position the reader
-                // was on.
-                startAtMs = (transportPosition * 1000.0).toLong()
-            )
-            listenPreparing = false
-            if (!started) {
-                Toast.makeText(
-                    context,
-                    "Couldn't start listening to this video",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-        }
+        onAudioMode((transportPosition * 1000.0).toLong().coerceAtLeast(0L))
     }
 
     /**
@@ -1148,12 +1107,11 @@ fun VideoPlayerScreen(
                 onWatchAgain = { requestSeek(0.0) },
                 onShare = { shareVideo() },
                 onHide = { showHideConfirm = true },
-                // Listen mode lives in the transport row; these two give it
-                // words in the ⋮ menu and own the sleep timer, which only means
-                // anything while the background player holds this video.
+                // Audio Mode lives in the transport row; these give it words in
+                // the ⋮ menu and own the sleep timer, which only means anything
+                // while the background player holds this video.
                 isListening = isListening,
-                listenPreparing = listenStarting,
-                onListen = { toggleListen() },
+                onAudioMode = { enterAudioMode() },
                 onSleepTimer = { minutes ->
                     AudioPlayback.setSleepTimer(context.applicationContext, minutes)
                 },
@@ -1422,15 +1380,10 @@ private fun PlayerControlPanel(
     onWatchAgain: () -> Unit,
     onShare: () -> Unit,
     onHide: () -> Unit,
-    /** True while the background audio player holds THIS video (listen mode). */
+    /** True while the background audio player holds THIS video (Audio Mode). */
     isListening: Boolean,
-    /**
-     * True while listen mode is still starting: the stream is being resolved,
-     * or its first bytes are still buffering (both are silent waits).
-     */
-    listenPreparing: Boolean,
-    /** Start or stop listen mode (background audio) for this video. */
-    onListen: () -> Unit,
+    /** Opens the audio player on this video's audio (Audio Mode). */
+    onAudioMode: () -> Unit,
     /** ⋮ menu → Sleep timer, in minutes from now; null turns it off. */
     onSleepTimer: (Int?) -> Unit,
     /** ⋮ menu → Sleep timer → stop when this track ends. */
@@ -1564,16 +1517,13 @@ private fun PlayerControlPanel(
                     // headphones button in the transport row is the fast path,
                     // and this is the one that explains itself.
                     DropdownMenuItem(
-                        text = {
-                            Text(if (isListening) "Stop listening" else "Listen in background")
-                        },
-                        enabled = !listenPreparing,
+                        text = { Text("Audio mode") },
                         leadingIcon = {
                             Icon(Icons.Filled.Headphones, contentDescription = null)
                         },
                         onClick = {
                             showMoreMenu = false
-                            onListen()
+                            onAudioMode()
                         }
                     )
                     if (isListening) {
@@ -1740,12 +1690,8 @@ private fun PlayerControlPanel(
                 onSeekForward10 = onSeekForward10,
                 onSeek = onSeek,
                 onToggleMute = onToggleMute,
-                onListen = onListen,
-                isListening = isListening,
-                // The panel is handed the screen's combined "still starting"
-                // state and simply forwards it — it has no view of the
-                // background player's buffering.
-                listenPreparing = listenPreparing
+                onAudioMode = onAudioMode,
+                isListening = isListening
             )
         }
 
@@ -2061,17 +2007,14 @@ private fun VideoTransportControls(
     canGoPrevious: Boolean = true,
     canGoNext: Boolean = true,
     /**
-     * Listen mode (background audio). Omitted by callers that do not offer it —
-     * the vertical Shorts viewer, where swiping is the whole interaction.
-     * While [listenPreparing] the headphones icon pulses and a short
-     * "Preparing audio…" caption is drawn under the bar. That flag must stay
-     * true for the WHOLE silent wait (stream resolution AND the first bytes
-     * buffering), or the animation ends while the reader is still hearing
-     * nothing.
+     * Audio Mode (the full audio player on this video's audio). Omitted by
+     * callers that do not offer it — the vertical Shorts viewer, where swiping
+     * is the whole interaction. [isListening] only tints the headphones when
+     * the background player already holds this video; tapping always opens the
+     * player.
      */
-    onListen: (() -> Unit)? = null,
-    isListening: Boolean = false,
-    listenPreparing: Boolean = false
+    onAudioMode: (() -> Unit)? = null,
+    isListening: Boolean = false
 ) {
     // While the user drags, the slider follows the finger instead of the
     // player's periodic position reports; the seek is committed on release.
@@ -2187,34 +2130,12 @@ private fun VideoTransportControls(
                 onClick = onToggleMute,
                 tint = iconTint
             )
-            onListen?.let { listen ->
-                // While the audio is being resolved, the headphones ICON itself
-                // breathes (a slow in-and-out scale). The ring below already
-                // says "working", but a spinning ring is easy to read as
-                // background chrome; a moving icon is what tells the reader
-                // their tap landed on the right button and audio is on its way.
-                // The transition is only created while preparing, so an idle
-                // transport runs no animation at all. Resolving a stream can
-                // take seconds, and the button stays tappable throughout (the
-                // reader may change their mind) — hence a draw-time scale, never
-                // a layout or hit-target change.
-                val listenPulse = if (listenPreparing) {
-                    rememberInfiniteTransition(label = "listen-preparing")
-                } else null
-                val iconScale = listenPulse?.animateFloat(
-                    initialValue = 0.88f,
-                    targetValue = 1.1f,
-                    animationSpec = infiniteRepeatable(
-                        animation = tween(durationMillis = 620, easing = FastOutSlowInEasing),
-                        repeatMode = RepeatMode.Reverse
-                    ),
-                    label = "listen-icon-pulse"
-                )?.value ?: 1f
+            onAudioMode?.let { audioMode ->
                 Box(contentAlignment = Alignment.Center) {
-                    // Armed, a filled disc sits behind the icon. A tint change
-                    // alone would be invisible in the control panel, where the
-                    // resting tint is ALREADY the accent colour — the one place
-                    // this state most needs to be legible.
+                    // Armed, a filled disc sits behind the icon: the video's
+                    // audio is already what the background player holds, and a
+                    // tint change alone would be invisible in the control panel,
+                    // where the resting tint is ALREADY the accent colour.
                     if (isListening) {
                         Surface(
                             shape = CircleShape,
@@ -2223,24 +2144,12 @@ private fun VideoTransportControls(
                             modifier = Modifier.size(44.dp)
                         ) {}
                     }
-                    // The wait is drawn around the button, never in its place:
-                    // resolving an audio stream can take a few seconds, and the
-                    // reader must still be able to tap it again to change their
-                    // mind.
-                    if (listenPreparing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(46.dp),
-                            strokeWidth = 2.dp,
-                            color = iconTint.copy(alpha = 0.5f)
-                        )
-                    }
                     TransportIconButton(
                         icon = Icons.Filled.Headphones,
-                        label = if (isListening) "Stop listening" else "Listen in background",
-                        enabled = !listenPreparing,
-                        onClick = listen,
-                        tint = if (isListening) MaterialTheme.colorScheme.primary else iconTint,
-                        iconScale = iconScale
+                        label = "Audio mode",
+                        enabled = true,
+                        onClick = audioMode,
+                        tint = if (isListening) MaterialTheme.colorScheme.primary else iconTint
                     )
                 }
             }
@@ -2293,30 +2202,6 @@ private fun VideoTransportControls(
             }
         }
 
-        // The wait, in words. The pulsing icon and the ring say that something
-        // is happening; this says WHAT — the reader tapped "listen" and for a
-        // few seconds nothing will be audible, because the audio stream has to
-        // be resolved (a real network round trip) before playback starts.
-        // Shown only while preparing, and grown/shrunk rather than toggled in,
-        // so the bar slides instead of jumping when the wait begins and ends.
-        AnimatedVisibility(
-            visible = listenPreparing,
-            enter = fadeIn(tween(durationMillis = 180)) +
-                expandVertically(tween(durationMillis = 220)),
-            exit = fadeOut(tween(durationMillis = 140)) +
-                shrinkVertically(tween(durationMillis = 180))
-        ) {
-            Text(
-                text = "Preparing audio…",
-                style = MaterialTheme.typography.labelMedium,
-                color = labelColor,
-                maxLines = 1,
-                textAlign = TextAlign.Center,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 6.dp)
-            )
-        }
     }
 }
 

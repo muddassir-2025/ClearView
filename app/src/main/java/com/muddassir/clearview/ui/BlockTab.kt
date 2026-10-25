@@ -75,6 +75,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import com.muddassir.clearview.R
+import com.muddassir.clearview.brainrot.BlockedItemMeta
 import com.muddassir.clearview.brainrot.BrainRotClient
 import com.muddassir.clearview.viewmodel.MainViewModel
 
@@ -616,6 +617,39 @@ private fun BlockManagerDialog(
 }
 
 // ── Shared: one compact, editable list row ──────────────────────
+
+/**
+ * Where a block came from, as the reader sees it.
+ *
+ * YouTube and Instagram are separate categories on purpose: a block made on the
+ * Instagram post/reel action must say Instagram, not present itself as a
+ * YouTube channel block, and the list groups the two so "what came from where"
+ * is answerable without opening each row.
+ */
+private enum class BlockSourceGroup(val title: String) {
+    YOUTUBE("From YouTube"),
+    INSTAGRAM("From Instagram"),
+    YOURS("Blocked by you")
+}
+
+private fun sourceGroupOf(meta: BlockedItemMeta.Meta?): BlockSourceGroup = when (meta?.source) {
+    // Every other source (a manual add, a global rule) belongs to the reader.
+
+    BlockedItemMeta.Source.YOUTUBE_NOT_INTERESTED -> BlockSourceGroup.YOUTUBE
+    BlockedItemMeta.Source.INSTAGRAM -> BlockSourceGroup.INSTAGRAM
+    else -> BlockSourceGroup.YOURS
+}
+
+@Composable
+private fun BlockSourceHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 6.dp)
+    )
+}
 
 /**
  * One entry in a blocked-items list: a leading glyph, the value on a single
@@ -1406,40 +1440,51 @@ private fun BrainRotChannelsCard(viewModel: MainViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
-                channels.forEach { channel ->
-                    BlockListItem(
-                        label = channel.handle,
-                        icon = Icons.Outlined.PlayCircle,
-                        onRemove = { viewModel.removeBrainRotChannel(channel.handle) },
-                        removeLabel = "Unblock ${channel.handle}",
-                        // A channel you block yourself can be sent for the
-                        // shared blocklist just like a keyword. The Send action
-                        // disappears once this value is queued or approved, so
-                        // the same request cannot be sent twice.
-                        onSend = if (
-                            viewModel.globalRulesAvailable &&
-                            viewModel.submissionStatusFor("channel", channel.handle) == null
-                        ) {
-                            {
-                                viewModel.submitChannelToGlobal(channel.handle, channel.name) { ok ->
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(
-                                            if (ok) R.string.block_global_suggest_queued
-                                            else R.string.block_global_suggest_failed
-                                        ),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                // Grouped by where the block came from. The order is stable and
+                // a category with no rows is not shown at all.
+                val grouped = channels.groupBy { sourceGroupOf(viewModel.reasonFor(it.handle)) }
+                BlockSourceGroup.entries.forEach { group ->
+                    val rows = grouped[group] ?: return@forEach
+                    if (rows.isEmpty()) return@forEach
+                    BlockSourceHeader(group.title)
+                    rows.forEach { channel ->
+                        BlockListItem(
+                            label = channel.handle,
+                            icon = Icons.Outlined.PlayCircle,
+                            onRemove = { viewModel.removeBrainRotChannel(channel.handle) },
+                            removeLabel = "Unblock ${channel.handle}",
+                            // A channel you block yourself can be sent for the
+                            // shared blocklist just like a keyword. The Send action
+                            // disappears once this value is queued or approved, so
+                            // the same request cannot be sent twice.
+                            onSend = if (
+                                viewModel.globalRulesAvailable &&
+                                viewModel.submissionStatusFor("channel", channel.handle) == null
+                            ) {
+                                {
+                                    viewModel.submitChannelToGlobal(channel.handle, channel.name) { ok ->
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(
+                                                if (ok) R.string.block_global_suggest_queued
+                                                else R.string.block_global_suggest_failed
+                                            ),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
                                 }
+                            } else null,
+                            subtitle = when {
+                                viewModel.isQueuedForReview("channel", channel.handle) -> "Queued for review"
+                                viewModel.isApprovedGlobally("channel", channel.handle) -> "Approved globally"
+                                viewModel.isRemovedGlobally("channel", channel.handle) -> "Removed"
+                                else -> listOfNotNull(
+                                    channel.name,
+                                    group.title
+                                ).joinToString("  ·  ")
                             }
-                        } else null,
-                        subtitle = when {
-                            viewModel.isQueuedForReview("channel", channel.handle) -> "Queued for review"
-                            viewModel.isApprovedGlobally("channel", channel.handle) -> "Approved globally"
-                            viewModel.isRemovedGlobally("channel", channel.handle) -> "Removed"
-                            else -> channel.name ?: stringResource(R.string.block_channel_my_block)
-                        }
-                    )
+                        )
+                    }
                 }
             }
 

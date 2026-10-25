@@ -180,6 +180,58 @@ object BrowserAddress {
             path == "/reel" || path.startsWith("/reel/")
     }
 
+    /**
+     * Instagram's home feed itself (`/`, `/home/`, `/feed/`).
+     *
+     * "Hide home" makes that surface unreachable, so the URL has to be
+     * recognised here rather than only in the page's nav bar.
+     */
+    fun isInstagramHomeUrl(url: String?): Boolean {
+        if (!isInstagram(url)) return false
+        val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+            .trimEnd('/')
+        return path.isEmpty() || path == "/home" || path == "/feed"
+    }
+
+    /** Instagram's search/explore surface (`/explore/`, `/explore/search/`). */
+    fun isInstagramExploreUrl(url: String?): Boolean {
+        if (!isInstagram(url)) return false
+        val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+        return path == "/explore" || path.startsWith("/explore/")
+    }
+
+    /**
+     * The `@handle` of a profile URL (`instagram.com/<handle>/`), or null.
+     *
+     * Site paths (`/explore/`, `/p/<code>/`, `/direct/`, ...) are not profiles:
+     * a blocked channel must never be read out of a page everyone can open.
+     */
+    fun instagramProfileHandle(url: String?): String? {
+        if (!isInstagram(url)) return null
+        val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+        val handle = path.trim('/')
+        if (!handle.matches(Regex("[A-Za-z0-9._]{2,30}"))) return null
+        if (INSTAGRAM_RESERVED_PATHS.contains(handle.lowercase())) return null
+        return "@${handle.lowercase()}"
+    }
+
+    /** The `@handle` of a YouTube channel URL, or null. */
+    fun youtubeChannelHandle(url: String?): String? {
+        if (!isYouTube(url)) return null
+        val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+        val handle = path.trim('/')
+        if (!handle.startsWith("@")) return null
+        return handle.lowercase()
+    }
+
+    /** Site paths that are not profiles. */
+    private val INSTAGRAM_RESERVED_PATHS = setOf(
+        "explore", "reels", "reel", "stories", "direct", "accounts", "p", "tv",
+        "about", "legal", "api", "developer", "session", "emails", "challenge",
+        "web", "your_activity", "nominate", "blog", "careers", "help", "press",
+        "privacy", "terms", "search", "locations", "home", "feed"
+    )
+
     private fun hostIs(url: String?, domain: String): Boolean {
         val host = host(url) ?: return false
         return host == domain || host.endsWith(".$domain")

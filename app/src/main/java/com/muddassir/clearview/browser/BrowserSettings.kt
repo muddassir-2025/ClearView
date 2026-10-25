@@ -62,10 +62,15 @@ class BrowserSettings(context: Context) {
         private const val PREFS = "clearview_browser_prefs"
 
         private const val KEY_INSTAGRAM_REELS = "hide_instagram_reels"
+        private const val KEY_INSTAGRAM_SEARCH = "hide_instagram_search"
+        private const val KEY_INSTAGRAM_SUGGESTIONS = "hide_instagram_suggestions"
+        private const val KEY_INSTAGRAM_HOME = "hide_instagram_home"
         private const val KEY_GOOGLE_CATEGORIES = "hide_google_categories"
         private const val KEY_REMOVE_BLOCKED = "remove_blocked_from_feed"
         private const val KEY_BLOCK_YOUTUBE_ADS = "block_youtube_ads"
+        private const val KEY_DARK_PAGES = "dark_pages"
         private const val KEY_SHORTCUTS = "shortcuts"
+        private const val KEY_REMOVED_BUILT_INS = "removed_builtin_shortcuts"
 
         /** The shortcuts ClearView ships on the start page. */
         val BUILT_IN_SHORTCUTS: List<BrowserShortcut> = listOf(
@@ -101,6 +106,38 @@ class BrowserSettings(context: Context) {
     var hideInstagramReels by mutableStateOf(prefs.getBoolean(KEY_INSTAGRAM_REELS, true))
         private set
 
+    /**
+     * Hide Instagram's search icon. Explore is the second endless
+     * recommendation feed on the site, so leaving the magnifier in place made
+     * "hide Reels" a one-tap detour. Its own switch, because a reader may want
+     * to search Instagram without the Reels surface.
+     */
+    var hideInstagramSearch by mutableStateOf(prefs.getBoolean(KEY_INSTAGRAM_SEARCH, true))
+        private set
+
+    /**
+     * Hide "Suggested for you" units on the Instagram home feed.
+     *
+     * They are the only part of the feed the reader never chose to follow, so
+     * they are where new channels come from — the opposite of what a blocking
+     * app should feed.
+     */
+    var hideInstagramSuggestions by mutableStateOf(prefs.getBoolean(KEY_INSTAGRAM_SUGGESTIONS, true))
+        private set
+
+    /**
+     * Hide Instagram's Home tab altogether.
+     *
+     * The home feed is the one surface a blocking browser cannot make safe by
+     * filtering: it is an endless, server-chosen list, and the reader can
+     * always pull another screen of it. Off by default — hiding the front door
+     * of a site is a decision, not a default — but when it is on, the tab and
+     * its URL are both gone (a hidden tab that a typed address can still open
+     * is not hidden).
+     */
+    var hideInstagramHome by mutableStateOf(prefs.getBoolean(KEY_INSTAGRAM_HOME, false))
+        private set
+
     /** Hide every Google result category except "All" (Images, Videos, News...). */
     var hideGoogleCategories by mutableStateOf(prefs.getBoolean(KEY_GOOGLE_CATEGORIES, true))
         private set
@@ -117,9 +154,51 @@ class BrowserSettings(context: Context) {
     var blockYouTubeAds by mutableStateOf(prefs.getBoolean(KEY_BLOCK_YOUTUBE_ADS, true))
         private set
 
+    /**
+     * Render websites that ship no dark theme in dark colours.
+     *
+     * On by default: ClearView itself is a dark app, and a white page in the
+     * middle of it is the one surface the reader cannot dim. Sites that already
+     * support a dark theme keep their own colours — the WebView's darkening is
+     * only applied when the page asks for a light scheme, so a site's designed
+     * dark mode is never inverted into something unreadable.
+     */
+    var darkPages by mutableStateOf(prefs.getBoolean(KEY_DARK_PAGES, true))
+        private set
+
     /** The reader's own shortcuts, in the order they were added. */
     var shortcuts by mutableStateOf(loadShortcuts())
         private set
+
+    /**
+     * URLs of ClearView's own shortcuts the reader removed from the start page.
+     *
+     * The built-ins used to be fixed furniture. They are now removable like any
+     * shortcut, and the removal is a preference, not a deletion of the site: no
+     * bookmark, history or session is touched — the tile simply is not drawn.
+     */
+    var removedBuiltIns by mutableStateOf(loadRemovedBuiltIns())
+        private set
+
+    /** The built-in shortcuts still on the start page, in their shipped order. */
+    val visibleBuiltInShortcuts: List<BrowserShortcut>
+        get() = BUILT_IN_SHORTCUTS.filterNot { it.url in removedBuiltIns }
+
+    /** True when [shortcut] is one of ClearView's own (not reader-added). */
+    fun isBuiltInShortcut(shortcut: BrowserShortcut): Boolean =
+        BUILT_IN_SHORTCUTS.any { it.url == shortcut.url }
+
+    /**
+     * Removes a built-in shortcut from the start page (persisted). Only the
+     * tile goes: the website, its cookies and the browser's history are
+     * untouched, so the reader can still reach the site by address.
+     */
+    fun removeBuiltInShortcut(shortcut: BrowserShortcut) {
+        if (!isBuiltInShortcut(shortcut) || shortcut.url in removedBuiltIns) return
+        val next = removedBuiltIns + shortcut.url
+        removedBuiltIns = next
+        prefs.edit().putStringSet(KEY_REMOVED_BUILT_INS, next).apply()
+    }
 
     /**
      * Pick up a change made in the Protection dashboard while this session was
@@ -149,6 +228,24 @@ class BrowserSettings(context: Context) {
         hideInstagramReels = enabled
     }
 
+    fun applyHideInstagramSearch(enabled: Boolean) {
+        if (hideInstagramSearch == enabled) return
+        prefs.edit().putBoolean(KEY_INSTAGRAM_SEARCH, enabled).apply()
+        hideInstagramSearch = enabled
+    }
+
+    fun applyHideInstagramSuggestions(enabled: Boolean) {
+        if (hideInstagramSuggestions == enabled) return
+        prefs.edit().putBoolean(KEY_INSTAGRAM_SUGGESTIONS, enabled).apply()
+        hideInstagramSuggestions = enabled
+    }
+
+    fun applyHideInstagramHome(enabled: Boolean) {
+        if (hideInstagramHome == enabled) return
+        prefs.edit().putBoolean(KEY_INSTAGRAM_HOME, enabled).apply()
+        hideInstagramHome = enabled
+    }
+
     fun applyHideGoogleCategories(enabled: Boolean) {
         if (hideGoogleCategories == enabled) return
         prefs.edit().putBoolean(KEY_GOOGLE_CATEGORIES, enabled).apply()
@@ -165,6 +262,12 @@ class BrowserSettings(context: Context) {
         if (blockYouTubeAds == enabled) return
         prefs.edit().putBoolean(KEY_BLOCK_YOUTUBE_ADS, enabled).apply()
         blockYouTubeAds = enabled
+    }
+
+    fun applyDarkPages(enabled: Boolean) {
+        if (darkPages == enabled) return
+        prefs.edit().putBoolean(KEY_DARK_PAGES, enabled).apply()
+        darkPages = enabled
     }
 
     /** [true] when the shortcut was added; false when the list is full. */
@@ -204,6 +307,9 @@ class BrowserSettings(context: Context) {
         }
         prefs.edit().putString(KEY_SHORTCUTS, array.toString()).apply()
     }
+
+    private fun loadRemovedBuiltIns(): Set<String> =
+        prefs.getStringSet(KEY_REMOVED_BUILT_INS, emptySet())?.toSet() ?: emptySet()
 
     private fun loadShortcuts(): List<BrowserShortcut> {
         val raw = prefs.getString(KEY_SHORTCUTS, null) ?: return emptyList()

@@ -23,6 +23,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -2963,17 +2964,35 @@ private fun PostViewer(
                     modifier = Modifier.weight(1f).fillMaxWidth()
                 ) { page ->
                     val post = posts.getOrNull(page) ?: return@HorizontalPager
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        PostView(
-                            video = post,
-                            onClick = {},
-                            onHide = { onHide(post) },
-                            progressStore = progressStore
-                        )
+                    // A short post should sit in the middle of the reader, not
+                    // pinned to the top with empty space below it: the page is
+                    // at least one viewport tall and the card is centered in
+                    // that, while a post taller than the screen still scrolls
+                    // from its first line.
+                    BoxWithConstraints(Modifier.fillMaxSize()) {
+                        val viewportHeight = maxHeight
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = viewportHeight),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                PostView(
+                                    video = post,
+                                    onClick = {},
+                                    onHide = { onHide(post) },
+                                    progressStore = progressStore,
+                                    // The reader opened this post to SEE it: no
+                                    // cropping here, unlike the grid tile.
+                                    fitMedia = true
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -2992,7 +3011,13 @@ private fun PostView(
     onClick: () -> Unit,
     onHide: () -> Unit,
     progressStore: WatchProgressStore,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * Show the whole image instead of filling (and cropping into) the tile's
+     * shape. True inside [PostViewer], where the post itself is the subject;
+     * false in the grid, where a uniform tile is the point.
+     */
+    fitMedia: Boolean = false
 ) {
     val context = LocalContext.current
     val watchRev by WatchProgressStore.revisionFlow.collectAsState()
@@ -3022,7 +3047,7 @@ private fun PostView(
                     RemoteImage(
                         url = video.thumbnailUrl,
                         modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Crop
+                        contentScale = if (fitMedia) ContentScale.Fit else ContentScale.Crop
                     )
                 } else {
                     StillFallback(video, Modifier.fillMaxSize())

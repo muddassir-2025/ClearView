@@ -183,4 +183,57 @@ class BrowserAddressTest {
             BrowserAddress.isInstagramReelsUrl("https://notinstagram.com/reels/abc/")
         )
     }
+
+    @Test
+    fun instagramHomeIsTheFeedAndNotAProfile() {
+        assertTrue(BrowserAddress.isInstagramHomeUrl("https://www.instagram.com/"))
+        assertTrue(BrowserAddress.isInstagramHomeUrl("https://www.instagram.com/home/"))
+        assertFalse(BrowserAddress.isInstagramHomeUrl("https://www.instagram.com/explore/"))
+        assertFalse(
+            BrowserAddress.isInstagramHomeUrl("https://www.instagram.com/maherzainofficial/")
+        )
+        // A hidden Home must be recognised on a host that only looks similar.
+        assertFalse(BrowserAddress.isInstagramHomeUrl("https://notinstagram.com/"))
+    }
+
+    @Test
+    fun instagramExploreIsRecognised() {
+        assertTrue(BrowserAddress.isInstagramExploreUrl("https://www.instagram.com/explore/"))
+        assertTrue(
+            BrowserAddress.isInstagramExploreUrl("https://www.instagram.com/explore/search/")
+        )
+        assertFalse(BrowserAddress.isInstagramExploreUrl("https://www.instagram.com/"))
+        assertFalse(
+            BrowserAddress.isInstagramExploreUrl("https://www.instagram.com/p/abc/")
+        )
+    }
+
+    @Test
+    fun instagramProfileHandleComesOnlyFromAProfileUrl() {
+        assertEquals(
+            "@maherzainofficial",
+            BrowserAddress.instagramProfileHandle("https://www.instagram.com/maherzainofficial/")
+        )
+        assertEquals(
+            "@someone",
+            BrowserAddress.instagramProfileHandle("https://instagram.com/someone")
+        )
+        // Site pages are not profiles: a block must never be read out of them.
+        assertNull(BrowserAddress.instagramProfileHandle("https://www.instagram.com/p/abc/"))
+        assertNull(
+            BrowserAddress.instagramProfileHandle("https://www.instagram.com/explore/")
+        )
+        assertNull(BrowserAddress.instagramProfileHandle("https://www.instagram.com/@user/"))
+        assertNull(BrowserAddress.instagramProfileHandle("https://example.com/someone/"))
+    }
+
+    @Test
+    fun youtubeHandleComesOnlyFromAChannelUrl() {
+        assertEquals(
+            "@someone",
+            BrowserAddress.youtubeChannelHandle("https://www.youtube.com/@someone")
+        )
+        assertNull(BrowserAddress.youtubeChannelHandle("https://www.youtube.com/watch?v=abc"))
+        assertNull(BrowserAddress.youtubeChannelHandle("https://example.com/@someone"))
+    }
 }

@@ -68,7 +68,10 @@ fun applyFeedFilter(
         }
         val typeOk = when (filter.content) {
             FeedContentFilter.ALL -> true
-            FeedContentFilter.VIDEOS -> !v.isShort && v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
+            // A YouTube community post lives on the channel's Posts tab and has
+            // no player, so it is not a "video" — the Posts rail owns it.
+            FeedContentFilter.VIDEOS -> !v.isShort && !v.isCommunityPost &&
+                v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
             FeedContentFilter.SHORTS -> v.isShort && v.platform == com.muddassir.clearview.media.model.MediaPlatform.YOUTUBE
             FeedContentFilter.LIVE -> v.isLive
             // Reels = Instagram VIDEO items, posts = everything else Instagram

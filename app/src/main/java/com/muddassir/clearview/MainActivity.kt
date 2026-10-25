@@ -526,9 +526,9 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
         else hub.playingVideo = null
     }
 
-    // System back while the offline audio player is open closes it (stops
-    // playback), like the top-bar back arrow.
-    BackHandler(enabled = hub.playingAudio != null) {
+    // System back while the audio player is open closes it (playback keeps
+    // running in the background), like the top-bar back arrow.
+    BackHandler(enabled = hub.playingAudio != null || hub.playingVideoAudio != null) {
         hub.exitAudio()
     }
 
@@ -661,7 +661,8 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
             }
         },
         bottomBar = {
-            if (hub.playingVideo == null && hub.playingAudio == null && !isFullscreen &&
+            if (hub.playingVideo == null && hub.playingAudio == null &&
+                hub.playingVideoAudio == null && !isFullscreen &&
                 (selectedTab != MainTab.BROWSER || browserSession.footerVisible)
             ) {
                 // Glass, not a slab: a translucent tint of the theme's own
@@ -846,8 +847,15 @@ private fun tabFor(tab: ContentTab): MainTab = when (tab) {
     ContentTab.BROWSER -> MainTab.BROWSER
 }
 
+/**
+ * The app-password gate.
+ *
+ * Internal rather than private: the Browser tab's Protection Settings asks for
+ * the SAME password through the same screen (see BrowserTab), so the two can
+ * never disagree about what the password is or how it is entered.
+ */
 @Composable
-private fun LockScreen(
+internal fun LockScreen(
     onUnlock: (String) -> Boolean,
     onSetupPassword: (String) -> Unit,
     hasPassword: Boolean

@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
@@ -57,6 +56,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.muddassir.clearview.media.download.AudioDownloads
 import com.muddassir.clearview.media.download.DownloadItem
+import com.muddassir.clearview.media.model.MediaVideo
 import com.muddassir.clearview.media.playback.AudioPlayback
 import com.muddassir.clearview.media.util.formatBytes
 import com.muddassir.clearview.media.util.formatDownloadDate
@@ -65,13 +65,51 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Podcast-style offline audio player, designed after the Spotify now-playing
- * screen: a blurred album-art backdrop, large rounded artwork, a bold
- * left-aligned title/channel, an elegant seek slider (elapsed left, time
- * remaining right), a clean transport row (previous / ‑10s / play‑pause /
- * +10s / next) and a playback-speed pill pinned to the bottom
- * corner. Plays the locally downloaded file through [AudioPlayback] — no
- * network, no WebView. Fully functional in airplane mode.
+ * What the audio player is playing.
+ *
+ * The player itself is one screen by design: a downloaded track and a video the
+ * reader asked to hear only (Audio Mode) are the same thing to them — the same
+ * backdrop, transport row, seek bar, speed and sleep timer. Only WHERE the bytes
+ * come from differs, and [AudioPlayback] already serves both, so the screen
+ * takes a source rather than a download.
+ */
+sealed class AudioPlayerSource {
+
+    abstract val videoId: String
+    abstract val title: String
+    abstract val channel: String
+
+    /** The downloaded audio file of a video. */
+    data class Download(val item: DownloadItem) : AudioPlayerSource() {
+        override val videoId: String get() = item.videoId
+        override val title: String get() = item.title
+        override val channel: String get() = item.channelName.ifBlank { "YouTube" }
+    }
+
+    /**
+     * A video's audio, streamed in the background (the headphones / Audio Mode
+     * control in the video player). [startAtMs] carries the position the video
+     * was at, so switching modes does not start the audio over.
+     */
+    data class Video(val video: MediaVideo, val startAtMs: Long = 0L) : AudioPlayerSource() {
+        override val videoId: String get() = video.videoId
+        override val title: String get() = video.title
+        override val channel: String get() = video.channelName.ifBlank { video.channelId }
+    }
+}
+
+/**
+ * Podcast-style audio player, designed after the Spotify now-playing screen: a
+ * blurred album-art backdrop, large rounded artwork, a bold left-aligned
+ * title/channel, an elegant seek slider (elapsed left, time remaining right), a
+ * clean transport row (previous / ‑10s / play‑pause / +10s / next) and a
+ * playback-speed pill pinned to the bottom corner.
+ *
+ * It plays either the locally downloaded file of an item or a video's audio-only
+ * stream ([AudioPlayerSource]) through [AudioPlayback] — the same engine either
+ * way — so Audio Mode on a video lands on exactly this screen, and no part of
+ * the player is duplicated. Both sources keep playing with the app
+ * backgrounded or the screen off (foreground service + media notification).
  *
  * A sleep-timer pill sits beside the speed pill: set here, enforced by the
  * playback service, so it keeps counting with the screen off — which is the
@@ -79,11 +117,12 @@ import java.io.File
  *
  * [hasPrevious] / [hasNext] reflect the CURRENT queue the audio was started
  * from (a playlist, the Downloads list, or the whole offline library); the
- * buttons disable at either end instead of wrapping around.
+ * buttons disable at either end instead of wrapping around. A video's audio has
+ * no queue, so both are off.
  */
 @Composable
 fun AudioPlayerScreen(
-    item: DownloadItem,
+    source: AudioPlayerSource,
     hasPrevious: Boolean = false,
     hasNext: Boolean = false,
     onPrevious: () -> Unit = {},
@@ -91,18 +130,39 @@ fun AudioPlayerScreen(
     onExit: () -> Unit = {}
 ) {
     val context = LocalContext.current
-    var fileMissing by remember(item.videoId) { mutableStateOf(false) }
+    var fileMissing by remember(source.videoId) { mutableStateOf(false) }
+    // Audio Mode only: the stream could not be resolved (no connection, a photo
+    // post, an age-restricted video). Saying so is better than a silent spinner.
+    var streamUnavailable by remember(source.videoId) { mutableStateOf(false) }
 
-    // Load the local file once for this item. Playback runs through the
-    // foreground [AudioPlaybackService], so it keeps playing when the app is
-    // backgrounded or the screen is off (media notification attached).
-    LaunchedEffect(item.videoId) {
-        val file = AudioDownloads.audioFile(context, item)
-        if (file.exists()) {
-            AudioPlayback.play(context, item)
-            AudioDownloads.markPlayed(item.videoId)
-        } else {
-            fileMissing = true
+    // Load the source once for this track. Playback runs through the foreground
+    // [AudioPlaybackService], so it keeps playing when the app is backgrounded
+    // or the screen is off (media notification attached).
+    LaunchedEffect(source.videoId) {
+        when (source) {
+            is AudioPlayerSource.Download -> {
+                val file = AudioDownloads.audioFile(context, source.item)
+                if (file.exists()) {
+                    AudioPlayback.play(context, source.item)
+                    AudioDownloads.markPlayed(source.videoId)
+                } else {
+                    fileMissing = true
+                }
+            }
+
+            is AudioPlayerSource.Video -> {
+                // Already the loaded track (the reader came back from the video
+                // player, or from the notification): keep it playing instead of
+                // resolving and restarting it.
+                if (AudioPlayback.playingVideoId.value != source.videoId) {
+                    val started = AudioPlayback.playVideo(
+                        context = context.applicationContext,
+                        video = source.video,
+                        startAtMs = source.startAtMs
+                    )
+                    streamUnavailable = !started
+                }
+            }
         }
     }
 
@@ -119,15 +179,11 @@ fun AudioPlayerScreen(
     var showSleepDialog by remember { mutableStateOf(false) }
 
     if (fileMissing) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "This download is no longer available on the device.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(32.dp)
-            )
-        }
+        AudioUnavailable("This download is no longer available on the device.")
+        return
+    }
+    if (streamUnavailable) {
+        AudioUnavailable("This video's audio couldn't be played. Check your connection and try again.")
         return
     }
 
@@ -137,7 +193,7 @@ fun AudioPlayerScreen(
             .background(MaterialTheme.colorScheme.surface)
     ) {
         // ── Spotify-style blurred album-art backdrop ──
-        AudioBackdrop(item = item)
+        AudioBackdrop(source = source)
 
         Column(
             modifier = Modifier
@@ -149,14 +205,14 @@ fun AudioPlayerScreen(
             // bottom free for the controls.
             Spacer(Modifier.weight(0.6f))
 
-            // ── Album art (local file, works offline) ──
+            // ── Album art ──
             Box(
                 modifier = Modifier
                     .size(252.dp)
                     .shadow(18.dp, RoundedCornerShape(18.dp))
                     .clip(RoundedCornerShape(18.dp))
             ) {
-                OfflineThumbnail(item = item, modifier = Modifier.fillMaxSize())
+                AudioArtwork(source = source, modifier = Modifier.fillMaxSize())
             }
 
             Spacer(Modifier.height(30.dp))
@@ -164,7 +220,7 @@ fun AudioPlayerScreen(
             // ── Title + channel (left-aligned, Spotify style) ──
             Column(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = item.title,
+                    text = source.title,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     maxLines = 2,
@@ -172,7 +228,7 @@ fun AudioPlayerScreen(
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = item.channelName.ifBlank { "YouTube" },
+                    text = source.channel,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -301,23 +357,13 @@ fun AudioPlayerScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // ── Bottom row: download info (left) · speed pill (right) ──
+            // ── Bottom row: track info (left) · speed pill (right) ──
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = buildString {
-                        // Real track length for imported device audio (from
-                        // MediaMetadataRetriever at import time).
-                        if (item.durationSeconds > 0L) {
-                            append(formatClock(item.durationSeconds)).append(" · ")
-                        }
-                        append("Downloaded ")
-                            .append(formatDownloadDate(item.downloadedAt))
-                            .append(" · ")
-                            .append(formatBytes(item.fileSize))
-                    },
+                    text = sourceFooter(source),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -412,25 +458,60 @@ fun AudioPlayerScreen(
     }
 }
 
+/** A quiet full-screen message for audio that cannot be played at all. */
+@Composable
+private fun AudioUnavailable(message: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.padding(32.dp)
+        )
+    }
+}
+
+/** The artwork: the downloaded thumbnail file, or the video's own poster. */
+@Composable
+private fun AudioArtwork(source: AudioPlayerSource, modifier: Modifier = Modifier) {
+    when (source) {
+        is AudioPlayerSource.Download -> OfflineThumbnail(item = source.item, modifier = modifier)
+        is AudioPlayerSource.Video -> RemoteImage(
+            url = source.video.thumbnailUrl.takeIf { it.isNotBlank() },
+            modifier = modifier
+        )
+    }
+}
+
 /**
  * Full-bleed blurred backdrop made from the track's own artwork (Spotify
- * style): the local thumbnail is decoded once, scaled up and heavily blurred
- * behind the player, with a theme-colored scrim on top so the foreground text
- * stays readable in both light and dark mode. Falls back to a brand-tinted
- * gradient while the artwork loads (or when there is none).
+ * style): the local thumbnail (or, for a streamed video, the poster already in
+ * the shared image cache) is decoded once, scaled up and heavily blurred behind
+ * the player, with a theme-colored scrim on top so the foreground text stays
+ * readable in both light and dark mode. Falls back to a brand-tinted gradient
+ * while the artwork loads (or when there is none).
  */
 @Composable
-private fun AudioBackdrop(item: DownloadItem) {
+private fun AudioBackdrop(source: AudioPlayerSource) {
     val context = LocalContext.current
-    var bitmap by remember(item.thumbnailPath) { mutableStateOf<Bitmap?>(null) }
+    var bitmap by remember(source.videoId) { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(item.thumbnailPath) {
+    LaunchedEffect(source.videoId) {
         bitmap = withContext(Dispatchers.IO) {
-            if (item.thumbnailPath.isBlank()) null
-            else runCatching {
-                val f = File(context.cacheDir, "thumbnails/${item.thumbnailPath}")
-                if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
-            }.getOrNull()
+            when (source) {
+                is AudioPlayerSource.Download -> {
+                    if (source.item.thumbnailPath.isBlank()) null
+                    else runCatching {
+                        val f = File(context.cacheDir, "thumbnails/${source.item.thumbnailPath}")
+                        if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+                    }.getOrNull()
+                }
+                is AudioPlayerSource.Video -> {
+                    val url = source.video.thumbnailUrl.takeIf { it.isNotBlank() }
+                    if (url == null) null else ThumbnailCache.get(context, url, BACKDROP_WIDTH_PX)
+                }
+            }
         }
     }
 
@@ -477,6 +558,31 @@ private fun AudioBackdrop(item: DownloadItem) {
     }
 }
 
+/** The bottom-left line: download details, or how Audio Mode is playing. */
+private fun sourceFooter(source: AudioPlayerSource): String = when (source) {
+    is AudioPlayerSource.Download -> buildString {
+        // Real track length for imported device audio (from
+        // MediaMetadataRetriever at import time).
+        val item = source.item
+        if (item.durationSeconds > 0L) {
+            append(formatClock(item.durationSeconds)).append(" · ")
+        }
+        append("Downloaded ")
+            .append(formatDownloadDate(item.downloadedAt))
+            .append(" · ")
+            .append(formatBytes(item.fileSize))
+    }
+
+    // Audio Mode: the bytes are a stream and there is no download to describe.
+    // The video's own length is shown while it is known; the line then says
+    // what the reader is hearing rather than pretending it is saved.
+    is AudioPlayerSource.Video -> buildString {
+        val duration = source.video.durationSeconds
+        if (duration > 0L) append(formatClock(duration)).append(" · ")
+        append("Audio only")
+    }
+}
+
 /**
  * Bounds for the AUDIO speed bar.
  *
@@ -487,6 +593,9 @@ private fun AudioBackdrop(item: DownloadItem) {
  */
 internal const val MIN_AUDIO_SPEED = 0.5
 internal const val MAX_AUDIO_SPEED = 3.0
+
+/** Poster width decoded for the blurred backdrop. */
+private const val BACKDROP_WIDTH_PX = 480
 
 /** "12:34", or "1:02:34" past an hour. */
 private fun formatClock(seconds: Long): String {
