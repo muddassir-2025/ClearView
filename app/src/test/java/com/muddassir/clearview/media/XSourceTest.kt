@@ -97,6 +97,25 @@ class XSourceTest {
         assertTrue(ids.none { it == "x_4398626122" })
     }
 
+    /**
+     * A syndication page embeds other accounts' posts too (quotes, promoted
+     * entries). Those must not be filed under the profile that was asked for:
+     * that is how a feed shows channels the reader never added.
+     */
+    @Test
+    fun dropsPostsByAnotherAccount() {
+        val page = """
+            {"timeline":{"entries":[
+            {"tweet":{"id_str":"1836000000000000011","screen_name":"AminaEditz","full_text":"not this profile's post"}},
+            {"tweet":{"id_str":"1836000000000000012","screen_name":"OpenAI","full_text":"this one is"}}
+            ]}}
+        """.trimIndent()
+
+        val ids = XFeedParser.parseSyndication(page, "OpenAI").map { it.videoId }
+        assertTrue(ids.none { it == "x_1836000000000000011" })
+        assertTrue(ids.any { it == "x_1836000000000000012" })
+    }
+
     @Test
     fun parsesServerRenderedTimelineMarkup() {
         val html = """

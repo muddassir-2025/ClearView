@@ -8,10 +8,10 @@ import java.net.URL
  * Fetches a YouTube channel's COMMUNITY posts.
  *
  * The Data API is not used because it does not expose community posts at all;
- * the channel's own `/community` page is the source, and
- * [YouTubeCommunityParser] turns its server-rendered data into posts. The page
- * is requested with a DESKTOP user agent on purpose: the mobile page serves a
- * reduced shell whose initial data does not include the post list.
+ * the channel's own Posts tab is the source, and [YouTubeCommunityParser] turns
+ * its server-rendered data into posts. The page is requested with a DESKTOP user
+ * agent on purpose: the mobile page serves a reduced shell whose initial data
+ * does not include the post list.
  *
  * Best-effort by design. A channel with no community tab, a bot wall, a
  * consent interstitial or no connection all end as an empty result rather than
@@ -28,12 +28,36 @@ object YouTubeCommunitySource {
             "(KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
 
     /**
+     * The tabs a channel's posts live on, newest URL first.
+     *
+     * `/community` was the tab's address for years, but YouTube moved posts to
+     * `/posts` and retired the old tab: for a channel that still posts, the old
+     * URL now answers 200 with "This Community isn't available" and no posts at
+     * all, while `/posts` on the SAME channel id returns them. Text that a
+     * channel has no posts must therefore come from the new tab, which is why
+     * it is asked first and the legacy path only backs it up.
+     */
+    private val POST_PATHS = listOf("posts", "community")
+
+    /**
      * The newest community posts of [channelId], or an empty result when the
      * channel has none / the page cannot be read.
      */
     fun fetch(channelId: String, channelName: String): Result {
         if (channelId.isBlank()) return Result(emptyList(), ok = false)
-        val url = "https://www.youtube.com/channel/$channelId/community"
+        for (path in POST_PATHS) {
+            val result = fetchTab(channelId, channelName, path)
+            // A readable page is the whole truth: it either has the posts or the
+            // channel has none. Trying the next path could only re-read the same
+            // answer.
+            if (result.ok) return result
+        }
+        return Result(emptyList(), ok = false)
+    }
+
+    /** One tab of the channel, read the same way regardless of its address. */
+    private fun fetchTab(channelId: String, channelName: String, path: String): Result {
+        val url = "https://www.youtube.com/channel/$channelId/$path"
         var connection: HttpURLConnection? = null
         return try {
             connection = (URL(url).openConnection() as HttpURLConnection).apply {

@@ -25,8 +25,10 @@ import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -66,8 +68,11 @@ import com.muddassir.clearview.ui.ApplyImmersiveIfNeeded
 import com.muddassir.clearview.ui.contentHubNavItems
 import com.muddassir.clearview.ui.isLandscape
 import com.muddassir.clearview.ui.rememberContentHubState
+import com.muddassir.clearview.ui.theme.CvTokens
 import com.muddassir.clearview.ui.theme.ThemeStore
 import com.muddassir.clearview.ui.theme.UrlblockerTheme
+import com.muddassir.clearview.ui.theme.cvGlassSurface
+import com.muddassir.clearview.ui.theme.cvPageBrush
 import com.muddassir.clearview.viewmodel.MainViewModel
 
 open class MainActivity : ComponentActivity() {
@@ -549,14 +554,21 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
     ApplyGoodPostStatusBar(enabled = selectedTab == MainTab.GOODPOST)
 
     Scaffold(
-        // Good Post paints its own dark surfaces and has no light mode, so the
-        // window behind it follows that rather than the app theme. Otherwise the
-        // transparent status bar shows a strip of the app's background above the
-        // tab's own dark bar, which reads as a rendering fault.
+        // The page's own backdrop: one very slight gradient (see [cvPageBrush])
+        // behind the whole shell instead of a flat rectangle. It is what the
+        // translucent bars and cards sit ON, which is what makes the depth read
+        // as depth rather than as a colour change. The container stays
+        // transparent so the gradient reaches every tab, except Good Post, which
+        // paints its own dark surfaces and has no light mode — a transparent
+        // status bar would otherwise show a strip of the app's background above
+        // its own dark bar, which reads as a rendering fault.
+        modifier = Modifier
+            .fillMaxSize()
+            .background(cvPageBrush()),
         containerColor = if (selectedTab == MainTab.GOODPOST) {
             Wa.Bar
         } else {
-            MaterialTheme.colorScheme.background
+            Color.Transparent
         },
         topBar = {
             // The Browser tab draws its own compact toolbar; the app-wide
@@ -642,8 +654,10 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                                 }
                             }
                         },
+                        // Transparent, so the page's backdrop runs behind the
+                        // title instead of stopping at a coloured band.
                         colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = MaterialTheme.colorScheme.surface
+                            containerColor = Color.Transparent
                         )
                     )
                 } else if (selectedTab == MainTab.GOODPOST) {
@@ -672,16 +686,32 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                 // it keeps working in both light and dark, and the items get
                 // explicit colours because NavigationBarItemDefaults follows the
                 // theme's on-surface roles, not this container tint.
+                //
+                // The bar also FLOATS now: inset from the screen edges, rounded
+                // and lifted, so it reads as a control over the page rather than
+                // as the page's last band. The slot keeps the inset in its own
+                // height, so content still ends above the bar (nothing is
+                // hidden behind it) and the insets below keep the gesture area
+                // clear.
                 val footerItemColors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+                    indicatorColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f),
-                    contentColor = MaterialTheme.colorScheme.onSurface
+                    modifier = Modifier
+                        .padding(horizontal = CvTokens.Space.md)
+                        .padding(bottom = CvTokens.Space.sm)
+                        .cvGlassSurface(
+                            shape = RoundedCornerShape(CvTokens.Radius.bar),
+                            alpha = CvTokens.Alpha.bar,
+                            elevation = 14.dp
+                        ),
+                    containerColor = Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    tonalElevation = 0.dp
                 ) {
                     contentHubNavItems().forEach { item ->
                         NavigationBarItem(

@@ -12,6 +12,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import com.muddassir.clearview.media.model.InstagramMediaType
 import com.muddassir.clearview.ui.ContentHubState
+import com.muddassir.clearview.ui.theme.CvTokens
+import com.muddassir.clearview.ui.theme.cvPressScale
+import com.muddassir.clearview.ui.theme.rememberCvInteraction
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -75,6 +78,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -2432,12 +2436,24 @@ private fun PostCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // The shared card language: the app's card radius, a hairline edge that
+    // keeps the tile visible over a busy page, a small lift, and the press
+    // feedback every tappable surface in the app now has.
+    val interaction = rememberCvInteraction()
     Card(
         onClick = onClick,
-        modifier = modifier.width(POST_CARD_WIDTH),
-        shape = RoundedCornerShape(16.dp),
+        modifier = modifier
+            .width(POST_CARD_WIDTH)
+            .cvPressScale(interaction),
+        interactionSource = interaction,
+        shape = RoundedCornerShape(CvTokens.Radius.lg),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        border = BorderStroke(
+            0.8.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = CvTokens.Alpha.hairline)
         )
     ) {
         Box(

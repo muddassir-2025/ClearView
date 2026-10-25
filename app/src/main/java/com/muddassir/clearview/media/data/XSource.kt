@@ -295,6 +295,24 @@ object XFeedParser {
         Regex("""\btext\b["']?\s*[:=]\s*["']([^"]{1,1000})""")
     )
 
+    /**
+     * The handle a post says it was written by.
+     *
+     * The syndication page is not only one profile's posts: quotes, replies and
+     * promoted entries embed OTHER accounts' JSON inside the same document, and
+     * the page's id scan therefore finds their posts too. Those are shown with
+     * the requested channel's name, which is how a feed ends up carrying posts
+     * from channels the reader never added.
+     *
+     * Only the FIRST handle in a post's own span is read, for the same reason
+     * the text is: a quote embeds the quoted account later, so the first one is
+     * the author of the post itself.
+     */
+    private val AUTHOR_PATTERNS = listOf(
+        Regex(""""screen_name"\s*:\s*"([A-Za-z0-9_]{1,15})""""),
+        Regex("""\bdata-screen-name\b["']?\s*[:=]\s*["']([A-Za-z0-9_]{1,15})""")
+    )
+
     // Media URLs point at the pbs.twimg.com/media (images) and
     // video.twimg.com (playable mp4) hosts. Query separators arrive escaped as
     // \u0026 / &amp; and are normalised by [unescape] before matching.
@@ -365,7 +383,7 @@ object XFeedParser {
         val source = unescape(body)
         val ids = postIds(source)
         if (ids.isEmpty()) return emptyList()
-        return ids.mapIndexed { index, (id, position) ->
+        return ids.mapIndexedNotNull { index, (id, position) ->
             val window = source.substring(
                 position,
                 (position + POST_WINDOW).coerceAtMost(source.length)
@@ -383,6 +401,14 @@ object XFeedParser {
                 ?.let { window.substring(0, (it - position).coerceAtMost(window.length)) }
                 ?: window
             val text = postText(ownSpan).ifBlank { postText(window) }
+            // Drop a post the page attributes to a DIFFERENT account: it is not
+            // this profile's, and showing it under this profile's name is worse
+            // than showing nothing. An unattributable span is kept — most
+            // server-rendered posts name no author at all.
+            val author = postAuthor(ownSpan) ?: postAuthor(window)
+            if (author != null && !author.equals(username, ignoreCase = true) &&
+                !author.equals(username.substringAfterLast('/'), ignoreCase = true)
+            ) return@mapIndexedNotNull null
             val mediaUrl = firstMediaVideo(ownSpan)
             item(
                 username = username,
@@ -440,6 +466,12 @@ object XFeedParser {
         }
         return ""
     }
+
+    /** The author handle the post names, or null when it names none. */
+    private fun postAuthor(window: String): String? =
+        AUTHOR_PATTERNS.firstNotNullOfOrNull { pattern ->
+            pattern.find(window)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+        }
 
     /**
      * How long the clip [mediaUrl] runs, from X's own `duration_millis`.

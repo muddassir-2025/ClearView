@@ -21,8 +21,6 @@ import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -38,6 +36,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.muddassir.clearview.R
+import com.muddassir.clearview.ui.theme.CvCard
+import com.muddassir.clearview.ui.theme.CvTokens
 import com.muddassir.clearview.ui.theme.ThemeMode
 
 /**
@@ -75,8 +75,11 @@ internal fun MoreTab(
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        contentPadding = PaddingValues(
+            horizontal = CvTokens.Space.lg,
+            vertical = CvTokens.Space.lg
+        ),
+        verticalArrangement = Arrangement.spacedBy(CvTokens.Space.md)
     ) {
         item {
             SectionLabel(stringResource(R.string.more_section_tools))
@@ -196,7 +199,7 @@ private fun SectionLabel(text: String) {
         text = text,
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+        modifier = Modifier.padding(top = CvTokens.Space.xs, start = CvTokens.Space.xs)
     )
 }
 
@@ -229,21 +232,24 @@ private fun MoreCard(
         MaterialTheme.colorScheme.onSurface
     }
 
-    Card(
-        onClick = onClick,
+    // The shared card surface rather than a one-off `Card`: same corner radius,
+    // translucent fill and hairline edge as every other card in the app, plus the
+    // app's press feedback (the surface answers the touch). Only the container
+    // colour differs for the highlighted row.
+    CvCard(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = container),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (highlight) 2.dp else 0.dp)
+        container = container,
+        onClick = onClick,
+        contentPadding = 14.dp
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(13.dp))
+                    .size(CvTokens.Size.glyphBox)
+                    .clip(RoundedCornerShape(CvTokens.Radius.sm))
                     .background(
                         if (highlight) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f)
                         else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
@@ -255,12 +261,12 @@ private fun MoreCard(
                         imageVector = icon,
                         contentDescription = null,
                         tint = if (highlight) ink else MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(24.dp)
+                        modifier = Modifier.size(CvTokens.Size.glyph)
                     )
                     emoji != null -> Text(text = emoji, fontSize = 22.sp)
                 }
             }
-            Spacer(Modifier.width(14.dp))
+            Spacer(Modifier.width(CvTokens.Space.lg))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -268,7 +274,7 @@ private fun MoreCard(
                     fontWeight = FontWeight.SemiBold,
                     color = ink
                 )
-                Spacer(Modifier.height(2.dp))
+                Spacer(Modifier.height(CvTokens.Space.xxs))
                 Text(
                     text = note,
                     style = MaterialTheme.typography.bodySmall,

@@ -31,6 +31,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.graphics.Color
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -1362,11 +1364,19 @@ fun ContentHubTopBar(
     onBack: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    // Every bar in this hub is transparent, so the shell's page backdrop runs
+    // behind the title instead of stopping at a coloured band. The bars still
+    // scroll-mute to a translucent fill, which is the platform behaviour.
+    val barColors = TopAppBarDefaults.topAppBarColors(
+        containerColor = Color.Transparent,
+        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = 0.86f)
+    )
     when {
         // While a video plays, the back arrow ALWAYS returns to the Media tab
         // (clears the player) — regardless of [onBack]. Both the widget and the
         // main app want this; [onBack] only applies to the tab top bars.
         state.playingVideo != null -> TopAppBar(
+            colors = barColors,
             title = {
                 Text(
                     text = state.playingVideo!!.title,
@@ -1384,6 +1394,7 @@ fun ContentHubTopBar(
         // Offline audio: back arrow closes the podcast-style player; the bar
         // shows "Now Playing" (the player body itself shows the track title).
         state.playingAudio != null || state.playingVideoAudio != null -> TopAppBar(
+            colors = barColors,
             title = {
                 Text(
                     text = "Now Playing",
@@ -1403,6 +1414,7 @@ fun ContentHubTopBar(
         // branches because it can be open OVER the Media tab, whose own bar would
         // otherwise draw its feed actions over a list that has none.
         state.showChannelDirectory -> TopAppBar(
+            colors = barColors,
             title = { Text(stringResource(R.string.channel_directory_title)) },
             navigationIcon = {
                 IconButton(onClick = { state.showChannelDirectory = false }) {
@@ -1412,6 +1424,7 @@ fun ContentHubTopBar(
         )
 
         state.selectedTab == ContentTab.QURAN -> TopAppBar(
+            colors = barColors,
             title = { Text(stringResource(R.string.quran_verse_header)) },
             navigationIcon = {
                 if (onBack != null) {
@@ -1498,6 +1511,7 @@ fun ContentHubTopBar(
         // Browser gets a plain bar; its address bar and navigation controls
         // live inside the tab, directly under this title.
         state.selectedTab == ContentTab.BROWSER -> TopAppBar(
+            colors = barColors,
             title = { Text(stringResource(R.string.browser_tab)) },
             navigationIcon = {
                 if (onBack != null) {
@@ -1510,6 +1524,7 @@ fun ContentHubTopBar(
 
         // Media. Quran is handled above; Browser has its own branch now.
         else -> TopAppBar(
+            colors = barColors,
             title = { Text(stringResource(R.string.media_tab)) },
             navigationIcon = {
                 if (onBack != null) {
